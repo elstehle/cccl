@@ -55,7 +55,10 @@
 #define _CUDA_ANNOTATED_PTR
 
 #include <cuda/std/cstdint>
-#include <cuda/barrier>
+// cuda/barrier transitively includes std/barrier, which intentionally fails compilation for __CUDA_ARCH__ < 700
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 700
+#  include <cuda/barrier>
+#endif
 
 #include "std/detail/__access_property"
 
@@ -171,23 +174,24 @@ void apply_access_property(const volatile void* __ptr, const _Shape __shape, acc
   ))
 }
 
-inline
-_LIBCUDACXX_HOST_DEVICE
-void discard_memory(volatile void* __ptr, std::size_t __nbytes) noexcept {
-  NV_IF_TARGET(NV_PROVIDES_SM_80,(
-    if (!__isGlobal((void*)__ptr)) return;
+inline _LIBCUDACXX_HOST_DEVICE void discard_memory(volatile void* __ptr, std::size_t __nbytes) noexcept
+{
+  NV_IF_TARGET(
+    NV_PROVIDES_SM_80,
+    (if (!__isGlobal((void*) __ptr)) return;
 
-    char* __p = reinterpret_cast<char*>(const_cast<void*>(__ptr));
-    static constexpr std::size_t _LINE_SIZE = 128;
-    std::size_t __start = (reinterpret_cast<std::uintptr_t>(__p) % _LINE_SIZE) ? 1 : 0;
-    std::size_t __end = (reinterpret_cast<std::uintptr_t>(__p + __nbytes) % _LINE_SIZE) ? __nbytes - _LINE_SIZE : __nbytes;
-    __end /= _LINE_SIZE;
+     char* __p                               = reinterpret_cast<char*>(const_cast<void*>(__ptr));
+     static constexpr std::size_t _LINE_SIZE = 128;
+     std::size_t __start                     = (reinterpret_cast<std::uintptr_t>(__p) % _LINE_SIZE) ? 1 : 0;
+     std::size_t __end =
+       (reinterpret_cast<std::uintptr_t>(__p + __nbytes) % _LINE_SIZE) ? __nbytes - _LINE_SIZE : __nbytes;
+     __end /= _LINE_SIZE;
 
-    //Trim the first block and last block if they're not 128 bytes aligned
-    for (std::size_t __i = __start; __i < __end; __i += _LINE_SIZE) {
-      asm volatile ("discard.global.L2 [%0], 128;" ::"l"(__p + (__i * _LINE_SIZE)) :);
-    }
-  ))
+     // Trim the first block and last block if they're not 128 bytes aligned
+     for (std::size_t __i = __start; __i < __end; __i += _LINE_SIZE) {
+       asm volatile("discard.global.L2 [%0], 128;" ::"l"(__p + (__i * _LINE_SIZE)) :);
+     }),
+    ((void) (__ptr); (void) (__nbytes);))
 }
 
 template<class _Tp, class _Property>
