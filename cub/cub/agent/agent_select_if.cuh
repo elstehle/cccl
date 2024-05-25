@@ -380,53 +380,6 @@ struct AgentSelectIf
   }
 
   /**
-   * @brief Scatter flagged items to output offsets (specialized for two-phase scattering)
-   *
-   * @param num_tile_items
-   *   Number of valid items in this tile
-   *
-   * @param num_tile_selections
-   *   Number of selections in this tile
-   *
-   * @param num_selections_prefix
-   *   Total number of selections prior to this tile
-   *
-   * @param num_rejected_prefix
-   *   Total number of rejections prior to this tile
-   *
-   * @param is_keep_rejects
-   *   Marker type indicating whether to keep rejected items in the second partition
-   */
-  template <bool IS_LAST_TILE, bool IS_FIRST_TILE>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void ScatterSelectedTwoPhase(
-    InputT (&items)[ITEMS_PER_THREAD],
-    OffsetT (&selection_flags)[ITEMS_PER_THREAD],
-    OffsetT (&selection_indices)[ITEMS_PER_THREAD],
-    int num_tile_selections,
-    OffsetT num_selections_prefix)
-  {
-    CTA_SYNC();
-
-// Compact and scatter items
-#pragma unroll
-    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
-    {
-      int local_scatter_offset = selection_indices[ITEM] - num_selections_prefix;
-      if (selection_flags[ITEM])
-      {
-        temp_storage.raw_exchange.Alias()[local_scatter_offset] = items[ITEM];
-      }
-    }
-
-    CTA_SYNC();
-
-    for (int item = threadIdx.x; item < num_tile_selections; item += BLOCK_THREADS)
-    {
-      d_selected_out[num_selections_prefix + item] = temp_storage.raw_exchange.Alias()[item];
-    }
-  }
-
-  /**
    * @brief Scatter flagged items. Specialized for selection algorithm that simply discards rejected items
    *
    * @param num_tile_items
@@ -456,17 +409,7 @@ struct AgentSelectIf
     OffsetT num_selections,
     Int2Type<false> /*is_keep_rejects*/)
   {
-    // Do a two-phase scatter if two-phase is enabled and the average number of selection_flags items per thread is
-    // greater than one
-    if (TWO_PHASE_SCATTER && (num_tile_selections > BLOCK_THREADS))
-    {
-      ScatterSelectedTwoPhase<IS_LAST_TILE, IS_FIRST_TILE>(
-        items, selection_flags, selection_indices, num_tile_selections, num_selections_prefix);
-    }
-    else
-    {
-      ScatterSelectedDirect<IS_LAST_TILE, IS_FIRST_TILE>(items, selection_flags, selection_indices, num_selections);
-    }
+    ScatterSelectedDirect<IS_LAST_TILE, IS_FIRST_TILE>(items, selection_flags, selection_indices, num_selections);
   }
   
 
