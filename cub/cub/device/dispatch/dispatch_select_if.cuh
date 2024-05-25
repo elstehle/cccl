@@ -235,12 +235,13 @@ __launch_bounds__(int(
 }
 
 template <typename OffsetT, typename ScanTileStateT>
-__global__ void unblock_first_tile_kernel(ScanTileStateT* tile_state)
+__global__ void unblock_first_tile_kernel(ScanTileStateT tile_state)
 {
   if (threadIdx.x == 0)
   {
     constexpr OffsetT inclusive_prefix = 0;
-    tile_state[0].SetInclusive(0, inclusive_prefix);
+    constexpr OffsetT tile_index = 0;
+    tile_state.SetInclusive(tile_index, inclusive_prefix);
   }
 }
 
