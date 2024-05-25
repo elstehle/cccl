@@ -677,7 +677,7 @@ struct ScanTileState<T, false>
   // Constants
   enum
   {
-    TILE_STATUS_PADDING = CUB_PTX_WARP_THREADS,
+    TILE_STATUS_PADDING = 2*CUB_PTX_WARP_THREADS,
   };
 
   // Device storage
