@@ -718,7 +718,7 @@ struct device_select_policy_hub
 {
   struct DefaultTuning
   {
-    static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 10;
+    static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 1;
 
     static constexpr int ITEMS_PER_THREAD =
       CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(InputT))));
