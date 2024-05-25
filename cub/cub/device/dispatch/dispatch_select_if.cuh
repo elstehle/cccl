@@ -234,6 +234,16 @@ __launch_bounds__(int(
   VsmemHelperT::discard_temp_storage(temp_storage);
 }
 
+template <typename OffsetT, typename ScanTileStateT>
+__global__ void unblock_first_tile_kernel(ScanTileStateT* tile_state)
+{
+  if (threadIdx.x == 0)
+  {
+    constexpr OffsetT inclusive_prefix = 0;
+    tile_state[0].SetInclusive(0, inclusive_prefix);
+  }
+}
+
 /******************************************************************************
  * Dispatch
  ******************************************************************************/
@@ -471,6 +481,8 @@ struct DispatchSelectIf : SelectedPolicy
       // Invoke scan_init_kernel to initialize tile descriptors
       THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(init_grid_size, INIT_KERNEL_THREADS, 0, stream)
         .doit(scan_init_kernel, tile_status, num_tiles, d_num_selected_out);
+
+        unblock_first_tile_kernel<OffsetT><<<1,1,0, stream>>>(tile_status);
 
       // Check for failure to launch
       error = CubDebug(cudaPeekAtLastError());

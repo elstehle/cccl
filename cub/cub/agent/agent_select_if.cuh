@@ -322,83 +322,25 @@ struct AgentSelectIf
       , select_op(select_op)
       , num_items(num_items)
   {}
-  
-
-  //---------------------------------------------------------------------
-  // Cooperatively scan a device-wide sequence of tiles with other CTAs
-  //---------------------------------------------------------------------
 
   /**
-   * @brief Process first tile of input (dynamic chained scan).
+   * @brief Process a tile of input
    *
    * @param num_tile_items
    *   Number of input items comprising this tile
+   *
+   * @param tile_idx
+   *   Tile index
    *
    * @param tile_offset
    *   Tile offset
    *
    * @param tile_state
    *   Global tile state descriptor
-   *
-   * @return The running count of selections (including this tile)
    */
   template <bool IS_LAST_TILE>
   _CCCL_DEVICE _CCCL_FORCEINLINE OffsetT
-  ConsumeFirstTile(int num_tile_items, OffsetT tile_offset, ScanTileStateT& tile_state)
-  {
-    InputT items[ITEMS_PER_THREAD];
-    OffsetT selection_flags[ITEMS_PER_THREAD];
-    OffsetT selection_indices[ITEMS_PER_THREAD];
-
-    // Load items 
-    BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items);
-
-    // Initialize selection_flags
-    #pragma unroll
-    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
-    {
-      selection_flags[ITEM] = static_cast<bool>(select_op(items[ITEM]));
-    }
-
-    // Make sure all threads of the tile have loaded their data (and temp storage can be reused)
-    CTA_SYNC();
-
-    // Exclusive scan of selection_flags
-    OffsetT num_tile_selections;
-    BlockScanT(temp_storage.scan_storage.scan).ExclusiveSum(selection_flags, selection_indices, num_tile_selections);
-
-    if (threadIdx.x == 0)
-    {
-      // Update tile status if this is not the last tile
-      if (!IS_LAST_TILE)
-      {
-        tile_state.SetInclusive(0, num_tile_selections);
-      }
-    }
-
-    // Discount any out-of-bounds selections
-    if (IS_LAST_TILE)
-    {
-      num_tile_selections -= (TILE_ITEMS - num_tile_items);
-    }
-
-    // Scatter flagged items
-    // Scatter flagged items
-#pragma unroll
-    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
-    {
-      if (selection_flags[ITEM])
-      {
-          d_selected_out[selection_indices[ITEM]] = items[ITEM];
-      }
-    }
-
-    return num_tile_selections;
-  }
-
-  template <bool IS_LAST_TILE>
-  _CCCL_DEVICE _CCCL_FORCEINLINE OffsetT
-  ConsumeSubsequentTile(int num_tile_items, int tile_idx, OffsetT tile_offset, ScanTileStateT& tile_state)
+  ConsumeTile(int tile_idx, OffsetT tile_offset, ScanTileStateT& tile_state)
   {
     InputT items[ITEMS_PER_THREAD];
     OffsetT selection_flags[ITEMS_PER_THREAD];
@@ -425,14 +367,6 @@ struct AgentSelectIf
     OffsetT num_selections_prefix = prefix_op.GetExclusivePrefix();
     OffsetT num_rejected_prefix   = tile_offset - num_selections_prefix;
 
-    // Discount any out-of-bounds selections
-    if (IS_LAST_TILE)
-    {
-      int num_discount = TILE_ITEMS - num_tile_items;
-      num_selections -= num_discount;
-      num_tile_selections -= num_discount;
-    }
-
     // Scatter flagged items
 #pragma unroll
     for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
@@ -441,38 +375,6 @@ struct AgentSelectIf
       {
           d_selected_out[selection_indices[ITEM]] = items[ITEM];
       }
-    }
-
-    return num_selections;
-  }
-
-  /**
-   * @brief Process a tile of input
-   *
-   * @param num_tile_items
-   *   Number of input items comprising this tile
-   *
-   * @param tile_idx
-   *   Tile index
-   *
-   * @param tile_offset
-   *   Tile offset
-   *
-   * @param tile_state
-   *   Global tile state descriptor
-   */
-  template <bool IS_LAST_TILE>
-  _CCCL_DEVICE _CCCL_FORCEINLINE OffsetT
-  ConsumeTile(int num_tile_items, int tile_idx, OffsetT tile_offset, ScanTileStateT& tile_state)
-  {
-    OffsetT num_selections;
-    if (tile_idx == 0)
-    {
-      num_selections = ConsumeFirstTile<IS_LAST_TILE>(num_tile_items, tile_offset, tile_state);
-    }
-    else
-    {
-      num_selections = ConsumeSubsequentTile<IS_LAST_TILE>(num_tile_items, tile_idx, tile_offset, tile_state);
     }
 
     return num_selections;
@@ -501,17 +403,9 @@ struct AgentSelectIf
     int tile_idx        = (blockIdx.x * gridDim.y) + blockIdx.y; // Current tile index
     OffsetT tile_offset = static_cast<OffsetT>(tile_idx) * static_cast<OffsetT>(TILE_ITEMS);
 
-    if (tile_idx < num_tiles - 1)
+    OffsetT num_selections = ConsumeTile<true>(tile_idx, tile_offset, tile_state);
+    if (tile_idx == num_tiles - 1)
     {
-      // Not the last tile (full)
-      ConsumeTile<false>(TILE_ITEMS, tile_idx, tile_offset, tile_state);
-    }
-    else
-    {
-      // The last tile (possibly partially-full)
-      OffsetT num_remaining  = num_items - tile_offset;
-      OffsetT num_selections = ConsumeTile<true>(num_remaining, tile_idx, tile_offset, tile_state);
-
       if (threadIdx.x == 0)
       {
         // Output the total number of items selection_flags
