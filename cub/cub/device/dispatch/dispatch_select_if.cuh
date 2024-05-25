@@ -240,7 +240,7 @@ __global__ void unblock_first_tile_kernel(ScanTileStateT tile_state)
   if (threadIdx.x == 0)
   {
     constexpr OffsetT inclusive_prefix = 0;
-    constexpr OffsetT tile_index = 0;
+    constexpr OffsetT tile_index = -1;
     tile_state.SetInclusive(tile_index, inclusive_prefix);
   }
 }
