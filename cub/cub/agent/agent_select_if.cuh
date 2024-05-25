@@ -322,95 +322,6 @@ struct AgentSelectIf
       , select_op(select_op)
       , num_items(num_items)
   {}
-
-  //---------------------------------------------------------------------
-  // Utility methods for initializing the selections
-  //---------------------------------------------------------------------
-
-  /**
-   * Initialize selections (specialized for selection operator)
-   */
-  template <bool IS_FIRST_TILE, bool IS_LAST_TILE>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void InitializeSelections(
-    OffsetT /*tile_offset*/,
-    OffsetT num_tile_items,
-    InputT (&items)[ITEMS_PER_THREAD],
-    OffsetT (&selection_flags)[ITEMS_PER_THREAD],
-    Int2Type<USE_SELECT_OP> /*select_method*/)
-  {
-#pragma unroll
-    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
-    {
-      // Out-of-bounds items are selection_flags
-      selection_flags[ITEM] = 1;
-
-      if (!IS_LAST_TILE || (static_cast<OffsetT>(threadIdx.x * ITEMS_PER_THREAD + ITEM) < num_tile_items))
-      {
-        selection_flags[ITEM] = static_cast<bool>(select_op(items[ITEM]));
-      }
-    }
-  }
-
-  //---------------------------------------------------------------------
-  // Scatter utility methods
-  //---------------------------------------------------------------------
-
-  /**
-   * Scatter flagged items to output offsets (specialized for direct scattering).
-   */
-  template <bool IS_LAST_TILE, bool IS_FIRST_TILE>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void ScatterSelectedDirect(
-    InputT (&items)[ITEMS_PER_THREAD],
-    OffsetT (&selection_flags)[ITEMS_PER_THREAD],
-    OffsetT (&selection_indices)[ITEMS_PER_THREAD],
-    OffsetT num_selections)
-  {
-// Scatter flagged items
-#pragma unroll
-    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
-    {
-      if (selection_flags[ITEM])
-      {
-        if ((!IS_LAST_TILE) || selection_indices[ITEM] < num_selections)
-        {
-          d_selected_out[selection_indices[ITEM]] = items[ITEM];
-        }
-      }
-    }
-  }
-
-  /**
-   * @brief Scatter flagged items. Specialized for selection algorithm that simply discards rejected items
-   *
-   * @param num_tile_items
-   *   Number of valid items in this tile
-   *
-   * @param num_tile_selections
-   *   Number of selections in this tile
-   *
-   * @param num_selections_prefix
-   *   Total number of selections prior to this tile
-   *
-   * @param num_rejected_prefix
-   *   Total number of rejections prior to this tile
-   *
-   * @param num_selections
-   *   Total number of selections including this tile
-   */
-  template <bool IS_LAST_TILE, bool IS_FIRST_TILE>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Scatter(
-    InputT (&items)[ITEMS_PER_THREAD],
-    OffsetT (&selection_flags)[ITEMS_PER_THREAD],
-    OffsetT (&selection_indices)[ITEMS_PER_THREAD],
-    int num_tile_items,
-    int num_tile_selections,
-    OffsetT num_selections_prefix,
-    OffsetT num_rejected_prefix,
-    OffsetT num_selections,
-    Int2Type<false> /*is_keep_rejects*/)
-  {
-    ScatterSelectedDirect<IS_LAST_TILE, IS_FIRST_TILE>(items, selection_flags, selection_indices, num_selections);
-  }
   
 
   //---------------------------------------------------------------------
@@ -439,20 +350,17 @@ struct AgentSelectIf
     OffsetT selection_flags[ITEMS_PER_THREAD];
     OffsetT selection_indices[ITEMS_PER_THREAD];
 
-    // Load items
-    if (IS_LAST_TILE)
-    {
-      BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items, num_tile_items);
-    }
-    else
-    {
-      BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items);
-    }
+    // Load items 
+    BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items);
 
     // Initialize selection_flags
-    InitializeSelections<true, IS_LAST_TILE>(
-      tile_offset, num_tile_items, items, selection_flags, Int2Type<SELECT_METHOD>());
+    #pragma unroll
+    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
+    {
+      selection_flags[ITEM] = static_cast<bool>(select_op(items[ITEM]));
+    }
 
+    // Make sure all threads of the tile have loaded their data (and temp storage can be reused)
     CTA_SYNC();
 
     // Exclusive scan of selection_flags
@@ -475,37 +383,19 @@ struct AgentSelectIf
     }
 
     // Scatter flagged items
-    Scatter<IS_LAST_TILE, true>(
-      items,
-      selection_flags,
-      selection_indices,
-      num_tile_items,
-      num_tile_selections,
-      0,
-      0,
-      num_tile_selections,
-      cub::Int2Type<KEEP_REJECTS>{});
+    // Scatter flagged items
+#pragma unroll
+    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
+    {
+      if (selection_flags[ITEM])
+      {
+          d_selected_out[selection_indices[ITEM]] = items[ITEM];
+      }
+    }
 
     return num_tile_selections;
   }
 
-  /**
-   * @brief Process subsequent tile of input (dynamic chained scan).
-   *
-   * @param num_tile_items
-   *   Number of input items comprising this tile
-   *
-   * @param tile_idx
-   *   Tile index
-   *
-   * @param tile_offset
-   *   Tile offset
-   *
-   * @param tile_state
-   *   Global tile state descriptor
-   *
-   * @return The running count of selections (including this tile)
-   */
   template <bool IS_LAST_TILE>
   _CCCL_DEVICE _CCCL_FORCEINLINE OffsetT
   ConsumeSubsequentTile(int num_tile_items, int tile_idx, OffsetT tile_offset, ScanTileStateT& tile_state)
@@ -515,18 +405,14 @@ struct AgentSelectIf
     OffsetT selection_indices[ITEMS_PER_THREAD];
 
     // Load items
-    if (IS_LAST_TILE)
-    {
-      BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items, num_tile_items);
-    }
-    else
-    {
-      BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items);
-    }
+    BlockLoadT(temp_storage.load_items).Load(d_in + tile_offset, items);
 
     // Initialize selection_flags
-    InitializeSelections<false, IS_LAST_TILE>(
-      tile_offset, num_tile_items, items, selection_flags, Int2Type<SELECT_METHOD>());
+    #pragma unroll
+    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
+    {
+      selection_flags[ITEM] = static_cast<bool>(select_op(items[ITEM]));
+    }
 
     CTA_SYNC();
 
@@ -548,16 +434,14 @@ struct AgentSelectIf
     }
 
     // Scatter flagged items
-    Scatter<IS_LAST_TILE, false>(
-      items,
-      selection_flags,
-      selection_indices,
-      num_tile_items,
-      num_tile_selections,
-      num_selections_prefix,
-      num_rejected_prefix,
-      num_selections,
-      cub::Int2Type<KEEP_REJECTS>{});
+#pragma unroll
+    for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
+    {
+      if (selection_flags[ITEM])
+      {
+          d_selected_out[selection_indices[ITEM]] = items[ITEM];
+      }
+    }
 
     return num_selections;
   }
