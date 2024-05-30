@@ -51,6 +51,8 @@
 #include <cub/util_temporary_storage.cuh>
 #include <cub/warp/warp_reduce.cuh>
 
+#include <cuda/std/type_traits>
+
 #include <iterator>
 
 #include <nv/target>
@@ -491,7 +493,7 @@ using default_reduce_by_key_delay_constructor_t =
 /**
  * Tile status interface.
  */
-template <typename T, bool SINGLE_WORD = Traits<T>::PRIMITIVE>
+template <typename T, bool SINGLE_WORD = ((sizeof(T) <= 8) && ::cuda::std::is_default_constructible<T>::value)>
 struct ScanTileState;
 
 /**
