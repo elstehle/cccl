@@ -86,7 +86,9 @@ enum class accum_size
 template <class AccumT>
 constexpr primitive_accum is_primitive_accum()
 {
-  return Traits<AccumT>::PRIMITIVE ? primitive_accum::yes : primitive_accum::no;
+  return ((sizeof(AccumT) <= 8) && ::cuda::std::is_default_constructible<AccumT>::value)
+         ? primitive_accum::yes
+         : primitive_accum::no;
 }
 
 template <class ScanOpT>
