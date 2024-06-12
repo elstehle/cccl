@@ -147,8 +147,6 @@ static void scan(nvbench::state& state, nvbench::type_list<KeyT, ValueT, OffsetT
   });
 }
 
-using some_offset_types = nvbench::type_list<nvbench::int32_t>;
-
 #ifdef TUNE_KeyT
 using key_types = nvbench::type_list<TUNE_KeyT>;
 #else // !defined(TUNE_KeyT)
@@ -170,7 +168,7 @@ using value_types =
                      >;
 #endif // TUNE_ValueT
 
-NVBENCH_BENCH_TYPES(scan, NVBENCH_TYPE_AXES(key_types, value_types, some_offset_types))
+NVBENCH_BENCH_TYPES(scan, NVBENCH_TYPE_AXES(key_types, value_types, offset_types))
   .set_name("base")
   .set_type_axes_names({"KeyT{ct}", "ValueT{ct}", "OffsetT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(16, 28, 4));

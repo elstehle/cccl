@@ -51,7 +51,7 @@ using push_back_t = typename detail::push_back<T, List>::type;
 #ifdef TUNE_OffsetT
 using offset_types = nvbench::type_list<TUNE_OffsetT>;
 #else
-using offset_types = nvbench::type_list<int32_t, int64_t>;
+using offset_types = nvbench::type_list<int32_t, uint32_t, int64_t, uint64_t>;
 #endif
 
 #ifdef TUNE_T
