@@ -512,7 +512,7 @@ using default_reduce_by_key_delay_constructor_t =
 /**
  * Tile status interface.
  */
-template <typename T, bool SINGLE_WORD = Traits<T>::PRIMITIVE>
+template <typename T, bool SINGLE_WORD = (Traits<T>::PRIMITIVE && sizeof(T)<8)>
 struct ScanTileState;
 
 /**
