@@ -51,6 +51,7 @@
 #include <cub/util_temporary_storage.cuh>
 #include <cub/warp/warp_reduce.cuh>
 
+#include <cuda/atomic>
 #include <cuda/std/type_traits>
 
 #include <iterator>
@@ -677,16 +678,17 @@ struct ScanTileState<T, true>
   WaitForValid(int tile_idx, StatusWord& status, T& value, DelayT delay_or_prevent_hoisting = {})
   {
     TileDescriptor tile_descriptor;
+    ::cuda::atomic_ref<TxnWord, cuda::thread_scope_device> atomic_ref_tile_descriptor{d_tile_descriptors[TILE_STATUS_PADDING + tile_idx]};
 
     {
-      TxnWord alias   = detail::load_relaxed(d_tile_descriptors + TILE_STATUS_PADDING + tile_idx);
+      TxnWord alias   = atomic_ref_tile_descriptor.load(::cuda::memory_order_acquire);
       tile_descriptor = reinterpret_cast<TileDescriptor&>(alias);
     }
 
     while (WARP_ANY((tile_descriptor.status == SCAN_TILE_INVALID), 0xffffffff))
     {
       delay_or_prevent_hoisting();
-      TxnWord alias   = detail::load_relaxed(d_tile_descriptors + TILE_STATUS_PADDING + tile_idx);
+      TxnWord alias   = atomic_ref_tile_descriptor.load(::cuda::memory_order_acquire);
       tile_descriptor = reinterpret_cast<TileDescriptor&>(alias);
     }
 
@@ -700,7 +702,8 @@ struct ScanTileState<T, true>
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE T LoadValid(int tile_idx)
   {
-    TxnWord alias                  = d_tile_descriptors[TILE_STATUS_PADDING + tile_idx];
+    ::cuda::atomic_ref<TxnWord, cuda::thread_scope_device> atomic_ref_tile_descriptor{d_tile_descriptors[TILE_STATUS_PADDING + tile_idx]};
+    TxnWord alias                  = atomic_ref_tile_descriptor.load(cuda::memory_order_acquire);
     TileDescriptor tile_descriptor = reinterpret_cast<TileDescriptor&>(alias);
     return tile_descriptor.value;
   }
