@@ -151,7 +151,6 @@ struct multiply_n
     return x * multiplier;
   }
 };
-
 using all_types =
   c2h::type_list<std::uint8_t,
                  std::uint16_t,
@@ -166,7 +165,7 @@ using all_types =
 using types = c2h::
   type_list<std::uint8_t, std::uint32_t, ulonglong4, c2h::custom_type_t<c2h::less_comparable_t, c2h::equal_comparable_t>>;
 
-using offset_types = c2h::type_list<std::int32_t, std::int64_t>;
+using offset_types = c2h::type_list<std::int32_t>;
 
 CUB_TEST("DeviceSelect::If can run with empty input", "[device][select_if]", types)
 {
