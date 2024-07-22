@@ -290,7 +290,7 @@ struct DispatchSelectIf : SelectedPolicy
   /******************************************************************************
    * Types and constants
    ******************************************************************************/
-  using ScanTileStateT = ScanTileState<OffsetT>;
+  using ScanTileStateT = offset_tile_state_t<OffsetT>;
 
   static constexpr int INIT_KERNEL_THREADS = 128;
 

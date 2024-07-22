@@ -186,7 +186,7 @@ struct AgentSelectIf
   //---------------------------------------------------------------------
   // Types and constants
   //---------------------------------------------------------------------
-  using ScanTileStateT = ScanTileState<OffsetT>;
+  using ScanTileStateT = offset_tile_state_t<OffsetT>;
 
   // Indicates whether the BlockLoad algorithm uses shared memory to load or exchange the data
   static constexpr bool loads_via_smem =
