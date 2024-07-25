@@ -239,7 +239,7 @@ void power_law(nvbench::state& state, nvbench::type_list<T, OffsetT> ts)
   seg_sort(state, ts, offsets, entropy);
 }
 
-NVBENCH_BENCH_TYPES(power_law, NVBENCH_TYPE_AXES(fundamental_types, some_offset_types))
+NVBENCH_BENCH_TYPES(power_law, NVBENCH_TYPE_AXES(fundamental_types, offset_types))
   .set_name("power")
   .set_type_axes_names({"T{ct}", "OffsetT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(22, 30, 4))
@@ -261,13 +261,13 @@ void uniform(nvbench::state& state, nvbench::type_list<T, OffsetT> ts)
   seg_sort(state, ts, offsets, bit_entropy::_1_000);
 }
 
-NVBENCH_BENCH_TYPES(uniform, NVBENCH_TYPE_AXES(fundamental_types, some_offset_types))
+NVBENCH_BENCH_TYPES(uniform, NVBENCH_TYPE_AXES(fundamental_types, offset_types))
   .set_name("small")
   .set_type_axes_names({"T{ct}", "OffsetT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(22, 30, 4))
   .add_int64_power_of_two_axis("MaxSegmentSize", nvbench::range(1, 8, 1));
 
-NVBENCH_BENCH_TYPES(uniform, NVBENCH_TYPE_AXES(fundamental_types, some_offset_types))
+NVBENCH_BENCH_TYPES(uniform, NVBENCH_TYPE_AXES(fundamental_types, offset_types))
   .set_name("large")
   .set_type_axes_names({"T{ct}", "OffsetT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(22, 30, 4))
