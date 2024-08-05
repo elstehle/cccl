@@ -743,7 +743,7 @@ struct device_select_policy_hub
       detail::select::sm80_tuning<InputT,
                                   select::is_flagged<FlagT>(),
                                   select::are_rejects_kept<KeepRejects>(),
-                                  select::classify_offset_size<OffsetT>()>;
+                                  select::offset_size::_4>;
 
     using SelectIfPolicyT =
       AgentSelectIfPolicy<tuning::threads,
@@ -765,7 +765,7 @@ struct device_select_policy_hub
       detail::select::sm90_tuning<InputT,
                                   select::is_flagged<FlagT>(),
                                   select::are_rejects_kept<KeepRejects>(),
-                                  select::classify_offset_size<OffsetT>()>;
+                                  select::offset_size::_4>;
 
     using SelectIfPolicyT =
       AgentSelectIfPolicy<tuning::threads,
