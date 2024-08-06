@@ -1567,4 +1567,163 @@ struct TilePrefixCallbackOp
   }
 };
 
+/**
+ * Stateful block-scan prefix functor.  Provides the the running prefix for
+ * the current tile by using the call-back warp to wait on on
+ * aggregates/prefixes from predecessor tiles to become available.
+ *
+ * @tparam DelayConstructorT
+ *   Implementation detail, do not specify directly, requirements on the
+ *   content of this type are subject to breaking change.
+ */
+template <typename GlobalT,
+          typename AggregateT,
+          typename ScanOpT,
+          typename ScanTileStateT,
+          int LEGACY_PTX_ARCH        = 0,
+          typename DelayConstructorT = detail::default_delay_constructor_t<GlobalT>>
+struct TilePrefixCallbackOp2
+{
+  // Parameterized warp reduce
+  using WarpReduceT = WarpReduce<GlobalT, (1 << (5))>;
+
+  // Temporary storage type
+  struct _TempStorage
+  {
+    typename WarpReduceT::TempStorage warp_reduce;
+    GlobalT exclusive_prefix;
+    GlobalT inclusive_prefix;
+    AggregateT block_aggregate;
+  };
+
+  // Alias wrapper allowing temporary storage to be unioned
+  struct TempStorage : Uninitialized<_TempStorage>
+  {};
+
+  // Type of status word
+  using StatusWord = typename ScanTileStateT::StatusWord;
+
+  // Fields
+  _TempStorage& temp_storage; ///< Reference to a warp-reduction instance
+  ScanTileStateT& tile_status; ///< Interface to tile status
+  ScanOpT scan_op; ///< Binary scan operator
+  int tile_idx; ///< The current tile index
+  GlobalT exclusive_prefix; ///< Exclusive prefix for the tile
+  GlobalT inclusive_prefix; ///< Inclusive prefix for the tile
+
+  // Constructs prefix functor for a given tile index.
+  // Precondition: thread blocks processing all of the predecessor tiles were scheduled.
+  _CCCL_DEVICE _CCCL_FORCEINLINE
+  TilePrefixCallbackOp2(ScanTileStateT& tile_status, TempStorage& temp_storage, ScanOpT scan_op, int tile_idx)
+      : temp_storage(temp_storage.Alias())
+      , tile_status(tile_status)
+      , scan_op(scan_op)
+      , tile_idx(tile_idx)
+  {}
+
+  // Computes the tile index and constructs prefix functor with it.
+  // Precondition: thread block per tile assignment.
+  _CCCL_DEVICE _CCCL_FORCEINLINE
+  TilePrefixCallbackOp2(ScanTileStateT& tile_status, TempStorage& temp_storage, ScanOpT scan_op)
+      : TilePrefixCallbackOp2(tile_status, temp_storage, scan_op, blockIdx.x)
+  {}
+
+  /**
+   * @brief Block until all predecessors within the warp-wide window have non-invalid status
+   *
+   * @param predecessor_idx
+   *   Preceding tile index to inspect
+   *
+   * @param[out] predecessor_status
+   *   Preceding tile status
+   *
+   * @param[out] window_aggregate
+   *   Relevant partial reduction from this window of preceding tiles
+   */
+  template <class DelayT = detail::default_delay_t<GlobalT>>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  ProcessWindow(int predecessor_idx, StatusWord& predecessor_status, GlobalT& window_aggregate, DelayT delay = {})
+  {
+    GlobalT value;
+    tile_status.WaitForValid(predecessor_idx, predecessor_status, value, delay);
+
+    // Perform a segmented reduction to get the prefix for the current window.
+    // Use the swizzled scan operator because we are now scanning *down* towards thread0.
+
+    int tail_flag = (predecessor_status == StatusWord(SCAN_TILE_INCLUSIVE));
+    window_aggregate =
+      WarpReduceT(temp_storage.warp_reduce).TailSegmentedReduce(value, tail_flag, SwizzleScanOp<ScanOpT>(scan_op));
+  }
+
+  // BlockScan prefix callback functor (called by the first warp)
+  _CCCL_DEVICE _CCCL_FORCEINLINE AggregateT operator()(AggregateT block_aggregate)
+  {
+    // Update our status with our tile-aggregate
+    if (threadIdx.x == 0)
+    {
+      detail::uninitialized_copy_single(&temp_storage.block_aggregate, block_aggregate);
+
+      tile_status.SetPartial(tile_idx, block_aggregate);
+    }
+
+    int predecessor_idx = tile_idx - threadIdx.x - 1;
+    StatusWord predecessor_status;
+    GlobalT window_aggregate;
+
+    // Wait for the warp-wide window of predecessor tiles to become valid
+    DelayConstructorT construct_delay(tile_idx);
+    ProcessWindow(predecessor_idx, predecessor_status, window_aggregate, construct_delay());
+
+    // The exclusive tile prefix starts out as the current window aggregate
+    exclusive_prefix = window_aggregate;
+
+    // Keep sliding the window back until we come across a tile whose inclusive prefix is known
+    while (WARP_ALL((predecessor_status != StatusWord(SCAN_TILE_INCLUSIVE)), 0xffffffff))
+    {
+      predecessor_idx -= CUB_PTX_WARP_THREADS;
+
+      // Update exclusive tile prefix with the window prefix
+      ProcessWindow(predecessor_idx, predecessor_status, window_aggregate, construct_delay());
+      exclusive_prefix = scan_op(window_aggregate, exclusive_prefix);
+    }
+
+    // Compute the inclusive tile prefix and update the status for this tile
+    if (threadIdx.x == 0)
+    {
+      inclusive_prefix = scan_op(exclusive_prefix, block_aggregate);
+      tile_status.SetInclusive(tile_idx, inclusive_prefix);
+
+      detail::uninitialized_copy_single(&temp_storage.exclusive_prefix, exclusive_prefix);
+
+      detail::uninitialized_copy_single(&temp_storage.inclusive_prefix, inclusive_prefix);
+    }
+
+    // Return default-constructed AggregateT
+    return AggregateT{};
+  }
+
+  // Get the exclusive prefix stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE GlobalT GetExclusivePrefix()
+  {
+    return temp_storage.exclusive_prefix;
+  }
+
+  // Get the inclusive prefix stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE GlobalT GetInclusivePrefix()
+  {
+    return temp_storage.inclusive_prefix;
+  }
+
+  // Get the block aggregate stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE AggregateT GetBlockAggregate()
+  {
+    return temp_storage.block_aggregate;
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE int GetTileIdx() const
+  {
+    return tile_idx;
+  }
+};
+
 CUB_NAMESPACE_END
