@@ -509,7 +509,7 @@ template <typename ScanTileStateT, MemoryOrder Order>
 struct tile_state_with_memory_order
 {
   ScanTileStateT& tile_state;
-  using T          = typename ScanTileStateT::StatusValueT;
+  using T          = typename ScanTileStateT::TileValueT;
   using StatusWord = typename ScanTileStateT::StatusWord;
 
   /**
@@ -542,6 +542,251 @@ struct tile_state_with_memory_order
     return tile_state.template LoadValid<Order>(tile_idx);
   }
 };
+
+/**
+ * Tile status interface that bit-packs both the value and the tile status into a machine word that can be read/written
+ * coherently in a single access.
+ */
+template <typename T, ::cuda::std::uint32_t NumValueBits = sizeof(T)*8-2>
+struct BitPackedTileState
+{
+  // Value type used for representing partial and inclusive prefix scan results
+  using TileValueT = T;
+
+  // Type used to bit-pack both tile value and tile status
+  using PaddedT = ::cuda::std::_If<sizeof(T) <= 4, ::cuda::std::uint32_t, ::cuda::std::uint64_t>;
+  using StatusWord = PaddedT;
+
+  // Tile status constants at the bit-offset, such that only masking for the status-bit range is needed
+  static constexpr PaddedT status_oob       = PaddedT{0x00} << NumValueBits;
+  static constexpr PaddedT status_invalid   = PaddedT{0x01} << NumValueBits;
+  static constexpr PaddedT status_partial   = PaddedT{0x02} << NumValueBits;
+  static constexpr PaddedT status_inclusive = PaddedT{0x03} << NumValueBits;
+
+
+  // Number of bits required to represent the tile status
+  static constexpr ::cuda::std::size_t bits_per_status = 2;
+
+  // Bit-mask for masking the bit range of the tile status and tile value, respectively
+  static constexpr PaddedT status_bit_mask = ((PaddedT{0x01} << bits_per_status) - PaddedT{1}) << NumValueBits;
+  static constexpr PaddedT value_bit_mask = ((PaddedT{0x01} << NumValueBits) - PaddedT{1});
+
+  union TileDescriptor
+  {
+    T value;
+    PaddedT alias;
+  };
+
+  // Unit word type
+  using TxnWord = ::cuda::std::_If<sizeof(TileDescriptor) == 8, uint2, unsigned int>;
+
+  static_assert(sizeof(PaddedT) * 8 <= NumValueBits + bits_per_status,
+                "Bits needed to store both tile value and tile status exceeds the bit-packed storage size.");
+  static_assert(sizeof(T) <= 8, "Currently, only value types of up to eight bytes are supported.");
+  static_assert(sizeof(TxnWord) == sizeof(TileDescriptor),
+                "Sanity check failed. The size of TileDescriptor and TxnWord should be equal.");
+
+  static constexpr auto tile_status_padding = CUB_PTX_WARP_THREADS;
+
+  // Device storage
+  TxnWord* d_tile_descriptors;
+
+  /// Constructor
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE BitPackedTileState()
+      : d_tile_descriptors(nullptr)
+  {}
+
+  /**
+   * @brief Initializer
+   *
+   * @param[in] num_tiles
+   *   Number of tiles
+   *
+   * @param[in] d_temp_storage
+   *   Device-accessible allocation of temporary storage.
+   *   When nullptr, the required allocation size is written to \p temp_storage_bytes and no work is
+   * done.
+   *
+   * @param[in] temp_storage_bytes
+   *   Size in bytes of \t d_temp_storage allocation
+   */
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE cudaError_t
+  Init(int /*num_tiles*/, void* d_temp_storage, size_t /*temp_storage_bytes*/)
+  {
+    d_tile_descriptors = reinterpret_cast<TxnWord*>(d_temp_storage);
+    return cudaSuccess;
+  }
+
+  /**
+   * @brief Compute device memory needed for tile status
+   *
+   * @param[in] num_tiles
+   *   Number of tiles
+   *
+   * @param[out] temp_storage_bytes
+   *   Size in bytes of \t d_temp_storage allocation
+   */
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE static cudaError_t AllocationSize(int num_tiles, size_t& temp_storage_bytes)
+  {
+    // bytes needed for tile status descriptors
+    temp_storage_bytes = (num_tiles + tile_status_padding) * sizeof(TxnWord);
+    return cudaSuccess;
+  }
+
+  /**
+   * Initialize (from device)
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InitializeStatus(int num_tiles)
+  {
+    int tile_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+
+    if (tile_idx < num_tiles)
+    {
+      // Not-yet-set
+      d_tile_descriptors[tile_status_padding + tile_idx] = GetTxnWordWithStatus(status_invalid);
+    }
+
+    if ((blockIdx.x == 0) && (threadIdx.x < tile_status_padding))
+    {
+      // Padding
+      d_tile_descriptors[threadIdx.x] = GetTxnWordWithStatus(status_oob);
+    }
+  }
+
+private:
+  _CCCL_DEVICE _CCCL_FORCEINLINE TxnWord GetTxnWordWithStatus(PaddedT tile_status)
+  {
+    TxnWord val{};
+    TileDescriptor* descriptor = reinterpret_cast<TileDescriptor*>(&val);
+    descriptor->alias         = tile_status;
+    return val;
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE TxnWord GetTxnWord(T value, PaddedT tile_status)
+  {
+    TileDescriptor tile_descriptor;
+    tile_descriptor.value = value;
+    tile_descriptor.alias |= tile_status;
+
+    TxnWord alias;
+    *reinterpret_cast<TileDescriptor*>(&alias) = tile_descriptor;
+    return alias;
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE PaddedT GetStatus(TxnWord txn_word) {
+    reinterpret_cast<TileDescriptor*>(&txn_word)->alias &= status_bit_mask;
+    return reinterpret_cast<TileDescriptor*>(&txn_word)->alias;
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE T GetValue(TxnWord txn_word) {
+    reinterpret_cast<TileDescriptor*>(&txn_word)->alias &= value_bit_mask;
+    return reinterpret_cast<TileDescriptor*>(&txn_word)->value;
+  }
+
+  template <MemoryOrder Order>
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename ::cuda::std::enable_if<(Order == MemoryOrder::relaxed), void>::type
+  StoreStatus(TxnWord* ptr, TxnWord alias)
+  {
+    detail::store_relaxed(ptr, alias);
+  }
+
+  template <MemoryOrder Order>
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename ::cuda::std::enable_if<(Order == MemoryOrder::acquire_release), void>::type
+  StoreStatus(TxnWord* ptr, TxnWord alias)
+  {
+    detail::store_release(ptr, alias);
+  }
+
+  template <MemoryOrder Order>
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename ::cuda::std::enable_if<(Order == MemoryOrder::relaxed), TxnWord>::type
+  LoadStatus(TxnWord* ptr)
+  {
+    return detail::load_relaxed(ptr);
+  }
+
+  template <MemoryOrder Order>
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename ::cuda::std::enable_if<(Order == MemoryOrder::acquire_release), TxnWord>::type
+  LoadStatus(TxnWord* ptr)
+  {
+    // For pre-volta we hoist the memory barrier to outside the loop, i.e., after reading a valid state
+    NV_IF_TARGET(NV_PROVIDES_SM_70, (return detail::load_acquire(ptr);), (return detail::load_relaxed(ptr);));
+  }
+
+  template <MemoryOrder Order>
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename ::cuda::std::enable_if<(Order == MemoryOrder::relaxed), void>::type
+  ThreadfenceForLoadAcqPreVolta()
+  {}
+
+  template <MemoryOrder Order>
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename ::cuda::std::enable_if<(Order == MemoryOrder::acquire_release), void>::type
+  ThreadfenceForLoadAcqPreVolta()
+  {
+    NV_IF_TARGET(NV_PROVIDES_SM_70, (), (__threadfence();));
+  }
+
+public:
+  template <MemoryOrder Order = MemoryOrder::relaxed>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void SetInclusive(int tile_idx, T tile_inclusive)
+  {
+    StoreStatus<Order>(d_tile_descriptors + tile_status_padding + tile_idx,
+                       GetTxnWord(tile_inclusive, status_inclusive));
+  }
+
+  template <MemoryOrder Order = MemoryOrder::relaxed>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void SetPartial(int tile_idx, T tile_partial)
+  {
+    StoreStatus<Order>(d_tile_descriptors + tile_status_padding + tile_idx, GetTxnWord(tile_partial, status_partial));
+  }
+
+  /**
+   * Wait for the corresponding tile to become non-invalid
+   */
+  template <class DelayT = detail::default_delay_t<T>, MemoryOrder Order = MemoryOrder::relaxed>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  WaitForValid(int tile_idx, PaddedT& status, T& value, DelayT delay_or_prevent_hoisting = {})
+  {
+    TxnWord alias = LoadStatus<Order>(d_tile_descriptors + tile_status_padding + tile_idx);
+
+    while (WARP_ANY((GetStatus(alias) == status_invalid), 0xffffffff))
+    {
+      delay_or_prevent_hoisting();
+      alias = LoadStatus<Order>(d_tile_descriptors + tile_status_padding + tile_idx);
+    }
+
+    // For pre-Volta and load acquire we emit relaxed loads in LoadStatus and hoist the threadfence here
+    ThreadfenceForLoadAcqPreVolta<Order>();
+
+    // switch (GetStatus(alias)) {
+    //   case status_invalid:
+    //   status = SCAN_TILE_INVALID;
+    //   break;
+    //   case status_oob:
+    //   status = SCAN_TILE_OOB;
+    //   break;
+    //   case status_partial:
+    //   status = SCAN_TILE_PARTIAL;
+    //   break;
+    //   case status_inclusive:
+    //   status = SCAN_TILE_INCLUSIVE;
+    //   break;
+    //   default:
+    //   break;
+    // }
+    status = (GetStatus(alias) >> NumValueBits) + 98;
+    value  = GetValue(alias);
+  }
+
+  /**
+   * Loads and returns the tile's value. The returned value is undefined if either (a) the tile's status is invalid or
+   * (b) there is no memory fence between reading a non-invalid status and the call to LoadValid.
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE T LoadValid(int tile_idx)
+  {
+    TxnWord alias = d_tile_descriptors[tile_status_padding + tile_idx];
+    return GetValue(alias);
+  }
+};
+
 } // namespace detail
 
 /**
@@ -558,7 +803,7 @@ struct ScanTileState;
 template <typename T>
 struct ScanTileState<T, true>
 {
-  using StatusValueT = T;
+  using TileValueT = T;
 
   // Status word type
   using StatusWord = ::cuda::std::_If<
@@ -768,7 +1013,7 @@ public:
 template <typename T>
 struct ScanTileState<T, false>
 {
-  using StatusValueT = T;
+  using TileValueT = T;
 
   // Status word type
   using StatusWord = unsigned int;
@@ -941,6 +1186,10 @@ struct ScanTileState<T, false>
     return d_tile_inclusive[TILE_STATUS_PADDING + tile_idx];
   }
 };
+
+template<typename OffsetT>
+using offset_tile_state_t = typename ::cuda::std::conditional<(sizeof(OffsetT)<=4), ScanTileState<OffsetT>, detail::BitPackedTileState<OffsetT>>::type;
+
 
 /******************************************************************************
  * ReduceByKey tile status interface types for block-cooperative scans
@@ -1308,6 +1557,165 @@ struct TilePrefixCallbackOp
 
   // Get the block aggregate stored in temporary storage
   _CCCL_DEVICE _CCCL_FORCEINLINE T GetBlockAggregate()
+  {
+    return temp_storage.block_aggregate;
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE int GetTileIdx() const
+  {
+    return tile_idx;
+  }
+};
+
+/**
+ * Stateful block-scan prefix functor.  Provides the the running prefix for
+ * the current tile by using the call-back warp to wait on on
+ * aggregates/prefixes from predecessor tiles to become available.
+ *
+ * @tparam DelayConstructorT
+ *   Implementation detail, do not specify directly, requirements on the
+ *   content of this type are subject to breaking change.
+ */
+template <typename GlobalT,
+          typename AggregateT,
+          typename ScanOpT,
+          typename ScanTileStateT,
+          int LEGACY_PTX_ARCH        = 0,
+          typename DelayConstructorT = detail::default_delay_constructor_t<GlobalT>>
+struct TilePrefixCallbackOp2
+{
+  // Parameterized warp reduce
+  using WarpReduceT = WarpReduce<GlobalT, (1 << (5))>;
+
+  // Temporary storage type
+  struct _TempStorage
+  {
+    typename WarpReduceT::TempStorage warp_reduce;
+    GlobalT exclusive_prefix;
+    GlobalT inclusive_prefix;
+    AggregateT block_aggregate;
+  };
+
+  // Alias wrapper allowing temporary storage to be unioned
+  struct TempStorage : Uninitialized<_TempStorage>
+  {};
+
+  // Type of status word
+  using StatusWord = typename ScanTileStateT::StatusWord;
+
+  // Fields
+  _TempStorage& temp_storage; ///< Reference to a warp-reduction instance
+  ScanTileStateT& tile_status; ///< Interface to tile status
+  ScanOpT scan_op; ///< Binary scan operator
+  int tile_idx; ///< The current tile index
+  GlobalT exclusive_prefix; ///< Exclusive prefix for the tile
+  GlobalT inclusive_prefix; ///< Inclusive prefix for the tile
+
+  // Constructs prefix functor for a given tile index.
+  // Precondition: thread blocks processing all of the predecessor tiles were scheduled.
+  _CCCL_DEVICE _CCCL_FORCEINLINE
+  TilePrefixCallbackOp2(ScanTileStateT& tile_status, TempStorage& temp_storage, ScanOpT scan_op, int tile_idx)
+      : temp_storage(temp_storage.Alias())
+      , tile_status(tile_status)
+      , scan_op(scan_op)
+      , tile_idx(tile_idx)
+  {}
+
+  // Computes the tile index and constructs prefix functor with it.
+  // Precondition: thread block per tile assignment.
+  _CCCL_DEVICE _CCCL_FORCEINLINE
+  TilePrefixCallbackOp2(ScanTileStateT& tile_status, TempStorage& temp_storage, ScanOpT scan_op)
+      : TilePrefixCallbackOp2(tile_status, temp_storage, scan_op, blockIdx.x)
+  {}
+
+  /**
+   * @brief Block until all predecessors within the warp-wide window have non-invalid status
+   *
+   * @param predecessor_idx
+   *   Preceding tile index to inspect
+   *
+   * @param[out] predecessor_status
+   *   Preceding tile status
+   *
+   * @param[out] window_aggregate
+   *   Relevant partial reduction from this window of preceding tiles
+   */
+  template <class DelayT = detail::default_delay_t<GlobalT>>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  ProcessWindow(int predecessor_idx, StatusWord& predecessor_status, GlobalT& window_aggregate, DelayT delay = {})
+  {
+    GlobalT value;
+    tile_status.WaitForValid(predecessor_idx, predecessor_status, value, delay);
+
+    // Perform a segmented reduction to get the prefix for the current window.
+    // Use the swizzled scan operator because we are now scanning *down* towards thread0.
+
+    int tail_flag = (predecessor_status == StatusWord(SCAN_TILE_INCLUSIVE));
+    window_aggregate =
+      WarpReduceT(temp_storage.warp_reduce).TailSegmentedReduce(value, tail_flag, SwizzleScanOp<ScanOpT>(scan_op));
+  }
+
+  // BlockScan prefix callback functor (called by the first warp)
+  _CCCL_DEVICE _CCCL_FORCEINLINE AggregateT operator()(AggregateT block_aggregate)
+  {
+    // Update our status with our tile-aggregate
+    if (threadIdx.x == 0)
+    {
+      detail::uninitialized_copy_single(&temp_storage.block_aggregate, block_aggregate);
+
+      tile_status.SetPartial(tile_idx, block_aggregate);
+    }
+
+    int predecessor_idx = tile_idx - threadIdx.x - 1;
+    StatusWord predecessor_status;
+    GlobalT window_aggregate;
+
+    // Wait for the warp-wide window of predecessor tiles to become valid
+    DelayConstructorT construct_delay(tile_idx);
+    ProcessWindow(predecessor_idx, predecessor_status, window_aggregate, construct_delay());
+
+    // The exclusive tile prefix starts out as the current window aggregate
+    exclusive_prefix = window_aggregate;
+
+    // Keep sliding the window back until we come across a tile whose inclusive prefix is known
+    while (WARP_ALL((predecessor_status != StatusWord(SCAN_TILE_INCLUSIVE)), 0xffffffff))
+    {
+      predecessor_idx -= CUB_PTX_WARP_THREADS;
+
+      // Update exclusive tile prefix with the window prefix
+      ProcessWindow(predecessor_idx, predecessor_status, window_aggregate, construct_delay());
+      exclusive_prefix = scan_op(window_aggregate, exclusive_prefix);
+    }
+
+    // Compute the inclusive tile prefix and update the status for this tile
+    if (threadIdx.x == 0)
+    {
+      inclusive_prefix = scan_op(exclusive_prefix, block_aggregate);
+      tile_status.SetInclusive(tile_idx, inclusive_prefix);
+
+      detail::uninitialized_copy_single(&temp_storage.exclusive_prefix, exclusive_prefix);
+
+      detail::uninitialized_copy_single(&temp_storage.inclusive_prefix, inclusive_prefix);
+    }
+
+    // Return default-constructed AggregateT
+    return AggregateT{};
+  }
+
+  // Get the exclusive prefix stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE GlobalT GetExclusivePrefix()
+  {
+    return temp_storage.exclusive_prefix;
+  }
+
+  // Get the inclusive prefix stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE GlobalT GetInclusivePrefix()
+  {
+    return temp_storage.inclusive_prefix;
+  }
+
+  // Get the block aggregate stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE AggregateT GetBlockAggregate()
   {
     return temp_storage.block_aggregate;
   }
