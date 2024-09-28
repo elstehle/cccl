@@ -201,7 +201,6 @@ struct AgentScanByKey
 
   TempStorage_& storage;
   WrappedKeysInputIteratorT d_keys_in;
-  KeyT* d_keys_prev_in;
   WrappedValuesInputIteratorT d_values_in;
   ValuesOutputIteratorT d_values_out;
   InequalityWrapper<EqualityOp> inequality_op;
@@ -373,7 +372,7 @@ struct AgentScanByKey
     }
     else
     {
-      KeyT tile_pred_key = (threadIdx.x == 0) ? d_keys_prev_in[tile_idx] : KeyT();
+      KeyT tile_pred_key = d_keys_in[tile_base - 1];
 
       BlockDiscontinuityKeysT(storage.scan_storage.discontinuity)
         .FlagHeads(segment_flags, keys, inequality_op, tile_pred_key);
@@ -412,7 +411,6 @@ struct AgentScanByKey
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentScanByKey(
     TempStorage& storage,
     KeysInputIteratorT d_keys_in,
-    KeyT* d_keys_prev_in,
     ValuesInputIteratorT d_values_in,
     ValuesOutputIteratorT d_values_out,
     EqualityOp equality_op,
@@ -420,7 +418,6 @@ struct AgentScanByKey
     InitValueT init_value)
       : storage(storage.Alias())
       , d_keys_in(d_keys_in)
-      , d_keys_prev_in(d_keys_prev_in)
       , d_values_in(d_values_in)
       , d_values_out(d_values_out)
       , inequality_op(equality_op)
