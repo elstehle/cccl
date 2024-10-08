@@ -316,7 +316,7 @@ struct AgentSelectIf
   InequalityWrapper<EqualityOpT> inequality_op; ///< T inequality operator
   SelectOpT select_op; ///< Selection operator
   OffsetT num_items; ///< Total number of input items
-  const StreamingContextT& streaming_context; ///< Context for the current partition
+  StreamingContextT streaming_context; ///< Context for the current partition
 
   //---------------------------------------------------------------------
   // Constructor
@@ -355,7 +355,7 @@ struct AgentSelectIf
     SelectOpT select_op,
     EqualityOpT equality_op,
     OffsetT num_items,
-    const StreamingContextT& streaming_context)
+    StreamingContextT streaming_context)
       : temp_storage(temp_storage.Alias())
       , d_in(d_in)
       , d_selected_out(d_selected_out)
