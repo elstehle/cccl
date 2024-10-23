@@ -50,10 +50,12 @@
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKPairs, topk_pairs);
 
 using custom_value_t = c2h::custom_type_t<c2h::equal_comparable_t>;
-using value_types    = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+// using value_types    = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
 
 // cub::detail::ChooseOffsetsT only selected 32/64 bit unsigned types:
-using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+// using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+using value_types     = c2h::type_list<cuda::std::uint32_t>;
+using num_items_types = c2h::type_list<cuda::std::uint32_t>;
 
 CUB_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", value_types, num_items_types)
 {

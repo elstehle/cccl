@@ -144,7 +144,13 @@ struct DeviceTopK
     NumItemsT k,
     cudaStream_t stream = 0)
   {
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, ValueInputIteratorT, ValueOutputIteratorT, NumItemsT>::
+    static constexpr bool SelectMin = false;
+    return DispatchTopK<KeyInputIteratorT,
+                        KeyOutputIteratorT,
+                        ValueInputIteratorT,
+                        ValueOutputIteratorT,
+                        NumItemsT,
+                        SelectMin>::
       Dispatch(
         d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
   }
