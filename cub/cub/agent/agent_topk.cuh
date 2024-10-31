@@ -100,17 +100,6 @@ struct AgentTopKPolicy
     /// Cofficient for reducing memry
     COFFICIENT_FOR_BUFFER = _COFFICIENT_FOR_BUFFER,
   };
-  // /// Threads per thread block
-  // static constexpr int BLOCK_THREADS = _BLOCK_THREADS;
-
-  // /// Items per thread (per tile of input)
-  // static constexpr int ITEMS_PER_THREAD = _ITEMS_PER_THREAD;
-
-  // /// BITS Processed per pass
-  // static constexpr int BITS_PER_PASS = _BITS_PER_PASS;
-
-  // /// Cofficient for reducing memry
-  // static constexpr int COFFICIENT_FOR_BUFFER = _COFFICIENT_FOR_BUFFER;
 
   /// The BlockLoad algorithm to use
   static constexpr cub::BlockLoadAlgorithm LOAD_ALGORITHM = _LOAD_ALGORITHM;
@@ -153,7 +142,7 @@ struct alignas(128) Counter
 
   // For a row inside a batch, we may launch multiple thread blocks. This counter is
   // used to determine if the current block is the last running block. If so, this block
-  // will execute scan() and choose_bucket().
+  // will execute Scan() and ChooseBucket().
   alignas(128) unsigned int finished_block_cnt;
 
   // Record how many elements have been written to the front of `out`. Elements less (if
@@ -224,7 +213,7 @@ template <typename AgentTopKPolicyT,
           typename ExtractBinOpT,
           typename NumItemsT,
           bool SELECT_MIN,
-          bool FusedLastFilter>
+          bool LAST_FILTER>
 struct AgentTopK
 {
   //---------------------------------------------------------------------
@@ -263,6 +252,7 @@ struct AgentTopK
   NumItemsT num_items; ///< Total number of input items
   NumItemsT k; ///< Total number of output items
   ExtractBinOpT extract_bin_op; /// The operation for bin
+
   //---------------------------------------------------------------------
   // Constructor
   //---------------------------------------------------------------------
@@ -292,7 +282,6 @@ struct AgentTopK
    *   The K value. Will find K elements from num_items elements
    *
    */
-  //    TempStorage& temp_storage,       : temp_storage(temp_storage.Alias())
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopK(
     KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
@@ -314,7 +303,7 @@ struct AgentTopK
   // Utility methods for device topK
   //---------------------------------------------------------------------
 
-  _CCCL_DEVICE typename cub::Traits<KeyInT>::UnsignedBits twiddle_in(KeyInT key, bool select_min)
+  _CCCL_DEVICE typename cub::Traits<KeyInT>::UnsignedBits TwiddleIn(KeyInT key, bool select_min)
   {
     auto bits = reinterpret_cast<typename cub::Traits<KeyInT>::UnsignedBits&>(key);
     bits      = cub::Traits<KeyInT>::TwiddleIn(bits);
@@ -325,14 +314,9 @@ struct AgentTopK
     return bits;
   }
 
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int calc_num_passes()
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int CalcNumPasses()
   {
     return ::cuda::ceil_div<int>(sizeof(KeyInT) * 8, BITS_PER_PASS);
-  }
-
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int calc_num_buckets()
-  {
-    return 1 << BITS_PER_PASS;
   }
 
   /**
@@ -340,10 +324,10 @@ struct AgentTopK
    * this implementation processes input from the most to the least significant bit.
    * This way, we can skip some passes in the end at the cost of having an unsorted output.
    *
-   * NB: Use pass=-1 for calc_mask().
+   * NB: Use pass=-1 for CalcMask().
    */
 
-  _CCCL_DEVICE constexpr int calc_start_bit(int pass)
+  _CCCL_DEVICE constexpr int CalcStartBit(int pass)
   {
     int start_bit = static_cast<int>(sizeof(KeyInT) * 8) - (pass + 1) * BITS_PER_PASS;
     if (start_bit < 0)
@@ -353,16 +337,17 @@ struct AgentTopK
     return start_bit;
   }
 
-  _CCCL_DEVICE constexpr unsigned calc_mask(int pass)
+  _CCCL_DEVICE constexpr unsigned CalcMask(int pass)
   {
     static_assert(BITS_PER_PASS <= 31);
-    int num_bits = calc_start_bit(pass - 1) - calc_start_bit(pass);
+    int num_bits = CalcStartBit(pass - 1) - CalcStartBit(pass);
     return (1 << num_bits) - 1;
   }
+
   // sync_width should >= warp_size
   template <typename Func>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  vectorized_process(size_t thread_rank, size_t num_threads, KeyInputIteratorT in, NumItemsT len, Func f)
+  VectorizedProcess(size_t thread_rank, size_t num_threads, KeyInputIteratorT in, NumItemsT len, Func f)
   {
     using WideT             = float4;
     constexpr int WARP_SIZE = 32;
@@ -377,7 +362,7 @@ struct AgentTopK
     {
       static_assert(sizeof(WideT) % sizeof(KeyInT) == 0);
       constexpr int items_per_scalar = sizeof(WideT) / sizeof(KeyInT);
-      // TODO: it's UB
+
       union
       {
         WideT scalar;
@@ -430,7 +415,7 @@ struct AgentTopK
    * (see steps 4 & 1 in `radix_kernel` description).
    */
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void filterAndHistogram(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void FilterAndHistogram(
     KeyInputIteratorT in_buf,
     IdxInputIteratorT in_idx_buf,
     KeyOutputIteratorT out_buf,
@@ -448,19 +433,19 @@ struct AgentTopK
     }
     __syncthreads();
 
-    int start_bit       = calc_start_bit(pass);
-    const unsigned mask = calc_mask(pass);
+    int start_bit       = CalcStartBit(pass);
+    const unsigned mask = CalcMask(pass);
 
     if (pass == 0)
     {
-      // Passed to vectorized_process, this function executes in all blocks in parallel,
+      // Passed to VectorizedProcess, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
       // row). Later, the histograms are merged using atomicAdd.
       auto f = [start_bit, mask, this](KeyInT key, NumItemsT) {
-        int bucket = (twiddle_in(key, SELECT_MIN) >> start_bit) & mask; // calc_bucket(key, start_bit, mask);
+        int bucket = (TwiddleIn(key, SELECT_MIN) >> start_bit) & mask;
         atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
       };
-      vectorized_process(
+      VectorizedProcess(
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
         static_cast<size_t>(blockDim.x) * gridDim.x,
         in_buf,
@@ -472,10 +457,10 @@ struct AgentTopK
       NumItemsT* p_filter_cnt = &counter->filter_cnt;
       NumItemsT* p_out_cnt    = &counter->out_cnt;
       const auto kth_key_bits = counter->kth_key_bits;
-      int previous_start_bit  = calc_start_bit(pass - 1);
+      int previous_start_bit  = CalcStartBit(pass - 1);
 
       // See the remark above on the distributed execution of `f` using
-      // vectorized_process.
+      // VectorizedProcess.
       auto f =
         [in_idx_buf,
          out_buf,
@@ -489,7 +474,7 @@ struct AgentTopK
          p_out_cnt,
          this,
          early_stop](KeyInT key, NumItemsT i) {
-          const auto previous_bits = (twiddle_in(key, SELECT_MIN) >> previous_start_bit) << previous_start_bit;
+          const auto previous_bits = (TwiddleIn(key, SELECT_MIN) >> previous_start_bit) << previous_start_bit;
           if (previous_bits == kth_key_bits)
           {
             if (early_stop)
@@ -508,7 +493,7 @@ struct AgentTopK
                 out_idx_buf[pos] = in_idx_buf ? in_idx_buf[i] : i;
               }
 
-              int bucket = (twiddle_in(key, SELECT_MIN) >> start_bit) & mask; // calc_bucket(key, start_bit, mask);
+              int bucket = (TwiddleIn(key, SELECT_MIN) >> start_bit) & mask; // calc_bucket(key, start_bit, mask);
               atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
             }
           }
@@ -516,7 +501,7 @@ struct AgentTopK
           // If we skip writing to `out_buf` (when `out_buf` is nullptr), we should skip
           // writing to `out` too. So we won't write the same key to `out` multiple
           // times in different passes. And if we keep skipping the writing, keys will
-          // be written in `last_filter_kernel()` at last. But when `early_stop` is
+          // be written in `LastFilter_kernel()` at last. But when `early_stop` is
           // true, we need to write to `out` since it's the last chance.
           else if ((out_buf || early_stop) && previous_bits < kth_key_bits)
           {
@@ -526,7 +511,7 @@ struct AgentTopK
             d_values_out[pos] = d_values_in[index];
           }
         };
-      vectorized_process(
+      VectorizedProcess(
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
         static_cast<size_t>(blockDim.x) * gridDim.x,
         in_buf,
@@ -544,12 +529,7 @@ struct AgentTopK
     {
       if (histogram_smem[i] != 0)
       {
-#ifdef USE_ATOMIC_REF_SMEM
-        auto atomic_ref = cuda::atomic_ref<NumItemsT, cuda::thread_scope::thread_scope_system>{histogram[i]};
-        atomic_ref.fetch_add(histogram_smem[i], cuda::memory_order_relaxed);
-#else
         atomicAdd(histogram + i, histogram_smem[i]);
-#endif
       }
     }
   }
@@ -559,11 +539,11 @@ struct AgentTopK
    * (step 2 in `radix_kernel` description)
    */
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void scan(volatile NumItemsT* histogram)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void Scan(volatile NumItemsT* histogram)
   {
     if (num_buckets >= BLOCK_THREADS)
     {
-      static_assert(num_buckets % BLOCK_THREADS == 0);
+      static_assert(num_buckets % BLOCK_THREADS == 0); //@todo: release constraints
       constexpr int items_per_thread = num_buckets / BLOCK_THREADS;
       typedef cub::BlockLoad<NumItemsT, BLOCK_THREADS, items_per_thread, cub::BLOCK_LOAD_TRANSPOSE> BlockLoad;
       typedef cub::BlockStore<NumItemsT, BLOCK_THREADS, items_per_thread, cub::BLOCK_STORE_TRANSPOSE> BlockStore;
@@ -611,7 +591,7 @@ struct AgentTopK
    *  (steps 3 in `radix_kernel` description)
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  choose_bucket(Counter<KeyInT, NumItemsT>* counter, const NumItemsT* histogram, const NumItemsT k, const int pass)
+  ChooseBucket(Counter<KeyInT, NumItemsT>* counter, const NumItemsT* histogram, const NumItemsT k, const int pass)
   {
     for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
     {
@@ -625,15 +605,15 @@ struct AgentTopK
         counter->k                                        = k - prev; // how many values still are there to find
         counter->len                                      = cur - prev; // number of values in next pass
         typename cub::Traits<KeyInT>::UnsignedBits bucket = i;
-        int start_bit                                     = calc_start_bit(pass);
+        int start_bit                                     = CalcStartBit(pass);
         counter->kth_key_bits |= bucket << start_bit;
       }
     }
   }
 
-  // For one-block version, last_filter() could be called when pass < num_passes - 1.
+  // For one-block version, LastFilter() could be called when pass < num_passes - 1.
   // So `pass` could not be constexpr
-  _CCCL_DEVICE _CCCL_FORCEINLINE void last_filter(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void LastFilter(
     const KeyInT* in_buf,
     const NumItemsT* in_idx_buf,
     NumItemsT current_len,
@@ -642,16 +622,16 @@ struct AgentTopK
     const int pass)
   {
     const auto kth_key_bits = counter->kth_key_bits;
-    int start_bit           = calc_start_bit(pass);
+    int start_bit           = CalcStartBit(pass);
 
-    // changed in choose_bucket(); need to reload
+    // changed in ChooseBucket(); need to reload
     NumItemsT num_of_kth_needed = counter->k;
     NumItemsT* p_out_cnt        = &counter->out_cnt;
     NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
     for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
     {
       const KeyInT key = in_buf[i];
-      const auto bits  = (twiddle_in(key, SELECT_MIN) >> start_bit) << start_bit;
+      const auto bits  = (TwiddleIn(key, SELECT_MIN) >> start_bit) << start_bit;
       if (bits < kth_key_bits)
       {
         NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
@@ -749,7 +729,7 @@ struct AgentTopK
       out_idx_buf = nullptr;
     }
 
-    filterAndHistogram(in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+    FilterAndHistogram(in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
     __threadfence();
 
     bool is_last_block = false;
@@ -765,19 +745,19 @@ struct AgentTopK
       {
         if (threadIdx.x == 0)
         {
-          // `last_filter_kernel()` requires setting previous_len
+          // `LastFilter_kernel()` requires setting previous_len
           counter->previous_len = 0;
           counter->len          = 0;
         }
         return;
       }
 
-      scan(histogram);
+      Scan(histogram);
       __syncthreads();
-      choose_bucket(counter, histogram, current_k, pass);
+      ChooseBucket(counter, histogram, current_k, pass);
       __syncthreads();
 
-      int num_passes = calc_num_passes();
+      int num_passes = CalcNumPasses();
       // reset for next pass
       if (pass != num_passes - 1)
       {
@@ -788,7 +768,7 @@ struct AgentTopK
       }
       if (threadIdx.x == 0)
       {
-        // `last_filter_kernel()` requires setting previous_len even in the last pass
+        // `LastFilter_kernel()` requires setting previous_len even in the last pass
         counter->previous_len = current_len;
         // not necessary for the last pass, but put it here anyway
         counter->filter_cnt = 0;
@@ -798,14 +778,15 @@ struct AgentTopK
       {
         volatile const NumItemsT num_of_kth_needed = counter->k;
         __syncthreads();
-        if (FusedLastFilter)
+
+        if (LAST_FILTER)
         {
-          last_filter(out_buf ? out_buf : in_buf,
-                      out_idx_buf ? out_idx_buf : in_idx_buf,
-                      out_buf ? current_len : num_items,
-                      k,
-                      counter,
-                      pass);
+          LastFilter(out_buf ? out_buf : in_buf,
+                     out_idx_buf ? out_idx_buf : in_idx_buf,
+                     out_buf ? current_len : num_items,
+                     k,
+                     counter,
+                     pass);
         }
       }
     }

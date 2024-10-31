@@ -28,7 +28,7 @@
 
 /**
  * @file
- *   cub::DeviceTopK provides device-wide, parallel operations for finding K largest (or smallest) items
+ *   cub::DeviceTopK provides device-wide, parallel operations for finding the K largest (or smallest) items
  * from sequences of unordered data items residing within device-accessible memory.
  */
 
@@ -39,8 +39,6 @@
 #include <cub/agent/agent_topk.cuh>
 #include <cub/block/block_histogram.cuh>
 #include <cub/block/block_load.cuh>
-#include <cub/block/block_scan.cuh>
-#include <cub/device/dispatch/dispatch_scan.cuh>
 #include <cub/util_deprecated.cuh>
 #include <cub/util_device.cuh>
 #include <cub/util_math.cuh>
@@ -49,11 +47,6 @@
 #include <thrust/system/cuda/detail/core/triple_chevron_launch.h>
 
 #include <cuda/cmath>
-
-#include <cstdio>
-#include <iterator>
-
-#include <nv/target>
 
 #if defined(_CCCL_IMPLICIT_SYSTEM_HEADER_GCC)
 #  pragma GCC system_header
@@ -83,7 +76,7 @@ struct sm90_tuning
   static constexpr int threads = 256; // Number of threads per block
 
   using WideT                                      = float4;
-  static constexpr int nominal_4b_items_per_thread = 16;
+  static constexpr int nominal_4b_items_per_thread = 4;
   static constexpr int items_per_scaler            = CUB_MAX(sizeof(WideT) / sizeof(KeyInT), 1);
   static constexpr int items                       = items_per_scaler * nominal_4b_items_per_thread;
 
@@ -128,8 +121,6 @@ struct device_topk_policy_hub
   {
     using tuning = detail::topk::sm90_tuning<KeyInT>;
 
-    // static constexpr int BITS_PER_PASS          = tuning::BITS_PER_PASS;
-    // static constexpr int COFFICIENT_FOR_BUFFER  = tuning::COFFICIENT_FOR_BUFFER;
     using TopKPolicyT =
       AgentTopKPolicy<tuning::threads,
                       tuning::items,
@@ -147,71 +138,79 @@ struct device_topk_policy_hub
  *****************************************************************************/
 
 /**
- * Select kernel entry point (multi-block)
+ * TopK kernel entry point (multi-block)
  *
- * Performs functor-based selection if SelectOpT functor type != NullType
- * Otherwise performs flag-based selection if FlagsInputIterator's value type != NullType
- * Otherwise performs discontinuity selection (keep unique)
+ * Find the largest (or smallest) K items from a sequence of unordered data
  *
- * @tparam InputIteratorT
- *   Random-access input iterator type for reading input items
+ * @tparam IdxInputIteratorT
+ *   **[inferred]** Random-access index iterator type @iterator
  *
- * @tparam FlagsInputIteratorT
- *   Random-access input iterator type for reading selection flags (NullType* if a selection functor
- *   or discontinuity flagging is to be used for selection)
+ * @tparam KeyInputIteratorT
+ *   **[inferred]** Random-access input iterator type for reading input keys @iterator
  *
- * @tparam SelectedOutputIteratorT
- *   Random-access output iterator type for writing selected items
+ * @tparam KeyOutputIteratorT
+ *   **[inferred]** Random-access output iterator type for writing output keys @iterator
  *
- * @tparam NumSelectedIteratorT
- *   Output iterator type for recording the number of items selected
+ * @tparam ValueInputIteratorT
+ *   **[inferred]** Random-access input iterator type for reading input values @iterator
  *
- * @tparam ScanTileStateT
- *   Tile status interface type
+ * @tparam ValueOutputIteratorT
+ *   **[inferred]** Random-access input iterator type for writing output values @iterator
  *
- * @tparam SelectOpT
- *   Selection operator type (NullType if selection flags or discontinuity flagging is
- *   to be used for selection)
+ * @tparam NumItemsT
+ *  Type of variable num_items and k
  *
- * @tparam EqualityOpT
- *   Equality operator type (NullType if selection functor or selection flags is
- *   to be used for selection)
+ * @tparam ExtractBinOpT
+ *   Operations to extract the bin from the input key value
  *
- * @tparam OffsetT
- *   Signed integer type for global offsets
+ * @tparam SelectMin
+ *   Indicate find the smallest (SelectMin=true) or largest (SelectMin=false) K elements
  *
- * @tparam KEEP_REJECTS
- *   Whether or not we push rejected items to the back of the output
+ * @tparam LastFilter
+ *   Indicate whether include the last filter operation or not
  *
- * @param[in] d_in
- *   Pointer to the input sequence of data items
+ * @param[in] d_keys_in
+ *   Pointer to the input data of key data
  *
- * @param[in] d_flags
- *   Pointer to the input sequence of selection flags (if applicable)
+ * @param[out] d_keys_out
+ *   Pointer to the K output sequence of key data
  *
- * @param[out] d_selected_out
- *   Pointer to the output sequence of selected data items
+ * @param[in] d_values_in
+ *   Pointer to the corresponding input sequence of associated value items
  *
- * @param[out] d_num_selected_out
- *   Pointer to the total number of items selected (i.e., length of \p d_selected_out)
+ * @param[out] d_values_out
+ *   Pointer to the correspondingly output sequence of associated
+ *   value items
  *
- * @param[in] tile_status
- *   Tile status interface
+ * @param[in] in_buf
+ *   Pointer to buffer of input key data
  *
- * @param[in] select_op
- *   Selection operator
+ * @param[out] out_buf
+ *   Pointer to buffer of output key data
  *
- * @param[in] equality_op
- *   Equality operator
+ * @param[in] in_idx_buf
+ *   Pointer to buffer of index of input buffer
+ *
+ * @param[out] out_idx_buf
+ *   Pointer to buffer of index of output
+ *
+ * @param[in] counter
+ *   Pointer to buffer of counter array
+ *
+ * @param[in] histogram
+ *   Pointer to buffer of histogram array
  *
  * @param[in] num_items
- *   Total number of input items (i.e., length of \p d_in)
+ *   Number of items to be processed
  *
- * @param[in] num_tiles
- *   Total number of tiles for the entire problem
+ * @param[in] k
+ *   The K value. Will find K elements from num_items elements
  *
- * @param[in] vsmem
- *   Memory to support virtual shared memory
+ * @param[in] extract_bin_op
+ *   Extract the bin operator
+ *
+ * @param[in] pass
+ *   The index of the passes
  */
 template <typename AgentTopKPolicyT,
           typename IdxInputIteratorT,
@@ -222,7 +221,7 @@ template <typename AgentTopKPolicyT,
           typename NumItemsT,
           typename ExtractBinOpT,
           bool SelectMin,
-          bool FusedLastFilter>
+          bool LastFilter>
 CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
   KeyInputIteratorT d_keys_in,
   KeyOutputIteratorT d_keys_out,
@@ -248,7 +247,7 @@ CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
             ExtractBinOpT,
             NumItemsT,
             SelectMin,
-            FusedLastFilter>(d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op)
+            LastFilter>(d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op)
     .InvokeOneSweep(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
 }
 
@@ -416,6 +415,7 @@ struct DispatchTopK : SelectedPolicy
     int num_tiles                  = static_cast<int>(::cuda::ceil_div(num_items, tile_size)); // Num of blocks
     int num_passes                 = ::cuda::ceil_div<int>(sizeof(KeyInT) * 8, Policy::BITS_PER_PASS);
     int num_buckets                = 1 << Policy::BITS_PER_PASS;
+
     do
     {
       // Get device ordinal

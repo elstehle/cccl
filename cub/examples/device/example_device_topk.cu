@@ -115,6 +115,7 @@ void Initialize(float* h_keys, int* h_values, float* h_reference_keys, int* h_re
   }
 
   delete[] h_pairs;
+  delete[] h_reference_pairs;
 }
 /**
  *  In some case the results of topK is unordered. Sort the results to compare with groundtruth.
@@ -146,7 +147,7 @@ void SortUnorderedRes(float* h_res_keys, float* d_keys_out, int* h_res_values, i
  */
 int main(int argc, char** argv)
 {
-  int num_items = 150;
+  int num_items = 10240;
   int k         = 10;
   // Initialize command line
   CommandLineArgs args(argc, argv);
@@ -216,16 +217,14 @@ int main(int argc, char** argv)
   CubDebugExit(cudaMemcpy(d_values_in, h_values, sizeof(int) * num_items, cudaMemcpyHostToDevice));
 
   // Run
-  CubDebugExit(DeviceTopK::TopKPairs(
+  CubDebugExit(DeviceTopK::TopKMinPairs(
     d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k));
 
   // Check for correctness (and display results, if specified)
   SortUnorderedRes(h_res_keys, d_keys_out, h_res_values, d_values_out, k);
   int compare = CompareResults(h_reference_keys, h_res_keys, k, g_verbose);
-  printf("\t Compare keys : %s\n", compare ? "FAIL" : "PASS");
   AssertEquals(0, compare);
   compare = CompareResults(h_reference_values, h_res_values, k, g_verbose);
-  printf("\t Compare values : %s\n", compare ? "FAIL" : "PASS");
   AssertEquals(0, compare);
 
   // Cleanup
