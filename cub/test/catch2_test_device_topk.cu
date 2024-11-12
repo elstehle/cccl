@@ -30,6 +30,7 @@
 
 #include <cub/device/device_topk.cuh>
 
+#include <thrust/iterator/zip_iterator.h>
 #include <thrust/memory.h>
 
 #include <algorithm>
@@ -45,22 +46,26 @@ DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinPairs, topk_min_pairs);
 template <typename key_t, typename value_t>
 struct comparator_t
 {
+  const key_t* key_arr;
+  const value_t* value_arr;
   bool is_descending{};
 
-  comparator_t(bool is_descending)
-      : is_descending(is_descending)
+  comparator_t(key_t* key_arr, value_t* value_arr, bool is_descending)
+      : key_arr(key_arr)
+      , value_arr(value_arr)
+      , is_descending(is_descending)
   {}
 
-  bool operator()(std::pair<key_t, value_t> a, std::pair<key_t, value_t> b)
+  bool operator()(std::size_t a, std::size_t b)
   {
     bool res;
     if (is_descending)
     {
-      if (a.first > b.first)
+      if (key_arr[a] > key_arr[b])
       {
         res = true;
       }
-      else if ((a.first == b.first) && (a.second > b.second))
+      else if ((key_arr[a] == key_arr[b]) && (value_arr[a] < value_arr[b]))
       {
         res = true;
       }
@@ -71,11 +76,11 @@ struct comparator_t
     }
     else
     {
-      if (a.first < b.first)
+      if (key_arr[a] < key_arr[b])
       {
         res = true;
       }
-      else if ((a.first == b.first) && (a.second < b.second))
+      else if ((key_arr[a] == key_arr[b]) && (value_arr[a] < value_arr[a]))
       {
         res = true;
       }
@@ -89,8 +94,30 @@ struct comparator_t
   }
 };
 
+template <typename key_t, typename value_t>
+void sort_keys_and_values(c2h::device_vector<key_t>& keys,
+                          c2h::device_vector<value_t>& values,
+                          std::pair<c2h::host_vector<key_t>, c2h::host_vector<value_t>>& results,
+                          bool is_descending)
+{
+  c2h::host_vector<key_t> h_keys(keys);
+  c2h::host_vector<value_t> h_values(values);
+
+  c2h::host_vector<std::size_t> h_permutation(keys.size());
+  thrust::sequence(h_permutation.begin(), h_permutation.end());
+  comparator_t<key_t, value_t> comp{
+    thrust::raw_pointer_cast(h_keys.data()), thrust::raw_pointer_cast(h_values.data()), is_descending};
+  std::stable_sort(h_permutation.begin(), h_permutation.end(), comp);
+
+  thrust::gather(h_permutation.cbegin(),
+                 h_permutation.cend(),
+                 thrust::make_zip_iterator(h_keys.cbegin(), h_values.cbegin()),
+                 thrust::make_zip_iterator(results.first.begin(), results.second.begin()));
+}
+
 using value_types     = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
-using num_items_types = c2h::type_list<cuda::std::uint32_t>;
+using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+
 CUB_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", value_types, num_items_types)
 {
   using key_t       = cuda::std::uint32_t;
@@ -144,63 +171,48 @@ CUB_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", value_
   }
 
   // Sort the entire input data as result referece
-  c2h::host_vector<std::pair<key_t, value_t>> h_pairs(num_items);
-  c2h::host_vector<key_t> h_in_keys(in_keys);
-  c2h::host_vector<value_t> h_in_values(in_values);
-  for (num_items_t i = 0; i < num_items; ++i)
-  {
-    h_pairs[i].first  = h_in_keys[i];
-    h_pairs[i].second = h_in_values[i];
-  }
-
-  comparator_t<key_t, value_t> comp{is_descending};
-  std::stable_sort(h_pairs.begin(), h_pairs.end(), comp);
+  std::pair<c2h::host_vector<key_t>, c2h::host_vector<value_t>> in_results;
+  in_results.first.resize(in_keys.size());
+  in_results.second.resize(in_keys.size());
+  sort_keys_and_values(in_keys, in_values, in_results, is_descending);
 
   // Since the results of API TopKMinPairs() and TopKPairs() are not-sorted
   // We need to sort the results first.
-  c2h::host_vector<std::pair<key_t, value_t>> h_out_pairs(k);
-  c2h::host_vector<key_t> h_out_keys(out_keys);
-  c2h::host_vector<value_t> h_out_values(out_values);
-  for (num_items_t i = 0; i < k; ++i)
-  {
-    h_out_pairs[i].first  = h_out_keys[i];
-    h_out_pairs[i].second = h_out_values[i];
-  }
-
-  std::stable_sort(h_out_pairs.begin(), h_out_pairs.end(), comp);
+  std::pair<c2h::host_vector<key_t>, c2h::host_vector<value_t>> out_results;
+  out_results.first.resize(out_keys.size());
+  out_results.second.resize(out_keys.size());
+  sort_keys_and_values(out_keys, out_values, out_results, is_descending);
 
   // i for results from gpu (TopKMinPairs() and TopKPairs()); j for reference results
   num_items_t i = 0, j = 0;
   bool res = true;
   while (i < k && j < num_items)
   {
-    if (h_out_pairs[i] != h_pairs[j])
+    if (out_results.first[i] == in_results.first[j])
     {
-      // Wrong if the keys are not equal to reference
-      if (h_out_pairs[i].first != h_pairs[j].first)
+      if (out_results.second[i] == in_results.second[j])
       {
-        res = false;
-        break;
+        i++;
+        j++;
       }
-      // Since the results of API TopKMinPairs() and TopKPairs() are not stable.
-      // There might be multiple items equaling to the value of kth element,
-      // any of them can appear in the results. We need to find them from the input data.
-      else if (comp(h_out_pairs[i], h_pairs[j]))
+      else if (out_results.second[i] > in_results.second[j])
       {
-        res = false;
-        break;
+        // Since the results of API TopKMinPairs() and TopKPairs() are not stable.
+        // There might be multiple items equaling to the value of kth element,
+        // any of them can appear in the results. We need to find them from the input data.
+        j++;
       }
       else
       {
-        j++;
+        res = false;
+        break;
       }
     }
     else
     {
-      i++;
-      j++;
+      res = false;
+      break;
     }
   }
-
   REQUIRE(res == true);
 }

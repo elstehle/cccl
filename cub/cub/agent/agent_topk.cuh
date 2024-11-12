@@ -53,6 +53,23 @@
 
 #include <iterator>
 
+// Overload CUDA atomic for other 64bit unsigned/signed integer type
+_CCCL_DEVICE _CCCL_FORCEINLINE long atomicAdd(long* address, long val)
+{
+  return (long) atomicAdd((unsigned long long*) address, (unsigned long long) val);
+}
+
+_CCCL_DEVICE _CCCL_FORCEINLINE long long atomicAdd(long long* address, long long val)
+{
+  return (long long) atomicAdd((unsigned long long*) address, (unsigned long long) val);
+}
+
+_CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, unsigned long val)
+{
+  // unsigned long long tmp=reinterpret_cast<unsigned long long>(address);
+  return (unsigned long) ::atomicAdd(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
+}
+
 CUB_NAMESPACE_BEGIN
 /******************************************************************************
  * Tuning policy types
@@ -173,6 +190,8 @@ struct ExtractBinOp
   }
 };
 
+// using ::atomicAdd();
+
 /**
  * @brief AgentTopK implements a stateful abstraction of CUDA thread blocks for participating in
  * device-wide topK
@@ -203,9 +222,8 @@ struct ExtractBinOp
  *   Operations to extract the bin from the input key value
  *
  */
-//
+
 template <typename AgentTopKPolicyT,
-          typename IdxInputIteratorT,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
           typename ValueInputIteratorT,
@@ -252,7 +270,7 @@ struct AgentTopK
   NumItemsT num_items; ///< Total number of input items
   NumItemsT k; ///< Total number of output items
   ExtractBinOpT extract_bin_op; /// The operation for bin
-
+  bool load_from_ori_input; /// Set if loading data from original input
   //---------------------------------------------------------------------
   // Constructor
   //---------------------------------------------------------------------
@@ -283,9 +301,9 @@ struct AgentTopK
    *
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopK(
-    KeyInputIteratorT d_keys_in,
+    const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
-    ValueInputIteratorT d_values_in,
+    const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
     NumItemsT k,
@@ -416,10 +434,10 @@ struct AgentTopK
    */
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void FilterAndHistogram(
-    KeyInputIteratorT in_buf,
-    IdxInputIteratorT in_idx_buf,
-    KeyOutputIteratorT out_buf,
-    IdxInputIteratorT out_idx_buf,
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
     NumItemsT previous_len,
     Counter<KeyInT, NumItemsT>* counter,
     NumItemsT* histogram,
@@ -448,7 +466,7 @@ struct AgentTopK
       VectorizedProcess(
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
         static_cast<size_t>(blockDim.x) * gridDim.x,
-        in_buf,
+        d_keys_in,
         previous_len,
         f);
     }
@@ -473,7 +491,8 @@ struct AgentTopK
          p_filter_cnt,
          p_out_cnt,
          this,
-         early_stop](KeyInT key, NumItemsT i) {
+         early_stop,
+         pass](KeyInT key, NumItemsT i) {
           const auto previous_bits = (TwiddleIn(key, SELECT_MIN) >> previous_start_bit) << previous_start_bit;
           if (previous_bits == kth_key_bits)
           {
@@ -490,6 +509,7 @@ struct AgentTopK
               {
                 NumItemsT pos    = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
                 out_buf[pos]     = key;
+                NumItemsT index  = in_idx_buf ? in_idx_buf[i] : i;
                 out_idx_buf[pos] = in_idx_buf ? in_idx_buf[i] : i;
               }
 
@@ -511,12 +531,24 @@ struct AgentTopK
             d_values_out[pos] = d_values_in[index];
           }
         };
-      VectorizedProcess(
-        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-        static_cast<size_t>(blockDim.x) * gridDim.x,
-        in_buf,
-        previous_len,
-        f);
+      if (load_from_ori_input)
+      {
+        VectorizedProcess(
+          static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+          static_cast<size_t>(blockDim.x) * gridDim.x,
+          d_keys_in,
+          previous_len,
+          f);
+      }
+      else
+      {
+        VectorizedProcess(
+          static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+          static_cast<size_t>(blockDim.x) * gridDim.x,
+          in_buf,
+          previous_len,
+          f);
+      }
     }
     if (early_stop)
     {
@@ -630,7 +662,7 @@ struct AgentTopK
     NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
     for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
     {
-      const KeyInT key = in_buf[i];
+      const KeyInT key = load_from_ori_input ? d_keys_in[i] : in_buf[i];
       const auto bits  = (TwiddleIn(key, SELECT_MIN) >> start_bit) << start_bit;
       if (bits < kth_key_bits)
       {
@@ -682,10 +714,10 @@ struct AgentTopK
    *   Indicate which pass are processed currently
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeOneSweep(
-    KeyInputIteratorT in_buf,
-    IdxInputIteratorT in_idx_buf,
-    KeyInputIteratorT out_buf,
-    IdxInputIteratorT out_idx_buf,
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
     Counter<KeyInT, NumItemsT>* counter,
     NumItemsT* histogram,
     int pass)
@@ -713,13 +745,17 @@ struct AgentTopK
     }
 
     const bool early_stop   = (current_len == current_k);
-    const NumItemsT buf_len = max(256, num_items / COFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
 
     if (previous_len > buf_len)
     {
-      in_buf       = d_keys_in;
-      in_idx_buf   = nullptr;
-      previous_len = num_items;
+      load_from_ori_input = true;
+      in_idx_buf          = nullptr;
+      previous_len        = num_items;
+    }
+    else
+    {
+      load_from_ori_input = false;
     }
 
     // "current_len > buf_len" means current pass will skip writing buffer
@@ -781,12 +817,9 @@ struct AgentTopK
 
         if (LAST_FILTER)
         {
-          LastFilter(out_buf ? out_buf : in_buf,
-                     out_idx_buf ? out_idx_buf : in_idx_buf,
-                     out_buf ? current_len : num_items,
-                     k,
-                     counter,
-                     pass);
+          load_from_ori_input = out_buf ? false : true;
+          LastFilter(
+            out_buf, out_idx_buf ? out_idx_buf : in_idx_buf, out_buf ? current_len : num_items, k, counter, pass);
         }
       }
     }

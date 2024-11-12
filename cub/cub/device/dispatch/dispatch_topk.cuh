@@ -141,10 +141,6 @@ struct device_topk_policy_hub
  * TopK kernel entry point (multi-block)
  *
  * Find the largest (or smallest) K items from a sequence of unordered data
- *
- * @tparam IdxInputIteratorT
- *   **[inferred]** Random-access index iterator type @iterator
- *
  * @tparam KeyInputIteratorT
  *   **[inferred]** Random-access input iterator type for reading input keys @iterator
  *
@@ -213,24 +209,24 @@ struct device_topk_policy_hub
  *   The index of the passes
  */
 template <typename AgentTopKPolicyT,
-          typename IdxInputIteratorT,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
+          typename KeyInT,
           typename ExtractBinOpT,
           bool SelectMin,
           bool LastFilter>
 CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
-  KeyInputIteratorT d_keys_in,
+  const KeyInputIteratorT d_keys_in,
   KeyOutputIteratorT d_keys_out,
-  ValueInputIteratorT d_values_in,
+  const ValueInputIteratorT d_values_in,
   ValueOutputIteratorT d_values_out,
-  KeyInputIteratorT in_buf,
-  IdxInputIteratorT in_idx_buf,
-  KeyInputIteratorT out_buf,
-  IdxInputIteratorT out_idx_buf,
+  KeyInT* in_buf,
+  NumItemsT* in_idx_buf,
+  KeyInT* out_buf,
+  NumItemsT* out_idx_buf,
   Counter<cub::detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
   NumItemsT* histogram,
   NumItemsT num_items,
@@ -239,7 +235,6 @@ CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
   int pass)
 {
   AgentTopK<AgentTopKPolicyT,
-            IdxInputIteratorT,
             KeyInputIteratorT,
             KeyOutputIteratorT,
             ValueInputIteratorT,
@@ -338,8 +333,7 @@ struct DispatchTopK : SelectedPolicy
 
   int ptx_version;
 
-  using IdxInputIteratorT = NumItemsT*;
-  using KeyInT            = cub::detail::value_t<KeyInputIteratorT>;
+  using KeyInT = cub::detail::value_t<KeyInputIteratorT>;
   /*
    *
    * @param[in] d_temp_storage
@@ -376,9 +370,9 @@ struct DispatchTopK : SelectedPolicy
   CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE DispatchTopK(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
-    KeyInputIteratorT d_keys_in,
+    const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
-    ValueInputIteratorT d_values_in,
+    const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
     NumItemsT k,
@@ -406,7 +400,7 @@ struct DispatchTopK : SelectedPolicy
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
     using Policy     = typename ActivePolicyT::TopKPolicyT;
 
-    using KeyInT    = cub::detail::value_t<KeyInputIteratorT>;
+    // using KeyInT    = cub::detail::value_t<KeyInputIteratorT>;
     cudaError error = cudaSuccess;
 
     constexpr int block_threads    = Policy::BLOCK_THREADS; // Threads per block
@@ -429,7 +423,7 @@ struct DispatchTopK : SelectedPolicy
       // Specify temporary storage allocation requirements
       size_t size_counter        = sizeof(Counter<KeyInT, NumItemsT>);
       size_t size_histogram      = num_buckets * sizeof(NumItemsT);
-      size_t num_candidates      = num_items / Policy::COFFICIENT_FOR_BUFFER;
+      size_t num_candidates      = CUB_MAX(256, num_items / Policy::COFFICIENT_FOR_BUFFER);
       size_t allocation_sizes[6] = {
         size_counter,
         size_histogram,
@@ -503,15 +497,15 @@ struct DispatchTopK : SelectedPolicy
         Counter<KeyInT, NumItemsT>* counter;
         counter = static_cast<decltype(counter)>(allocations[0]);
         NumItemsT* histogram;
-        histogram                     = static_cast<decltype(histogram)>(allocations[1]);
-        KeyInputIteratorT in_buf      = static_cast<KeyInputIteratorT>(pass % 2 == 0 ? allocations[2] : allocations[4]);
-        IdxInputIteratorT in_idx_buf  = static_cast<IdxInputIteratorT>(pass % 2 == 0 ? allocations[3] : allocations[5]);
-        KeyInputIteratorT out_buf     = static_cast<KeyInputIteratorT>(pass % 2 == 0 ? allocations[4] : allocations[2]);
-        IdxInputIteratorT out_idx_buf = static_cast<IdxInputIteratorT>(pass % 2 == 0 ? allocations[5] : allocations[3]);
+        histogram              = static_cast<decltype(histogram)>(allocations[1]);
+        KeyInT* in_buf         = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[2] : allocations[4]);
+        NumItemsT* in_idx_buf  = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[3] : allocations[5]);
+        KeyInT* out_buf        = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[4] : allocations[2]);
+        NumItemsT* out_idx_buf = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[3]);
 
         if (pass <= 1)
         {
-          in_buf     = d_keys_in;
+          // in_buf     = d_keys_in;
           in_idx_buf = nullptr; //@TODO: check the correctness of the nullptr
         }
 
@@ -571,22 +565,22 @@ struct DispatchTopK : SelectedPolicy
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
     return Invoke<ActivePolicyT>(
       DeviceTopKKernel<MaxPolicyT,
-                       IdxInputIteratorT,
                        KeyInputIteratorT,
                        KeyOutputIteratorT,
                        ValueInputIteratorT,
                        ValueOutputIteratorT,
                        NumItemsT,
+                       KeyInT,
                        ExtractBinOp<KeyInT, SelectMin>,
                        SelectMin,
                        false>,
       DeviceTopKKernel<MaxPolicyT,
-                       IdxInputIteratorT,
                        KeyInputIteratorT,
                        KeyOutputIteratorT,
                        ValueInputIteratorT,
                        ValueOutputIteratorT,
                        NumItemsT,
+                       KeyInT,
                        ExtractBinOp<KeyInT, SelectMin>,
                        SelectMin,
                        true>);
@@ -628,9 +622,9 @@ struct DispatchTopK : SelectedPolicy
   CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE static cudaError_t Dispatch(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
-    KeyInputIteratorT d_keys_in,
+    const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
-    ValueInputIteratorT d_values_in,
+    const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
     NumItemsT k,
