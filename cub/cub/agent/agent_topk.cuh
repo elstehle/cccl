@@ -53,7 +53,10 @@
 
 #include <iterator>
 
+CUB_NAMESPACE_BEGIN
+
 // Overload CUDA atomic for other 64bit unsigned/signed integer type
+using ::atomicAdd;
 _CCCL_DEVICE _CCCL_FORCEINLINE long atomicAdd(long* address, long val)
 {
   return (long) atomicAdd((unsigned long long*) address, (unsigned long long) val);
@@ -67,14 +70,12 @@ _CCCL_DEVICE _CCCL_FORCEINLINE long long atomicAdd(long long* address, long long
 _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, unsigned long val)
 {
   // unsigned long long tmp=reinterpret_cast<unsigned long long>(address);
-  return (unsigned long) ::atomicAdd(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
+  return (unsigned long) atomicAdd(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
 }
 
-CUB_NAMESPACE_BEGIN
 /******************************************************************************
  * Tuning policy types
  ******************************************************************************/
-
 /**
  * Parameterizable tuning policy type for AgentTopK
  *
