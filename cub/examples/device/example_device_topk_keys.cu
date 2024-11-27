@@ -60,39 +60,14 @@ CachingDeviceAllocator g_allocator(true); // Caching allocator for device memory
 // Test generation
 //---------------------------------------------------------------------
 /**
- * Simple key-value pairing for floating point types.
- * Treats positive and negative zero as equivalent.
- */
-struct Pair
-{
-  float key;
-  int value;
-
-  bool operator<(const Pair& b) const
-  {
-    bool res = key < b.key;
-    if (key == b.key)
-    {
-      res = value < b.value;
-    }
-    return res;
-  }
-};
-/**
  * Initialize key-value sorting problem.
  */
 
-void Initialize(float* h_keys, int* h_values, float* h_reference_keys, int* h_reference_values, int num_items, int k)
+void Initialize(float* h_keys, float* h_reference_keys, int num_items, int k)
 {
-  Pair* h_pairs           = new Pair[num_items];
-  Pair* h_reference_pairs = new Pair[k];
-
   for (int i = 0; i < num_items; ++i)
   {
     RandomBits(h_keys[i]);
-    RandomBits(h_values[i]);
-    h_pairs[i].key   = h_keys[i];
-    h_pairs[i].value = h_values[i];
   }
 
   if (g_verbose)
@@ -100,42 +75,17 @@ void Initialize(float* h_keys, int* h_values, float* h_reference_keys, int* h_re
     printf("Input keys:\n");
     DisplayResults(h_keys, num_items);
     printf("\n\n");
-
-    printf("Input values:\n");
-    DisplayResults(h_values, num_items);
-    printf("\n\n");
   }
 
-  std::partial_sort_copy(h_pairs, h_pairs + num_items, h_reference_pairs, h_reference_pairs + k);
-
-  for (int i = 0; i < k; ++i)
-  {
-    h_reference_keys[i]   = h_reference_pairs[i].key;
-    h_reference_values[i] = h_reference_pairs[i].value;
-  }
-
-  delete[] h_pairs;
-  delete[] h_reference_pairs;
+  std::partial_sort_copy(h_keys, h_keys + num_items, h_reference_keys, h_reference_keys + k);
 }
 /**
  *  In some case the results of topK is unordered. Sort the results to compare with groundtruth.
  */
-void SortUnorderedRes(float* h_res_keys, float* d_keys_out, int* h_res_values, int* d_values_out, int k)
+void SortUnorderedRes(float* h_res_keys, float* d_keys_out, int k)
 {
   CubDebugExit(cudaMemcpy(h_res_keys, d_keys_out, sizeof(float) * k, cudaMemcpyDeviceToHost));
-  CubDebugExit(cudaMemcpy(h_res_values, d_values_out, sizeof(int) * k, cudaMemcpyDeviceToHost));
-  Pair* h_res_pairs = new Pair[k];
-  for (int i = 0; i < k; ++i)
-  {
-    h_res_pairs[i].key   = h_res_keys[i];
-    h_res_pairs[i].value = h_res_values[i];
-  }
-  std::stable_sort(h_res_pairs, h_res_pairs + k);
-  for (int i = 0; i < k; ++i)
-  {
-    h_res_keys[i]   = h_res_pairs[i].key;
-    h_res_values[i] = h_res_pairs[i].value;
-  }
+  std::stable_sort(h_res_keys, h_res_keys + k);
 }
 
 //---------------------------------------------------------------------
@@ -181,50 +131,37 @@ int main(int argc, char** argv)
   float* h_keys           = new float[num_items];
   float* h_reference_keys = new float[k];
   float* h_res_keys       = new float[k];
-  int* h_values           = new int[num_items];
-  int* h_reference_values = new int[k];
-  int* h_res_values       = new int[k];
 
   // Initialize problem and solution on host
-  Initialize(h_keys, h_values, h_reference_keys, h_reference_values, num_items, k);
+  Initialize(h_keys, h_reference_keys, num_items, k);
 
   // Allocate device arrays
   float* d_keys_in = nullptr;
   CubDebugExit(g_allocator.DeviceAllocate((void**) &d_keys_in, sizeof(float) * num_items));
-  int* d_values_in = nullptr;
-  CubDebugExit(g_allocator.DeviceAllocate((void**) &d_values_in, sizeof(int) * num_items));
 
   // Initialize device input
   CubDebugExit(cudaMemcpy(d_keys_in, h_keys, sizeof(float) * num_items, cudaMemcpyHostToDevice));
-  CubDebugExit(cudaMemcpy(d_values_in, h_values, sizeof(int) * num_items, cudaMemcpyHostToDevice));
 
   // Allocate device output array and num selected
   float* d_keys_out = nullptr;
-  int* d_values_out = nullptr;
   CubDebugExit(g_allocator.DeviceAllocate((void**) &d_keys_out, sizeof(float) * k));
-  CubDebugExit(g_allocator.DeviceAllocate((void**) &d_values_out, sizeof(int) * k));
 
   // Allocate temporary storage
   size_t temp_storage_bytes = 0;
   void* d_temp_storage      = nullptr;
 
-  CubDebugExit(DeviceTopK::TopKPairs(
-    d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k));
+  CubDebugExit(DeviceTopK::TopKMinKeys(d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, num_items, k));
   CubDebugExit(g_allocator.DeviceAllocate(&d_temp_storage, temp_storage_bytes));
 
   // Initialize device arrays
   CubDebugExit(cudaMemcpy(d_keys_in, h_keys, sizeof(float) * num_items, cudaMemcpyHostToDevice));
-  CubDebugExit(cudaMemcpy(d_values_in, h_values, sizeof(int) * num_items, cudaMemcpyHostToDevice));
 
   // Run
-  CubDebugExit(DeviceTopK::TopKMinPairs(
-    d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k));
+  CubDebugExit(DeviceTopK::TopKMinKeys(d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, num_items, k));
 
   // Check for correctness (and display results, if specified)
-  SortUnorderedRes(h_res_keys, d_keys_out, h_res_values, d_values_out, k);
+  SortUnorderedRes(h_res_keys, d_keys_out, k);
   int compare = CompareResults(h_reference_keys, h_res_keys, k, g_verbose);
-  AssertEquals(0, compare);
-  compare = CompareResults(h_reference_values, h_res_values, k, g_verbose);
   AssertEquals(0, compare);
 
   // Cleanup
@@ -243,41 +180,19 @@ int main(int argc, char** argv)
     delete[] h_res_keys;
     h_res_keys = nullptr;
   }
-  if (h_values)
-  {
-    delete[] h_values;
-    h_values = nullptr;
-  }
-  if (h_reference_values)
-  {
-    delete[] h_reference_values;
-    h_reference_values = nullptr;
-  }
-  if (h_res_values)
-  {
-    delete[] h_res_values;
-    h_res_values = nullptr;
-  }
+
   if (d_keys_in)
   {
     CubDebugExit(g_allocator.DeviceFree(d_keys_in));
     d_keys_in = nullptr;
   }
-  if (d_values_in)
-  {
-    CubDebugExit(g_allocator.DeviceFree(d_values_in));
-    d_values_in = nullptr;
-  }
+
   if (d_keys_out)
   {
     CubDebugExit(g_allocator.DeviceFree(d_keys_out));
     d_keys_out = nullptr;
   }
-  if (d_values_out)
-  {
-    CubDebugExit(g_allocator.DeviceFree(d_values_out));
-    d_values_out = nullptr;
-  }
+
   if (d_temp_storage)
   {
     CubDebugExit(g_allocator.DeviceFree(d_temp_storage));

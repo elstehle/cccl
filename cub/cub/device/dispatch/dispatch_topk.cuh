@@ -64,6 +64,7 @@ namespace detail
 namespace topk
 {
 
+#define DEFAULT_NUM_THREADS 512
 template <class KeyT>
 constexpr int calc_bits_per_pass()
 {
@@ -73,7 +74,7 @@ constexpr int calc_bits_per_pass()
 template <class KeyInT>
 struct sm90_tuning
 {
-  static constexpr int threads = 256; // Number of threads per block
+  static constexpr int threads = DEFAULT_NUM_THREADS; // Number of threads per block
 
   using WideT                                      = float4;
   static constexpr int nominal_4b_items_per_thread = 4;
@@ -83,7 +84,7 @@ struct sm90_tuning
   static constexpr int BITS_PER_PASS         = detail::topk::calc_bits_per_pass<KeyInT>();
   static constexpr int COFFICIENT_FOR_BUFFER = 128;
 
-  static constexpr cub::BlockLoadAlgorithm load_algorithm = cub::BLOCK_LOAD_DIRECT;
+  static constexpr cub::BlockLoadAlgorithm load_algorithm = cub::BLOCK_LOAD_VECTORIZE;
 };
 
 } // namespace topk
@@ -94,7 +95,7 @@ struct device_topk_policy_hub
 {
   struct DefaultTuning
   {
-    static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 10;
+    static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 4;
 
     static constexpr int ITEMS_PER_THREAD =
       CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
@@ -103,11 +104,11 @@ struct device_topk_policy_hub
     static constexpr int COFFICIENT_FOR_BUFFER = 128;
 
     using TopKPolicyT =
-      AgentTopKPolicy<128,
+      AgentTopKPolicy<DEFAULT_NUM_THREADS,
                       ITEMS_PER_THREAD,
                       BITS_PER_PASS,
                       COFFICIENT_FOR_BUFFER,
-                      cub::BLOCK_LOAD_DIRECT,
+                      cub::BLOCK_LOAD_VECTORIZE,
                       cub::BLOCK_HISTO_ATOMIC,
                       cub::BLOCK_SCAN_WARP_SCANS>;
   };
@@ -333,7 +334,8 @@ struct DispatchTopK : SelectedPolicy
 
   int ptx_version;
 
-  using KeyInT = cub::detail::value_t<KeyInputIteratorT>;
+  using KeyInT                    = cub::detail::value_t<KeyInputIteratorT>;
+  static constexpr bool KEYS_ONLY = std::is_same<ValueInputIteratorT, NullType>::value;
   /*
    *
    * @param[in] d_temp_storage
@@ -400,7 +402,6 @@ struct DispatchTopK : SelectedPolicy
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
     using Policy     = typename ActivePolicyT::TopKPolicyT;
 
-    // using KeyInT    = cub::detail::value_t<KeyInputIteratorT>;
     cudaError error = cudaSuccess;
 
     constexpr int block_threads    = Policy::BLOCK_THREADS; // Threads per block
@@ -428,9 +429,9 @@ struct DispatchTopK : SelectedPolicy
         size_counter,
         size_histogram,
         num_candidates * sizeof(KeyInT),
-        num_candidates * sizeof(NumItemsT),
         num_candidates * sizeof(KeyInT),
-        num_candidates * sizeof(NumItemsT)};
+        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT),
+        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT)};
 
       // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
       void* allocations[6] = {};
@@ -498,10 +499,15 @@ struct DispatchTopK : SelectedPolicy
         counter = static_cast<decltype(counter)>(allocations[0]);
         NumItemsT* histogram;
         histogram              = static_cast<decltype(histogram)>(allocations[1]);
-        KeyInT* in_buf         = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[2] : allocations[4]);
-        NumItemsT* in_idx_buf  = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[3] : allocations[5]);
-        KeyInT* out_buf        = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[4] : allocations[2]);
-        NumItemsT* out_idx_buf = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[3]);
+        KeyInT* in_buf         = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
+        KeyInT* out_buf        = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
+        NumItemsT* in_idx_buf  = nullptr;
+        NumItemsT* out_idx_buf = nullptr;
+        if (!KEYS_ONLY)
+        {
+          in_idx_buf  = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
+          out_idx_buf = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
+        }
 
         if (pass <= 1)
         {

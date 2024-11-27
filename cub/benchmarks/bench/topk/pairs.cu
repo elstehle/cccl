@@ -1,0 +1,146 @@
+/******************************************************************************
+ * Copyright (c) 2011-2023, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the NVIDIA CORPORATION nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ ******************************************************************************/
+#include <cub/device/device_topk.cuh>
+
+#include <nvbench_helper.cuh>
+
+// %RANGE% TUNE_ITEMS_PER_THREAD ipt 4:32:4
+// %RANGE% TUNE_THREADS_PER_BLOCK tpb 256:1024:256
+
+#if !TUNE_BASE
+template <class KeyInT, class NumItemT>
+struct policy_hub_t
+{
+  struct policy_t : cub::ChainedPolicy<300, policy_t, policy_t>
+  {
+    static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = TUNE_ITEMS_PER_THREAD;
+
+    static constexpr int ITEMS_PER_THREAD =
+      CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(InputT))));
+
+    static constexpr int BITS_PER_PASS = cub::detail::topk::calc_bits_per_pass<KeyInT>(); //@TODO:add tuning axis?
+    static constexpr int COFFICIENT_FOR_BUFFER = 128; //@TODO:add tuning axis?
+
+    using TopKPolicyT =
+      cub::AgentTopKPolicy<TUNE_THREADS_PER_BLOCK,
+                           ITEMS_PER_THREAD,
+                           BITS_PER_PASS,
+                           COFFICIENT_FOR_BUFFER,
+                           cub::BLOCK_LOAD_DIRECT,
+                           cub::BLOCK_HISTO_ATOMIC,
+                           cub::BLOCK_SCAN_WARP_SCANS>;
+  };
+
+  using MaxPolicy = policy_t;
+};
+#endif // !TUNE_BASE
+
+template <typename KeyT, typename ValueT, typename NumItemT>
+void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, NumItemT>)
+{
+  using key_input_it_t    = const KeyT*;
+  using key_output_it_t   = KeyT*;
+  using value_input_it_t  = const ValueT*;
+  using value_output_it_t = ValueT*;
+  using num_items_t       = NumItemT;
+  // using select_op_t        = less_then_t<T>;
+  // using equality_op_t      = cub::NullType;
+
+  constexpr bool select_min = false;
+
+#if !TUNE_BASE
+  using policy_t   = policy_hub_t<KeyT, NumItemT>;
+  using dispatch_t = cub::
+    DispatchTopK<key_input_it_t, key_output_it_t, value_input_it_t, value_output_it_t, num_items_t, select_min, policy_t>;
+#else // TUNE_BASE
+  using dispatch_t =
+    cub::DispatchTopK<key_input_it_t, key_output_it_t, value_input_it_t, value_output_it_t, num_items_t, select_min>;
+#endif // TUNE_BASE
+
+  // Retrieve axis parameters
+  const auto elements          = static_cast<std::size_t>(state.get_int64("Elements{io}"));
+  const auto selected_elements = static_cast<std::size_t>(state.get_int64("SelectedElements{io}"));
+
+  // If possible, do not initialize the input data in the benchmark function.
+  // Instead, use the gen function.
+  thrust::device_vector<KeyT> in_keys      = generate(elements);
+  thrust::device_vector<KeyT> out_keys     = generate(selected_elements);
+  thrust::device_vector<ValueT> in_values  = generate(elements);
+  thrust::device_vector<ValueT> out_values = generate(selected_elements);
+
+  key_input_it_t d_keys_in       = thrust::raw_pointer_cast(in_keys.data());
+  key_output_it_t d_keys_out     = thrust::raw_pointer_cast(out_keys.data());
+  value_input_it_t d_values_in   = thrust::raw_pointer_cast(in_values.data());
+  value_output_it_t d_values_out = thrust::raw_pointer_cast(out_values.data());
+
+  // optionally add memory usage to the state
+  //  Calling `state.add_element_count(num_elements)` with the number of input
+  //  items will report the item throughput rate in elements-per-second.
+  //
+  //  Calling `state.add_global_memory_reads<T>(num_elements)` and/or
+  //  `state.add_global_memory_writes<T>(num_elements)` will report global device
+  //  memory throughput as a percentage of the current device's peak global memory
+  //  bandwidth, and also in bytes-per-second.
+  //
+  //  All of these methods take an optional second `column_name` argument, which
+  //  will add a new column to the output with the reported element count / buffer
+  //  size and column name.
+  state.add_element_count(elements, "NumElements");
+  state.add_element_count(selected_elements, "NumSelectedElements");
+  state.add_global_memory_reads<KeyT>(elements, "InputKeys");
+  state.add_global_memory_reads<ValueT>(elements, "InputValues");
+  state.add_global_memory_writes<KeyT>(selected_elements, "OutputKeys");
+  state.add_global_memory_writes<ValueT>(selected_elements, "OutputVales");
+
+  // allocate temporary storage
+  std::size_t temp_size;
+  dispatch_t::Dispatch(
+    nullptr, temp_size, d_keys_in, d_keys_out, d_values_in, d_values_out, elements, selected_elements, 0);
+  thrust::device_vector<nvbench::uint8_t> temp(temp_size);
+  auto* temp_storage = thrust::raw_pointer_cast(temp.data());
+
+  // run the algorithm
+  state.exec(nvbench::exec_tag::no_batch, [&](nvbench::launch& launch) {
+    dispatch_t::Dispatch(
+      temp_storage,
+      temp_size,
+      d_keys_in,
+      d_keys_out,
+      d_values_in,
+      d_values_out,
+      elements,
+      selected_elements,
+      launch.get_stream());
+  });
+}
+
+NVBENCH_BENCH_TYPES(topk_pairs, NVBENCH_TYPE_AXES(fundamental_types, fundamental_types, offset_types))
+  .set_name("base")
+  .set_type_axes_names({"KeyT{ct}", "ValueT{ct}", "NumItemT{ct}"})
+  .add_int64_power_of_two_axis("Elements{io}", nvbench::range(16, 28, 4))
+  .add_int64_power_of_two_axis("SelectedElements{io}", nvbench::range(3, 15, 4))
+  .add_string_axis("Entropy", {"1.000", "0.544", "0.000"});

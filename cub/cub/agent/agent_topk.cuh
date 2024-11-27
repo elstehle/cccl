@@ -54,8 +54,8 @@
 #include <iterator>
 
 CUB_NAMESPACE_BEGIN
-
-// Overload CUDA atomic for other 64bit unsigned/signed integer type
+// #define USE_CUSTOMIZED_LOAD
+//  Overload CUDA atomic for other 64bit unsigned/signed integer type
 using ::atomicAdd;
 _CCCL_DEVICE _CCCL_FORCEINLINE long atomicAdd(long* address, long val)
 {
@@ -254,6 +254,7 @@ struct AgentTopK
   static constexpr ::cuda::std::int32_t TILE_ITEMS            = BLOCK_THREADS * ITEMS_PER_THREAD;
   static constexpr int num_buckets                            = 1 << BITS_PER_PASS;
 
+  static constexpr bool KEYS_ONLY = std::is_same<ValueInputIteratorT, cub::NullType>::value;
   // Parameterized BlockLoad type for input data
   using BlockLoadT =
     cub::BlockLoad<KeyInT, BLOCK_THREADS, ITEMS_PER_THREAD, AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM>;
@@ -429,6 +430,37 @@ struct AgentTopK
     }
   }
 
+  template <typename Func>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(KeyInputIteratorT in, NumItemsT num_items, Func f)
+  {
+    KeyInT thread_data[ITEMS_PER_THREAD];
+    __shared__ typename BlockLoadT::TempStorage temp_storage;
+
+    NumItemsT ITEMS_PER_TILE = ITEMS_PER_THREAD * BLOCK_THREADS;
+    NumItemsT tile_base      = blockIdx.x * ITEMS_PER_TILE;
+    // Remaining items (including this tile)
+    NumItemsT num_remaining = num_items - tile_base;
+
+    if (num_remaining > ITEMS_PER_TILE)
+    {
+      BlockLoadT(temp_storage).Load(in + tile_base, thread_data);
+    }
+    else
+    {
+      BlockLoadT(temp_storage).Load(in + tile_base, thread_data, num_remaining, 0);
+    }
+
+    NumItemsT offset = tile_base + threadIdx.x * ITEMS_PER_THREAD;
+    for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+    {
+      if (offset < num_items)
+      {
+        f(thread_data[j], offset);
+      }
+      offset++;
+    }
+  }
+
   /**
    * Fused filtering of the current pass and building histogram for the next pass
    * (see steps 4 & 1 in `radix_kernel` description).
@@ -460,16 +492,20 @@ struct AgentTopK
       // Passed to VectorizedProcess, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
       // row). Later, the histograms are merged using atomicAdd.
-      auto f = [start_bit, mask, this](KeyInT key, NumItemsT) {
+      auto f = [start_bit, mask, this](KeyInT key, NumItemsT index) {
         int bucket = (TwiddleIn(key, SELECT_MIN) >> start_bit) & mask;
         atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
       };
+#ifdef USE_CUSTOMIZED_LOAD
       VectorizedProcess(
         static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
         static_cast<size_t>(blockDim.x) * gridDim.x,
         d_keys_in,
         previous_len,
         f);
+#else
+      ConsumeRange(d_keys_in, previous_len, f);
+#endif
     }
     else
     {
@@ -497,21 +533,29 @@ struct AgentTopK
           const auto previous_bits = (TwiddleIn(key, SELECT_MIN) >> previous_start_bit) << previous_start_bit;
           if (previous_bits == kth_key_bits)
           {
+            NumItemsT index;
+            NumItemsT pos;
             if (early_stop)
             {
-              NumItemsT pos     = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-              NumItemsT index   = in_idx_buf ? in_idx_buf[i] : i;
-              d_keys_out[pos]   = key;
-              d_values_out[pos] = d_values_in[index];
+              pos             = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+              d_keys_out[pos] = key;
+              _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+              {
+                index             = in_idx_buf ? in_idx_buf[i] : i;
+                d_values_out[pos] = d_values_in[index];
+              }
             }
             else
             {
               if (out_buf)
               {
-                NumItemsT pos    = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
-                out_buf[pos]     = key;
-                NumItemsT index  = in_idx_buf ? in_idx_buf[i] : i;
-                out_idx_buf[pos] = in_idx_buf ? in_idx_buf[i] : i;
+                pos          = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
+                out_buf[pos] = key;
+                _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+                {
+                  index            = in_idx_buf ? in_idx_buf[i] : i;
+                  out_idx_buf[pos] = index;
+                }
               }
 
               int bucket = (TwiddleIn(key, SELECT_MIN) >> start_bit) & mask; // calc_bucket(key, start_bit, mask);
@@ -526,29 +570,40 @@ struct AgentTopK
           // true, we need to write to `out` since it's the last chance.
           else if ((out_buf || early_stop) && previous_bits < kth_key_bits)
           {
-            NumItemsT pos     = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-            NumItemsT index   = in_idx_buf ? in_idx_buf[i] : i;
-            d_keys_out[pos]   = key;
-            d_values_out[pos] = d_values_in[index];
+            NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+            d_keys_out[pos] = key;
+            _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+            {
+              NumItemsT index   = in_idx_buf ? in_idx_buf[i] : i;
+              d_values_out[pos] = d_values_in[index];
+            }
           }
         };
       if (load_from_ori_input)
       {
+#ifdef USE_CUSTOMIZED_LOAD
         VectorizedProcess(
           static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
           static_cast<size_t>(blockDim.x) * gridDim.x,
           d_keys_in,
           previous_len,
           f);
+#else
+        ConsumeRange(d_keys_in, previous_len, f);
+#endif
       }
       else
       {
+#ifdef USE_CUSTOMIZED_LOAD
         VectorizedProcess(
           static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
           static_cast<size_t>(blockDim.x) * gridDim.x,
           in_buf,
           previous_len,
           f);
+#else
+        ConsumeRange(in_buf, previous_len, f);
+#endif
       }
     }
     if (early_stop)
@@ -576,8 +631,8 @@ struct AgentTopK
   {
     if (num_buckets >= BLOCK_THREADS)
     {
-      static_assert(num_buckets % BLOCK_THREADS == 0); //@todo: release constraints
-      constexpr int items_per_thread = num_buckets / BLOCK_THREADS;
+      // static_assert(num_buckets % BLOCK_THREADS == 0); //@todo: release constraints
+      constexpr int items_per_thread = (num_buckets - 1) / BLOCK_THREADS + 1;
       typedef cub::BlockLoad<NumItemsT, BLOCK_THREADS, items_per_thread, cub::BLOCK_LOAD_TRANSPOSE> BlockLoad;
       typedef cub::BlockStore<NumItemsT, BLOCK_THREADS, items_per_thread, cub::BLOCK_STORE_TRANSPOSE> BlockStore;
       typedef cub::BlockScan<NumItemsT, BLOCK_THREADS> BlockScan;
@@ -590,13 +645,13 @@ struct AgentTopK
       } temp_storage;
       NumItemsT thread_data[items_per_thread];
 
-      BlockLoad(temp_storage.load).Load(histogram, thread_data);
+      BlockLoad(temp_storage.load).Load(histogram, thread_data, num_buckets, 0);
       __syncthreads();
 
       BlockScan(temp_storage.scan).InclusiveSum(thread_data, thread_data);
       __syncthreads();
 
-      BlockStore(temp_storage.store).Store(histogram, thread_data);
+      BlockStore(temp_storage.store).Store(histogram, thread_data, num_buckets);
     }
     else
     {
@@ -640,6 +695,13 @@ struct AgentTopK
         typename cub::Traits<KeyInT>::UnsignedBits bucket = i;
         int start_bit                                     = CalcStartBit(pass);
         counter->kth_key_bits |= bucket << start_bit;
+        // printf("pass=%d i=%d prev=%d cur=%d counter->k=%d counter->len=%d \n",
+        //        (int) pass,
+        //        (int) i,
+        //        (int) prev,
+        //        (int) cur,
+        //        (int) counter->k,
+        //        (int) counter->len);
       }
     }
   }
@@ -668,12 +730,16 @@ struct AgentTopK
       if (bits < kth_key_bits)
       {
         NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
-        NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
         d_keys_out[pos] = key;
-        // For one-block version, `in_idx_buf` could be nullptr at pass 0.
-        // For non one-block version, if writing has been skipped, `in_idx_buf` could
-        // be nullptr if `in_buf` is `in`
-        d_values_out[pos] = d_values_in[index];
+        _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+        {
+          NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
+
+          // For one-block version, `in_idx_buf` could be nullptr at pass 0.
+          // For non one-block version, if writing has been skipped, `in_idx_buf` could
+          // be nullptr if `in_buf` is `in`
+          d_values_out[pos] = d_values_in[index];
+        }
       }
       else if (bits == kth_key_bits)
       {
@@ -682,9 +748,12 @@ struct AgentTopK
 
         if (back_pos < num_of_kth_needed)
         {
-          NumItemsT pos     = k - 1 - back_pos;
-          d_keys_out[pos]   = key;
-          d_values_out[pos] = d_values_in[new_idx];
+          NumItemsT pos   = k - 1 - back_pos;
+          d_keys_out[pos] = key;
+          _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+          {
+            d_values_out[pos] = d_values_in[new_idx];
+          }
         }
       }
     }
@@ -788,6 +857,17 @@ struct AgentTopK
         }
         return;
       }
+
+      // if (threadIdx.x == 0)
+      // {
+      //   for (int i = 0; i < 2048; i++)
+      //   {
+      //     if (histogram[i] != 0)
+      //     {
+      //       printf("i=%d his=%d \n", i, histogram[i]);
+      //     }
+      //   }
+      // }
 
       Scan(histogram);
       __syncthreads();

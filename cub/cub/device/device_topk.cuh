@@ -273,6 +273,162 @@ struct DeviceTopK
       d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
   }
 #endif
+
+  //! @tparam KeyInputIteratorT
+  //!   **[inferred]** Random-access input iterator type for reading input keys @iterator
+  //!
+  //! @tparam KeyOutputIteratorT
+  //!   **[inferred]** Random-access output iterator type for writing output keys @iterator
+  //!
+  //! @tparam NumItemsT
+  //! Type of variable num_items and k
+  //!
+  //! @param[in] d_temp_storage
+  //!   Device-accessible allocation of temporary storage. When `nullptr`, the
+  //!   required allocation size is written to `temp_storage_bytes` and no work is done.
+  //!
+  //! @param[in,out] temp_storage_bytes
+  //!   Reference to size in bytes of `d_temp_storage` allocation
+  //!
+  //! @param[in] d_keys_in
+  //!   Pointer to the input data of key data
+  //!
+  //! @param[out] d_keys_out
+  //!   Pointer to the K output sequence of key data
+  //!
+  //! @param[in] num_items
+  //!   Number of items to be processed
+  //!
+  //! @param[in] k
+  //!   The K value. Will find K elements from num_items elements
+  //!
+  //! @param[in] stream
+  //!   @rst
+  //!   **[optional]** CUDA stream to launch kernels within. Default is stream\ :sub:`0`.
+  //!   @endrst
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT>
+  CUB_RUNTIME_FUNCTION static cudaError_t TopKKeys(
+    void* d_temp_storage,
+    size_t& temp_storage_bytes,
+    KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    NumItemsT num_items,
+    NumItemsT k,
+    cudaStream_t stream = 0)
+  {
+    static constexpr bool SelectMin = false;
+    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin>::Dispatch(
+      d_temp_storage,
+      temp_storage_bytes,
+      d_keys_in,
+      d_keys_out,
+      static_cast<cub::NullType*>(nullptr),
+      static_cast<cub::NullType*>(nullptr),
+      num_items,
+      k,
+      stream);
+  }
+
+#ifndef DOXYGEN_SHOULD_SKIP_THIS // Do not document
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT>
+  CUB_DETAIL_RUNTIME_DEBUG_SYNC_IS_NOT_SUPPORTED CUB_RUNTIME_FUNCTION static cudaError_t TopKKeys(
+    void* d_temp_storage,
+    size_t& temp_storage_bytes,
+    const KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    NumItemsT num_items,
+    NumItemsT k,
+    cudaStream_t stream,
+    bool debug_synchronous)
+  {
+    CUB_DETAIL_RUNTIME_DEBUG_SYNC_USAGE_LOG
+
+    return TopKKeys<KeyInputIteratorT, KeyOutputIteratorT, NumItemsT>(
+      d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, num_items, k, stream);
+  }
+#endif
+
+  //! @tparam KeyInputIteratorT
+  //!   **[inferred]** Random-access input iterator type for reading input keys @iterator
+  //!
+  //! @tparam KeyOutputIteratorT
+  //!   **[inferred]** Random-access output iterator type for writing output keys @iterator
+  //!
+  //! @tparam NumItemsT
+  //! Type of variable num_items and k
+  //!
+  //! @param[in] d_temp_storage
+  //!   Device-accessible allocation of temporary storage. When `nullptr`, the
+  //!   required allocation size is written to `temp_storage_bytes` and no work is done.
+  //!
+  //! @param[in,out] temp_storage_bytes
+  //!   Reference to size in bytes of `d_temp_storage` allocation
+  //!
+  //! @param[in] d_keys_in
+  //!   Pointer to the input data of key data to find top K
+  //!
+  //! @param[out] d_keys_out
+  //!   Pointer to the K output sequence of key data
+  //!
+  //! @param[in] num_items
+  //!   Number of items to be processed
+  //!
+  //! @param[in] k
+  //!   The K value. Will find K elements from num_items elements
+  //!
+  //! @param[in] stream
+  //!   @rst
+  //!   **[optional]** CUDA stream to launch kernels within. Default is stream\ :sub:`0`.
+  //!   @endrst
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT>
+  CUB_RUNTIME_FUNCTION static cudaError_t TopKMinKeys(
+    void* d_temp_storage,
+    size_t& temp_storage_bytes,
+    KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    NumItemsT num_items,
+    NumItemsT k,
+    cudaStream_t stream = 0)
+  {
+    static constexpr bool SelectMin = true;
+    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin>::Dispatch(
+      d_temp_storage,
+      temp_storage_bytes,
+      d_keys_in,
+      d_keys_out,
+      static_cast<cub::NullType*>(nullptr),
+      static_cast<cub::NullType*>(nullptr),
+      num_items,
+      k,
+      stream);
+  }
+
+#ifndef DOXYGEN_SHOULD_SKIP_THIS // Do not document
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT>
+  CUB_DETAIL_RUNTIME_DEBUG_SYNC_IS_NOT_SUPPORTED CUB_RUNTIME_FUNCTION static cudaError_t TopKMinKeys(
+    void* d_temp_storage,
+    size_t& temp_storage_bytes,
+    KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    NumItemsT num_items,
+    NumItemsT k,
+    cudaStream_t stream,
+    bool debug_synchronous)
+  {
+    CUB_DETAIL_RUNTIME_DEBUG_SYNC_USAGE_LOG
+
+    return TopKMinKeys<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT>(
+      d_temp_storage,
+      temp_storage_bytes,
+      d_keys_in,
+      d_keys_out,
+      static_cast<cub::NullType*>(nullptr),
+      static_cast<cub::NullType*>(nullptr),
+      num_items,
+      k,
+      stream);
+  }
+#endif
 };
 
 CUB_NAMESPACE_END
