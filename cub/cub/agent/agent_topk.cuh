@@ -1,30 +1,5 @@
-/******************************************************************************
- * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2018, NVIDIA CORPORATION.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of the NVIDIA CORPORATION nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- ******************************************************************************/
+// SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 /**
  * \file
@@ -55,6 +30,7 @@
 
 CUB_NAMESPACE_BEGIN
 // #define USE_CUSTOMIZED_LOAD
+
 //  Overload CUDA atomic for other 64bit unsigned/signed integer type
 using ::atomicAdd;
 _CCCL_DEVICE _CCCL_FORCEINLINE long atomicAdd(long* address, long val)
@@ -104,29 +80,23 @@ template <int _BLOCK_THREADS,
           BlockScanAlgorithm _SCAN_ALGORITHM>
 struct AgentTopKPolicy
 {
-  enum
-  {
-    /// Threads per thread block
-    BLOCK_THREADS = _BLOCK_THREADS,
-
-    /// Items per thread (per tile of input)
-    ITEMS_PER_THREAD = _ITEMS_PER_THREAD,
-
-    /// BITS Processed per pass
-    BITS_PER_PASS = _BITS_PER_PASS,
-
-    /// Cofficient for reducing memry
-    COFFICIENT_FOR_BUFFER = _COFFICIENT_FOR_BUFFER,
-  };
+  /// Threads per thread block
+  static constexpr int BLOCK_THREADS = _BLOCK_THREADS;
+  /// Items per thread (per tile of input)
+  static constexpr int ITEMS_PER_THREAD = _ITEMS_PER_THREAD;
+  /// BITS Processed per pass
+  static constexpr int BITS_PER_PASS = _BITS_PER_PASS;
+  /// Cofficient for reducing memory
+  static constexpr int COFFICIENT_FOR_BUFFER = _COFFICIENT_FOR_BUFFER;
 
   /// The BlockLoad algorithm to use
-  static constexpr cub::BlockLoadAlgorithm LOAD_ALGORITHM = _LOAD_ALGORITHM;
+  static constexpr BlockLoadAlgorithm LOAD_ALGORITHM = _LOAD_ALGORITHM;
 
   /// The BlockHistogram algorithm to use
-  static constexpr cub::BlockHistogramAlgorithm HISTOGRAM_ALGORITHM = _HISTOGRAM_ALGORITHM;
+  static constexpr BlockHistogramAlgorithm HISTOGRAM_ALGORITHM = _HISTOGRAM_ALGORITHM;
 
   /// The BlockScan algorithm to use
-  static constexpr cub::BlockScanAlgorithm SCAN_ALGORITHM = _SCAN_ALGORITHM;
+  static constexpr BlockScanAlgorithm SCAN_ALGORITHM = _SCAN_ALGORITHM;
 };
 
 /******************************************************************************
@@ -152,7 +122,7 @@ struct alignas(128) Counter
   // element is a result (written to `out`), a candidate for next pass (written to
   // `out_buf`), or not useful (discarded). The bits that are not yet processed do not
   // matter for this purpose.
-  typename cub::Traits<KeyInT>::UnsignedBits kth_key_bits;
+  typename Traits<KeyInT>::UnsignedBits kth_key_bits;
 
   // Record how many elements have passed filtering. It's used to determine the position
   // in the `out_buf` where an element should be written.
@@ -181,8 +151,8 @@ struct ExtractBinOp
 {
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE typename cub::Traits<T>::UnsignedBits operator()(T key)
   {
-    auto bits = reinterpret_cast<typename cub::Traits<T>::UnsignedBits&>(key);
-    bits      = cub::Traits<T>::TwiddleIn(bits);
+    auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
+    bits      = Traits<T>::TwiddleIn(bits);
     if (!SELECT_MIN)
     {
       bits = ~bits;
@@ -190,8 +160,6 @@ struct ExtractBinOp
     return bits;
   }
 };
-
-// using ::atomicAdd();
 
 /**
  * @brief AgentTopK implements a stateful abstraction of CUDA thread blocks for participating in
@@ -222,6 +190,9 @@ struct ExtractBinOp
  * @tparam ExtractBinOpT
  *   Operations to extract the bin from the input key value
  *
+ * @tparam INCLUDE_LAST_FILTER
+ *   Whether include the last filter step in the kernel
+ *
  */
 
 template <typename AgentTopKPolicyT,
@@ -232,20 +203,14 @@ template <typename AgentTopKPolicyT,
           typename ExtractBinOpT,
           typename NumItemsT,
           bool SELECT_MIN,
-          bool LAST_FILTER>
+          bool INCLUDE_LAST_FILTER>
 struct AgentTopK
 {
   //---------------------------------------------------------------------
   // Types and constants
   //---------------------------------------------------------------------
-  // Indicates whether the BlockLoad algorithm uses shared memory to load or exchange the data
-  static constexpr bool loads_via_smem =
-    !(AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM == cub::BLOCK_LOAD_DIRECT
-      || AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM == cub::BLOCK_LOAD_STRIPED
-      || AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM == cub::BLOCK_LOAD_VECTORIZE);
-
   // The key and value type
-  using KeyInT = cub::detail::value_t<KeyInputIteratorT>;
+  using KeyInT = detail::value_t<KeyInputIteratorT>;
 
   static constexpr ::cuda::std::int32_t BLOCK_THREADS         = AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS;
   static constexpr ::cuda::std::int32_t ITEMS_PER_THREAD      = AgentTopKPolicyT::TopKPolicyT::ITEMS_PER_THREAD;
@@ -254,17 +219,37 @@ struct AgentTopK
   static constexpr ::cuda::std::int32_t TILE_ITEMS            = BLOCK_THREADS * ITEMS_PER_THREAD;
   static constexpr int num_buckets                            = 1 << BITS_PER_PASS;
 
-  static constexpr bool KEYS_ONLY = std::is_same<ValueInputIteratorT, cub::NullType>::value;
-  // Parameterized BlockLoad type for input data
-  using BlockLoadT =
-    cub::BlockLoad<KeyInT, BLOCK_THREADS, ITEMS_PER_THREAD, AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM>;
+  static constexpr bool KEYS_ONLY                = std::is_same<ValueInputIteratorT, NullType>::value;
+  static constexpr int items_per_thread_for_scan = (num_buckets - 1) / BLOCK_THREADS + 1;
 
+  // Parameterized BlockLoad type for input data
+  using BlockLoadInputT =
+    BlockLoad<KeyInT, BLOCK_THREADS, ITEMS_PER_THREAD, AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM>;
+  using BlockLoadTransT = BlockLoad<NumItemsT, BLOCK_THREADS, items_per_thread_for_scan, BLOCK_LOAD_TRANSPOSE>;
   // Parameterized BlockScan type
-  using BlockScanT = cub::BlockScan<NumItemsT, BLOCK_THREADS, AgentTopKPolicyT::TopKPolicyT::SCAN_ALGORITHM>;
+  using BlockScanT = BlockScan<NumItemsT, BLOCK_THREADS, AgentTopKPolicyT::TopKPolicyT::SCAN_ALGORITHM>;
+  // Parameterized BlockStore type
+  using BlockStoreTransT = BlockStore<NumItemsT, BLOCK_THREADS, items_per_thread_for_scan, BLOCK_STORE_TRANSPOSE>;
+
+  // Shared memory
+  union _TempStorage
+  {
+    // Smem needed for loading
+    typename BlockLoadInputT::TempStorage load_input;
+    typename BlockLoadTransT::TempStorage load_trans;
+    // Smem needed for scan
+    typename BlockScanT::TempStorage scan;
+    // Smem needed for storing
+    typename BlockStoreTransT::TempStorage store_trans;
+  };
+  /// Alias wrapper allowing storage to be unioned
+  struct TempStorage : Uninitialized<_TempStorage>
+  {};
 
   //---------------------------------------------------------------------
   // Per-thread fields
   //---------------------------------------------------------------------
+  _TempStorage& temp_storage; ///< Reference to temp_storage
   KeyInputIteratorT d_keys_in; ///< Input keys
   KeyOutputIteratorT d_keys_out; ///< Output keys
   ValueInputIteratorT d_values_in; ///< Input values
@@ -272,7 +257,7 @@ struct AgentTopK
   NumItemsT num_items; ///< Total number of input items
   NumItemsT k; ///< Total number of output items
   ExtractBinOpT extract_bin_op; /// The operation for bin
-  bool load_from_ori_input; /// Set if loading data from original input
+  bool load_from_original_input; /// Set if loading data from original input
   //---------------------------------------------------------------------
   // Constructor
   //---------------------------------------------------------------------
@@ -289,11 +274,8 @@ struct AgentTopK
    * @param d_values_in
    *   Input data, values
    *
-   * @param d_values_in
+   * @param d_values_out
    *   Output data, values
-   *
-   * @param extract_bin_op
-   *   Extract bin operator
    *
    * @param num_items
    *   Total number of input items
@@ -301,8 +283,12 @@ struct AgentTopK
    * @param k
    *   The K value. Will find K elements from num_items elements
    *
+   * @param extract_bin_op
+   *   Extract bin operator
+   *
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopK(
+    TempStorage& temp_storage,
     const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
@@ -310,7 +296,8 @@ struct AgentTopK
     NumItemsT num_items,
     NumItemsT k,
     ExtractBinOpT extract_bin_op)
-      : d_keys_in(d_keys_in)
+      : temp_storage(temp_storage.Alias())
+      , d_keys_in(d_keys_in)
       , d_keys_out(d_keys_out)
       , d_values_in(d_values_in)
       , d_values_out(d_values_out)
@@ -323,10 +310,10 @@ struct AgentTopK
   // Utility methods for device topK
   //---------------------------------------------------------------------
 
-  _CCCL_DEVICE typename cub::Traits<KeyInT>::UnsignedBits TwiddleIn(KeyInT key, bool select_min)
+  _CCCL_DEVICE typename Traits<KeyInT>::UnsignedBits TwiddleIn(KeyInT key, bool select_min)
   {
-    auto bits = reinterpret_cast<typename cub::Traits<KeyInT>::UnsignedBits&>(key);
-    bits      = cub::Traits<KeyInT>::TwiddleIn(bits);
+    auto bits = reinterpret_cast<typename Traits<KeyInT>::UnsignedBits&>(key);
+    bits      = Traits<KeyInT>::TwiddleIn(bits);
     if (!select_min)
     {
       bits = ~bits;
@@ -431,33 +418,40 @@ struct AgentTopK
   }
 
   template <typename Func>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(KeyInputIteratorT in, NumItemsT num_items, Func f)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(const KeyInputIteratorT in, const NumItemsT num_items, Func f)
   {
     KeyInT thread_data[ITEMS_PER_THREAD];
-    __shared__ typename BlockLoadT::TempStorage temp_storage;
 
-    NumItemsT ITEMS_PER_TILE = ITEMS_PER_THREAD * BLOCK_THREADS;
-    NumItemsT tile_base      = blockIdx.x * ITEMS_PER_TILE;
+    NumItemsT ITEMS_PER_PASS = TILE_ITEMS * gridDim.x;
+    NumItemsT tile_base      = blockIdx.x * TILE_ITEMS;
     // Remaining items (including this tile)
-    NumItemsT num_remaining = num_items - tile_base;
+    NumItemsT num_remaining_per_tile = num_items > tile_base ? num_items - tile_base : 0;
+    NumItemsT num_remaining_per_pass = num_items;
 
-    if (num_remaining > ITEMS_PER_TILE)
+    while (num_remaining_per_pass > 0)
     {
-      BlockLoadT(temp_storage).Load(in + tile_base, thread_data);
-    }
-    else
-    {
-      BlockLoadT(temp_storage).Load(in + tile_base, thread_data, num_remaining, 0);
-    }
-
-    NumItemsT offset = tile_base + threadIdx.x * ITEMS_PER_THREAD;
-    for (int j = 0; j < ITEMS_PER_THREAD; ++j)
-    {
-      if (offset < num_items)
+      if (num_remaining_per_tile > TILE_ITEMS)
       {
-        f(thread_data[j], offset);
+        BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data);
       }
-      offset++;
+      else if (num_remaining_per_tile > 0)
+      {
+        BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data, num_remaining_per_tile, 0);
+      }
+      CTA_SYNC();
+      NumItemsT offset = threadIdx.x * ITEMS_PER_THREAD + tile_base;
+      for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+      {
+        if (offset < num_items)
+        {
+          f(thread_data[j], offset);
+        }
+        offset++;
+      }
+
+      num_remaining_per_tile = num_remaining_per_tile > ITEMS_PER_PASS ? num_remaining_per_tile - ITEMS_PER_PASS : 0;
+      num_remaining_per_pass = num_remaining_per_pass > ITEMS_PER_PASS ? num_remaining_per_pass - ITEMS_PER_PASS : 0;
+      tile_base += ITEMS_PER_PASS;
     }
   }
 
@@ -482,7 +476,7 @@ struct AgentTopK
     {
       histogram_smem[i] = 0;
     }
-    __syncthreads();
+    CTA_SYNC();
 
     int start_bit       = CalcStartBit(pass);
     const unsigned mask = CalcMask(pass);
@@ -579,7 +573,7 @@ struct AgentTopK
             }
           }
         };
-      if (load_from_ori_input)
+      if (load_from_original_input)
       {
 #ifdef USE_CUSTOMIZED_LOAD
         VectorizedProcess(
@@ -606,11 +600,12 @@ struct AgentTopK
 #endif
       }
     }
+
     if (early_stop)
     {
       return;
     }
-    __syncthreads();
+    CTA_SYNC();
 
     // merge histograms produced by individual blocks
     for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
@@ -629,49 +624,15 @@ struct AgentTopK
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void Scan(volatile NumItemsT* histogram)
   {
-    if (num_buckets >= BLOCK_THREADS)
-    {
-      // static_assert(num_buckets % BLOCK_THREADS == 0); //@todo: release constraints
-      constexpr int items_per_thread = (num_buckets - 1) / BLOCK_THREADS + 1;
-      typedef cub::BlockLoad<NumItemsT, BLOCK_THREADS, items_per_thread, cub::BLOCK_LOAD_TRANSPOSE> BlockLoad;
-      typedef cub::BlockStore<NumItemsT, BLOCK_THREADS, items_per_thread, cub::BLOCK_STORE_TRANSPOSE> BlockStore;
-      typedef cub::BlockScan<NumItemsT, BLOCK_THREADS> BlockScan;
+    NumItemsT thread_data[items_per_thread_for_scan];
 
-      __shared__ union
-      {
-        typename BlockLoad::TempStorage load;
-        typename BlockScan::TempStorage scan;
-        typename BlockStore::TempStorage store;
-      } temp_storage;
-      NumItemsT thread_data[items_per_thread];
+    BlockLoadTransT(temp_storage.load_trans).Load(histogram, thread_data, num_buckets, 0);
+    CTA_SYNC();
 
-      BlockLoad(temp_storage.load).Load(histogram, thread_data, num_buckets, 0);
-      __syncthreads();
+    BlockScanT(temp_storage.scan).InclusiveSum(thread_data, thread_data);
+    CTA_SYNC();
 
-      BlockScan(temp_storage.scan).InclusiveSum(thread_data, thread_data);
-      __syncthreads();
-
-      BlockStore(temp_storage.store).Store(histogram, thread_data, num_buckets);
-    }
-    else
-    {
-      typedef cub::BlockScan<NumItemsT, BLOCK_THREADS> BlockScan;
-      __shared__ typename BlockScan::TempStorage temp_storage;
-
-      NumItemsT thread_data = 0;
-      if (threadIdx.x < num_buckets)
-      {
-        thread_data = histogram[threadIdx.x];
-      }
-
-      BlockScan(temp_storage).InclusiveSum(thread_data, thread_data);
-      __syncthreads();
-
-      if (threadIdx.x < num_buckets)
-      {
-        histogram[threadIdx.x] = thread_data;
-      }
-    }
+    BlockStoreTransT(temp_storage.store_trans).Store(histogram, thread_data, num_buckets);
   }
 
   /**
@@ -690,18 +651,11 @@ struct AgentTopK
       // only one thread
       if (prev < k && cur >= k)
       {
-        counter->k                                        = k - prev; // how many values still are there to find
-        counter->len                                      = cur - prev; // number of values in next pass
-        typename cub::Traits<KeyInT>::UnsignedBits bucket = i;
-        int start_bit                                     = CalcStartBit(pass);
+        counter->k                                   = k - prev; // how many values still are there to find
+        counter->len                                 = cur - prev; // number of values in next pass
+        typename Traits<KeyInT>::UnsignedBits bucket = i;
+        int start_bit                                = CalcStartBit(pass);
         counter->kth_key_bits |= bucket << start_bit;
-        // printf("pass=%d i=%d prev=%d cur=%d counter->k=%d counter->len=%d \n",
-        //        (int) pass,
-        //        (int) i,
-        //        (int) prev,
-        //        (int) cur,
-        //        (int) counter->k,
-        //        (int) counter->len);
       }
     }
   }
@@ -725,7 +679,7 @@ struct AgentTopK
     NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
     for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
     {
-      const KeyInT key = load_from_ori_input ? d_keys_in[i] : in_buf[i];
+      const KeyInT key = load_from_original_input ? d_keys_in[i] : in_buf[i];
       const auto bits  = (TwiddleIn(key, SELECT_MIN) >> start_bit) << start_bit;
       if (bits < kth_key_bits)
       {
@@ -819,13 +773,13 @@ struct AgentTopK
 
     if (previous_len > buf_len)
     {
-      load_from_ori_input = true;
-      in_idx_buf          = nullptr;
-      previous_len        = num_items;
+      load_from_original_input = true;
+      in_idx_buf               = nullptr;
+      previous_len             = num_items;
     }
     else
     {
-      load_from_ori_input = false;
+      load_from_original_input = false;
     }
 
     // "current_len > buf_len" means current pass will skip writing buffer
@@ -845,7 +799,7 @@ struct AgentTopK
       is_last_block         = (finished == (gridDim.x - 1));
     }
 
-    if (__syncthreads_or(is_last_block))
+    if (CTA_SYNC_OR(is_last_block))
     {
       if (early_stop)
       {
@@ -858,21 +812,11 @@ struct AgentTopK
         return;
       }
 
-      // if (threadIdx.x == 0)
-      // {
-      //   for (int i = 0; i < 2048; i++)
-      //   {
-      //     if (histogram[i] != 0)
-      //     {
-      //       printf("i=%d his=%d \n", i, histogram[i]);
-      //     }
-      //   }
-      // }
-
       Scan(histogram);
-      __syncthreads();
+
+      CTA_SYNC();
       ChooseBucket(counter, histogram, current_k, pass);
-      __syncthreads();
+      CTA_SYNC();
 
       int num_passes = CalcNumPasses();
       // reset for next pass
@@ -894,11 +838,11 @@ struct AgentTopK
       if (pass == num_passes - 1)
       {
         volatile const NumItemsT num_of_kth_needed = counter->k;
-        __syncthreads();
+        CTA_SYNC();
 
-        if (LAST_FILTER)
+        _CCCL_IF_CONSTEXPR (INCLUDE_LAST_FILTER)
         {
-          load_from_ori_input = out_buf ? false : true;
+          load_from_original_input = out_buf ? false : true;
           LastFilter(
             out_buf, out_idx_buf ? out_idx_buf : in_idx_buf, out_buf ? current_len : num_items, k, counter, pass);
         }

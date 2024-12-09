@@ -1,30 +1,5 @@
-/******************************************************************************
- * Copyright (c) 2011, Duane Merrill.  All rights reserved.
- * Copyright (c) 2011-2018, NVIDIA CORPORATION.  All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *     * Redistributions of source code must retain the above copyright
- *       notice, this list of conditions and the following disclaimer.
- *     * Redistributions in binary form must reproduce the above copyright
- *       notice, this list of conditions and the following disclaimer in the
- *       documentation and/or other materials provided with the distribution.
- *     * Neither the name of the NVIDIA CORPORATION nor the
- *       names of its contributors may be used to endorse or promote products
- *       derived from this software without specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
- * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
- * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
- * DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
- * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
- * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
- * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
- * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
- * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- ******************************************************************************/
+// SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 /**
  * @file
@@ -84,7 +59,7 @@ struct sm90_tuning
   static constexpr int BITS_PER_PASS         = detail::topk::calc_bits_per_pass<KeyInT>();
   static constexpr int COFFICIENT_FOR_BUFFER = 128;
 
-  static constexpr cub::BlockLoadAlgorithm load_algorithm = cub::BLOCK_LOAD_VECTORIZE;
+  static constexpr BlockLoadAlgorithm load_algorithm = BLOCK_LOAD_VECTORIZE;
 };
 
 } // namespace topk
@@ -108,17 +83,17 @@ struct device_topk_policy_hub
                       ITEMS_PER_THREAD,
                       BITS_PER_PASS,
                       COFFICIENT_FOR_BUFFER,
-                      cub::BLOCK_LOAD_VECTORIZE,
-                      cub::BLOCK_HISTO_ATOMIC,
-                      cub::BLOCK_SCAN_WARP_SCANS>;
+                      BLOCK_LOAD_VECTORIZE,
+                      BLOCK_HISTO_ATOMIC,
+                      BLOCK_SCAN_WARP_SCANS>;
   };
 
   struct Policy350
       : DefaultTuning
-      , cub::ChainedPolicy<350, Policy350, Policy350>
+      , ChainedPolicy<350, Policy350, Policy350>
   {};
 
-  struct Policy900 : cub::ChainedPolicy<900, Policy900, Policy350>
+  struct Policy900 : ChainedPolicy<900, Policy900, Policy350>
   {
     using tuning = detail::topk::sm90_tuning<KeyInT>;
 
@@ -128,8 +103,8 @@ struct device_topk_policy_hub
                       tuning::BITS_PER_PASS,
                       tuning::COFFICIENT_FOR_BUFFER,
                       tuning::load_algorithm,
-                      cub::BLOCK_HISTO_ATOMIC,
-                      cub::BLOCK_SCAN_WARP_SCANS>;
+                      BLOCK_HISTO_ATOMIC,
+                      BLOCK_SCAN_WARP_SCANS>;
   };
 
   using MaxPolicy = Policy900;
@@ -163,7 +138,7 @@ struct device_topk_policy_hub
  * @tparam SelectMin
  *   Indicate find the smallest (SelectMin=true) or largest (SelectMin=false) K elements
  *
- * @tparam LastFilter
+ * @tparam IncludeLastFilter
  *   Indicate whether include the last filter operation or not
  *
  * @param[in] d_keys_in
@@ -218,8 +193,8 @@ template <typename AgentTopKPolicyT,
           typename KeyInT,
           typename ExtractBinOpT,
           bool SelectMin,
-          bool LastFilter>
-CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
+          bool IncludeLastFilter>
+__launch_bounds__(int(AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS)) CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
   const KeyInputIteratorT d_keys_in,
   KeyOutputIteratorT d_keys_out,
   const ValueInputIteratorT d_values_in,
@@ -228,22 +203,27 @@ CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
   NumItemsT* in_idx_buf,
   KeyInT* out_buf,
   NumItemsT* out_idx_buf,
-  Counter<cub::detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+  Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
   NumItemsT* histogram,
   NumItemsT num_items,
   NumItemsT k,
   ExtractBinOpT extract_bin_op,
   int pass)
 {
-  AgentTopK<AgentTopKPolicyT,
-            KeyInputIteratorT,
-            KeyOutputIteratorT,
-            ValueInputIteratorT,
-            ValueOutputIteratorT,
-            ExtractBinOpT,
-            NumItemsT,
-            SelectMin,
-            LastFilter>(d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op)
+  using AgentTopKT =
+    AgentTopK<AgentTopKPolicyT,
+              KeyInputIteratorT,
+              KeyOutputIteratorT,
+              ValueInputIteratorT,
+              ValueOutputIteratorT,
+              ExtractBinOpT,
+              NumItemsT,
+              SelectMin,
+              IncludeLastFilter>;
+
+  // Shared memory storage
+  __shared__ typename AgentTopKT::TempStorage temp_storage;
+  AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op)
     .InvokeOneSweep(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
 }
 
@@ -300,7 +280,7 @@ template <typename KeyInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
           bool SelectMin,
-          typename SelectedPolicy = device_topk_policy_hub<cub::detail::value_t<KeyInputIteratorT>, NumItemsT>>
+          typename SelectedPolicy = device_topk_policy_hub<detail::value_t<KeyInputIteratorT>, NumItemsT>>
 struct DispatchTopK : SelectedPolicy
 {
   /// Device-accessible allocation of temporary storage.
@@ -334,7 +314,7 @@ struct DispatchTopK : SelectedPolicy
 
   int ptx_version;
 
-  using KeyInT                    = cub::detail::value_t<KeyInputIteratorT>;
+  using KeyInT                    = detail::value_t<KeyInputIteratorT>;
   static constexpr bool KEYS_ONLY = std::is_same<ValueInputIteratorT, NullType>::value;
   /*
    *
@@ -436,7 +416,7 @@ struct DispatchTopK : SelectedPolicy
       // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
       void* allocations[6] = {};
 
-      error = CubDebug(cub::AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes));
+      error = CubDebug(AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes));
       if (cudaSuccess != error)
       {
         break;
@@ -460,10 +440,32 @@ struct DispatchTopK : SelectedPolicy
       int max_dim_x;
       error = CubDebug(cudaDeviceGetAttribute(&max_dim_x, cudaDevAttrMaxGridDimX, device_ordinal));
 
+      int device  = -1;
+      int num_sms = 0;
+
+      error = CubDebug(cudaGetDevice(&device));
+      if (cudaSuccess != error)
+      {
+        break;
+      }
+      error = CubDebug(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      if (cudaSuccess != error)
+      {
+        break;
+      }
+
+      int topk_blocks_per_sm = 1;
+      error                  = CubDebug(
+        cudaOccupancyMaxActiveBlocksPerMultiprocessor(&topk_blocks_per_sm, topk_onesweep_kernel, block_threads, 0));
+      if (cudaSuccess != error)
+      {
+        break;
+      }
       dim3 topk_grid_size;
       topk_grid_size.z = 1;
       topk_grid_size.y = 1;
-      topk_grid_size.x = num_tiles;
+      topk_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
+                                 (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
 
       ExtractBinOp<KeyInT, SelectMin> extract_bin_op;
 
@@ -521,7 +523,7 @@ struct DispatchTopK : SelectedPolicy
           out_idx_buf = nullptr;
         }
 
-        // Invoke select_if_kernel
+        // Invoke kernel
         if (pass < num_passes - 1)
         {
           THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
@@ -639,7 +641,7 @@ struct DispatchTopK : SelectedPolicy
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
 
     int ptx_version = 0;
-    if (cudaError_t error = CubDebug(cub::PtxVersion(ptx_version)))
+    if (cudaError_t error = CubDebug(PtxVersion(ptx_version)))
     {
       return error;
     }
