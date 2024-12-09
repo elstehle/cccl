@@ -212,12 +212,12 @@ struct AgentTopK
   // The key and value type
   using KeyInT = detail::value_t<KeyInputIteratorT>;
 
-  static constexpr ::cuda::std::int32_t BLOCK_THREADS         = AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS;
-  static constexpr ::cuda::std::int32_t ITEMS_PER_THREAD      = AgentTopKPolicyT::TopKPolicyT::ITEMS_PER_THREAD;
-  static constexpr ::cuda::std::int32_t BITS_PER_PASS         = AgentTopKPolicyT::TopKPolicyT::BITS_PER_PASS;
-  static constexpr ::cuda::std::int32_t COFFICIENT_FOR_BUFFER = AgentTopKPolicyT::TopKPolicyT::COFFICIENT_FOR_BUFFER;
-  static constexpr ::cuda::std::int32_t TILE_ITEMS            = BLOCK_THREADS * ITEMS_PER_THREAD;
-  static constexpr int num_buckets                            = 1 << BITS_PER_PASS;
+  static constexpr int BLOCK_THREADS         = AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS;
+  static constexpr int ITEMS_PER_THREAD      = AgentTopKPolicyT::TopKPolicyT::ITEMS_PER_THREAD;
+  static constexpr int BITS_PER_PASS         = AgentTopKPolicyT::TopKPolicyT::BITS_PER_PASS;
+  static constexpr int COFFICIENT_FOR_BUFFER = AgentTopKPolicyT::TopKPolicyT::COFFICIENT_FOR_BUFFER;
+  static constexpr int TILE_ITEMS            = BLOCK_THREADS * ITEMS_PER_THREAD;
+  static constexpr int num_buckets           = 1 << BITS_PER_PASS;
 
   static constexpr bool KEYS_ONLY                = std::is_same<ValueInputIteratorT, NullType>::value;
   static constexpr int items_per_thread_for_scan = (num_buckets - 1) / BLOCK_THREADS + 1;
