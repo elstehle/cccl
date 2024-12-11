@@ -437,9 +437,6 @@ struct DispatchTopK : SelectedPolicy
       }
 
       // Get grid size for scanning tiles
-      int max_dim_x;
-      error = CubDebug(cudaDeviceGetAttribute(&max_dim_x, cudaDevAttrMaxGridDimX, device_ordinal));
-
       int device  = -1;
       int num_sms = 0;
 
@@ -475,10 +472,6 @@ struct DispatchTopK : SelectedPolicy
 #ifdef CUB_DETAIL_DEBUG_ENABLE_LOG
         {
           // Get SM occupancy for select_if_kernel
-          int range_select_sm_occupancy;
-          error = CubDebug(MaxSmOccupancy(range_select_sm_occupancy, // out
-                                          select_if_kernel,
-                                          block_threads));
           if (cudaSuccess != error)
           {
             break;
@@ -486,13 +479,13 @@ struct DispatchTopK : SelectedPolicy
 
           _CubLog("Invoking topk_kernel<<<{%d,%d,%d}, %d, 0, "
                   "%lld>>>(), %d items per thread, %d SM occupancy\n",
-                  scan_grid_size.x,
-                  scan_grid_size.y,
-                  scan_grid_size.z,
+                  topk_grid_size.x,
+                  topk_grid_size.y,
+                  topk_grid_size.z,
                   block_threads,
                   (long long) stream,
                   items_per_thread,
-                  range_select_sm_occupancy);
+                  topk_blocks_per_sm);
         }
 #endif // CUB_DETAIL_DEBUG_ENABLE_LOG
 
@@ -513,7 +506,6 @@ struct DispatchTopK : SelectedPolicy
 
         if (pass <= 1)
         {
-          // in_buf     = d_keys_in;
           in_idx_buf = nullptr; //@TODO: check the correctness of the nullptr
         }
 

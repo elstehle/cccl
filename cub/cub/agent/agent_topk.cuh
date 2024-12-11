@@ -3,7 +3,7 @@
 
 /**
  * \file
- * cub::AgentTopK implements a stateful abstraction of CUDA thread blocks for participating in device-wide select.
+ * cub::AgentTopK implements a stateful abstraction of CUDA thread blocks for participating in device-wide topK.
  */
 
 #pragma once
@@ -29,7 +29,7 @@
 #include <iterator>
 
 CUB_NAMESPACE_BEGIN
-// #define USE_CUSTOMIZED_LOAD
+#define USE_CUSTOMIZED_LOAD
 
 //  Overload CUDA atomic for other 64bit unsigned/signed integer type
 using ::atomicAdd;
