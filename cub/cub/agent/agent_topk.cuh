@@ -146,18 +146,82 @@ struct alignas(128) Counter
 /**
  * @brief Operations for calculating the bin index based on the input
  */
-template <typename T, bool SELECT_MIN>
+template <typename T, int BITS_PER_PASS>
+_CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int CalcNumPasses()
+{
+  return ::cuda::ceil_div<int>(sizeof(T) * 8, BITS_PER_PASS);
+}
+
+/**
+ * Bit 0 is the least significant (rightmost);
+ * this implementation processes input from the most to the least significant bit.
+ * This way, we can skip some passes in the end at the cost of having an unsorted output.
+ *
+ */
+template <typename T, int BITS_PER_PASS>
+_CCCL_DEVICE constexpr int CalcStartBit(const int pass)
+{
+  int start_bit = static_cast<int>(sizeof(T) * 8) - (pass + 1) * BITS_PER_PASS;
+  if (start_bit < 0)
+  {
+    start_bit = 0;
+  }
+  return start_bit;
+}
+
+template <typename T, int BITS_PER_PASS>
+_CCCL_DEVICE constexpr unsigned CalcMask(const int pass)
+{
+  int num_bits = CalcStartBit<T, BITS_PER_PASS>(pass - 1) - CalcStartBit<T, BITS_PER_PASS>(pass);
+  return (1 << num_bits) - 1;
+}
+
+template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
 struct ExtractBinOp
 {
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE typename cub::Traits<T>::UnsignedBits operator()(T key)
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key, const int pass)
   {
+    const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
+    const unsigned mask = CalcMask<T, BITS_PER_PASS>(pass);
+
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
     if (!SELECT_MIN)
     {
       bits = ~bits;
     }
-    return bits;
+    int bucket = (bits >> start_bit) & mask;
+    return bucket;
+  }
+};
+
+template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
+struct FilterOp
+{
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int
+  operator()(T key, const int pass, const typename Traits<T>::UnsignedBits kth_key_bits)
+  {
+    const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
+
+    auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
+    bits      = Traits<T>::TwiddleIn(bits);
+    if (!SELECT_MIN)
+    {
+      bits = ~bits;
+    }
+    bits = (bits >> start_bit) << start_bit;
+
+    int res = -1;
+    if (bits > kth_key_bits)
+    {
+      res = 1;
+    }
+    else if (bits == kth_key_bits)
+    {
+      res = 0;
+    }
+
+    return res;
   }
 };
 
@@ -188,7 +252,10 @@ struct ExtractBinOp
  * Type of variable num_items and k
  *
  * @tparam ExtractBinOpT
- *   Operations to extract the bin from the input key value
+ *   Operations to extract the bin from the input key values
+ *
+ * @tparam FilterOpT
+ *   Operations to filter the input key values
  *
  * @tparam INCLUDE_LAST_FILTER
  *   Whether include the last filter step in the kernel
@@ -201,6 +268,7 @@ template <typename AgentTopKPolicyT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
           typename ExtractBinOpT,
+          typename FilterOpT,
           typename NumItemsT,
           bool SELECT_MIN,
           bool INCLUDE_LAST_FILTER>
@@ -212,10 +280,10 @@ struct AgentTopK
   // The key and value type
   using KeyInT = detail::value_t<KeyInputIteratorT>;
 
-  static constexpr int BLOCK_THREADS         = AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS;
-  static constexpr int ITEMS_PER_THREAD      = AgentTopKPolicyT::TopKPolicyT::ITEMS_PER_THREAD;
-  static constexpr int BITS_PER_PASS         = AgentTopKPolicyT::TopKPolicyT::BITS_PER_PASS;
-  static constexpr int COFFICIENT_FOR_BUFFER = AgentTopKPolicyT::TopKPolicyT::COFFICIENT_FOR_BUFFER;
+  static constexpr int BLOCK_THREADS         = AgentTopKPolicyT::BLOCK_THREADS;
+  static constexpr int ITEMS_PER_THREAD      = AgentTopKPolicyT::ITEMS_PER_THREAD;
+  static constexpr int BITS_PER_PASS         = AgentTopKPolicyT::BITS_PER_PASS;
+  static constexpr int COFFICIENT_FOR_BUFFER = AgentTopKPolicyT::COFFICIENT_FOR_BUFFER;
   static constexpr int TILE_ITEMS            = BLOCK_THREADS * ITEMS_PER_THREAD;
   static constexpr int num_buckets           = 1 << BITS_PER_PASS;
 
@@ -223,11 +291,10 @@ struct AgentTopK
   static constexpr int items_per_thread_for_scan = (num_buckets - 1) / BLOCK_THREADS + 1;
 
   // Parameterized BlockLoad type for input data
-  using BlockLoadInputT =
-    BlockLoad<KeyInT, BLOCK_THREADS, ITEMS_PER_THREAD, AgentTopKPolicyT::TopKPolicyT::LOAD_ALGORITHM>;
+  using BlockLoadInputT = BlockLoad<KeyInT, BLOCK_THREADS, ITEMS_PER_THREAD, AgentTopKPolicyT::LOAD_ALGORITHM>;
   using BlockLoadTransT = BlockLoad<NumItemsT, BLOCK_THREADS, items_per_thread_for_scan, BLOCK_LOAD_TRANSPOSE>;
   // Parameterized BlockScan type
-  using BlockScanT = BlockScan<NumItemsT, BLOCK_THREADS, AgentTopKPolicyT::TopKPolicyT::SCAN_ALGORITHM>;
+  using BlockScanT = BlockScan<NumItemsT, BLOCK_THREADS, AgentTopKPolicyT::SCAN_ALGORITHM>;
   // Parameterized BlockStore type
   using BlockStoreTransT = BlockStore<NumItemsT, BLOCK_THREADS, items_per_thread_for_scan, BLOCK_STORE_TRANSPOSE>;
 
@@ -257,6 +324,7 @@ struct AgentTopK
   NumItemsT num_items; ///< Total number of input items
   NumItemsT k; ///< Total number of output items
   ExtractBinOpT extract_bin_op; /// The operation for bin
+  FilterOpT filter_op; /// The operation for filtering
   bool load_from_original_input; /// Set if loading data from original input
   //---------------------------------------------------------------------
   // Constructor
@@ -286,6 +354,9 @@ struct AgentTopK
    * @param extract_bin_op
    *   Extract bin operator
    *
+   * @param filter_op
+   *   Filter operator
+   *
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopK(
     TempStorage& temp_storage,
@@ -295,7 +366,8 @@ struct AgentTopK
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
     NumItemsT k,
-    ExtractBinOpT extract_bin_op)
+    ExtractBinOpT extract_bin_op,
+    FilterOpT filter_op)
       : temp_storage(temp_storage.Alias())
       , d_keys_in(d_keys_in)
       , d_keys_out(d_keys_out)
@@ -304,27 +376,12 @@ struct AgentTopK
       , num_items(num_items)
       , k(k)
       , extract_bin_op(extract_bin_op)
+      , filter_op(filter_op)
   {}
 
   //---------------------------------------------------------------------
   // Utility methods for device topK
   //---------------------------------------------------------------------
-
-  _CCCL_DEVICE typename Traits<KeyInT>::UnsignedBits TwiddleIn(KeyInT key, bool select_min)
-  {
-    auto bits = reinterpret_cast<typename Traits<KeyInT>::UnsignedBits&>(key);
-    bits      = Traits<KeyInT>::TwiddleIn(bits);
-    if (!select_min)
-    {
-      bits = ~bits;
-    }
-    return bits;
-  }
-
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int CalcNumPasses()
-  {
-    return ::cuda::ceil_div<int>(sizeof(KeyInT) * 8, BITS_PER_PASS);
-  }
 
   /**
    * Bit 0 is the least significant (rightmost);
@@ -333,23 +390,6 @@ struct AgentTopK
    *
    * NB: Use pass=-1 for CalcMask().
    */
-
-  _CCCL_DEVICE constexpr int CalcStartBit(int pass)
-  {
-    int start_bit = static_cast<int>(sizeof(KeyInT) * 8) - (pass + 1) * BITS_PER_PASS;
-    if (start_bit < 0)
-    {
-      start_bit = 0;
-    }
-    return start_bit;
-  }
-
-  _CCCL_DEVICE constexpr unsigned CalcMask(int pass)
-  {
-    static_assert(BITS_PER_PASS <= 31);
-    int num_bits = CalcStartBit(pass - 1) - CalcStartBit(pass);
-    return (1 << num_bits) - 1;
-  }
 
   // sync_width should >= warp_size
   template <typename Func>
@@ -478,16 +518,13 @@ struct AgentTopK
     }
     CTA_SYNC();
 
-    int start_bit       = CalcStartBit(pass);
-    const unsigned mask = CalcMask(pass);
-
     if (pass == 0)
     {
       // Passed to VectorizedProcess, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
       // row). Later, the histograms are merged using atomicAdd.
-      auto f = [start_bit, mask, this](KeyInT key, NumItemsT index) {
-        int bucket = (TwiddleIn(key, SELECT_MIN) >> start_bit) & mask;
+      auto f = [this](KeyInT key, NumItemsT index) {
+        int bucket = extract_bin_op(key, /*pass*/ 0);
         atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
       };
 #ifdef USE_CUSTOMIZED_LOAD
@@ -506,26 +543,14 @@ struct AgentTopK
       NumItemsT* p_filter_cnt = &counter->filter_cnt;
       NumItemsT* p_out_cnt    = &counter->out_cnt;
       const auto kth_key_bits = counter->kth_key_bits;
-      int previous_start_bit  = CalcStartBit(pass - 1);
 
       // See the remark above on the distributed execution of `f` using
       // VectorizedProcess.
       auto f =
-        [in_idx_buf,
-         out_buf,
-         out_idx_buf,
-         start_bit,
-         mask,
-         previous_start_bit,
-         kth_key_bits,
-         counter,
-         p_filter_cnt,
-         p_out_cnt,
-         this,
-         early_stop,
-         pass](KeyInT key, NumItemsT i) {
-          const auto previous_bits = (TwiddleIn(key, SELECT_MIN) >> previous_start_bit) << previous_start_bit;
-          if (previous_bits == kth_key_bits)
+        [in_idx_buf, out_buf, out_idx_buf, kth_key_bits, counter, p_filter_cnt, p_out_cnt, this, early_stop, pass](
+          KeyInT key, NumItemsT i) {
+          int pre_res = filter_op(key, pass - 1, kth_key_bits);
+          if (pre_res == 0)
           {
             NumItemsT index;
             NumItemsT pos;
@@ -552,7 +577,7 @@ struct AgentTopK
                 }
               }
 
-              int bucket = (TwiddleIn(key, SELECT_MIN) >> start_bit) & mask; // calc_bucket(key, start_bit, mask);
+              int bucket = extract_bin_op(key, pass);
               atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
             }
           }
@@ -562,7 +587,7 @@ struct AgentTopK
           // times in different passes. And if we keep skipping the writing, keys will
           // be written in `LastFilter_kernel()` at last. But when `early_stop` is
           // true, we need to write to `out` since it's the last chance.
-          else if ((out_buf || early_stop) && previous_bits < kth_key_bits)
+          else if ((out_buf || early_stop) && (pre_res < 0))
           {
             NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
             d_keys_out[pos] = key;
@@ -654,7 +679,7 @@ struct AgentTopK
         counter->k                                   = k - prev; // how many values still are there to find
         counter->len                                 = cur - prev; // number of values in next pass
         typename Traits<KeyInT>::UnsignedBits bucket = i;
-        int start_bit                                = CalcStartBit(pass);
+        int start_bit                                = CalcStartBit<KeyInT, BITS_PER_PASS>(pass);
         counter->kth_key_bits |= bucket << start_bit;
       }
     }
@@ -671,7 +696,6 @@ struct AgentTopK
     const int pass)
   {
     const auto kth_key_bits = counter->kth_key_bits;
-    int start_bit           = CalcStartBit(pass);
 
     // changed in ChooseBucket(); need to reload
     NumItemsT num_of_kth_needed = counter->k;
@@ -680,8 +704,9 @@ struct AgentTopK
     for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
     {
       const KeyInT key = load_from_original_input ? d_keys_in[i] : in_buf[i];
-      const auto bits  = (TwiddleIn(key, SELECT_MIN) >> start_bit) << start_bit;
-      if (bits < kth_key_bits)
+
+      int res = filter_op(key, pass, kth_key_bits);
+      if (res < 0)
       {
         NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
         d_keys_out[pos] = key;
@@ -695,7 +720,7 @@ struct AgentTopK
           d_values_out[pos] = d_values_in[index];
         }
       }
-      else if (bits == kth_key_bits)
+      else if (res == 0)
       {
         NumItemsT new_idx  = in_idx_buf ? in_idx_buf[i] : i;
         NumItemsT back_pos = atomicAdd(p_out_back_cnt, static_cast<NumItemsT>(1));
@@ -818,7 +843,7 @@ struct AgentTopK
       ChooseBucket(counter, histogram, current_k, pass);
       CTA_SYNC();
 
-      int num_passes = CalcNumPasses();
+      int num_passes = CalcNumPasses<KeyInT, BITS_PER_PASS>();
       // reset for next pass
       if (pass != num_passes - 1)
       {

@@ -135,6 +135,9 @@ struct device_topk_policy_hub
  * @tparam ExtractBinOpT
  *   Operations to extract the bin from the input key value
  *
+ * @tparam FilterOpT
+ *   Operations to filter the input key value
+ *
  * @tparam SelectMin
  *   Indicate find the smallest (SelectMin=true) or largest (SelectMin=false) K elements
  *
@@ -181,10 +184,13 @@ struct device_topk_policy_hub
  * @param[in] extract_bin_op
  *   Extract the bin operator
  *
+ * @param[in] filter_op
+ *   Extract element filter operator
+ *
  * @param[in] pass
  *   The index of the passes
  */
-template <typename AgentTopKPolicyT,
+template <typename ChainedPolicyT,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
           typename ValueInputIteratorT,
@@ -192,24 +198,28 @@ template <typename AgentTopKPolicyT,
           typename NumItemsT,
           typename KeyInT,
           typename ExtractBinOpT,
+          typename FilterOpT,
           bool SelectMin,
           bool IncludeLastFilter>
-__launch_bounds__(int(AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS)) CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
-  const KeyInputIteratorT d_keys_in,
-  KeyOutputIteratorT d_keys_out,
-  const ValueInputIteratorT d_values_in,
-  ValueOutputIteratorT d_values_out,
-  KeyInT* in_buf,
-  NumItemsT* in_idx_buf,
-  KeyInT* out_buf,
-  NumItemsT* out_idx_buf,
-  Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
-  NumItemsT* histogram,
-  NumItemsT num_items,
-  NumItemsT k,
-  ExtractBinOpT extract_bin_op,
-  int pass)
+__launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
+  CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
+    const KeyInputIteratorT d_keys_in,
+    KeyOutputIteratorT d_keys_out,
+    const ValueInputIteratorT d_values_in,
+    ValueOutputIteratorT d_values_out,
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    KeyInT* out_buf,
+    NumItemsT* out_idx_buf,
+    Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    NumItemsT* histogram,
+    NumItemsT num_items,
+    NumItemsT k,
+    ExtractBinOpT extract_bin_op,
+    FilterOpT filter_op,
+    int pass)
 {
+  using AgentTopKPolicyT = typename ChainedPolicyT::ActivePolicy::TopKPolicyT;
   using AgentTopKT =
     AgentTopK<AgentTopKPolicyT,
               KeyInputIteratorT,
@@ -217,13 +227,14 @@ __launch_bounds__(int(AgentTopKPolicyT::TopKPolicyT::BLOCK_THREADS)) CUB_DETAIL_
               ValueInputIteratorT,
               ValueOutputIteratorT,
               ExtractBinOpT,
+              FilterOpT,
               NumItemsT,
               SelectMin,
               IncludeLastFilter>;
 
   // Shared memory storage
   __shared__ typename AgentTopKT::TempStorage temp_storage;
-  AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op)
+  AgentTopKT(temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, filter_op)
     .InvokeOneSweep(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
 }
 
@@ -388,7 +399,7 @@ struct DispatchTopK : SelectedPolicy
     constexpr int items_per_thread = Policy::ITEMS_PER_THREAD; // Items per thread
     constexpr int tile_size        = block_threads * items_per_thread; // Items per block
     int num_tiles                  = static_cast<int>(::cuda::ceil_div(num_items, tile_size)); // Num of blocks
-    int num_passes                 = ::cuda::ceil_div<int>(sizeof(KeyInT) * 8, Policy::BITS_PER_PASS);
+    constexpr int num_passes       = CalcNumPasses<KeyInT, Policy::BITS_PER_PASS>();
     int num_buckets                = 1 << Policy::BITS_PER_PASS;
 
     do
@@ -464,7 +475,19 @@ struct DispatchTopK : SelectedPolicy
       topk_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
                                  (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
 
-      ExtractBinOp<KeyInT, SelectMin> extract_bin_op;
+      // Initialize address variables
+      Counter<KeyInT, NumItemsT>* counter;
+      counter = static_cast<decltype(counter)>(allocations[0]);
+      NumItemsT* histogram;
+      histogram              = static_cast<decltype(histogram)>(allocations[1]);
+      KeyInT* in_buf         = nullptr;
+      KeyInT* out_buf        = nullptr;
+      NumItemsT* in_idx_buf  = nullptr;
+      NumItemsT* out_idx_buf = nullptr;
+
+      // Set operator
+      ExtractBinOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> extract_bin_op;
+      FilterOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> filter_op;
 
       for (int pass = 0; pass < num_passes; pass++)
       {
@@ -490,72 +513,58 @@ struct DispatchTopK : SelectedPolicy
 #endif // CUB_DETAIL_DEBUG_ENABLE_LOG
 
         // Initialize address variables
-        Counter<KeyInT, NumItemsT>* counter;
-        counter = static_cast<decltype(counter)>(allocations[0]);
-        NumItemsT* histogram;
-        histogram              = static_cast<decltype(histogram)>(allocations[1]);
-        KeyInT* in_buf         = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
-        KeyInT* out_buf        = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
-        NumItemsT* in_idx_buf  = nullptr;
-        NumItemsT* out_idx_buf = nullptr;
+        in_buf  = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
+        out_buf = pass == 0 ? nullptr : static_cast<KeyInT*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
         if (!KEYS_ONLY)
         {
-          in_idx_buf  = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
-          out_idx_buf = static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
-        }
-
-        if (pass <= 1)
-        {
-          in_idx_buf = nullptr; //@TODO: check the correctness of the nullptr
-        }
-
-        if (pass == 0)
-        {
-          out_buf     = nullptr;
-          out_idx_buf = nullptr;
+          in_idx_buf  = pass <= 1 ? nullptr : static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
+          out_idx_buf = pass == 0 ? nullptr : static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
         }
 
         // Invoke kernel
         if (pass < num_passes - 1)
         {
           THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
-            .doit(topk_onesweep_kernel,
-                  d_keys_in,
-                  d_keys_out,
-                  d_values_in,
-                  d_values_out,
-                  in_buf,
-                  in_idx_buf,
-                  out_buf,
-                  out_idx_buf,
-                  counter,
-                  histogram,
-                  num_items,
-                  k,
-                  extract_bin_op,
-                  pass);
+            .doit(
+              topk_onesweep_kernel,
+              d_keys_in,
+              d_keys_out,
+              d_values_in,
+              d_values_out,
+              in_buf,
+              in_idx_buf,
+              out_buf,
+              out_idx_buf,
+              counter,
+              histogram,
+              num_items,
+              k,
+              extract_bin_op,
+              filter_op,
+              pass);
         }
         else
         {
           THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
-            .doit(topk_lastpass_kernel,
-                  d_keys_in,
-                  d_keys_out,
-                  d_values_in,
-                  d_values_out,
-                  in_buf,
-                  in_idx_buf,
-                  out_buf,
-                  out_idx_buf,
-                  counter,
-                  histogram,
-                  num_items,
-                  k,
-                  extract_bin_op,
-                  pass);
+            .doit(
+              topk_lastpass_kernel,
+              d_keys_in,
+              d_keys_out,
+              d_values_in,
+              d_values_out,
+              in_buf,
+              in_idx_buf,
+              out_buf,
+              out_idx_buf,
+              counter,
+              histogram,
+              num_items,
+              k,
+              extract_bin_op,
+              filter_op,
+              pass);
         }
       }
-      // set address for
     } while (0);
     return error;
   }
@@ -571,7 +580,8 @@ struct DispatchTopK : SelectedPolicy
                        ValueOutputIteratorT,
                        NumItemsT,
                        KeyInT,
-                       ExtractBinOp<KeyInT, SelectMin>,
+                       ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                       FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
                        false>,
       DeviceTopKKernel<MaxPolicyT,
@@ -581,7 +591,8 @@ struct DispatchTopK : SelectedPolicy
                        ValueOutputIteratorT,
                        NumItemsT,
                        KeyInT,
-                       ExtractBinOp<KeyInT, SelectMin>,
+                       ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                       FilterOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
                        true>);
   }
