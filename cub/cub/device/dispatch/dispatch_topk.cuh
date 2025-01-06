@@ -51,9 +51,8 @@ struct sm90_tuning
 {
   static constexpr int threads = DEFAULT_NUM_THREADS; // Number of threads per block
 
-  using WideT                                      = float4;
   static constexpr int nominal_4b_items_per_thread = 4;
-  static constexpr int items_per_scaler            = CUB_MAX(sizeof(WideT) / sizeof(KeyInT), 1);
+  static constexpr int items_per_scaler            = CUB_MAX(4 / sizeof(KeyInT), 1);
   static constexpr int items                       = items_per_scaler * nominal_4b_items_per_thread;
 
   static constexpr int BITS_PER_PASS         = detail::topk::calc_bits_per_pass<KeyInT>();
