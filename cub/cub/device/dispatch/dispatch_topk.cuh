@@ -484,12 +484,13 @@ struct DispatchTopK : SelectedPolicy
       NumItemsT* in_idx_buf  = nullptr;
       NumItemsT* out_idx_buf = nullptr;
 
-      // Set operator
-      ExtractBinOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> extract_bin_op;
-      FilterOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> filter_op;
 
       for (int pass = 0; pass < num_passes; pass++)
       {
+      // Set operator
+      ExtractBinOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> extract_bin_op(pass);
+      FilterOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> filter_op;
+
 // Log topk_kernel configuration @todo check the kernel launch
 #ifdef CUB_DETAIL_DEBUG_ENABLE_LOG
         {

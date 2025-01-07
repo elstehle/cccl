@@ -179,7 +179,13 @@ _CCCL_DEVICE constexpr unsigned CalcMask(const int pass)
 template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
 struct ExtractBinOp
 {
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key, const int pass)
+  int pass{};
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE ExtractBinOp(int pass)
+  :pass(pass)
+  {}
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
   {
     const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
     const unsigned mask = CalcMask<T, BITS_PER_PASS>(pass);
@@ -199,7 +205,7 @@ template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
 struct FilterOp
 {
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int
-  operator()(T key, const int pass, const typename Traits<T>::UnsignedBits kth_key_bits)
+  operator()(T key, const int pass, const typename Traits<T>::UnsignedBits kth_key_bits) const
   {
     const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
 
@@ -524,7 +530,7 @@ struct AgentTopK
       // i.e. the work is split along the input (both, in batches and chunks of a single
       // row). Later, the histograms are merged using atomicAdd.
       auto f = [this](KeyInT key, NumItemsT index) {
-        int bucket = extract_bin_op(key, /*pass*/ 0);
+        int bucket = extract_bin_op(key);
         atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
       };
 #ifdef USE_CUSTOMIZED_LOAD
@@ -577,7 +583,7 @@ struct AgentTopK
                 }
               }
 
-              int bucket = extract_bin_op(key, pass);
+              int bucket = extract_bin_op(key);
               atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
             }
           }
