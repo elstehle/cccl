@@ -29,7 +29,7 @@
 #include <iterator>
 
 CUB_NAMESPACE_BEGIN
-#define USE_CUSTOMIZED_LOAD
+// #define USE_CUSTOMIZED_LOAD
 
 //  Overload CUDA atomic for other 64bit unsigned/signed integer type
 using ::atomicAdd;
@@ -182,7 +182,7 @@ struct ExtractBinOp
   int pass{};
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE ExtractBinOp(int pass)
-  :pass(pass)
+      : pass(pass)
   {}
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
@@ -202,10 +202,16 @@ struct ExtractBinOp
 };
 
 template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
-struct FilterOp
+struct IdentifyCandidatesOp
 {
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int
-  operator()(T key, const int pass, const typename Traits<T>::UnsignedBits kth_key_bits) const
+  typename Traits<T>::UnsignedBits& kth_key_bits;
+  int pass;
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE IdentifyCandidatesOp(typename Traits<T>::UnsignedBits& kth_key_bits, int pass)
+      : kth_key_bits(kth_key_bits)
+      , pass(pass - 1)
+  {}
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
   {
     const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
 
@@ -260,11 +266,8 @@ struct FilterOp
  * @tparam ExtractBinOpT
  *   Operations to extract the bin from the input key values
  *
- * @tparam FilterOpT
+ * @tparam IdentifyCandidatesOpT
  *   Operations to filter the input key values
- *
- * @tparam INCLUDE_LAST_FILTER
- *   Whether include the last filter step in the kernel
  *
  */
 
@@ -274,10 +277,9 @@ template <typename AgentTopKPolicyT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
           typename ExtractBinOpT,
-          typename FilterOpT,
+          typename IdentifyCandidatesOpT,
           typename NumItemsT,
-          bool SELECT_MIN,
-          bool INCLUDE_LAST_FILTER>
+          bool SELECT_MIN>
 struct AgentTopK
 {
   //---------------------------------------------------------------------
@@ -330,7 +332,7 @@ struct AgentTopK
   NumItemsT num_items; ///< Total number of input items
   NumItemsT k; ///< Total number of output items
   ExtractBinOpT extract_bin_op; /// The operation for bin
-  FilterOpT filter_op; /// The operation for filtering
+  IdentifyCandidatesOpT identify_candidates_op; /// The operation for filtering
   bool load_from_original_input; /// Set if loading data from original input
   //---------------------------------------------------------------------
   // Constructor
@@ -360,7 +362,7 @@ struct AgentTopK
    * @param extract_bin_op
    *   Extract bin operator
    *
-   * @param filter_op
+   * @param identify_candidates_op
    *   Filter operator
    *
    */
@@ -373,7 +375,7 @@ struct AgentTopK
     NumItemsT num_items,
     NumItemsT k,
     ExtractBinOpT extract_bin_op,
-    FilterOpT filter_op)
+    IdentifyCandidatesOpT identify_candidates_op)
       : temp_storage(temp_storage.Alias())
       , d_keys_in(d_keys_in)
       , d_keys_out(d_keys_out)
@@ -382,7 +384,7 @@ struct AgentTopK
       , num_items(num_items)
       , k(k)
       , extract_bin_op(extract_bin_op)
-      , filter_op(filter_op)
+      , identify_candidates_op(identify_candidates_op)
   {}
 
   //---------------------------------------------------------------------
@@ -505,7 +507,7 @@ struct AgentTopK
    * Fused filtering of the current pass and building histogram for the next pass
    * (see steps 4 & 1 in `radix_kernel` description).
    */
-
+  template <bool IS_FIRST_PASS>
   _CCCL_DEVICE _CCCL_FORCEINLINE void FilterAndHistogram(
     KeyInT* in_buf,
     NumItemsT* in_idx_buf,
@@ -524,7 +526,8 @@ struct AgentTopK
     }
     CTA_SYNC();
 
-    if (pass == 0)
+    _CCCL_IF_CONSTEXPR (IS_FIRST_PASS) //  _CCCL_IF_CONSTEXPR  'if constexpr (IS_FIRST_PASS)' are C++17 feature use
+                                       //  macro is
     {
       // Passed to VectorizedProcess, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
@@ -555,7 +558,7 @@ struct AgentTopK
       auto f =
         [in_idx_buf, out_buf, out_idx_buf, kth_key_bits, counter, p_filter_cnt, p_out_cnt, this, early_stop, pass](
           KeyInT key, NumItemsT i) {
-          int pre_res = filter_op(key, pass - 1, kth_key_bits);
+          int pre_res = identify_candidates_op(key);
           if (pre_res == 0)
           {
             NumItemsT index;
@@ -691,27 +694,48 @@ struct AgentTopK
     }
   }
 
-  // For one-block version, LastFilter() could be called when pass < num_passes - 1.
-  // So `pass` could not be constexpr
-  _CCCL_DEVICE _CCCL_FORCEINLINE void LastFilter(
-    const KeyInT* in_buf,
-    const NumItemsT* in_idx_buf,
-    NumItemsT current_len,
-    NumItemsT k,
-    Counter<KeyInT, NumItemsT>* counter,
-    const int pass)
+  /**
+   * @brief One sweep topK (specialized for topK operator)
+   *
+   * @param in_buf
+   *   Buffer address for input data
+   *
+   * @param in_idx_buf
+   *   Buffer address for index of the input data
+   *
+   * @param counter
+   *   Record the meta data for different passes
+   *
+   * @param k
+   *   The original K value. Will find K elements from num_items elements
+   *
+   * @param histogram
+   *   Record the element number of each bucket
+   *
+   * @param pass
+   *   Indicate which pass are processed currently
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeLastFilter(
+    KeyInT* in_buf, NumItemsT* in_idx_buf, Counter<KeyInT, NumItemsT>* counter, NumItemsT* histogram, int k, int pass)
   {
-    const auto kth_key_bits = counter->kth_key_bits;
+    const NumItemsT buf_len  = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
+    load_from_original_input = counter->previous_len > buf_len;
+    NumItemsT current_len    = load_from_original_input ? num_items : counter->previous_len;
+    in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
+
+    if (current_len == 0)
+    {
+      return;
+    }
 
     // changed in ChooseBucket(); need to reload
     NumItemsT num_of_kth_needed = counter->k;
     NumItemsT* p_out_cnt        = &counter->out_cnt;
     NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
-    for (NumItemsT i = threadIdx.x; i < current_len; i += blockDim.x)
-    {
-      const KeyInT key = load_from_original_input ? d_keys_in[i] : in_buf[i];
 
-      int res = filter_op(key, pass, kth_key_bits);
+    auto f = [this, pass, p_out_cnt, counter, in_idx_buf, p_out_back_cnt, num_of_kth_needed, k, current_len](
+               KeyInT key, NumItemsT i) {
+      int res = identify_candidates_op(key);
       if (res < 0)
       {
         NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
@@ -741,6 +765,33 @@ struct AgentTopK
           }
         }
       }
+    };
+
+    if (load_from_original_input)
+    {
+#ifdef USE_CUSTOMIZED_LOAD
+      VectorizedProcess(
+        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+        static_cast<size_t>(blockDim.x) * gridDim.x,
+        d_keys_in,
+        current_len,
+        f);
+#else
+      ConsumeRange(d_keys_in, current_len, f);
+#endif
+    }
+    else
+    {
+#ifdef USE_CUSTOMIZED_LOAD
+      VectorizedProcess(
+        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
+        static_cast<size_t>(blockDim.x) * gridDim.x,
+        in_buf,
+        current_len,
+        f);
+#else
+      ConsumeRange(in_buf, current_len, f);
+#endif
     }
   }
 
@@ -768,6 +819,7 @@ struct AgentTopK
    * @param pass
    *   Indicate which pass are processed currently
    */
+  template <bool IS_FIRST_PASS>
   _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeOneSweep(
     KeyInT* in_buf,
     NumItemsT* in_idx_buf,
@@ -820,7 +872,8 @@ struct AgentTopK
       out_idx_buf = nullptr;
     }
 
-    FilterAndHistogram(in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
+    FilterAndHistogram<IS_FIRST_PASS>(
+      in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
     __threadfence();
 
     bool is_last_block = false;
@@ -864,19 +917,6 @@ struct AgentTopK
         counter->previous_len = current_len;
         // not necessary for the last pass, but put it here anyway
         counter->filter_cnt = 0;
-      }
-
-      if (pass == num_passes - 1)
-      {
-        volatile const NumItemsT num_of_kth_needed = counter->k;
-        CTA_SYNC();
-
-        _CCCL_IF_CONSTEXPR (INCLUDE_LAST_FILTER)
-        {
-          load_from_original_input = out_buf ? false : true;
-          LastFilter(
-            out_buf, out_idx_buf ? out_idx_buf : in_idx_buf, out_buf ? current_len : num_items, k, counter, pass);
-        }
       }
     }
   }
