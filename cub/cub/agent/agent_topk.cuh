@@ -180,16 +180,18 @@ template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
 struct ExtractBinOp
 {
   int pass{};
+  int start_bit;
+  unsigned mask;
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE ExtractBinOp(int pass)
       : pass(pass)
-  {}
+  {
+    start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
+    mask      = CalcMask<T, BITS_PER_PASS>(pass);
+  }
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
   {
-    const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
-    const unsigned mask = CalcMask<T, BITS_PER_PASS>(pass);
-
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
     if (!SELECT_MIN)
@@ -206,15 +208,16 @@ struct IdentifyCandidatesOp
 {
   typename Traits<T>::UnsignedBits& kth_key_bits;
   int pass;
+  int start_bit;
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE IdentifyCandidatesOp(typename Traits<T>::UnsignedBits& kth_key_bits, int pass)
       : kth_key_bits(kth_key_bits)
       , pass(pass - 1)
-  {}
+  {
+    start_bit = CalcStartBit<T, BITS_PER_PASS>(this->pass);
+  }
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
   {
-    const int start_bit = CalcStartBit<T, BITS_PER_PASS>(pass);
-
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
     if (!SELECT_MIN)
@@ -486,7 +489,7 @@ struct AgentTopK
       {
         BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data, num_remaining_per_tile, 0);
       }
-      CTA_SYNC();
+
       NumItemsT offset = threadIdx.x * ITEMS_PER_THREAD + tile_base;
       for (int j = 0; j < ITEMS_PER_THREAD; ++j)
       {
