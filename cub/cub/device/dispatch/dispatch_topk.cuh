@@ -445,6 +445,12 @@ struct DispatchTopK : SelectedPolicy
     return topk_blocks_per_sm;
   }
 
+  template <typename T>
+  CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE T RoundUp(T num, T round_value)
+  {
+    return ((num - 1) / round_value + 1) * round_value;
+  }
+
   template <typename ActivePolicyT,
             typename TopKFirstPassKernelPtrT,
             typename TopKKernelPtrT,
@@ -480,13 +486,14 @@ struct DispatchTopK : SelectedPolicy
       size_t size_counter        = sizeof(Counter<KeyInT, NumItemsT>);
       size_t size_histogram      = num_buckets * sizeof(NumItemsT);
       size_t num_candidates      = CUB_MAX(256, num_items / Policy::COFFICIENT_FOR_BUFFER);
+      size_t aligend_bytes       = 256;
       size_t allocation_sizes[6] = {
-        size_counter,
-        size_histogram,
-        num_candidates * sizeof(KeyInT),
-        num_candidates * sizeof(KeyInT),
-        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT),
-        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT)};
+        RoundUp(size_counter, aligend_bytes),
+        RoundUp(size_histogram, aligend_bytes),
+        RoundUp(num_candidates * sizeof(KeyInT), aligend_bytes),
+        RoundUp(num_candidates * sizeof(KeyInT), aligend_bytes),
+        KEYS_ONLY ? 0 : RoundUp(num_candidates * sizeof(NumItemsT), aligend_bytes),
+        KEYS_ONLY ? 0 : RoundUp(num_candidates * sizeof(NumItemsT), aligend_bytes)};
 
       // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
       void* allocations[6] = {};

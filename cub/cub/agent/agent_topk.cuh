@@ -468,8 +468,8 @@ struct AgentTopK
     }
   }
 
-  template <typename Func>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(const KeyInputIteratorT in, const NumItemsT num_items, Func f)
+  template <typename Func, typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(T in, const NumItemsT num_items, Func f)
   {
     KeyInT thread_data[ITEMS_PER_THREAD];
 

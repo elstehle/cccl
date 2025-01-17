@@ -136,7 +136,7 @@ struct DeviceTopK
   CUB_DETAIL_RUNTIME_DEBUG_SYNC_IS_NOT_SUPPORTED CUB_RUNTIME_FUNCTION static cudaError_t TopKPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
-    const KeyInputIteratorT d_keys_in,
+    KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
