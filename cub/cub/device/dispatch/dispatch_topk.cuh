@@ -573,8 +573,8 @@ struct DispatchTopK : SelectedPolicy
       for (; pass < num_passes; pass++)
       {
         // Set operator
-        ExtractBinOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> extract_bin_op(pass);
-        IdentifyCandidatesOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(
+        ExtractBinOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> extract_bin_op(pass);
+        IdentifyCandidatesOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(
           counter->kth_key_bits, pass);
 
         // Initialize address variables
@@ -637,7 +637,8 @@ struct DispatchTopK : SelectedPolicy
         }
       }
       // Set operator
-      IdentifyCandidatesOp<KeyInT, SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(counter->kth_key_bits, pass);
+      IdentifyCandidatesOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(
+        counter->kth_key_bits, pass);
       topk_blocks_per_sm = CalculateBlocksPerSM(topk_lastfilter_kernel, block_threads);
       topk_grid_size.x   = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
                                  (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
@@ -670,8 +671,8 @@ struct DispatchTopK : SelectedPolicy
                        ValueOutputIteratorT,
                        NumItemsT,
                        KeyInT,
-                       ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       IdentifyCandidatesOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                       ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                       IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
                        /*IsFirstPass*/ true>,
 
@@ -682,8 +683,8 @@ struct DispatchTopK : SelectedPolicy
                        ValueOutputIteratorT,
                        NumItemsT,
                        KeyInT,
-                       ExtractBinOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       IdentifyCandidatesOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                       ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                       IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
                        /*IsFirstPass*/ false>,
 
@@ -694,7 +695,7 @@ struct DispatchTopK : SelectedPolicy
                                  ValueOutputIteratorT,
                                  NumItemsT,
                                  KeyInT,
-                                 IdentifyCandidatesOp<KeyInT, SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+                                 IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                                  SelectMin>);
   }
 

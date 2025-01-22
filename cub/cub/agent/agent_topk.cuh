@@ -176,7 +176,7 @@ _CCCL_DEVICE constexpr unsigned CalcMask(const int pass)
   return (1 << num_bits) - 1;
 }
 
-template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
+template <typename T, bool FLIP, int BITS_PER_PASS>
 struct ExtractBinOp
 {
   int pass{};
@@ -194,7 +194,7 @@ struct ExtractBinOp
   {
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
-    if (!SELECT_MIN)
+    _CCCL_IF_CONSTEXPR (FLIP)
     {
       bits = ~bits;
     }
@@ -203,7 +203,7 @@ struct ExtractBinOp
   }
 };
 
-template <typename T, bool SELECT_MIN, int BITS_PER_PASS>
+template <typename T, bool FLIP, int BITS_PER_PASS>
 struct IdentifyCandidatesOp
 {
   typename Traits<T>::UnsignedBits& kth_key_bits;
@@ -220,23 +220,16 @@ struct IdentifyCandidatesOp
   {
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
-    if (!SELECT_MIN)
+
+    _CCCL_IF_CONSTEXPR (FLIP)
     {
       bits = ~bits;
     }
+
     bits = (bits >> start_bit) << start_bit;
 
-    int res = -1;
-    if (bits > kth_key_bits)
-    {
-      res = 1;
-    }
-    else if (bits == kth_key_bits)
-    {
-      res = 0;
-    }
-
-    return res;
+    auto diff = bits - kth_key_bits;
+    return (diff > bits) ? -1 : (diff == 0) ? 0 : 1;
   }
 };
 
@@ -469,12 +462,12 @@ struct AgentTopK
   }
 
   template <typename Func, typename T>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(T in, const NumItemsT num_items, Func f)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange0(T in, const NumItemsT num_items, Func f)
   {
     KeyInT thread_data[ITEMS_PER_THREAD];
 
-    NumItemsT ITEMS_PER_PASS = TILE_ITEMS * gridDim.x;
-    NumItemsT tile_base      = blockIdx.x * TILE_ITEMS;
+    const NumItemsT ITEMS_PER_PASS = TILE_ITEMS * gridDim.x;
+    NumItemsT tile_base            = blockIdx.x * TILE_ITEMS;
     // Remaining items (including this tile)
     NumItemsT num_remaining_per_tile = num_items > tile_base ? num_items - tile_base : 0;
     NumItemsT num_remaining_per_pass = num_items;
@@ -506,6 +499,51 @@ struct AgentTopK
     }
   }
 
+  template <typename Func, typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(T in, const NumItemsT num_items, Func f)
+  {
+    KeyInT thread_data[ITEMS_PER_THREAD];
+
+    const NumItemsT ITEMS_PER_PASS   = TILE_ITEMS * gridDim.x;
+    const NumItemsT total_num_blocks = (num_items - 1) / TILE_ITEMS + 1;
+
+    const NumItemsT num_remaining_elements = num_items % TILE_ITEMS;
+    const NumItemsT last_block_id          = (total_num_blocks - 1) % gridDim.x;
+
+    NumItemsT tile_base = blockIdx.x * TILE_ITEMS;
+    NumItemsT offset    = threadIdx.x * ITEMS_PER_THREAD + tile_base;
+
+    for (int i_block = blockIdx.x; i_block < total_num_blocks - 1; i_block += gridDim.x)
+    {
+      BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data);
+      for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+      {
+        f(thread_data[j], offset + j);
+      }
+      tile_base += ITEMS_PER_PASS;
+      offset += ITEMS_PER_PASS;
+    }
+
+    if (blockIdx.x == last_block_id)
+    {
+      if (num_remaining_elements == 0)
+      {
+        BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data);
+      }
+      else
+      {
+        BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data, num_remaining_elements, 0);
+      }
+
+      for (int j = 0; j < ITEMS_PER_THREAD; ++j)
+      {
+        if ((offset + j) < num_items)
+        {
+          f(thread_data[j], offset + j);
+        }
+      }
+    }
+  }
   /**
    * Fused filtering of the current pass and building histogram for the next pass
    * (see steps 4 & 1 in `radix_kernel` description).
@@ -519,23 +557,17 @@ struct AgentTopK
     NumItemsT previous_len,
     Counter<KeyInT, NumItemsT>* counter,
     NumItemsT* histogram,
+    NumItemsT* histogram_smem,
     int pass,
     bool early_stop)
   {
-    __shared__ NumItemsT histogram_smem[num_buckets];
-    for (NumItemsT i = threadIdx.x; i < num_buckets; i += blockDim.x)
-    {
-      histogram_smem[i] = 0;
-    }
-    CTA_SYNC();
-
     _CCCL_IF_CONSTEXPR (IS_FIRST_PASS) //  _CCCL_IF_CONSTEXPR  'if constexpr (IS_FIRST_PASS)' are C++17 feature use
                                        //  macro is
     {
       // Passed to VectorizedProcess, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
       // row). Later, the histograms are merged using atomicAdd.
-      auto f = [this](KeyInT key, NumItemsT index) {
+      auto f = [this, histogram_smem](KeyInT key, NumItemsT index) {
         int bucket = extract_bin_op(key);
         atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
       };
@@ -559,8 +591,17 @@ struct AgentTopK
       // See the remark above on the distributed execution of `f` using
       // VectorizedProcess.
       auto f =
-        [in_idx_buf, out_buf, out_idx_buf, kth_key_bits, counter, p_filter_cnt, p_out_cnt, this, early_stop, pass](
-          KeyInT key, NumItemsT i) {
+        [in_idx_buf,
+         out_buf,
+         out_idx_buf,
+         kth_key_bits,
+         counter,
+         p_filter_cnt,
+         p_out_cnt,
+         this,
+         histogram_smem,
+         early_stop,
+         pass](KeyInT key, NumItemsT i) {
           int pre_res = identify_candidates_op(key);
           if (pre_res == 0)
           {
@@ -650,6 +691,7 @@ struct AgentTopK
       if (histogram_smem[i] != 0)
       {
         atomicAdd(histogram + i, histogram_smem[i]);
+        __threadfence();
       }
     }
   }
@@ -659,7 +701,7 @@ struct AgentTopK
    * (step 2 in `radix_kernel` description)
    */
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Scan(volatile NumItemsT* histogram)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void Scan(volatile NumItemsT* histogram, NumItemsT* histogram_smem)
   {
     NumItemsT thread_data[items_per_thread_for_scan];
 
@@ -669,7 +711,7 @@ struct AgentTopK
     BlockScanT(temp_storage.scan).InclusiveSum(thread_data, thread_data);
     CTA_SYNC();
 
-    BlockStoreTransT(temp_storage.store_trans).Store(histogram, thread_data, num_buckets);
+    BlockStoreTransT(temp_storage.store_trans).Store(histogram_smem, thread_data, num_buckets);
   }
 
   /**
@@ -875,9 +917,16 @@ struct AgentTopK
       out_idx_buf = nullptr;
     }
 
+    __shared__ NumItemsT histogram_smem[num_buckets];
+    for (NumItemsT i = threadIdx.x; i < num_buckets; i += blockDim.x)
+    {
+      histogram_smem[i] = 0;
+    }
+    CTA_SYNC();
+
     FilterAndHistogram<IS_FIRST_PASS>(
-      in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, pass, early_stop);
-    __threadfence();
+      in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, histogram_smem, pass, early_stop);
+    //__threadfence();
 
     bool is_last_block = false;
     if (threadIdx.x == 0)
@@ -888,24 +937,27 @@ struct AgentTopK
 
     if (CTA_SYNC_OR(is_last_block))
     {
-      if (early_stop)
+      if (threadIdx.x == 0)
       {
-        if (threadIdx.x == 0)
+        if (early_stop)
         {
           // `LastFilter_kernel()` requires setting previous_len
           counter->previous_len = 0;
           counter->len          = 0;
         }
-        return;
+        else
+        {
+          counter->previous_len = current_len;
+          // not necessary for the last pass, but put it here anyway
+          counter->filter_cnt = 0;
+        }
       }
 
-      Scan(histogram);
-
+      constexpr int num_passes = CalcNumPasses<KeyInT, BITS_PER_PASS>();
+      Scan(histogram, histogram_smem);
       CTA_SYNC();
-      ChooseBucket(counter, histogram, current_k, pass);
-      CTA_SYNC();
+      ChooseBucket(counter, histogram_smem, current_k, pass);
 
-      int num_passes = CalcNumPasses<KeyInT, BITS_PER_PASS>();
       // reset for next pass
       if (pass != num_passes - 1)
       {
@@ -914,13 +966,13 @@ struct AgentTopK
           histogram[i] = 0;
         }
       }
-      if (threadIdx.x == 0)
-      {
-        // `LastFilter_kernel()` requires setting previous_len even in the last pass
-        counter->previous_len = current_len;
-        // not necessary for the last pass, but put it here anyway
-        counter->filter_cnt = 0;
-      }
+      // if (threadIdx.x == 0)
+      // {
+      //   // `LastFilter_kernel()` requires setting previous_len even in the last pass
+      //   counter->previous_len = current_len;
+      //   // not necessary for the last pass, but put it here anyway
+      //   counter->filter_cnt = 0;
+      // }
     }
   }
 };
