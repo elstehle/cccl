@@ -39,42 +39,41 @@ CUB_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
   const num_items_t k         = GENERATE_COPY(take(5, random(min_k, max_k)));
 
   // Allocate the device memory
-  c2h::device_vector<key_t> in_keys(num_items);
-  c2h::device_vector<key_t> out_keys(k);
+  c2h::device_vector<key_t> keys_in(num_items);
+  c2h::device_vector<key_t> keys_out(k);
 
   const int num_key_seeds = 1;
-  c2h::gen(CUB_SEED(num_key_seeds), in_keys);
+  c2h::gen(CUB_SEED(num_key_seeds), keys_in);
 
-  const bool select_min    = GENERATE(false, true);
-  const bool is_descending = !select_min;
+  const bool is_descending = GENERATE(false, true);
 
   // Run the device-wide API
-  if (select_min)
+  if (!is_descending)
   {
-    topk_min_keys(thrust::raw_pointer_cast(in_keys.data()), thrust::raw_pointer_cast(out_keys.data()), num_items, k);
+    topk_min_keys(thrust::raw_pointer_cast(keys_in.data()), thrust::raw_pointer_cast(keys_out.data()), num_items, k);
   }
   else
   {
-    topk_keys(thrust::raw_pointer_cast(in_keys.data()), thrust::raw_pointer_cast(out_keys.data()), num_items, k);
+    topk_keys(thrust::raw_pointer_cast(keys_in.data()), thrust::raw_pointer_cast(keys_out.data()), num_items, k);
   }
 
   // Sort the entire input data as result referece
-  c2h::host_vector<key_t> h_in_keys(in_keys);
+  c2h::host_vector<key_t> h_keys_in(keys_in);
   c2h::host_vector<key_t> host_results;
-  host_results.resize(out_keys.size());
+  host_results.resize(keys_out.size());
   if (is_descending)
   {
     std::partial_sort_copy(
-      h_in_keys.begin(), h_in_keys.end(), host_results.begin(), host_results.end(), std::greater<key_t>());
+      h_keys_in.begin(), h_keys_in.end(), host_results.begin(), host_results.end(), std::greater<key_t>());
   }
   else
   {
     std::partial_sort_copy(
-      h_in_keys.begin(), h_in_keys.end(), host_results.begin(), host_results.end(), std::less<key_t>());
+      h_keys_in.begin(), h_keys_in.end(), host_results.begin(), host_results.end(), std::less<key_t>());
   }
   // Since the results of API TopKMinKeys() and TopKKeys() are not-sorted
   // We need to sort the results first.
-  c2h::host_vector<key_t> device_results(out_keys);
+  c2h::host_vector<key_t> device_results(keys_out);
   if (is_descending)
   {
     std::stable_sort(device_results.begin(), device_results.end(), std::greater<key_t>());
@@ -85,4 +84,75 @@ CUB_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
   }
 
   REQUIRE(host_results == device_results);
+}
+
+CUB_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", key_types, num_items_types)
+{
+  using key_t       = c2h::get<0, TestType>;
+  using num_items_t = c2h::get<1, TestType>;
+
+  // Set input size
+  constexpr num_items_t min_num_items = 1 << 10;
+  constexpr num_items_t max_num_items = 1 << 15;
+  const num_items_t num_items         = GENERATE_COPY(take(5, random(min_num_items, max_num_items)));
+
+  // Set the k value
+  constexpr num_items_t min_k = 1 << 3;
+  constexpr num_items_t max_k = 1 << 5;
+  const num_items_t k         = GENERATE_COPY(take(5, random(min_k, max_k)));
+
+  // Prepare input and output
+  auto keys_in = thrust::make_counting_iterator(key_t{});
+  c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
+
+  // Run the device-wide API
+  const bool is_descending = GENERATE(false, true);
+  if (!is_descending)
+  {
+    topk_min_keys(keys_in, thrust::raw_pointer_cast(keys_out.data()), num_items, k);
+  }
+  else
+  {
+    topk_keys(keys_in, thrust::raw_pointer_cast(keys_out.data()), num_items, k);
+  }
+
+  // Verify results
+
+  /// Since the results of API TopKMinKeys() and TopKKeys() are not-sorted
+  /// We need to sort the results first.
+  c2h::host_vector<key_t> device_results(keys_out);
+  if (is_descending)
+  {
+    std::stable_sort(device_results.begin(), device_results.end(), std::greater<key_t>());
+  }
+  else
+  {
+    std::stable_sort(device_results.begin(), device_results.end(), std::less<key_t>());
+  }
+
+  bool res = true;
+  if (is_descending)
+  {
+    auto keys_expected_it = thrust::make_reverse_iterator(keys_in + num_items);
+    for (num_items_t i = 0; i < k; i++)
+    {
+      if (device_results[i] != keys_expected_it[i])
+      {
+        res = false;
+      }
+    }
+  }
+  else
+  {
+    auto keys_expected_it = keys_in;
+    for (num_items_t i = 0; i < k; i++)
+    {
+      if (device_results[i] != keys_expected_it[i])
+      {
+        res = false;
+      }
+    }
+  }
+
+  REQUIRE(res == true);
 }

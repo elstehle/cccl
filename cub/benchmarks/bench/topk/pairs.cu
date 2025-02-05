@@ -20,13 +20,13 @@ struct policy_hub_t
       CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
 
     static constexpr int BITS_PER_PASS = cub::detail::topk::calc_bits_per_pass<KeyInT>(); //@TODO:add tuning axis?
-    static constexpr int COFFICIENT_FOR_BUFFER = 128; //@TODO:add tuning axis?
+    static constexpr int COEFFICIENT_FOR_BUFFER = 128; //@TODO:add tuning axis?
 
     using TopKPolicyT =
       cub::AgentTopKPolicy<TUNE_THREADS_PER_BLOCK,
                            ITEMS_PER_THREAD,
                            BITS_PER_PASS,
-                           COFFICIENT_FOR_BUFFER,
+                           COEFFICIENT_FOR_BUFFER,
                            cub::BLOCK_LOAD_DIRECT,
                            cub::BLOCK_HISTO_ATOMIC,
                            cub::BLOCK_SCAN_WARP_SCANS>;
@@ -61,10 +61,11 @@ void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, NumItemT
   // Retrieve axis parameters
   const auto elements          = static_cast<std::size_t>(state.get_int64("Elements{io}"));
   const auto selected_elements = static_cast<std::size_t>(state.get_int64("SelectedElements{io}"));
+  const bit_entropy entropy    = str_to_entropy(state.get_string("Entropy"));
 
   // If possible, do not initialize the input data in the benchmark function.
   // Instead, use the gen function.
-  thrust::device_vector<KeyT> in_keys      = generate(elements);
+  thrust::device_vector<KeyT> in_keys      = generate(elements, entropy);
   thrust::device_vector<KeyT> out_keys     = generate(selected_elements);
   thrust::device_vector<ValueT> in_values  = generate(elements);
   thrust::device_vector<ValueT> out_values = generate(selected_elements);
@@ -120,4 +121,4 @@ NVBENCH_BENCH_TYPES(topk_pairs, NVBENCH_TYPE_AXES(fundamental_types, fundamental
   .set_type_axes_names({"KeyT{ct}", "ValueT{ct}", "NumItemT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(16, 28, 4))
   .add_int64_power_of_two_axis("SelectedElements{io}", nvbench::range(3, 15, 4))
-  .add_string_axis("Entropy", {"1.000", "0.544", "0.000"});
+  .add_string_axis("Entropy", {"1.000", "0.544", "0.201", "0.000"});

@@ -55,8 +55,8 @@ struct sm90_tuning
   static constexpr int items_per_scaler            = CUB_MAX(4 / sizeof(KeyInT), 1);
   static constexpr int items                       = items_per_scaler * nominal_4b_items_per_thread;
 
-  static constexpr int BITS_PER_PASS         = detail::topk::calc_bits_per_pass<KeyInT>();
-  static constexpr int COFFICIENT_FOR_BUFFER = 128;
+  static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
+  static constexpr int COEFFICIENT_FOR_BUFFER = 128;
 
   static constexpr BlockLoadAlgorithm load_algorithm = BLOCK_LOAD_VECTORIZE;
 };
@@ -74,14 +74,14 @@ struct device_topk_policy_hub
     static constexpr int ITEMS_PER_THREAD =
       CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
 
-    static constexpr int BITS_PER_PASS         = detail::topk::calc_bits_per_pass<KeyInT>();
-    static constexpr int COFFICIENT_FOR_BUFFER = 128;
+    static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
+    static constexpr int COEFFICIENT_FOR_BUFFER = 128;
 
     using TopKPolicyT =
       AgentTopKPolicy<DEFAULT_NUM_THREADS,
                       ITEMS_PER_THREAD,
                       BITS_PER_PASS,
-                      COFFICIENT_FOR_BUFFER,
+                      COEFFICIENT_FOR_BUFFER,
                       BLOCK_LOAD_VECTORIZE,
                       BLOCK_HISTO_ATOMIC,
                       BLOCK_SCAN_WARP_SCANS>;
@@ -100,7 +100,7 @@ struct device_topk_policy_hub
       AgentTopKPolicy<tuning::threads,
                       tuning::items,
                       tuning::BITS_PER_PASS,
-                      tuning::COFFICIENT_FOR_BUFFER,
+                      tuning::COEFFICIENT_FOR_BUFFER,
                       tuning::load_algorithm,
                       BLOCK_HISTO_ATOMIC,
                       BLOCK_SCAN_WARP_SCANS>;
@@ -112,7 +112,8 @@ struct device_topk_policy_hub
  * Kernel entry points
  *****************************************************************************/
 /**
- * TopK kernel entry point (multi-block)
+ * TopK kernel entry point (multi-block) for histogram collection, prefix sum and filering operations except for the
+ * last round
  *
  * Find the largest (or smallest) K items from a sequence of unordered data
  * @tparam KeyInputIteratorT
@@ -125,10 +126,13 @@ struct device_topk_policy_hub
  *   **[inferred]** Random-access input iterator type for reading input values @iterator
  *
  * @tparam ValueOutputIteratorT
- *   **[inferred]** Random-access input iterator type for writing output values @iterator
+ *   **[inferred]** Random-access output iterator type for writing output values @iterator
  *
  * @tparam NumItemsT
- *  Type of variable num_items and k
+ *  Data Type for variables: num_items and k
+ *
+ * @tparam KeyInT
+ *  Data Type for input keys
  *
  * @tparam ExtractBinOpT
  *   Operations to extract the bin from the input key value
@@ -137,10 +141,7 @@ struct device_topk_policy_hub
  *   Operations to filter the input key value
  *
  * @tparam SelectMin
- *   Indicate find the smallest (SelectMin=true) or largest (SelectMin=false) K elements
- *
- * @tparam IncludeLastFilter
- *   Indicate whether include the last filter operation or not
+ *   Determine whether to select the smallest (SelectMin=true) or largest (SelectMin=false) K elements.
  *
  * @param[in] d_keys_in
  *   Pointer to the input data of key data
@@ -149,11 +150,10 @@ struct device_topk_policy_hub
  *   Pointer to the K output sequence of key data
  *
  * @param[in] d_values_in
- *   Pointer to the corresponding input sequence of associated value items
+ *   Pointer to the input sequence of associated value items
  *
  * @param[out] d_values_out
- *   Pointer to the correspondingly output sequence of associated
- *   value items
+ *   Pointer to the output sequence of associated value items
  *
  * @param[in] in_buf
  *   Pointer to buffer of input key data
@@ -236,6 +236,70 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     .InvokeOneSweep<IsFirstPass>(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
 }
 
+/**
+ * TopK kernel entry point for the last filtering step (multi-block)
+ *
+ * Find the largest (or smallest) K items from a sequence of unordered data
+ * @tparam KeyInputIteratorT
+ *   **[inferred]** Random-access input iterator type for reading input keys @iterator
+ *
+ * @tparam KeyOutputIteratorT
+ *   **[inferred]** Random-access output iterator type for writing output keys @iterator
+ *
+ * @tparam ValueInputIteratorT
+ *   **[inferred]** Random-access input iterator type for reading input values @iterator
+ *
+ * @tparam ValueOutputIteratorT
+ *   **[inferred]** Random-access output iterator type for writing output values @iterator
+ *
+ * @tparam NumItemsT
+ *  Data Type for variables: num_items and k
+ *
+ * @tparam KeyInT
+ *  Data Type for input keys
+ *
+ * @tparam IdentifyCandidatesOpT
+ *   Operations to filter the input key value
+ *
+ * @tparam SelectMin
+ *   Determine whether to select the smallest (SelectMin=true) or largest (SelectMin=false) K elements.
+ *
+ * @param[in] d_keys_in
+ *   Pointer to the input data of key data
+ *
+ * @param[out] d_keys_out
+ *   Pointer to the K output sequence of key data
+ *
+ * @param[in] d_values_in
+ *   Pointer to the input sequence of associated value items
+ *
+ * @param[out] d_values_out
+ *   Pointer to the output sequence of associated value items
+ *
+ * @param[in] in_buf
+ *   Pointer to buffer of input key data
+ *
+ * @param[in] in_idx_buf
+ *   Pointer to buffer of index of input buffer
+ *
+ * @param[in] counter
+ *   Pointer to buffer of counter array
+ *
+ * @param[in] histogram
+ *   Pointer to buffer of histogram array
+ *
+ * @param[in] num_items
+ *   Number of items to be processed
+ *
+ * @param[in] k
+ *   The K value. Will find K elements from num_items elements
+ *
+ * @param[in] identify_candidates_op
+ *   Extract element filter operator
+ *
+ * @param[in] pass
+ *   The index of the passes
+ */
 template <typename ChainedPolicyT,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
@@ -294,7 +358,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  *   **[inferred]** Random-access input iterator type for writing output values @iterator
  *
  * @tparam NumItemsT
- * Type of variable num_items and k
+ *  Type of variable num_items and k
+ *
+ * @tparam SelectMin
+ *   Determine whether to select the smallest (SelectMin=true) or largest (SelectMin=false) K elements.
  *
  * @param[in] d_temp_storage
  *   Device-accessible allocation of temporary storage. When `nullptr`, the
@@ -310,11 +377,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  *   Pointer to the K output sequence of key data
  *
  * @param[in] d_values_in
- *   Pointer to the corresponding input sequence of associated value items
+ *   Pointer to the input sequence of associated value items
  *
  * @param[out] d_values_out
- *   Pointer to the correspondingly output sequence of associated
- *   value items
+ *   Pointer to the output sequence of associated value items
  *
  * @param[in] num_items
  *   Number of items to be processed
@@ -350,10 +416,10 @@ struct DispatchTopK : SelectedPolicy
   /// Pointer to the K output sequence of key data
   KeyOutputIteratorT d_keys_out;
 
-  /// Pointer to the corresponding input sequence of associated value items
+  /// Pointer to the input sequence of associated value items
   ValueInputIteratorT d_values_in;
 
-  /// Pointer to the correspondingly output sequence of associated value items
+  /// Pointer to the output sequence of associated value items
   ValueOutputIteratorT d_values_out;
 
   /// Number of items to be processed
@@ -379,17 +445,16 @@ struct DispatchTopK : SelectedPolicy
    *   Reference to size in bytes of `d_temp_storage` allocation
    *
    * @param[in] d_keys_in
-   *   Pointer to the input data of key data to find top K
+   *   Pointer to the input data of key data
    *
    * @param[out] d_keys_out
    *   Pointer to the K output sequence of key data
    *
    * @param[in] d_values_in
-   *   Pointer to the corresponding input sequence of associated value items
+   *   Pointer to the input sequence of associated value items
    *
    * @param[out] d_values_out
-   *   Pointer to the correspondingly output sequence of associated
-   *   value items
+   *   Pointer to the output sequence of associated value items
    *
    * @param[in] num_items
    *   Number of items to be processed
@@ -485,7 +550,7 @@ struct DispatchTopK : SelectedPolicy
       // Specify temporary storage allocation requirements
       size_t size_counter        = sizeof(Counter<KeyInT, NumItemsT>);
       size_t size_histogram      = num_buckets * sizeof(NumItemsT);
-      size_t num_candidates      = CUB_MAX(256, num_items / Policy::COFFICIENT_FOR_BUFFER);
+      size_t num_candidates      = CUB_MAX(256, num_items / Policy::COEFFICIENT_FOR_BUFFER);
       size_t aligend_bytes       = 256;
       size_t allocation_sizes[6] = {
         RoundUp(size_counter, aligend_bytes),
@@ -715,11 +780,10 @@ struct DispatchTopK : SelectedPolicy
    *   Pointer to the K output sequence of key data
    *
    * @param[in] d_values_in
-   *   Pointer to the corresponding input sequence of associated value items
+   *   Pointer to the input sequence of associated value items
    *
    * @param[out] d_values_out
-   *   Pointer to the correspondingly output sequence of associated
-   *   value items
+   *   Pointer to the output sequence of associated value items
    *
    * @param[in] num_items
    *   Number of items to be processed

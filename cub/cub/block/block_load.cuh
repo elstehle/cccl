@@ -905,16 +905,7 @@ class BlockLoad
     template <typename RandomAccessIterator>
     _CCCL_DEVICE _CCCL_FORCEINLINE void Load(RandomAccessIterator block_src_it, T (&dst_items)[ITEMS_PER_THREAD])
     {
-      bool is_same_type  = ::cuda::std::is_same<RandomAccessIterator, const T*>::value;
-      bool is_same_type2 = ::cuda::std::is_same<RandomAccessIterator, T*>::value;
-      if (is_same_type || is_same_type2)
-      {
-        InternalLoadDirectBlockedVectorized<LOAD_DEFAULT>(linear_tid, block_src_it, dst_items);
-      }
-      else
-      {
-        LoadDirectBlocked(linear_tid, block_src_it, dst_items);
-      }
+      LoadDirectBlocked(linear_tid, block_src_it, dst_items);
     }
 
     // attempts vectorization (cache modified iterator)

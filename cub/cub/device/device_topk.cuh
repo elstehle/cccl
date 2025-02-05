@@ -24,11 +24,11 @@ CUB_NAMESPACE_BEGIN
 
 //! @rst
 //! @brief DeviceTopK provides device-wide, parallel operations for
-//!        parallel operations for finding the largest (or smallest) K items from sequences of unordered data
+//!        finding the largest (or smallest) K items from sequences of unordered data
 //!        items residing within device-accessible memory.
 //!
 //! @par Overview
-//! TopK problem tries to find the largest (or smallest) K items in a list. A relative problem is called
+//! TopK problem tries to find the largest (or smallest) K items in an unordered list. A related problem is called
 //! [*K selection problem*](https://en.wikipedia.org/wiki/Selection_algorithm), which find the Kth largest
 //! (or smallest) value in a list.
 //! DeviceTopK will return K items as results (ordered or unordered). It is

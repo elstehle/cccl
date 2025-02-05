@@ -29,9 +29,10 @@
 #include <iterator>
 
 CUB_NAMESPACE_BEGIN
-// #define USE_CUSTOMIZED_LOAD
 
-//  Overload CUDA atomic for other 64bit unsigned/signed integer type
+/**
+ * Overload CUDA atomic functions for other 64bit unsigned/signed integer type
+ */
 using ::atomicAdd;
 _CCCL_DEVICE _CCCL_FORCEINLINE long atomicAdd(long* address, long val)
 {
@@ -45,7 +46,6 @@ _CCCL_DEVICE _CCCL_FORCEINLINE long long atomicAdd(long long* address, long long
 
 _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, unsigned long val)
 {
-  // unsigned long long tmp=reinterpret_cast<unsigned long long>(address);
   return (unsigned long) atomicAdd(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
 }
 
@@ -61,6 +61,13 @@ _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, u
  * @tparam _ITEMS_PER_THREAD
  *   Items per thread (per tile of input)
  *
+ * @tparam _BITS_PER_PASS
+ *   Number of bits processed per pass
+ *
+ * @tparam _COEFFICIENT_FOR_BUFFER
+ *   The coefficient parameter for reducing the size of buffer.
+ *   The size of buffer is `1/ _COEFFICIENT_FOR_BUFFER` of original input
+ *
  * @tparam _LOAD_ALGORITHM
  *   The BlockLoad algorithm to use
  *
@@ -69,12 +76,13 @@ _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, u
  *
  * @tparam _SCAN_ALGORITHM
  *   The BlockScan algorithm to use
+ * @todo remove the histogram algorithm?
  */
 
 template <int _BLOCK_THREADS,
           int _ITEMS_PER_THREAD,
           int _BITS_PER_PASS,
-          int _COFFICIENT_FOR_BUFFER,
+          int _COEFFICIENT_FOR_BUFFER,
           BlockLoadAlgorithm _LOAD_ALGORITHM,
           BlockHistogramAlgorithm _HISTOGRAM_ALGORITHM,
           BlockScanAlgorithm _SCAN_ALGORITHM>
@@ -84,10 +92,10 @@ struct AgentTopKPolicy
   static constexpr int BLOCK_THREADS = _BLOCK_THREADS;
   /// Items per thread (per tile of input)
   static constexpr int ITEMS_PER_THREAD = _ITEMS_PER_THREAD;
-  /// BITS Processed per pass
+  /// Number of BITS Processed per pass
   static constexpr int BITS_PER_PASS = _BITS_PER_PASS;
-  /// Cofficient for reducing memory
-  static constexpr int COFFICIENT_FOR_BUFFER = _COFFICIENT_FOR_BUFFER;
+  /// Coefficient for reducing buffer size
+  static constexpr int COEFFICIENT_FOR_BUFFER = _COEFFICIENT_FOR_BUFFER;
 
   /// The BlockLoad algorithm to use
   static constexpr BlockLoadAlgorithm LOAD_ALGORITHM = _LOAD_ALGORITHM;
@@ -114,7 +122,7 @@ struct alignas(128) Counter
 
   //  `previous_len` is the length of input in previous pass. Note that `previous_len`
   //  rather than `len` is used for the filtering step because filtering is indeed for
-  //  previous pass (see comments before `radix_kernel`).
+  //  previous pass.
   NumItemsT previous_len;
 
   // We determine the bits of the k_th key inside the mask processed by the pass. The
@@ -144,7 +152,7 @@ struct alignas(128) Counter
 };
 
 /**
- * @brief Operations for calculating the bin index based on the input
+ * Operations for calculating the bin index based on the input
  */
 template <typename T, int BITS_PER_PASS>
 _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int CalcNumPasses()
@@ -169,6 +177,9 @@ _CCCL_DEVICE constexpr int CalcStartBit(const int pass)
   return start_bit;
 }
 
+/**
+ * Used in the bin ID calculation to exclude bits unrelated to the current pass
+ */
 template <typename T, int BITS_PER_PASS>
 _CCCL_DEVICE constexpr unsigned CalcMask(const int pass)
 {
@@ -176,6 +187,9 @@ _CCCL_DEVICE constexpr unsigned CalcMask(const int pass)
   return (1 << num_bits) - 1;
 }
 
+/**
+ * Get the bin ID from the value of element
+ */
 template <typename T, bool FLIP, int BITS_PER_PASS>
 struct ExtractBinOp
 {
@@ -203,6 +217,9 @@ struct ExtractBinOp
   }
 };
 
+/**
+ * Check if the input element is still a candidate.
+ */
 template <typename T, bool FLIP, int BITS_PER_PASS>
 struct IdentifyCandidatesOp
 {
@@ -237,10 +254,6 @@ struct IdentifyCandidatesOp
  * @brief AgentTopK implements a stateful abstraction of CUDA thread blocks for participating in
  * device-wide topK
  *
- * Performs functor-based selection if SelectOpT functor type != NullType
- * Otherwise performs flag-based selection if FlagsInputIterator's value type != NullType
- * Otherwise performs discontinuity selection (keep unique)
- *
  * @tparam AgentTopKPolicyT
  *   Parameterized AgentTopKPolicy tuning policy type
  *
@@ -254,16 +267,19 @@ struct IdentifyCandidatesOp
  *   **[inferred]** Random-access input iterator type for reading input values @iterator
  *
  * @tparam ValueOutputIteratorT
- *   **[inferred]** Random-access input iterator type for writing output values @iterator
- *
- * @tparam NumItemsT
- * Type of variable num_items and k
+ *   **[inferred]** Random-access output iterator type for writing output values @iterator
  *
  * @tparam ExtractBinOpT
  *   Operations to extract the bin from the input key values
  *
  * @tparam IdentifyCandidatesOpT
  *   Operations to filter the input key values
+ *
+ * @tparam NumItemsT
+ *   Type of variable num_items and k
+ *
+ * @tparam SELECT_MIN
+ *   Determine whether to select the smallest (SELECT_MIN=true) or largest (SELECT_MIN=false) K elements.
  *
  */
 
@@ -284,12 +300,12 @@ struct AgentTopK
   // The key and value type
   using KeyInT = detail::value_t<KeyInputIteratorT>;
 
-  static constexpr int BLOCK_THREADS         = AgentTopKPolicyT::BLOCK_THREADS;
-  static constexpr int ITEMS_PER_THREAD      = AgentTopKPolicyT::ITEMS_PER_THREAD;
-  static constexpr int BITS_PER_PASS         = AgentTopKPolicyT::BITS_PER_PASS;
-  static constexpr int COFFICIENT_FOR_BUFFER = AgentTopKPolicyT::COFFICIENT_FOR_BUFFER;
-  static constexpr int TILE_ITEMS            = BLOCK_THREADS * ITEMS_PER_THREAD;
-  static constexpr int num_buckets           = 1 << BITS_PER_PASS;
+  static constexpr int BLOCK_THREADS          = AgentTopKPolicyT::BLOCK_THREADS;
+  static constexpr int ITEMS_PER_THREAD       = AgentTopKPolicyT::ITEMS_PER_THREAD;
+  static constexpr int BITS_PER_PASS          = AgentTopKPolicyT::BITS_PER_PASS;
+  static constexpr int COEFFICIENT_FOR_BUFFER = AgentTopKPolicyT::COEFFICIENT_FOR_BUFFER;
+  static constexpr int TILE_ITEMS             = BLOCK_THREADS * ITEMS_PER_THREAD;
+  static constexpr int num_buckets            = 1 << BITS_PER_PASS;
 
   static constexpr bool KEYS_ONLY                = std::is_same<ValueInputIteratorT, NullType>::value;
   static constexpr int items_per_thread_for_scan = (num_buckets - 1) / BLOCK_THREADS + 1;
@@ -330,6 +346,7 @@ struct AgentTopK
   ExtractBinOpT extract_bin_op; /// The operation for bin
   IdentifyCandidatesOpT identify_candidates_op; /// The operation for filtering
   bool load_from_original_input; /// Set if loading data from original input
+
   //---------------------------------------------------------------------
   // Constructor
   //---------------------------------------------------------------------
@@ -386,119 +403,9 @@ struct AgentTopK
   //---------------------------------------------------------------------
   // Utility methods for device topK
   //---------------------------------------------------------------------
-
   /**
-   * Bit 0 is the least significant (rightmost);
-   * this implementation processes input from the most to the least significant bit.
-   * This way, we can skip some passes in the end at the cost of having an unsorted output.
-   *
-   * NB: Use pass=-1 for CalcMask().
+   * Try to perform vectorized data loading.
    */
-
-  // sync_width should >= warp_size
-  template <typename Func>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  VectorizedProcess(size_t thread_rank, size_t num_threads, KeyInputIteratorT in, NumItemsT len, Func f)
-  {
-    using WideT             = float4;
-    constexpr int WARP_SIZE = 32;
-    if (sizeof(KeyInT) >= sizeof(WideT))
-    {
-      for (NumItemsT i = thread_rank; i < len; i += num_threads)
-      {
-        f(in[i], i);
-      }
-    }
-    else
-    {
-      static_assert(sizeof(WideT) % sizeof(KeyInT) == 0);
-      constexpr int items_per_scalar = sizeof(WideT) / sizeof(KeyInT);
-
-      union
-      {
-        WideT scalar;
-        KeyInT array[items_per_scalar];
-      } wide;
-
-      int skip_cnt = (reinterpret_cast<size_t>(in) % sizeof(WideT))
-                     ? ((sizeof(WideT) - reinterpret_cast<size_t>(in) % sizeof(WideT)) / sizeof(KeyInT))
-                     : 0;
-      if (skip_cnt > len)
-      {
-        skip_cnt = len;
-      }
-      const WideT* in_cast     = reinterpret_cast<decltype(in_cast)>(in + skip_cnt);
-      const NumItemsT len_cast = (len - skip_cnt) / items_per_scalar;
-
-      for (NumItemsT i = thread_rank; i < len_cast; i += num_threads)
-      {
-        wide.scalar            = in_cast[i];
-        const NumItemsT real_i = skip_cnt + i * items_per_scalar;
-#pragma unroll
-        for (int j = 0; j < items_per_scalar; ++j)
-        {
-          f(wide.array[j], real_i + j);
-        }
-      }
-
-      static_assert(WARP_SIZE >= items_per_scalar);
-      // and because items_per_scalar > skip_cnt, WARP_SIZE > skip_cnt
-      // no need to use loop
-      if (thread_rank < skip_cnt)
-      {
-        f(in[thread_rank], thread_rank);
-      }
-      // because len_cast = (len - skip_cnt) / items_per_scalar,
-      // len_cast * items_per_scalar + items_per_scalar > len - skip_cnt;
-      // and so
-      // len - (skip_cnt + len_cast * items_per_scalar) < items_per_scalar <= WARP_SIZE
-      // no need to use loop
-      const NumItemsT remain_i = skip_cnt + len_cast * items_per_scalar + thread_rank;
-      if (remain_i < len)
-      {
-        f(in[remain_i], remain_i);
-      }
-    }
-  }
-
-  template <typename Func, typename T>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange0(T in, const NumItemsT num_items, Func f)
-  {
-    KeyInT thread_data[ITEMS_PER_THREAD];
-
-    const NumItemsT ITEMS_PER_PASS = TILE_ITEMS * gridDim.x;
-    NumItemsT tile_base            = blockIdx.x * TILE_ITEMS;
-    // Remaining items (including this tile)
-    NumItemsT num_remaining_per_tile = num_items > tile_base ? num_items - tile_base : 0;
-    NumItemsT num_remaining_per_pass = num_items;
-
-    while (num_remaining_per_pass > 0)
-    {
-      if (num_remaining_per_tile > TILE_ITEMS)
-      {
-        BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data);
-      }
-      else if (num_remaining_per_tile > 0)
-      {
-        BlockLoadInputT(temp_storage.load_input).Load(in + tile_base, thread_data, num_remaining_per_tile, 0);
-      }
-
-      NumItemsT offset = threadIdx.x * ITEMS_PER_THREAD + tile_base;
-      for (int j = 0; j < ITEMS_PER_THREAD; ++j)
-      {
-        if (offset < num_items)
-        {
-          f(thread_data[j], offset);
-        }
-        offset++;
-      }
-
-      num_remaining_per_tile = num_remaining_per_tile > ITEMS_PER_PASS ? num_remaining_per_tile - ITEMS_PER_PASS : 0;
-      num_remaining_per_pass = num_remaining_per_pass > ITEMS_PER_PASS ? num_remaining_per_pass - ITEMS_PER_PASS : 0;
-      tile_base += ITEMS_PER_PASS;
-    }
-  }
-
   template <typename Func, typename T>
   _CCCL_DEVICE _CCCL_FORCEINLINE void ConsumeRange(T in, const NumItemsT num_items, Func f)
   {
@@ -546,7 +453,6 @@ struct AgentTopK
   }
   /**
    * Fused filtering of the current pass and building histogram for the next pass
-   * (see steps 4 & 1 in `radix_kernel` description).
    */
   template <bool IS_FIRST_PASS>
   _CCCL_DEVICE _CCCL_FORCEINLINE void FilterAndHistogram(
@@ -561,26 +467,16 @@ struct AgentTopK
     int pass,
     bool early_stop)
   {
-    _CCCL_IF_CONSTEXPR (IS_FIRST_PASS) //  _CCCL_IF_CONSTEXPR  'if constexpr (IS_FIRST_PASS)' are C++17 feature use
-                                       //  macro is
+    _CCCL_IF_CONSTEXPR (IS_FIRST_PASS)
     {
-      // Passed to VectorizedProcess, this function executes in all blocks in parallel,
+      // Passed to vectorized loading, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
       // row). Later, the histograms are merged using atomicAdd.
       auto f = [this, histogram_smem](KeyInT key, NumItemsT index) {
         int bucket = extract_bin_op(key);
         atomicAdd(histogram_smem + bucket, static_cast<NumItemsT>(1));
       };
-#ifdef USE_CUSTOMIZED_LOAD
-      VectorizedProcess(
-        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-        static_cast<size_t>(blockDim.x) * gridDim.x,
-        d_keys_in,
-        previous_len,
-        f);
-#else
       ConsumeRange(d_keys_in, previous_len, f);
-#endif
     }
     else
     {
@@ -589,7 +485,7 @@ struct AgentTopK
       const auto kth_key_bits = counter->kth_key_bits;
 
       // See the remark above on the distributed execution of `f` using
-      // VectorizedProcess.
+      // vectorized loading.
       auto f =
         [in_idx_buf,
          out_buf,
@@ -653,29 +549,11 @@ struct AgentTopK
         };
       if (load_from_original_input)
       {
-#ifdef USE_CUSTOMIZED_LOAD
-        VectorizedProcess(
-          static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-          static_cast<size_t>(blockDim.x) * gridDim.x,
-          d_keys_in,
-          previous_len,
-          f);
-#else
         ConsumeRange(d_keys_in, previous_len, f);
-#endif
       }
       else
       {
-#ifdef USE_CUSTOMIZED_LOAD
-        VectorizedProcess(
-          static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-          static_cast<size_t>(blockDim.x) * gridDim.x,
-          in_buf,
-          previous_len,
-          f);
-#else
         ConsumeRange(in_buf, previous_len, f);
-#endif
       }
     }
 
@@ -691,16 +569,13 @@ struct AgentTopK
       if (histogram_smem[i] != 0)
       {
         atomicAdd(histogram + i, histogram_smem[i]);
-        __threadfence();
       }
     }
   }
 
   /**
    * Replace histogram with its own prefix sum
-   * (step 2 in `radix_kernel` description)
    */
-
   _CCCL_DEVICE _CCCL_FORCEINLINE void Scan(volatile NumItemsT* histogram, NumItemsT* histogram_smem)
   {
     NumItemsT thread_data[items_per_thread_for_scan];
@@ -716,7 +591,6 @@ struct AgentTopK
 
   /**
    * Calculate in which bucket the k-th value will fall
-   *  (steps 3 in `radix_kernel` description)
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   ChooseBucket(Counter<KeyInT, NumItemsT>* counter, const NumItemsT* histogram, const NumItemsT k, const int pass)
@@ -740,7 +614,7 @@ struct AgentTopK
   }
 
   /**
-   * @brief One sweep topK (specialized for topK operator)
+   * @brief Perform the filter operation for the lass pass.
    *
    * @param in_buf
    *   Buffer address for input data
@@ -751,11 +625,11 @@ struct AgentTopK
    * @param counter
    *   Record the meta data for different passes
    *
-   * @param k
-   *   The original K value. Will find K elements from num_items elements
-   *
    * @param histogram
    *   Record the element number of each bucket
+   *
+   * @param k
+   *   The original K value. Will find K elements from num_items elements
    *
    * @param pass
    *   Indicate which pass are processed currently
@@ -763,7 +637,7 @@ struct AgentTopK
   _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeLastFilter(
     KeyInT* in_buf, NumItemsT* in_idx_buf, Counter<KeyInT, NumItemsT>* counter, NumItemsT* histogram, int k, int pass)
   {
-    const NumItemsT buf_len  = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len  = CUB_MAX(256, num_items / COEFFICIENT_FOR_BUFFER);
     load_from_original_input = counter->previous_len > buf_len;
     NumItemsT current_len    = load_from_original_input ? num_items : counter->previous_len;
     in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
@@ -814,34 +688,17 @@ struct AgentTopK
 
     if (load_from_original_input)
     {
-#ifdef USE_CUSTOMIZED_LOAD
-      VectorizedProcess(
-        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-        static_cast<size_t>(blockDim.x) * gridDim.x,
-        d_keys_in,
-        current_len,
-        f);
-#else
       ConsumeRange(d_keys_in, current_len, f);
-#endif
     }
     else
     {
-#ifdef USE_CUSTOMIZED_LOAD
-      VectorizedProcess(
-        static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x,
-        static_cast<size_t>(blockDim.x) * gridDim.x,
-        in_buf,
-        current_len,
-        f);
-#else
       ConsumeRange(in_buf, current_len, f);
-#endif
     }
   }
 
   /**
-   * @brief One sweep topK (specialized for topK operator)
+   * @brief Perform the histogram collection, prefix sum calculation and candidates filter (except the filtering in the
+   * last pas)
    *
    * @param in_buf
    *   Buffer address for input data
@@ -897,7 +754,7 @@ struct AgentTopK
     }
 
     const bool early_stop   = (current_len == current_k);
-    const NumItemsT buf_len = CUB_MAX(256, num_items / COFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len = CUB_MAX(256, num_items / COEFFICIENT_FOR_BUFFER);
 
     if (previous_len > buf_len)
     {
@@ -926,7 +783,10 @@ struct AgentTopK
 
     FilterAndHistogram<IS_FIRST_PASS>(
       in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, histogram_smem, pass, early_stop);
-    //__threadfence();
+
+    __threadfence();
+    // We need this `__threadfence()` because the global array `histogram` will be accessed by other threads using
+    // non-atomic operations.
 
     bool is_last_block = false;
     if (threadIdx.x == 0)
@@ -966,13 +826,6 @@ struct AgentTopK
           histogram[i] = 0;
         }
       }
-      // if (threadIdx.x == 0)
-      // {
-      //   // `LastFilter_kernel()` requires setting previous_len even in the last pass
-      //   counter->previous_len = current_len;
-      //   // not necessary for the last pass, but put it here anyway
-      //   counter->filter_cnt = 0;
-      // }
     }
   }
 };

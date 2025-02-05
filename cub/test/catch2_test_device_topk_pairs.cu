@@ -65,85 +65,35 @@ void sort_keys_and_values(
   std::stable_sort(zipped_it, zipped_it + num_items, comp);
 }
 
-using value_types     = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
-using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
-
-CUB_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", value_types, num_items_types)
+template <typename key_in_it, typename value_in_it, typename key_t, typename value_t, typename num_items_t>
+bool check_results(
+  key_in_it h_keys_in,
+  value_in_it h_values_in,
+  c2h::device_vector<key_t>& keys_out,
+  c2h::device_vector<value_t>& out_values,
+  num_items_t num_items,
+  num_items_t k,
+  bool is_descending)
 {
-  using key_t       = cuda::std::uint32_t;
-  using value_t     = c2h::get<0, TestType>;
-  using num_items_t = c2h::get<1, TestType>;
-
-  // Set input size
-  constexpr num_items_t min_num_items = 1 << 10;
-  constexpr num_items_t max_num_items = 1 << 15;
-  const num_items_t num_items         = GENERATE_COPY(take(5, random(min_num_items, max_num_items)));
-
-  // Set the k value
-  constexpr num_items_t min_k = 1 << 3;
-  constexpr num_items_t max_k = 1 << 5;
-  const num_items_t k         = GENERATE_COPY(take(5, random(min_k, max_k)));
-
-  // Allocate the device memory
-  c2h::device_vector<key_t> in_keys(num_items);
-  c2h::device_vector<key_t> out_keys(k);
-
-  c2h::device_vector<value_t> in_values(num_items);
-  c2h::device_vector<value_t> out_values(k);
-
-  const int num_key_seeds   = 1;
-  const int num_value_seeds = 1;
-  c2h::gen(CUB_SEED(num_key_seeds), in_keys);
-  c2h::gen(CUB_SEED(num_value_seeds), in_values);
-
-  const bool select_min    = GENERATE(false, true);
-  const bool is_descending = !select_min;
-
-  // Run the device-wide API
-  if (select_min)
-  {
-    topk_min_pairs(
-      thrust::raw_pointer_cast(in_keys.data()),
-      thrust::raw_pointer_cast(out_keys.data()),
-      thrust::raw_pointer_cast(in_values.data()),
-      thrust::raw_pointer_cast(out_values.data()),
-      num_items,
-      k);
-  }
-  else
-  {
-    topk_pairs(thrust::raw_pointer_cast(in_keys.data()),
-               thrust::raw_pointer_cast(out_keys.data()),
-               thrust::raw_pointer_cast(in_values.data()),
-               thrust::raw_pointer_cast(out_values.data()),
-               num_items,
-               k);
-  }
-
-  // Sort the entire input data as result referece
-  c2h::host_vector<key_t> h_in_keys(in_keys);
-  c2h::host_vector<value_t> h_in_values(in_values);
-  sort_keys_and_values(h_in_keys, h_in_values, num_items, is_descending);
-
   // Since the results of API TopKMinPairs() and TopKPairs() are not-sorted
   // We need to sort the results first.
-  c2h::host_vector<key_t> h_out_keys(out_keys);
+  c2h::host_vector<key_t> h_keys_out(keys_out);
   c2h::host_vector<value_t> h_out_values(out_values);
-  sort_keys_and_values(h_out_keys, h_out_values, k, is_descending);
+  sort_keys_and_values(h_keys_out, h_out_values, k, is_descending);
 
   // i for results from gpu (TopKMinPairs() and TopKPairs()); j for reference results
   num_items_t i = 0, j = 0;
   bool res = true;
   while (i < k && j < num_items)
   {
-    if (h_out_keys[i] == h_in_keys[j])
+    if (h_keys_out[i] == h_keys_in[j])
     {
-      if (h_out_values[i] == h_in_values[j])
+      if (h_out_values[i] == h_values_in[j])
       {
         i++;
         j++;
       }
-      else if (h_out_values[i] > h_in_values[j])
+      else if (h_out_values[i] > h_values_in[j])
       {
         // Since the results of API TopKMinPairs() and TopKPairs() are not stable.
         // There might be multiple items equaling to the value of kth element,
@@ -162,5 +112,140 @@ CUB_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", value_
       break;
     }
   }
+  return res;
+}
+
+using key_types       = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+using value_types     = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+
+CUB_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_types, value_types, num_items_types)
+{
+  using key_t       = c2h::get<0, TestType>;
+  using value_t     = c2h::get<1, TestType>;
+  using num_items_t = c2h::get<2, TestType>;
+
+  // Set input size
+  constexpr num_items_t min_num_items = 1 << 10;
+  constexpr num_items_t max_num_items = 1 << 15;
+  const num_items_t num_items         = GENERATE_COPY(take(5, random(min_num_items, max_num_items)));
+
+  // Set the k value
+  constexpr num_items_t min_k = 1 << 3;
+  constexpr num_items_t max_k = 1 << 5;
+  const num_items_t k         = GENERATE_COPY(take(5, random(min_k, max_k)));
+
+  // Allocate the device memory
+  c2h::device_vector<key_t> keys_in(num_items);
+  c2h::device_vector<key_t> keys_out(k);
+
+  c2h::device_vector<value_t> in_values(num_items);
+  c2h::device_vector<value_t> out_values(k);
+
+  const int num_key_seeds   = 1;
+  const int num_value_seeds = 1;
+  c2h::gen(CUB_SEED(num_key_seeds), keys_in);
+  c2h::gen(CUB_SEED(num_value_seeds), in_values);
+
+  const bool select_min    = GENERATE(false, true);
+  const bool is_descending = !select_min;
+
+  // Run the device-wide API
+  if (select_min)
+  {
+    topk_min_pairs(
+      thrust::raw_pointer_cast(keys_in.data()),
+      thrust::raw_pointer_cast(keys_out.data()),
+      thrust::raw_pointer_cast(in_values.data()),
+      thrust::raw_pointer_cast(out_values.data()),
+      num_items,
+      k);
+  }
+  else
+  {
+    topk_pairs(thrust::raw_pointer_cast(keys_in.data()),
+               thrust::raw_pointer_cast(keys_out.data()),
+               thrust::raw_pointer_cast(in_values.data()),
+               thrust::raw_pointer_cast(out_values.data()),
+               num_items,
+               k);
+  }
+
+  // Sort the entire input data as result referece
+  c2h::host_vector<key_t> h_keys_in(keys_in);
+  c2h::host_vector<value_t> h_values_in(in_values);
+  sort_keys_and_values(h_keys_in, h_values_in, num_items, is_descending);
+
+  bool res = check_results(
+    thrust::raw_pointer_cast(h_keys_in.data()),
+    thrust::raw_pointer_cast(h_values_in.data()),
+    keys_out,
+    out_values,
+    num_items,
+    k,
+    is_descending);
+
+  REQUIRE(res == true);
+}
+
+CUB_TEST("DeviceTopK::TopKPairs: Works with iterators", "[pairs][topk][device]", key_types, value_types, num_items_types)
+{
+  using key_t       = c2h::get<0, TestType>;
+  using value_t     = c2h::get<1, TestType>;
+  using num_items_t = c2h::get<2, TestType>;
+
+  // Set input size
+  constexpr num_items_t min_num_items = 1 << 10;
+  constexpr num_items_t max_num_items = 1 << 15;
+  const num_items_t num_items         = GENERATE_COPY(take(5, random(min_num_items, max_num_items)));
+
+  // Set the k value
+  constexpr num_items_t min_k = 1 << 3;
+  constexpr num_items_t max_k = 1 << 5;
+  const num_items_t k         = GENERATE_COPY(take(5, random(min_k, max_k)));
+
+  // Prepare input and output
+  auto keys_in   = thrust::make_counting_iterator(key_t{});
+  auto values_in = thrust::make_counting_iterator(value_t{});
+  c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
+  c2h::device_vector<value_t> values_out(k, static_cast<value_t>(42));
+
+  // Run the device-wide API
+  const bool is_descending = GENERATE(false, true);
+  if (!is_descending)
+  {
+    topk_min_pairs(
+      keys_in,
+      thrust::raw_pointer_cast(keys_out.data()),
+      values_in,
+      thrust::raw_pointer_cast(values_out.data()),
+      num_items,
+      k);
+  }
+  else
+  {
+    topk_pairs(keys_in,
+               thrust::raw_pointer_cast(keys_out.data()),
+               values_in,
+               thrust::raw_pointer_cast(values_out.data()),
+               num_items,
+               k);
+  }
+
+  // Verify results
+  bool res;
+  if (is_descending)
+  {
+    auto keys_expected_it   = thrust::make_reverse_iterator(keys_in + num_items);
+    auto values_expected_it = thrust::make_reverse_iterator(values_in + num_items);
+    res = check_results(keys_expected_it, values_expected_it, keys_out, values_out, num_items, k, is_descending);
+  }
+  else
+  {
+    auto keys_expected_it   = keys_in;
+    auto values_expected_it = values_in;
+    res = check_results(keys_expected_it, values_expected_it, keys_out, values_out, num_items, k, is_descending);
+  }
+
   REQUIRE(res == true);
 }
