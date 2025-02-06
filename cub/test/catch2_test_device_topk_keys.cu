@@ -13,17 +13,17 @@
 #include <algorithm>
 
 #include "catch2_radix_sort_helper.cuh"
-#include "catch2_test_helper.h"
 #include "catch2_test_launch_helper.h"
+#include <c2h/catch2_test_helper.h>
 
 // %PARAM% TEST_LAUNCH lid 0:1:2
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKKeys, topk_keys);
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinKeys, topk_min_keys);
 
-using key_types       = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+using key_types       = c2h::type_list<cuda::std::uint16_t, cuda::std::uint32_t, cuda::std::uint64_t>;
 using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
 
-CUB_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_types, num_items_types)
+C2H_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_types, num_items_types)
 {
   using key_t       = c2h::get<0, TestType>;
   using num_items_t = c2h::get<1, TestType>;
@@ -43,7 +43,7 @@ CUB_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
   c2h::device_vector<key_t> keys_out(k);
 
   const int num_key_seeds = 1;
-  c2h::gen(CUB_SEED(num_key_seeds), keys_in);
+  c2h::gen(C2H_SEED(num_key_seeds), keys_in);
 
   const bool is_descending = GENERATE(false, true);
 
@@ -57,7 +57,7 @@ CUB_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
     topk_keys(thrust::raw_pointer_cast(keys_in.data()), thrust::raw_pointer_cast(keys_out.data()), num_items, k);
   }
 
-  // Sort the entire input data as result referece
+  // Sort the entire input data as result reference
   c2h::host_vector<key_t> h_keys_in(keys_in);
   c2h::host_vector<key_t> host_results;
   host_results.resize(keys_out.size());
@@ -86,7 +86,7 @@ CUB_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
   REQUIRE(host_results == device_results);
 }
 
-CUB_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", key_types, num_items_types)
+C2H_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", key_types, num_items_types)
 {
   using key_t       = c2h::get<0, TestType>;
   using num_items_t = c2h::get<1, TestType>;

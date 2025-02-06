@@ -5,7 +5,7 @@
 
 #include <nvbench_helper.cuh>
 
-// %RANGE% TUNE_ITEMS_PER_THREAD ipt 4:32:4
+// %RANGE% TUNE_ITEMS_PER_THREAD ipt 4:12:4
 // %RANGE% TUNE_THREADS_PER_BLOCK tpb 256:1024:256
 
 #if !TUNE_BASE
@@ -16,19 +16,16 @@ struct policy_hub_t
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = TUNE_ITEMS_PER_THREAD;
 
-    static constexpr int ITEMS_PER_THREAD =
-      CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
+    static constexpr int ITEMS_PER_THREAD = CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
 
-    static constexpr int BITS_PER_PASS = cub::detail::topk::calc_bits_per_pass<KeyInT>(); //@TODO:add tuning axis?
-    static constexpr int COEFFICIENT_FOR_BUFFER = 128; //@TODO:add tuning axis?
-
+    static constexpr int BITS_PER_PASS          = cub::detail::topk::calc_bits_per_pass<KeyInT>();
+    static constexpr int COEFFICIENT_FOR_BUFFER = 128;
     using TopKPolicyT =
       cub::AgentTopKPolicy<TUNE_THREADS_PER_BLOCK,
                            ITEMS_PER_THREAD,
                            BITS_PER_PASS,
                            COEFFICIENT_FOR_BUFFER,
-                           cub::BLOCK_LOAD_DIRECT,
-                           cub::BLOCK_HISTO_ATOMIC,
+                           cub::BLOCK_LOAD_VECTORIZE,
                            cub::BLOCK_SCAN_WARP_SCANS>;
   };
 
@@ -44,8 +41,6 @@ void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, NumItemT
   using value_input_it_t  = const ValueT*;
   using value_output_it_t = ValueT*;
   using num_items_t       = NumItemT;
-  // using select_op_t        = less_then_t<T>;
-  // using equality_op_t      = cub::NullType;
 
   constexpr bool select_min = false;
 
@@ -53,7 +48,7 @@ void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, NumItemT
   using policy_t   = policy_hub_t<KeyT, NumItemT>;
   using dispatch_t = cub::
     DispatchTopK<key_input_it_t, key_output_it_t, value_input_it_t, value_output_it_t, num_items_t, select_min, policy_t>;
-#else // TUNE_BASE
+#else
   using dispatch_t =
     cub::DispatchTopK<key_input_it_t, key_output_it_t, value_input_it_t, value_output_it_t, num_items_t, select_min>;
 #endif // TUNE_BASE
@@ -116,7 +111,7 @@ void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, NumItemT
   });
 }
 
-NVBENCH_BENCH_TYPES(topk_pairs, NVBENCH_TYPE_AXES(fundamental_types, fundamental_types, offset_types))
+NVBENCH_BENCH_TYPES(topk_pairs, NVBENCH_TYPE_AXES(integral_types, integral_types, offset_types))
   .set_name("base")
   .set_type_axes_names({"KeyT{ct}", "ValueT{ct}", "NumItemT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(16, 28, 4))

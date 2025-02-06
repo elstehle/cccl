@@ -75,8 +75,8 @@
 #include <cub/device/device_segmented_reduce.cuh>
 #include <cub/device/device_segmented_sort.cuh>
 #include <cub/device/device_select.cuh>
-#include <cub/device/device_transform.cuh>
 #include <cub/device/device_topk.cuh>
+#include <cub/device/device_transform.cuh>
 
 // Grid
 #include <cub/grid/grid_even_share.cuh>

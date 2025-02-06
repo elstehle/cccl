@@ -5,7 +5,7 @@
 
 #include <nvbench_helper.cuh>
 
-// %RANGE% TUNE_ITEMS_PER_THREAD ipt 4:32:4
+// %RANGE% TUNE_ITEMS_PER_THREAD ipt 4:12:4
 // %RANGE% TUNE_THREADS_PER_BLOCK tpb 256:1024:256
 
 #if !TUNE_BASE
@@ -15,20 +15,17 @@ struct policy_hub_t
   struct policy_t : cub::ChainedPolicy<300, policy_t, policy_t>
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = TUNE_ITEMS_PER_THREAD;
+    static constexpr int ITEMS_PER_THREAD            = CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
 
-    static constexpr int ITEMS_PER_THREAD =
-      CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
-
-    static constexpr int BITS_PER_PASS = cub::detail::topk::calc_bits_per_pass<KeyInT>(); //@TODO:add tuning axis?
-    static constexpr int COEFFICIENT_FOR_BUFFER = 128; //@TODO:add tuning axis?
+    static constexpr int BITS_PER_PASS          = cub::detail::topk::calc_bits_per_pass<KeyInT>();
+    static constexpr int COEFFICIENT_FOR_BUFFER = 128;
 
     using TopKPolicyT =
       cub::AgentTopKPolicy<TUNE_THREADS_PER_BLOCK,
                            ITEMS_PER_THREAD,
                            BITS_PER_PASS,
                            COEFFICIENT_FOR_BUFFER,
-                           cub::BLOCK_LOAD_DIRECT,
-                           cub::BLOCK_HISTO_ATOMIC,
+                           cub::BLOCK_LOAD_VECTORIZE,
                            cub::BLOCK_SCAN_WARP_SCANS>;
   };
 

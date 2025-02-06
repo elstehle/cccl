@@ -10,7 +10,6 @@
 
 #include <cub/config.cuh>
 
-#include <cub/block/block_histogram.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/block/block_store.cuh>
@@ -71,12 +70,8 @@ _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, u
  * @tparam _LOAD_ALGORITHM
  *   The BlockLoad algorithm to use
  *
- * @tparam _HISTOGRAM_ALGORITHM
- *   The BlockHistogram algorithm to use
- *
  * @tparam _SCAN_ALGORITHM
  *   The BlockScan algorithm to use
- * @todo remove the histogram algorithm?
  */
 
 template <int _BLOCK_THREADS,
@@ -84,7 +79,6 @@ template <int _BLOCK_THREADS,
           int _BITS_PER_PASS,
           int _COEFFICIENT_FOR_BUFFER,
           BlockLoadAlgorithm _LOAD_ALGORITHM,
-          BlockHistogramAlgorithm _HISTOGRAM_ALGORITHM,
           BlockScanAlgorithm _SCAN_ALGORITHM>
 struct AgentTopKPolicy
 {
@@ -99,9 +93,6 @@ struct AgentTopKPolicy
 
   /// The BlockLoad algorithm to use
   static constexpr BlockLoadAlgorithm LOAD_ALGORITHM = _LOAD_ALGORITHM;
-
-  /// The BlockHistogram algorithm to use
-  static constexpr BlockHistogramAlgorithm HISTOGRAM_ALGORITHM = _HISTOGRAM_ALGORITHM;
 
   /// The BlockScan algorithm to use
   static constexpr BlockScanAlgorithm SCAN_ALGORITHM = _SCAN_ALGORITHM;
@@ -149,6 +140,8 @@ struct alignas(128) Counter
   // the k-th key are written from back to front. We need to keep count of them
   // separately because the number of elements that <= the k-th key might exceed k.
   alignas(128) NumItemsT out_back_cnt;
+  // The 'alignas' is necessary to improve the performance of global memory accessing by isolating the request,
+  // especially for the segment version.
 };
 
 /**
@@ -218,7 +211,7 @@ struct ExtractBinOp
 };
 
 /**
- * Check if the input element is still a candidate.
+ * Check if the input element is still a candidate for the target pass.
  */
 template <typename T, bool FLIP, int BITS_PER_PASS>
 struct IdentifyCandidatesOp
@@ -245,8 +238,7 @@ struct IdentifyCandidatesOp
 
     bits = (bits >> start_bit) << start_bit;
 
-    auto diff = bits - kth_key_bits;
-    return (diff > bits) ? -1 : (diff == 0) ? 0 : 1;
+    return (bits < kth_key_bits) ? -1 : (bits == kth_key_bits) ? 0 : 1;
   }
 };
 
@@ -561,7 +553,7 @@ struct AgentTopK
     {
       return;
     }
-    CTA_SYNC();
+    __syncthreads();
 
     // merge histograms produced by individual blocks
     for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
@@ -581,10 +573,10 @@ struct AgentTopK
     NumItemsT thread_data[items_per_thread_for_scan];
 
     BlockLoadTransT(temp_storage.load_trans).Load(histogram, thread_data, num_buckets, 0);
-    CTA_SYNC();
+    __syncthreads();
 
     BlockScanT(temp_storage.scan).InclusiveSum(thread_data, thread_data);
-    CTA_SYNC();
+    __syncthreads();
 
     BlockStoreTransT(temp_storage.store_trans).Store(histogram_smem, thread_data, num_buckets);
   }
@@ -755,7 +747,6 @@ struct AgentTopK
 
     const bool early_stop   = (current_len == current_k);
     const NumItemsT buf_len = CUB_MAX(256, num_items / COEFFICIENT_FOR_BUFFER);
-
     if (previous_len > buf_len)
     {
       load_from_original_input = true;
@@ -779,13 +770,13 @@ struct AgentTopK
     {
       histogram_smem[i] = 0;
     }
-    CTA_SYNC();
+    __syncthreads();
 
     FilterAndHistogram<IS_FIRST_PASS>(
       in_buf, in_idx_buf, out_buf, out_idx_buf, previous_len, counter, histogram, histogram_smem, pass, early_stop);
 
     __threadfence();
-    // We need this `__threadfence()` because the global array `histogram` will be accessed by other threads using
+    // We need this `__threadfence()` because the global array `histogram` will be accessed by other threads with
     // non-atomic operations.
 
     bool is_last_block = false;
@@ -795,7 +786,7 @@ struct AgentTopK
       is_last_block         = (finished == (gridDim.x - 1));
     }
 
-    if (CTA_SYNC_OR(is_last_block))
+    if (__syncthreads_or(is_last_block))
     {
       if (threadIdx.x == 0)
       {
@@ -815,7 +806,7 @@ struct AgentTopK
 
       constexpr int num_passes = CalcNumPasses<KeyInT, BITS_PER_PASS>();
       Scan(histogram, histogram_smem);
-      CTA_SYNC();
+      __syncthreads();
       ChooseBucket(counter, histogram_smem, current_k, pass);
 
       // reset for next pass

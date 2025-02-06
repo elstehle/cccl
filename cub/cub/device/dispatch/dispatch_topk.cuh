@@ -12,7 +12,6 @@
 #include <cub/config.cuh>
 
 #include <cub/agent/agent_topk.cuh>
-#include <cub/block/block_histogram.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/util_deprecated.cuh>
 #include <cub/util_device.cuh>
@@ -52,8 +51,8 @@ struct sm90_tuning
   static constexpr int threads = DEFAULT_NUM_THREADS; // Number of threads per block
 
   static constexpr int nominal_4b_items_per_thread = 4;
-  static constexpr int items_per_scaler            = CUB_MAX(4 / sizeof(KeyInT), 1);
-  static constexpr int items                       = items_per_scaler * nominal_4b_items_per_thread;
+  static constexpr int items                       = CUB_MAX(1, (nominal_4b_items_per_thread * 4 / sizeof(KeyInT)));
+  // Try to load 16 Bytes per thread. (int64(items=2);int32(items=4);int16(items=8)).
 
   static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
   static constexpr int COEFFICIENT_FOR_BUFFER = 128;
@@ -70,7 +69,6 @@ struct device_topk_policy_hub
   struct DefaultTuning
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 4;
-
     static constexpr int ITEMS_PER_THREAD =
       CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
 
@@ -83,7 +81,6 @@ struct device_topk_policy_hub
                       BITS_PER_PASS,
                       COEFFICIENT_FOR_BUFFER,
                       BLOCK_LOAD_VECTORIZE,
-                      BLOCK_HISTO_ATOMIC,
                       BLOCK_SCAN_WARP_SCANS>;
   };
 
@@ -102,7 +99,6 @@ struct device_topk_policy_hub
                       tuning::BITS_PER_PASS,
                       tuning::COEFFICIENT_FOR_BUFFER,
                       tuning::load_algorithm,
-                      BLOCK_HISTO_ATOMIC,
                       BLOCK_SCAN_WARP_SCANS>;
   };
 
@@ -721,6 +717,7 @@ struct DispatchTopK : SelectedPolicy
               k,
               identify_candidates_op,
               pass);
+      // pass==num_passes to align with the usage of identify_candidates_op in previous passes.
     } while (0);
     return error;
   }
