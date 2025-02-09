@@ -133,27 +133,29 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::AgentLargeBufferPolicyT::BLO
     return;
   }
 
-  __shared__ BufferOffsetT block_buffer_id;
-  __shared__ BufferSizeT block_tile_offset_within_buffer;
+  __shared__ BufferOffsetT block_buffer_id[2];
+  __shared__ BufferSizeT block_tile_offset_within_buffer[2];
+  int selection_buffer = 0;
 
   // Binary search the buffer that this tile belongs to
   if (threadIdx.x == 0)
   {
-    block_buffer_id = UpperBound(buffer_tile_offsets, num_blev_buffers, tile_id) - 1;
-    block_tile_offset_within_buffer =
-      static_cast<BufferSizeT>(tile_id - buffer_tile_offsets[block_buffer_id]) * TILE_SIZE;
+    block_buffer_id[selection_buffer] = UpperBound(buffer_tile_offsets, num_blev_buffers, tile_id) - 1;
+    block_buffer_id[selection_buffer] = (::cuda::std::min)(block_buffer_id[selection_buffer], num_blev_buffers - 1);
+    block_tile_offset_within_buffer[selection_buffer] =
+      static_cast<BufferSizeT>(tile_id - buffer_tile_offsets[block_buffer_id[selection_buffer]]) * TILE_SIZE;
   }
 
   // Make sure thread 0 has written the buffer this thread block is assigned to
   __syncthreads();
 
-  const BufferOffsetT buffer_id = block_buffer_id;
+  const BufferOffsetT buffer_id = block_buffer_id[selection_buffer];
 
   // The relative offset of this tile within the buffer it's assigned to
-  BufferSizeT tile_offset_within_buffer = block_tile_offset_within_buffer;
+  BufferSizeT tile_offset_within_buffer = block_tile_offset_within_buffer[selection_buffer];
 
   // While there's still tiles of bytes from block-level buffers to copied
-  while (buffer_id < num_blev_buffers && tile_offset_within_buffer < buffer_sizes[buffer_id])
+  while (buffer_id < num_blev_buffers - 1 && tile_offset_within_buffer < buffer_sizes[buffer_id])
   {
     // Tiny remainders are copied without vectorizing loads
     if (buffer_sizes[buffer_id] - tile_offset_within_buffer <= 32)
@@ -184,23 +186,25 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::AgentLargeBufferPolicyT::BLO
 
     // Make sure thread 0 does not overwrite the buffer id before other threads have finished with
     // the prior iteration of the loop
-    __syncthreads();
+    // __syncthreads();
+    selection_buffer ^= 1;
 
     // Binary search the buffer that this tile belongs to
     if (threadIdx.x == 0)
     {
-      block_buffer_id = UpperBound(buffer_tile_offsets, num_blev_buffers, tile_id) - 1;
-      block_tile_offset_within_buffer =
-        static_cast<BufferSizeT>(tile_id - buffer_tile_offsets[block_buffer_id]) * TILE_SIZE;
+      block_buffer_id[selection_buffer] = UpperBound(buffer_tile_offsets, num_blev_buffers, tile_id) - 1;
+      block_buffer_id[selection_buffer] = (::cuda::std::min)(block_buffer_id[selection_buffer], num_blev_buffers - 1);
+      block_tile_offset_within_buffer[selection_buffer] =
+        static_cast<BufferSizeT>(tile_id - buffer_tile_offsets[block_buffer_id[selection_buffer]]) * TILE_SIZE;
     }
 
     // Make sure thread 0 has written the buffer this thread block is assigned to
     __syncthreads();
 
-    const BufferOffsetT buffer_id = block_buffer_id;
+    const BufferOffsetT buffer_id = block_buffer_id[selection_buffer];
 
     // The relative offset of this tile within the buffer it's assigned to
-    BufferSizeT tile_offset_within_buffer = block_tile_offset_within_buffer;
+    BufferSizeT tile_offset_within_buffer = block_tile_offset_within_buffer[selection_buffer];
   };
 }
 
