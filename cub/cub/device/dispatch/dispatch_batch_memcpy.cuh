@@ -133,10 +133,12 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::AgentLargeBufferPolicyT::BLO
     return;
   }
 
+  __shared__ BufferOffsetT block_buffer_id;
+  __shared__ BufferSizeT block_tile_offset_within_buffer;
+
   // While there's still tiles of bytes from block-level buffers to copied
   do
   {
-    __shared__ BufferOffsetT block_buffer_id;
 
     // Make sure thread 0 does not overwrite the buffer id before other threads have finished with
     // the prior iteration of the loop
@@ -146,6 +148,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::AgentLargeBufferPolicyT::BLO
     if (threadIdx.x == 0)
     {
       block_buffer_id = UpperBound(buffer_tile_offsets, num_blev_buffers, tile_id) - 1;
+      block_tile_offset_within_buffer = static_cast<BufferSizeT>(tile_id - buffer_tile_offsets[block_buffer_id]) * TILE_SIZE;
     }
 
     // Make sure thread 0 has written the buffer this thread block is assigned to
@@ -154,8 +157,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::AgentLargeBufferPolicyT::BLO
     const BufferOffsetT buffer_id = block_buffer_id;
 
     // The relative offset of this tile within the buffer it's assigned to
-    BufferSizeT tile_offset_within_buffer =
-      static_cast<BufferSizeT>(tile_id - buffer_tile_offsets[buffer_id]) * TILE_SIZE;
+    BufferSizeT tile_offset_within_buffer = block_tile_offset_within_buffer;
 
     // If the tile has already reached beyond the work of the end of the last buffer
     if (buffer_id >= num_blev_buffers - 1 && tile_offset_within_buffer > buffer_sizes[buffer_id])
