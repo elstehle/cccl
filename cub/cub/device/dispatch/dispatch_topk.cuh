@@ -13,7 +13,6 @@
 
 #include <cub/agent/agent_topk.cuh>
 #include <cub/block/block_load.cuh>
-#include <cub/util_deprecated.cuh>
 #include <cub/util_device.cuh>
 #include <cub/util_math.cuh>
 #include <cub/util_temporary_storage.cuh>
@@ -51,7 +50,7 @@ struct sm90_tuning
   static constexpr int threads = DEFAULT_NUM_THREADS; // Number of threads per block
 
   static constexpr int nominal_4b_items_per_thread = 4;
-  static constexpr int items                       = CUB_MAX(1, (nominal_4b_items_per_thread * 4 / sizeof(KeyInT)));
+  static constexpr int items = cuda::std::max(1, (nominal_4b_items_per_thread * 4 / (int) sizeof(KeyInT)));
   // Try to load 16 Bytes per thread. (int64(items=2);int32(items=4);int16(items=8)).
 
   static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
@@ -69,8 +68,8 @@ struct device_topk_policy_hub
   struct DefaultTuning
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 4;
-    static constexpr int ITEMS_PER_THREAD =
-      CUB_MIN(NOMINAL_4B_ITEMS_PER_THREAD, CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT))));
+    static constexpr int ITEMS_PER_THREAD            = cuda::std::min(
+      NOMINAL_4B_ITEMS_PER_THREAD, cuda::std::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / (int) sizeof(KeyInT))));
 
     static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
     static constexpr int COEFFICIENT_FOR_BUFFER = 128;
@@ -205,7 +204,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     NumItemsT* in_idx_buf,
     KeyInT* out_buf,
     NumItemsT* out_idx_buf,
-    Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT num_items,
     NumItemsT k,
@@ -313,7 +312,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     ValueOutputIteratorT d_values_out,
     KeyInT* in_buf,
     NumItemsT* in_idx_buf,
-    Counter<detail::value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT num_items,
     NumItemsT k,
@@ -395,7 +394,7 @@ template <typename KeyInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
           bool SelectMin,
-          typename SelectedPolicy = device_topk_policy_hub<detail::value_t<KeyInputIteratorT>, NumItemsT>>
+          typename SelectedPolicy = device_topk_policy_hub<detail::it_value_t<KeyInputIteratorT>, NumItemsT>>
 struct DispatchTopK : SelectedPolicy
 {
   /// Device-accessible allocation of temporary storage.
@@ -429,7 +428,7 @@ struct DispatchTopK : SelectedPolicy
 
   int ptx_version;
 
-  using KeyInT                    = detail::value_t<KeyInputIteratorT>;
+  using KeyInT                    = detail::it_value_t<KeyInputIteratorT>;
   static constexpr bool KEYS_ONLY = std::is_same<ValueInputIteratorT, NullType>::value;
   /*
    *
@@ -546,7 +545,7 @@ struct DispatchTopK : SelectedPolicy
       // Specify temporary storage allocation requirements
       size_t size_counter        = sizeof(Counter<KeyInT, NumItemsT>);
       size_t size_histogram      = num_buckets * sizeof(NumItemsT);
-      size_t num_candidates      = CUB_MAX(256, num_items / Policy::COEFFICIENT_FOR_BUFFER);
+      size_t num_candidates      = cuda::std::max((size_t) 256, (size_t) num_items / Policy::COEFFICIENT_FOR_BUFFER);
       size_t aligend_bytes       = 256;
       size_t allocation_sizes[6] = {
         RoundUp(size_counter, aligend_bytes),
@@ -559,7 +558,7 @@ struct DispatchTopK : SelectedPolicy
       // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
       void* allocations[6] = {};
 
-      error = CubDebug(AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes));
+      error = CubDebug(detail::AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes));
       if (cudaSuccess != error)
       {
         break;
@@ -619,8 +618,8 @@ struct DispatchTopK : SelectedPolicy
       topk_grid_size.z       = 1;
       topk_grid_size.y       = 1;
       int topk_blocks_per_sm = CalculateBlocksPerSM(topk_kernel, block_threads);
-      topk_grid_size.x       = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
-                                 (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+      topk_grid_size.x       = cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
+                                        (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
       // Initialize address variables
       Counter<KeyInT, NumItemsT>* counter;
       counter = static_cast<decltype(counter)>(allocations[0]);
@@ -654,9 +653,10 @@ struct DispatchTopK : SelectedPolicy
           dim3 topk_firstpass_grid_size;
           topk_firstpass_grid_size.z = 1;
           topk_firstpass_grid_size.y = 1;
-          topk_firstpass_grid_size.x = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
-                                               (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
-          THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_firstpass_grid_size, block_threads, 0, stream)
+          topk_firstpass_grid_size.x =
+            cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
+                           (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+          THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_firstpass_grid_size, block_threads, 0, stream)
             .doit(
               topk_firstpass_kernel,
               d_keys_in,
@@ -677,7 +677,7 @@ struct DispatchTopK : SelectedPolicy
         }
         else
         {
-          THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
+          THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
             .doit(
               topk_kernel,
               d_keys_in,
@@ -701,9 +701,9 @@ struct DispatchTopK : SelectedPolicy
       IdentifyCandidatesOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(
         counter->kth_key_bits, pass);
       topk_blocks_per_sm = CalculateBlocksPerSM(topk_lastfilter_kernel, block_threads);
-      topk_grid_size.x   = CUB_MIN((unsigned int) topk_blocks_per_sm * num_sms,
-                                 (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
-      THRUST_NS_QUALIFIER::cuda_cub::launcher::triple_chevron(topk_grid_size, block_threads, 0, stream)
+      topk_grid_size.x   = cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
+                                        (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+      THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
         .doit(topk_lastfilter_kernel,
               d_keys_in,
               d_keys_out,

@@ -201,7 +201,7 @@ struct ExtractBinOp
   {
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
-    _CCCL_IF_CONSTEXPR (FLIP)
+    if constexpr (FLIP)
     {
       bits = ~bits;
     }
@@ -231,7 +231,7 @@ struct IdentifyCandidatesOp
     auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
     bits      = Traits<T>::TwiddleIn(bits);
 
-    _CCCL_IF_CONSTEXPR (FLIP)
+    if constexpr (FLIP)
     {
       bits = ~bits;
     }
@@ -290,7 +290,7 @@ struct AgentTopK
   // Types and constants
   //---------------------------------------------------------------------
   // The key and value type
-  using KeyInT = detail::value_t<KeyInputIteratorT>;
+  using KeyInT = detail::it_value_t<KeyInputIteratorT>;
 
   static constexpr int BLOCK_THREADS          = AgentTopKPolicyT::BLOCK_THREADS;
   static constexpr int ITEMS_PER_THREAD       = AgentTopKPolicyT::ITEMS_PER_THREAD;
@@ -459,7 +459,7 @@ struct AgentTopK
     int pass,
     bool early_stop)
   {
-    _CCCL_IF_CONSTEXPR (IS_FIRST_PASS)
+    if constexpr (IS_FIRST_PASS)
     {
       // Passed to vectorized loading, this function executes in all blocks in parallel,
       // i.e. the work is split along the input (both, in batches and chunks of a single
@@ -499,7 +499,7 @@ struct AgentTopK
             {
               pos             = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
               d_keys_out[pos] = key;
-              _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+              if constexpr (!KEYS_ONLY)
               {
                 index             = in_idx_buf ? in_idx_buf[i] : i;
                 d_values_out[pos] = d_values_in[index];
@@ -511,7 +511,7 @@ struct AgentTopK
               {
                 pos          = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
                 out_buf[pos] = key;
-                _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+                if constexpr (!KEYS_ONLY)
                 {
                   index            = in_idx_buf ? in_idx_buf[i] : i;
                   out_idx_buf[pos] = index;
@@ -532,7 +532,7 @@ struct AgentTopK
           {
             NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
             d_keys_out[pos] = key;
-            _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+            if constexpr (!KEYS_ONLY)
             {
               NumItemsT index   = in_idx_buf ? in_idx_buf[i] : i;
               d_values_out[pos] = d_values_in[index];
@@ -629,7 +629,7 @@ struct AgentTopK
   _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeLastFilter(
     KeyInT* in_buf, NumItemsT* in_idx_buf, Counter<KeyInT, NumItemsT>* counter, NumItemsT* histogram, int k, int pass)
   {
-    const NumItemsT buf_len  = CUB_MAX(256, num_items / COEFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len  = cuda::std::max((NumItemsT) 256, num_items / COEFFICIENT_FOR_BUFFER);
     load_from_original_input = counter->previous_len > buf_len;
     NumItemsT current_len    = load_from_original_input ? num_items : counter->previous_len;
     in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
@@ -651,7 +651,7 @@ struct AgentTopK
       {
         NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
         d_keys_out[pos] = key;
-        _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+        if constexpr (!KEYS_ONLY)
         {
           NumItemsT index = in_idx_buf ? in_idx_buf[i] : i;
 
@@ -670,7 +670,7 @@ struct AgentTopK
         {
           NumItemsT pos   = k - 1 - back_pos;
           d_keys_out[pos] = key;
-          _CCCL_IF_CONSTEXPR (!KEYS_ONLY)
+          if constexpr (!KEYS_ONLY)
           {
             d_values_out[pos] = d_values_in[new_idx];
           }
@@ -746,7 +746,7 @@ struct AgentTopK
     }
 
     const bool early_stop   = (current_len == current_k);
-    const NumItemsT buf_len = CUB_MAX(256, num_items / COEFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len = cuda::std::max((NumItemsT) 256, num_items / COEFFICIENT_FOR_BUFFER);
     if (previous_len > buf_len)
     {
       load_from_original_input = true;

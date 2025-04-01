@@ -15,7 +15,7 @@ struct policy_hub_t
   struct policy_t : cub::ChainedPolicy<300, policy_t, policy_t>
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = TUNE_ITEMS_PER_THREAD;
-    static constexpr int ITEMS_PER_THREAD            = CUB_MAX(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
+    static constexpr int ITEMS_PER_THREAD = cuda::std::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
 
     static constexpr int BITS_PER_PASS          = cub::detail::topk::calc_bits_per_pass<KeyInT>();
     static constexpr int COEFFICIENT_FOR_BUFFER = 128;
