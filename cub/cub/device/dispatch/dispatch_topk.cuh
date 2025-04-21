@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 /**
@@ -124,7 +124,10 @@ struct device_topk_policy_hub
  *   **[inferred]** Random-access output iterator type for writing output values @iterator
  *
  * @tparam NumItemsT
- *  Data Type for variables: num_items and k
+ *  Data Type for variables: num_items
+ *
+ * @tparam KItemsT
+ *  Data Type for variables: k
  *
  * @tparam KeyInT
  *  Data Type for input keys
@@ -172,7 +175,7 @@ struct device_topk_policy_hub
  *   Number of items to be processed
  *
  * @param[in] k
- *   The K value. Will find K elements from num_items elements
+ *   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
  *
  * @param[in] extract_bin_op
  *   Extract the bin operator
@@ -189,6 +192,7 @@ template <typename ChainedPolicyT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
+          typename KItemsT,
           typename KeyInT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT,
@@ -204,10 +208,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     NumItemsT* in_idx_buf,
     KeyInT* out_buf,
     NumItemsT* out_idx_buf,
-    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT, KItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     ExtractBinOpT extract_bin_op,
     IdentifyCandidatesOpT identify_candidates_op,
     int pass)
@@ -222,6 +226,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
               ExtractBinOpT,
               IdentifyCandidatesOpT,
               NumItemsT,
+              KItemsT,
               SelectMin>;
 
   // Shared memory storage
@@ -248,7 +253,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  *   **[inferred]** Random-access output iterator type for writing output values @iterator
  *
  * @tparam NumItemsT
- *  Data Type for variables: num_items and k
+ *  Data Type for variables: num_items
+ *
+ * @tparam KItemsT
+ *  Data Type for variables: k
  *
  * @tparam KeyInT
  *  Data Type for input keys
@@ -287,7 +295,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  *   Number of items to be processed
  *
  * @param[in] k
- *   The K value. Will find K elements from num_items elements
+ *   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
  *
  * @param[in] identify_candidates_op
  *   Extract element filter operator
@@ -301,6 +309,7 @@ template <typename ChainedPolicyT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
+          typename KItemsT,
           typename KeyInT,
           typename IdentifyCandidatesOpT,
           bool SelectMin>
@@ -312,10 +321,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
     ValueOutputIteratorT d_values_out,
     KeyInT* in_buf,
     NumItemsT* in_idx_buf,
-    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT>* counter,
+    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT, KItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     IdentifyCandidatesOpT identify_candidates_op,
     int pass)
 {
@@ -330,6 +339,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
               ExtractBinOpT, // ExtractBinOp operator (not used)
               IdentifyCandidatesOpT,
               NumItemsT,
+              KItemsT,
               SelectMin>;
 
   // Shared memory storage
@@ -353,7 +363,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  *   **[inferred]** Random-access input iterator type for writing output values @iterator
  *
  * @tparam NumItemsT
- *  Type of variable num_items and k
+ *  Data Type for variables: num_items
+ *
+ * @tparam KItemsT
+ *  Data Type for variables: k
  *
  * @tparam SelectMin
  *   Determine whether to select the smallest (SelectMin=true) or largest (SelectMin=false) K elements.
@@ -381,7 +394,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  *   Number of items to be processed
  *
  * @param[in] k
- *   The K value. Will find K elements from num_items elements
+ *   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
  *
  * @param[in] stream
  *   @rst
@@ -393,6 +406,7 @@ template <typename KeyInputIteratorT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
           typename NumItemsT,
+          typename KItemsT,
           bool SelectMin,
           typename SelectedPolicy = device_topk_policy_hub<detail::it_value_t<KeyInputIteratorT>, NumItemsT>>
 struct DispatchTopK : SelectedPolicy
@@ -421,7 +435,7 @@ struct DispatchTopK : SelectedPolicy
   NumItemsT num_items;
 
   /// The K value. Will find K elements from num_items elements
-  NumItemsT k;
+  KItemsT k;
 
   /// CUDA stream to launch kernels within. Default is stream<sub>0</sub>.
   cudaStream_t stream;
@@ -455,7 +469,7 @@ struct DispatchTopK : SelectedPolicy
    *   Number of items to be processed
    *
    * @param[in] k
-   *   The K value. Will find K elements from num_items elements
+   *   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
    *
    * @param[in] stream
    *   @rst
@@ -470,7 +484,7 @@ struct DispatchTopK : SelectedPolicy
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     cudaStream_t stream,
     int ptx_version)
       : d_temp_storage(d_temp_storage)
@@ -505,12 +519,6 @@ struct DispatchTopK : SelectedPolicy
     return topk_blocks_per_sm;
   }
 
-  template <typename T>
-  CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE T RoundUp(T num, T round_value)
-  {
-    return ((num - 1) / round_value + 1) * round_value;
-  }
-
   template <typename ActivePolicyT,
             typename TopKFirstPassKernelPtrT,
             typename TopKKernelPtrT,
@@ -534,26 +542,18 @@ struct DispatchTopK : SelectedPolicy
 
     do
     {
-      // Get device ordinal
-      int device_ordinal;
-      error = CubDebug(cudaGetDevice(&device_ordinal));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-
       // Specify temporary storage allocation requirements
-      size_t size_counter        = sizeof(Counter<KeyInT, NumItemsT>);
-      size_t size_histogram      = num_buckets * sizeof(NumItemsT);
-      size_t num_candidates      = cuda::std::max((size_t) 256, (size_t) num_items / Policy::COEFFICIENT_FOR_BUFFER);
-      size_t aligend_bytes       = 256;
+      size_t size_counter   = sizeof(Counter<KeyInT, NumItemsT, KItemsT>);
+      size_t size_histogram = num_buckets * sizeof(NumItemsT);
+      size_t num_candidates = cuda::std::max((size_t) 256, (size_t) num_items / Policy::COEFFICIENT_FOR_BUFFER);
+
       size_t allocation_sizes[6] = {
-        RoundUp(size_counter, aligend_bytes),
-        RoundUp(size_histogram, aligend_bytes),
-        RoundUp(num_candidates * sizeof(KeyInT), aligend_bytes),
-        RoundUp(num_candidates * sizeof(KeyInT), aligend_bytes),
-        KEYS_ONLY ? 0 : RoundUp(num_candidates * sizeof(NumItemsT), aligend_bytes),
-        KEYS_ONLY ? 0 : RoundUp(num_candidates * sizeof(NumItemsT), aligend_bytes)};
+        size_counter,
+        size_histogram,
+        num_candidates * sizeof(KeyInT),
+        num_candidates * sizeof(KeyInT),
+        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT),
+        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT)};
 
       // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
       void* allocations[6] = {};
@@ -621,7 +621,7 @@ struct DispatchTopK : SelectedPolicy
       topk_grid_size.x       = cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
                                         (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
       // Initialize address variables
-      Counter<KeyInT, NumItemsT>* counter;
+      Counter<KeyInT, NumItemsT, KItemsT>* counter;
       counter = static_cast<decltype(counter)>(allocations[0]);
       NumItemsT* histogram;
       histogram              = static_cast<decltype(histogram)>(allocations[1]);
@@ -732,6 +732,7 @@ struct DispatchTopK : SelectedPolicy
                        ValueInputIteratorT,
                        ValueOutputIteratorT,
                        NumItemsT,
+                       KItemsT,
                        KeyInT,
                        ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
@@ -744,21 +745,24 @@ struct DispatchTopK : SelectedPolicy
                        ValueInputIteratorT,
                        ValueOutputIteratorT,
                        NumItemsT,
+                       KItemsT,
                        KeyInT,
                        ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
                        SelectMin,
                        /*IsFirstPass*/ false>,
 
-      DeviceTopKLastFilterKernel<MaxPolicyT,
-                                 KeyInputIteratorT,
-                                 KeyOutputIteratorT,
-                                 ValueInputIteratorT,
-                                 ValueOutputIteratorT,
-                                 NumItemsT,
-                                 KeyInT,
-                                 IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                                 SelectMin>);
+      DeviceTopKLastFilterKernel<
+        MaxPolicyT,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        NumItemsT,
+        KItemsT,
+        KeyInT,
+        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        SelectMin>);
   }
 
   /*
@@ -786,7 +790,7 @@ struct DispatchTopK : SelectedPolicy
    *   Number of items to be processed
    *
    * @param[in] k
-   *   The K value. Will find K elements from num_items elements
+   *   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
    *
    * @param[in] stream
    *   @rst
@@ -801,7 +805,7 @@ struct DispatchTopK : SelectedPolicy
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     cudaStream_t stream)
   {
     using MaxPolicyT = typename SelectedPolicy::MaxPolicy;

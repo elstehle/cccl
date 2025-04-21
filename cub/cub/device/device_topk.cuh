@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! cub::DeviceTopK provides device-wide, parallel operations for finding K largest (or smallest) items from sequences
-//! of unordered data items residing within device-accessible memory.
+//! cub::DeviceTopK provides device-wide, parallel operations for finding the K largest (or smallest) items from
+//! sequences of data
 
 #pragma once
 
@@ -17,6 +17,7 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cub/detail/choose_offset.cuh>
 #include <cub/detail/nvtx.cuh>
 #include <cub/device/dispatch/dispatch_topk.cuh>
 
@@ -29,10 +30,13 @@ CUB_NAMESPACE_BEGIN
 //!
 //! @par Overview
 //! TopK problem tries to find the largest (or smallest) K items in an unordered list. A related problem is called
-//! [*K selection problem*](https://en.wikipedia.org/wiki/Selection_algorithm), which find the Kth largest
-//! (or smallest) value in a list.
+//! [*K selection problem*](https://en.wikipedia.org/wiki/Selection_algorithm), which finds the Kth largest
+//! (or smallest) values in a list.
 //! DeviceTopK will return K items as results (ordered or unordered). It is
 //! based on an algorithm called [*AIR TopK*](https://dl.acm.org/doi/10.1145/3581784.3607062).
+//!
+//! @par Note
+//! We only support the case where the variable K is smaller than the variable N.
 //!
 //! @par Supported Types
 //! DeviceTopK can process all of the built-in C++ numeric primitive types
@@ -40,7 +44,7 @@ CUB_NAMESPACE_BEGIN
 //! and `__nv_bfloat16` 16-bit floating-point types.
 //!
 //! @par Stability
-//! DeviceTopK provide stable and unstable version.
+//! DeviceTopK provides stable and unstable version.
 //! Usage Considerations
 //! +++++++++++++++++++++++++++++++++++++++++++++
 //!
@@ -68,7 +72,10 @@ struct DeviceTopK
   //!   **[inferred]** Random-access input iterator type for writing output values @iterator
   //!
   //! @tparam NumItemsT
-  //! Type of variable num_items and k
+  //! Type of variable num_items
+  //!
+  //! @tparam KItemsT
+  //! Type of variable k
   //!
   //! @param[in] d_temp_storage
   //!   Device-accessible allocation of temporary storage. When `nullptr`, the
@@ -87,14 +94,14 @@ struct DeviceTopK
   //!   Pointer to the corresponding input sequence of associated value items
   //!
   //! @param[out] d_values_out
-  //!   Pointer to the correspondingly output sequence of associated
+  //!   Pointer to the corresponding output sequence of associated
   //!   value items
   //!
   //! @param[in] num_items
   //!   Number of items to be processed
   //!
   //! @param[in] k
-  //!   The K value. Will find K elements from num_items elements
+  //!   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
   //!
   //! @param[in] stream
   //!   @rst
@@ -104,7 +111,8 @@ struct DeviceTopK
             typename KeyOutputIteratorT,
             typename ValueInputIteratorT,
             typename ValueOutputIteratorT,
-            typename NumItemsT>
+            typename NumItemsT,
+            typename KItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
@@ -113,18 +121,28 @@ struct DeviceTopK
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     cudaStream_t stream = 0)
   {
-    static constexpr bool SelectMin = false;
-    return DispatchTopK<KeyInputIteratorT,
-                        KeyOutputIteratorT,
-                        ValueInputIteratorT,
-                        ValueOutputIteratorT,
-                        NumItemsT,
-                        SelectMin>::
-      Dispatch(
-        d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
+    static constexpr bool select_min = false;
+    using offset_t                   = detail::choose_offset_t<NumItemsT>;
+
+    return DispatchTopK<
+      KeyInputIteratorT,
+      KeyOutputIteratorT,
+      ValueInputIteratorT,
+      ValueOutputIteratorT,
+      offset_t,
+      KItemsT,
+      select_min>::Dispatch(d_temp_storage,
+                            temp_storage_bytes,
+                            d_keys_in,
+                            d_keys_out,
+                            d_values_in,
+                            d_values_out,
+                            static_cast<offset_t>(num_items),
+                            k,
+                            stream);
   }
 
   //! @tparam KeyInputIteratorT
@@ -140,7 +158,10 @@ struct DeviceTopK
   //!   **[inferred]** Random-access input iterator type for writing output values @iterator
   //!
   //! @tparam NumItemsT
-  //! Type of variable num_items and k
+  //! Type of variable num_items
+  //!
+  //! @tparam KItemsT
+  //! Type of variable k
   //!
   //! @param[in] d_temp_storage
   //!   Device-accessible allocation of temporary storage. When `nullptr`, the
@@ -159,14 +180,14 @@ struct DeviceTopK
   //!   Pointer to the corresponding input sequence of associated value items
   //!
   //! @param[out] d_values_out
-  //!   Pointer to the correspondingly output sequence of associated
+  //!   Pointer to the corresponding output sequence of associated
   //!   value items
   //!
   //! @param[in] num_items
   //!   Number of items to be processed
   //!
   //! @param[in] k
-  //!   The K value. Will find K elements from num_items elements
+  //!   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
   //!
   //! @param[in] stream
   //!   @rst
@@ -176,7 +197,8 @@ struct DeviceTopK
             typename KeyOutputIteratorT,
             typename ValueInputIteratorT,
             typename ValueOutputIteratorT,
-            typename NumItemsT>
+            typename NumItemsT,
+            typename KItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKMinPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
@@ -185,18 +207,28 @@ struct DeviceTopK
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     cudaStream_t stream = 0)
   {
-    static constexpr bool SelectMin = true;
-    return DispatchTopK<KeyInputIteratorT,
-                        KeyOutputIteratorT,
-                        ValueInputIteratorT,
-                        ValueOutputIteratorT,
-                        NumItemsT,
-                        SelectMin>::
-      Dispatch(
-        d_temp_storage, temp_storage_bytes, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, stream);
+    static constexpr bool select_min = true;
+    using offset_t                   = detail::choose_offset_t<NumItemsT>;
+
+    return DispatchTopK<
+      KeyInputIteratorT,
+      KeyOutputIteratorT,
+      ValueInputIteratorT,
+      ValueOutputIteratorT,
+      offset_t,
+      KItemsT,
+      select_min>::Dispatch(d_temp_storage,
+                            temp_storage_bytes,
+                            d_keys_in,
+                            d_keys_out,
+                            d_values_in,
+                            d_values_out,
+                            static_cast<offset_t>(num_items),
+                            k,
+                            stream);
   }
 
   //! @tparam KeyInputIteratorT
@@ -206,7 +238,10 @@ struct DeviceTopK
   //!   **[inferred]** Random-access output iterator type for writing output keys @iterator
   //!
   //! @tparam NumItemsT
-  //! Type of variable num_items and k
+  //! Type of variable num_items
+  //!
+  //! @tparam KItemsT
+  //! Type of variable k
   //!
   //! @param[in] d_temp_storage
   //!   Device-accessible allocation of temporary storage. When `nullptr`, the
@@ -225,33 +260,35 @@ struct DeviceTopK
   //!   Number of items to be processed
   //!
   //! @param[in] k
-  //!   The K value. Will find K elements from num_items elements
+  //!   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
   //!
   //! @param[in] stream
   //!   @rst
   //!   **[optional]** CUDA stream to launch kernels within. Default is stream\ :sub:`0`.
   //!   @endrst
-  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT>
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT, typename KItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKKeys(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
     KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     cudaStream_t stream = 0)
   {
-    static constexpr bool SelectMin = false;
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin>::Dispatch(
-      d_temp_storage,
-      temp_storage_bytes,
-      d_keys_in,
-      d_keys_out,
-      static_cast<NullType*>(nullptr),
-      static_cast<NullType*>(nullptr),
-      num_items,
-      k,
-      stream);
+    static constexpr bool select_min = false;
+    using offset_t                   = detail::choose_offset_t<NumItemsT>;
+
+    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, KItemsT, select_min>::
+      Dispatch(d_temp_storage,
+               temp_storage_bytes,
+               d_keys_in,
+               d_keys_out,
+               static_cast<NullType*>(nullptr),
+               static_cast<NullType*>(nullptr),
+               static_cast<offset_t>(num_items),
+               k,
+               stream);
   }
 
   //! @tparam KeyInputIteratorT
@@ -261,7 +298,10 @@ struct DeviceTopK
   //!   **[inferred]** Random-access output iterator type for writing output keys @iterator
   //!
   //! @tparam NumItemsT
-  //! Type of variable num_items and k
+  //! Type of variable num_items
+  //!
+  //! @tparam KItemsT
+  //! Type of variable k
   //!
   //! @param[in] d_temp_storage
   //!   Device-accessible allocation of temporary storage. When `nullptr`, the
@@ -280,33 +320,35 @@ struct DeviceTopK
   //!   Number of items to be processed
   //!
   //! @param[in] k
-  //!   The K value. Will find K elements from num_items elements
+  //!   The K value. Will find K elements from num_items elements. The variable K should be smaller than the variable N.
   //!
   //! @param[in] stream
   //!   @rst
   //!   **[optional]** CUDA stream to launch kernels within. Default is stream\ :sub:`0`.
   //!   @endrst
-  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT>
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT, typename KItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKMinKeys(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
     KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     cudaStream_t stream = 0)
   {
-    static constexpr bool SelectMin = true;
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, NumItemsT, SelectMin>::Dispatch(
-      d_temp_storage,
-      temp_storage_bytes,
-      d_keys_in,
-      d_keys_out,
-      static_cast<NullType*>(nullptr),
-      static_cast<NullType*>(nullptr),
-      num_items,
-      k,
-      stream);
+    static constexpr bool select_min = true;
+    using offset_t                   = detail::choose_offset_t<NumItemsT>;
+
+    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, KItemsT, select_min>::
+      Dispatch(d_temp_storage,
+               temp_storage_bytes,
+               d_keys_in,
+               d_keys_out,
+               static_cast<NullType*>(nullptr),
+               static_cast<NullType*>(nullptr),
+               static_cast<offset_t>(num_items),
+               k,
+               stream);
   }
 };
 

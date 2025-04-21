@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2024, NVIDIA CORPORATION. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 /**
@@ -102,13 +102,13 @@ struct AgentTopKPolicy
  * Thread block abstractions
  ******************************************************************************/
 
-template <typename KeyInT, typename NumItemsT>
+template <typename KeyInT, typename NumItemsT, typename KItemsT>
 struct alignas(128) Counter
 {
   // We are processing the values in multiple passes, from most significant to least
   // significant. In each pass, we keep the length of input (`len`) and the `k` of
   // current pass, and update them at the end of the pass.
-  NumItemsT k;
+  KItemsT k;
   NumItemsT len;
 
   //  `previous_len` is the length of input in previous pass. Note that `previous_len`
@@ -134,12 +134,12 @@ struct alignas(128) Counter
 
   // Record how many elements have been written to the front of `out`. Elements less (if
   // SELECT_MIN==true) than the k-th key are written from front to back.
-  alignas(128) NumItemsT out_cnt;
+  alignas(128) KItemsT out_cnt;
 
   // Record how many elements have been written to the back of `out`. Elements equal to
   // the k-th key are written from back to front. We need to keep count of them
   // separately because the number of elements that <= the k-th key might exceed k.
-  alignas(128) NumItemsT out_back_cnt;
+  alignas(128) KItemsT out_back_cnt;
   // The 'alignas' is necessary to improve the performance of global memory accessing by isolating the request,
   // especially for the segment version.
 };
@@ -268,7 +268,10 @@ struct IdentifyCandidatesOp
  *   Operations to filter the input key values
  *
  * @tparam NumItemsT
- *   Type of variable num_items and k
+ *   Type of variable num_items
+ *
+ * @tparam KItemsT
+ *   Type of variable k
  *
  * @tparam SELECT_MIN
  *   Determine whether to select the smallest (SELECT_MIN=true) or largest (SELECT_MIN=false) K elements.
@@ -283,6 +286,7 @@ template <typename AgentTopKPolicyT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT,
           typename NumItemsT,
+          typename KItemsT,
           bool SELECT_MIN>
 struct AgentTopK
 {
@@ -334,7 +338,7 @@ struct AgentTopK
   ValueInputIteratorT d_values_in; ///< Input values
   ValueOutputIteratorT d_values_out; ///< Output values
   NumItemsT num_items; ///< Total number of input items
-  NumItemsT k; ///< Total number of output items
+  KItemsT k; ///< Total number of output items
   ExtractBinOpT extract_bin_op; /// The operation for bin
   IdentifyCandidatesOpT identify_candidates_op; /// The operation for filtering
   bool load_from_original_input; /// Set if loading data from original input
@@ -378,7 +382,7 @@ struct AgentTopK
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    NumItemsT k,
+    KItemsT k,
     ExtractBinOpT extract_bin_op,
     IdentifyCandidatesOpT identify_candidates_op)
       : temp_storage(temp_storage.Alias())
@@ -453,7 +457,7 @@ struct AgentTopK
     KeyInT* out_buf,
     NumItemsT* out_idx_buf,
     NumItemsT previous_len,
-    Counter<KeyInT, NumItemsT>* counter,
+    Counter<KeyInT, NumItemsT, KItemsT>* counter,
     NumItemsT* histogram,
     NumItemsT* histogram_smem,
     int pass,
@@ -473,7 +477,7 @@ struct AgentTopK
     else
     {
       NumItemsT* p_filter_cnt = &counter->filter_cnt;
-      NumItemsT* p_out_cnt    = &counter->out_cnt;
+      KItemsT* p_out_cnt      = &counter->out_cnt;
       const auto kth_key_bits = counter->kth_key_bits;
 
       // See the remark above on the distributed execution of `f` using
@@ -494,10 +498,9 @@ struct AgentTopK
           if (pre_res == 0)
           {
             NumItemsT index;
-            NumItemsT pos;
             if (early_stop)
             {
-              pos             = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+              KItemsT pos     = atomicAdd(p_out_cnt, static_cast<KItemsT>(1));
               d_keys_out[pos] = key;
               if constexpr (!KEYS_ONLY)
               {
@@ -509,8 +512,8 @@ struct AgentTopK
             {
               if (out_buf)
               {
-                pos          = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
-                out_buf[pos] = key;
+                NumItemsT pos = atomicAdd(p_filter_cnt, static_cast<NumItemsT>(1));
+                out_buf[pos]  = key;
                 if constexpr (!KEYS_ONLY)
                 {
                   index            = in_idx_buf ? in_idx_buf[i] : i;
@@ -530,7 +533,7 @@ struct AgentTopK
           // true, we need to write to `out` since it's the last chance.
           else if ((out_buf || early_stop) && (pre_res < 0))
           {
-            NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+            KItemsT pos     = atomicAdd(p_out_cnt, static_cast<KItemsT>(1));
             d_keys_out[pos] = key;
             if constexpr (!KEYS_ONLY)
             {
@@ -584,8 +587,8 @@ struct AgentTopK
   /**
    * Calculate in which bucket the k-th value will fall
    */
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  ChooseBucket(Counter<KeyInT, NumItemsT>* counter, const NumItemsT* histogram, const NumItemsT k, const int pass)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void ChooseBucket(
+    Counter<KeyInT, NumItemsT, KItemsT>* counter, const NumItemsT* histogram, const KItemsT k, const int pass)
   {
     for (int i = threadIdx.x; i < num_buckets; i += blockDim.x)
     {
@@ -627,9 +630,14 @@ struct AgentTopK
    *   Indicate which pass are processed currently
    */
   _CCCL_DEVICE _CCCL_FORCEINLINE void InvokeLastFilter(
-    KeyInT* in_buf, NumItemsT* in_idx_buf, Counter<KeyInT, NumItemsT>* counter, NumItemsT* histogram, int k, int pass)
+    KeyInT* in_buf,
+    NumItemsT* in_idx_buf,
+    Counter<KeyInT, NumItemsT, KItemsT>* counter,
+    NumItemsT* histogram,
+    KItemsT k,
+    int pass)
   {
-    const NumItemsT buf_len  = cuda::std::max((NumItemsT) 256, num_items / COEFFICIENT_FOR_BUFFER);
+    const NumItemsT buf_len  = cuda::std::max((NumItemsT) 1, num_items / COEFFICIENT_FOR_BUFFER);
     load_from_original_input = counter->previous_len > buf_len;
     NumItemsT current_len    = load_from_original_input ? num_items : counter->previous_len;
     in_idx_buf               = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
@@ -641,15 +649,15 @@ struct AgentTopK
 
     // changed in ChooseBucket(); need to reload
     NumItemsT num_of_kth_needed = counter->k;
-    NumItemsT* p_out_cnt        = &counter->out_cnt;
-    NumItemsT* p_out_back_cnt   = &counter->out_back_cnt;
+    KItemsT* p_out_cnt          = &counter->out_cnt;
+    KItemsT* p_out_back_cnt     = &counter->out_back_cnt;
 
     auto f = [this, pass, p_out_cnt, counter, in_idx_buf, p_out_back_cnt, num_of_kth_needed, k, current_len](
                KeyInT key, NumItemsT i) {
       int res = identify_candidates_op(key);
       if (res < 0)
       {
-        NumItemsT pos   = atomicAdd(p_out_cnt, static_cast<NumItemsT>(1));
+        KItemsT pos     = atomicAdd(p_out_cnt, static_cast<KItemsT>(1));
         d_keys_out[pos] = key;
         if constexpr (!KEYS_ONLY)
         {
@@ -663,12 +671,12 @@ struct AgentTopK
       }
       else if (res == 0)
       {
-        NumItemsT new_idx  = in_idx_buf ? in_idx_buf[i] : i;
-        NumItemsT back_pos = atomicAdd(p_out_back_cnt, static_cast<NumItemsT>(1));
+        NumItemsT new_idx = in_idx_buf ? in_idx_buf[i] : i;
+        KItemsT back_pos  = atomicAdd(p_out_back_cnt, static_cast<KItemsT>(1));
 
         if (back_pos < num_of_kth_needed)
         {
-          NumItemsT pos   = k - 1 - back_pos;
+          KItemsT pos     = k - 1 - back_pos;
           d_keys_out[pos] = key;
           if constexpr (!KEYS_ONLY)
           {
@@ -719,11 +727,11 @@ struct AgentTopK
     NumItemsT* in_idx_buf,
     KeyInT* out_buf,
     NumItemsT* out_idx_buf,
-    Counter<KeyInT, NumItemsT>* counter,
+    Counter<KeyInT, NumItemsT, KItemsT>* counter,
     NumItemsT* histogram,
     int pass)
   {
-    NumItemsT current_k;
+    KItemsT current_k;
     NumItemsT previous_len;
     NumItemsT current_len;
 
@@ -745,8 +753,8 @@ struct AgentTopK
       return;
     }
 
-    const bool early_stop   = (current_len == current_k);
-    const NumItemsT buf_len = cuda::std::max((NumItemsT) 256, num_items / COEFFICIENT_FOR_BUFFER);
+    const bool early_stop   = (current_len == (NumItemsT) current_k);
+    const NumItemsT buf_len = cuda::std::max((NumItemsT) 1, num_items / COEFFICIENT_FOR_BUFFER);
     if (previous_len > buf_len)
     {
       load_from_original_input = true;
