@@ -23,7 +23,6 @@ template <typename key_t, typename value_t, typename num_items_t>
 void sort_keys_and_values(
   c2h::host_vector<key_t>& h_keys, c2h::host_vector<value_t>& h_values, num_items_t num_items, bool is_descending)
 {
-  // compare_op_t comp{is_descending};
   auto zipped_it = thrust::make_zip_iterator(h_keys.begin(), h_values.begin());
   if (is_descending)
   {
