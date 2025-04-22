@@ -4,6 +4,7 @@
 #include "insert_nested_NVTX_range_guard.h"
 // above header needs to be included first
 
+#include <cub/device/device_merge_sort.cuh>
 #include <cub/device/device_topk.cuh>
 
 #include <thrust/iterator/zip_iterator.h>
@@ -18,19 +19,22 @@
 // %PARAM% TEST_LAUNCH lid 0:1:2
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKPairs, topk_pairs);
 DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinPairs, topk_min_pairs);
+DECLARE_LAUNCH_WRAPPER(cub::DeviceMergeSort::StableSortKeys, stable_sort_keys);
 
 template <typename key_t, typename value_t, typename num_items_t>
 void sort_keys_and_values(
-  c2h::host_vector<key_t>& h_keys, c2h::host_vector<value_t>& h_values, num_items_t num_items, bool is_descending)
+  c2h::device_vector<key_t>& keys, c2h::device_vector<value_t>& values, num_items_t num_items, bool is_descending)
 {
-  auto zipped_it = thrust::make_zip_iterator(h_keys.begin(), h_values.begin());
+  auto zipped_it = thrust::make_zip_iterator(keys.begin(), values.begin());
+
+  // Perform sort
   if (is_descending)
   {
-    std::stable_sort(zipped_it, zipped_it + num_items, ::cuda::std::greater<>{});
+    stable_sort_keys(zipped_it, num_items, ::cuda::std::greater<>{});
   }
   else
   {
-    std::stable_sort(zipped_it, zipped_it + num_items, ::cuda::std::less<>{});
+    stable_sort_keys(zipped_it, num_items, ::cuda::std::less<>{});
   }
 }
 
@@ -46,9 +50,9 @@ bool check_results(
 {
   // Since the results of API TopKMinPairs() and TopKPairs() are not-sorted
   // We need to sort the results first.
+  sort_keys_and_values(keys_out, values_out, k, is_descending);
   c2h::host_vector<key_t> h_keys_out(keys_out);
   c2h::host_vector<value_t> h_values_out(values_out);
-  sort_keys_and_values(h_keys_out, h_values_out, k, is_descending);
 
   // i for results from gpu (TopKMinPairs() and TopKPairs()); j for reference results
   num_items_t i = 0, j = 0;
@@ -144,16 +148,18 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
 
   // Set input size
   constexpr num_items_t min_num_items = 1 << 2;
-  constexpr num_items_t max_num_items = 1 << 15;
-  const num_items_t num_items =
-    GENERATE_COPY(values({min_num_items, max_num_items}), take(3, random(min_num_items, max_num_items)));
+  constexpr num_items_t max_num_items = 1 << 24;
+  const num_items_t num_items = GENERATE_COPY(values({min_num_items}), take(4, random(min_num_items, max_num_items)));
 
   // Set the k value
   constexpr num_items_t min_k = 1 << 3;
   constexpr num_items_t max_k = 1 << 15;
   num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
-  k                           = k > num_items ? num_items - 1 : k;
 
+  if (k >= num_items)
+  {
+    SKIP("We only support the case where the variable K is smaller than the variable N.");
+  }
   // Allocate the device memory
   c2h::device_vector<key_t> keys_in(num_items);
   c2h::device_vector<key_t> keys_out(k);
@@ -165,9 +171,6 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   const int num_value_seeds = 1;
   c2h::gen(C2H_SEED(num_key_seeds), keys_in);
   c2h::gen(C2H_SEED(num_value_seeds), values_in);
-
-  c2h::host_vector<key_t> h_keys_in(keys_in);
-  c2h::host_vector<value_t> h_values_in(values_in);
 
   const bool select_min    = GENERATE(false, true);
   const bool is_descending = !select_min;
@@ -194,11 +197,13 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
   }
 
   // Sort the entire input data as result reference
-  sort_keys_and_values(h_keys_in, h_values_in, num_items, is_descending);
+  sort_keys_and_values(keys_in, values_in, num_items, is_descending);
+  c2h::host_vector<key_t> h_keys(keys_in);
+  c2h::host_vector<value_t> h_values(values_in);
 
   bool res = check_results(
-    thrust::raw_pointer_cast(h_keys_in.data()),
-    thrust::raw_pointer_cast(h_values_in.data()),
+    thrust::raw_pointer_cast(h_keys.data()),
+    thrust::raw_pointer_cast(h_values.data()),
     keys_out,
     values_out,
     num_items,
@@ -248,9 +253,13 @@ C2H_TEST("DeviceTopK::TopKPairs: Works with iterators", "[pairs][topk][device]",
 
   // Set the k value
   constexpr num_items_t min_k = 1 << 3;
-  constexpr num_items_t max_k = 1 << 5;
+  constexpr num_items_t max_k = 1 << 15;
   num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
-  k                           = k > num_items ? num_items - 1 : k;
+
+  if (k >= num_items)
+  {
+    SKIP("We only support the case where the variable K is smaller than the variable N.");
+  }
 
   // Prepare input and output
   auto keys_in =
@@ -267,8 +276,8 @@ C2H_TEST("DeviceTopK::TopKPairs: Works with iterators", "[pairs][topk][device]",
 
 C2H_TEST("DeviceTopK::TopKPairs: Test for large num_items", "[pairs][topk][device]", num_items_types)
 {
-  using key_t       = float;
-  using value_t     = float;
+  using key_t       = uint32_t;
+  using value_t     = uint32_t;
   using num_items_t = c2h::get<0, TestType>;
 
   // Set input size
@@ -280,12 +289,16 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for large num_items", "[pairs][topk][devic
 
   // Set the k value
   constexpr num_items_t min_k = 1 << 3;
-  constexpr num_items_t max_k = 1 << 5;
+  constexpr num_items_t max_k = 1 << 15;
   num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
-  k                           = k > num_items ? num_items - 1 : k;
 
+  if (k >= num_items)
+  {
+    SKIP("We only support the case where the variable K is smaller than the variable N.");
+  }
   // Prepare input and output
-  auto keys_in   = thrust::make_counting_iterator(key_t{});
+  auto keys_in =
+    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
   auto values_in = thrust::make_counting_iterator(value_t{});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
   c2h::device_vector<value_t> values_out(k, static_cast<value_t>(42));

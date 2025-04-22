@@ -540,6 +540,12 @@ struct DispatchTopK : SelectedPolicy
     constexpr int num_passes       = CalcNumPasses<KeyInT, Policy::BITS_PER_PASS>();
     int num_buckets                = 1 << Policy::BITS_PER_PASS;
 
+    if (static_cast<NumItemsT>(k) >= num_items)
+    {
+      // We only support the case where the variable K is smaller than the variable N.
+      return cudaErrorInvalidValue;
+    }
+
     do
     {
       // Specify temporary storage allocation requirements
