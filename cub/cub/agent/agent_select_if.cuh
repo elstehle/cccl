@@ -203,7 +203,7 @@ struct AgentSelectIf
   //---------------------------------------------------------------------
   // Types and constants
   //---------------------------------------------------------------------
-  using ScanTileStateT = ScanTileState<OffsetT>;
+  using ScanTileStateT = AtomicsBasedTileState<OffsetT>;
 
   // Indicates whether the BlockLoad algorithm uses shared memory to load or exchange the data
   static constexpr bool loads_via_smem =
@@ -222,7 +222,7 @@ struct AgentSelectIf
 
   // If we need to enforce memory order for in-place stream compaction, wrap the default decoupled look-back tile
   // state in a helper class that enforces memory order on reads and writes
-  using MemoryOrderedTileStateT = tile_state_with_memory_order<ScanTileStateT, memory_order>;
+  using MemoryOrderedTileStateT = ScanTileStateT; // tile_state_with_memory_order<ScanTileStateT, memory_order>;
 
   // The input value type
   using InputT = it_value_t<InputIteratorT>;
@@ -284,7 +284,9 @@ struct AgentSelectIf
   // Callback type for obtaining tile prefix during block scan
   using DelayConstructorT = typename AgentSelectIfPolicyT::detail::delay_constructor_t;
   using TilePrefixCallbackOpT =
-    TilePrefixCallbackOp<OffsetT, ::cuda::std::plus<>, MemoryOrderedTileStateT, DelayConstructorT>;
+    AtomicsBasedTilePrefixCallbackOp<OffsetT, ::cuda::std::plus<>, MemoryOrderedTileStateT, DelayConstructorT>;
+  // using TilePrefixCallbackOpT =
+  //   TilePrefixCallbackOp<OffsetT, ::cuda::std::plus<>, MemoryOrderedTileStateT, DelayConstructorT>;
 
   // Item exchange type
   using ItemExchangeT = InputT[TILE_ITEMS];
@@ -400,7 +402,7 @@ struct AgentSelectIf
     for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
     {
       // Out-of-bounds items are selection_flags
-      selection_flags[ITEM] = 1;
+      selection_flags[ITEM] = false;
 
       if (!IS_LAST_TILE || (static_cast<OffsetT>(threadIdx.x * ITEMS_PER_THREAD + ITEM) < num_tile_items))
       {
@@ -429,7 +431,7 @@ struct AgentSelectIf
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int ITEM = 0; ITEM < ITEMS_PER_THREAD; ++ITEM)
       {
-        selection_flags[ITEM] = true;
+        selection_flags[ITEM] = false;
       }
       // Guarded loads
       BlockLoadFlags(temp_storage.load_flags)
@@ -470,7 +472,7 @@ struct AgentSelectIf
     {
       // Out-of-bounds items are selection_flags
       BlockLoadFlags(temp_storage.load_flags)
-        .Load((d_flags_in + streaming_context.input_offset()) + tile_offset, flags, num_tile_items, 1);
+        .Load((d_flags_in + streaming_context.input_offset()) + tile_offset, flags, num_tile_items, 0);
     }
     else
     {
@@ -524,7 +526,7 @@ struct AgentSelectIf
       // Set selection_flags for out-of-bounds items
       if ((IS_LAST_TILE) && (OffsetT(threadIdx.x * ITEMS_PER_THREAD) + ITEM >= num_tile_items))
       {
-        selection_flags[ITEM] = 1;
+        selection_flags[ITEM] = 0;
       }
     }
   }
@@ -857,7 +859,7 @@ struct AgentSelectIf
       0,
       0,
       num_tile_selections,
-      bool_constant_v < SelectionOpt == SelectImpl::Partition >);
+      bool_constant_v<SelectionOpt == SelectImpl::Partition>);
 
     return num_tile_selections;
   }
@@ -919,12 +921,12 @@ struct AgentSelectIf
     OffsetT num_rejected_prefix   = tile_offset - num_selections_prefix;
 
     // Discount any out-of-bounds selections
-    if (IS_LAST_TILE)
-    {
-      int num_discount = TILE_ITEMS - num_tile_items;
-      num_selections -= num_discount;
-      num_tile_selections -= num_discount;
-    }
+    // if (IS_LAST_TILE)
+    // {
+    //   int num_discount = TILE_ITEMS - num_tile_items;
+    //   num_selections -= num_discount;
+    //   num_tile_selections -= num_discount;
+    // }
 
     // note (only applies to in-place stream compaction): We can avoid having to introduce explicit memory order between
     // the look-back (i.e., loading previous tiles' states) and scattering items (which means, potentially overwriting
@@ -940,7 +942,7 @@ struct AgentSelectIf
       num_selections_prefix,
       num_rejected_prefix,
       num_selections,
-      bool_constant_v < SelectionOpt == SelectImpl::Partition >);
+      bool_constant_v<SelectionOpt == SelectImpl::Partition>);
 
     return num_selections;
   }
@@ -966,14 +968,14 @@ struct AgentSelectIf
   ConsumeTile(int num_tile_items, int tile_idx, OffsetT tile_offset, MemoryOrderedTileStateT& tile_state_wrapper)
   {
     OffsetT num_selections;
-    if (tile_idx == 0)
-    {
-      num_selections = ConsumeFirstTile<IS_LAST_TILE>(num_tile_items, tile_offset, tile_state_wrapper);
-    }
-    else
-    {
-      num_selections = ConsumeSubsequentTile<IS_LAST_TILE>(num_tile_items, tile_idx, tile_offset, tile_state_wrapper);
-    }
+    // if (tile_idx == 0)
+    // {
+    //   num_selections = ConsumeFirstTile<IS_LAST_TILE>(num_tile_items, tile_offset, tile_state_wrapper);
+    // }
+    // else
+    // {
+    num_selections = ConsumeSubsequentTile<IS_LAST_TILE>(num_tile_items, tile_idx, tile_offset, tile_state_wrapper);
+    // }
 
     return num_selections;
   }
@@ -998,7 +1000,7 @@ struct AgentSelectIf
   ConsumeRange(int num_tiles, ScanTileStateT& tile_state, NumSelectedIteratorT d_num_selected_out)
   {
     // Ensure consistent memory order across all tile status updates and loads
-    auto tile_state_wrapper = MemoryOrderedTileStateT{tile_state};
+    auto tile_state_wrapper = tile_state; // MemoryOrderedTileStateT{tile_state};
 
     // Blocks are launched in increasing order, so just assign one tile per block
     // TODO (elstehle): replacing this term with just `blockIdx.x` degrades perf for partition. Once we get to re-tune
@@ -1006,6 +1008,7 @@ struct AgentSelectIf
     int tile_idx        = (blockIdx.x * gridDim.y) + blockIdx.y; // Current tile index
     OffsetT tile_offset = static_cast<OffsetT>(tile_idx) * static_cast<OffsetT>(TILE_ITEMS);
 
+    OffsetT num_selections;
     if (tile_idx < num_tiles - 1)
     {
       // Not the last tile (full)
@@ -1014,13 +1017,23 @@ struct AgentSelectIf
     else
     {
       // The last tile (possibly partially-full)
-      OffsetT num_remaining  = num_items - tile_offset;
-      OffsetT num_selections = ConsumeTile<true>(num_remaining, tile_idx, tile_offset, tile_state_wrapper);
+      OffsetT num_remaining = num_items - tile_offset;
+      num_selections        = ConsumeTile<true>(num_remaining, tile_idx, tile_offset, tile_state_wrapper);
 
-      if (threadIdx.x == 0)
+      // if (threadIdx.x == 0)
+      // {
+      //   // Update the number of selected items with this partition's selections
+      //   streaming_context.update_num_selected(d_num_selected_out, num_selections);
+      // }
+    }
+    if (threadIdx.x == 0)
+    {
+      auto tombstones = tile_state.note_tombstone();
+      if (tombstones == gridDim.x - 1)
       {
+        // printf("Final tile: %lld\n", (long long)(tile_state.get_aggregate()));
         // Update the number of selected items with this partition's selections
-        streaming_context.update_num_selected(d_num_selected_out, num_selections);
+        streaming_context.update_num_selected(d_num_selected_out, tile_state.get_aggregate());
       }
     }
   }

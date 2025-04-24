@@ -450,7 +450,8 @@ struct DispatchSelectIf
 
   using streaming_context_t = detail::select::streaming_context_t<num_total_items_t, may_require_streaming>;
 
-  using ScanTileStateT = ScanTileState<per_partition_offset_t>;
+  // using ScanTileStateT = ScanTileState<per_partition_offset_t>;
+  using ScanTileStateT = detail::AtomicsBasedTileState<per_partition_offset_t>;
 
   static constexpr int INIT_KERNEL_THREADS = 128;
 

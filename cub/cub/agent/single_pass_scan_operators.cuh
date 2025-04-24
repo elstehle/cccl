@@ -586,6 +586,198 @@ _CCCL_HOST_DEVICE _CCCL_FORCEINLINE cudaError_t tile_state_init(
   return AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes);
 }
 
+template <typename T>
+struct AtomicsBasedTileState
+{
+  struct counters_t {
+    T d_atomic_offset;
+    uint32_t d_atomic_tombstones;
+  }; 
+
+  // Device storage
+  counters_t* d_atomic_counter = nullptr;
+
+  /**
+   * @brief Initializer
+   *
+   * @param[in] num_tiles
+   *   Number of tiles. Unused in this implementation.
+   *
+   * @param[in] d_temp_storage
+   *   Device-accessible allocation of temporary storage.
+   *   When nullptr, the required allocation size is written to \p temp_storage_bytes and no work is done.
+   *
+   * @param[in] temp_storage_bytes
+   *   Size in bytes of \t d_temp_storage allocation
+   */
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE cudaError_t Init(int /*num_tiles*/, void* d_temp_storage, size_t temp_storage_bytes)
+  { 
+    // Ensure temporary storage allocation is sufficient
+    if(temp_storage_bytes < sizeof(counters_t))
+    {
+      return cudaErrorInvalidValue;
+    }
+    d_atomic_counter = reinterpret_cast<counters_t*>(d_temp_storage);
+
+    return cudaSuccess;
+  }
+
+  /**
+   * @brief Compute device memory needed for tile status
+   */
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE static constexpr cudaError_t
+  AllocationSize(int /*num_tiles*/, size_t& temp_storage_bytes)
+  {
+    temp_storage_bytes = sizeof(counters_t);
+    return cudaSuccess;
+  }
+
+  /**
+   * Initialize (from device)
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void InitializeStatus(int /*num_tiles*/)
+  {
+    int tile_idx = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (tile_idx < 1)
+    {
+      // printf("InitializeStatus %lld (BID %d, TID %d)\n", (long long)0, blockIdx.x, threadIdx.x);
+      d_atomic_counter->d_atomic_offset = T{0};
+      d_atomic_counter->d_atomic_tombstones = T{0};
+    }
+  }
+
+  /**
+   * Update the specified tile's inclusive value and corresponding status
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE void SetInclusive(int /*tile_idx*/, T tile_inclusive)
+  {
+    auto x = atomicAdd(&d_atomic_counter->d_atomic_offset, tile_inclusive);
+    // printf("set inclusive addL %lld, old: %lld (BID %d, TID %d)\n", (long long) tile_inclusive, (long long)x, blockIdx.x, threadIdx.x);
+  }
+
+  /**
+   * Update the specified tile's inclusive value and corresponding status
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto atomic_add( T block_aggregate)
+  {
+    auto x = atomicAdd(&d_atomic_counter->d_atomic_offset, block_aggregate);
+    // printf("atomic_add add: %lld, old: %lld (BID %d, TID %d)\n", (long long)block_aggregate, (long long)x, blockIdx.x, threadIdx.x);
+    return x;
+  }
+
+  /**
+   * Update the specified tile's inclusive value and corresponding status
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto note_tombstone()
+  {
+    auto x = atomicAdd(&d_atomic_counter->d_atomic_tombstones, 1);
+    // printf("note_tombstone add: 1, old: %lld (BID %d, TID %d)\n", (long long)x, blockIdx.x, threadIdx.x);
+    return x;
+  }
+
+  /**
+   * Update the specified tile's inclusive value and corresponding status
+   */
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto get_aggregate()
+  {
+    return d_atomic_counter->d_atomic_offset;
+  }
+};
+
+
+/**
+ * Stateful block-scan prefix functor.  Provides the the running prefix for
+ * the current tile by using the call-back warp to wait on on
+ * aggregates/prefixes from predecessor tiles to become available.
+ *
+ * @tparam DelayConstructorT
+ *   Implementation detail, do not specify directly, requirements on the
+ *   content of this type are subject to breaking change.
+ */
+template <typename T,
+          typename ScanOpT,
+          typename ScanTileStateT,
+          typename DelayConstructorT = detail::default_delay_constructor_t<T>>
+struct AtomicsBasedTilePrefixCallbackOp
+{
+  // Temporary storage type
+  struct _TempStorage
+  {
+    T exclusive_prefix;
+    T inclusive_prefix;
+    T block_aggregate;
+  };
+
+  // Alias wrapper allowing temporary storage to be unioned
+  struct TempStorage : Uninitialized<_TempStorage>
+  {};
+
+  // Fields
+  _TempStorage& temp_storage; ///< Reference to a warp-reduction instance
+  ScanTileStateT& tile_status; ///< Interface to tile status
+  ScanOpT scan_op; ///< Binary scan operator
+  int tile_idx; ///< The current tile index
+  T exclusive_prefix; ///< Exclusive prefix for the tile
+  T inclusive_prefix; ///< Inclusive prefix for the tile
+
+  // Constructs prefix functor for a given tile index.
+  // Precondition: thread blocks processing all of the predecessor tiles were scheduled.
+  _CCCL_DEVICE _CCCL_FORCEINLINE
+  AtomicsBasedTilePrefixCallbackOp(ScanTileStateT& tile_status, TempStorage& temp_storage, ScanOpT scan_op, int tile_idx)
+      : temp_storage(temp_storage.Alias())
+      , tile_status(tile_status)
+      , scan_op(scan_op)
+      , tile_idx(tile_idx)
+  {}
+
+  // Computes the tile index and constructs prefix functor with it.
+  // Precondition: thread block per tile assignment.
+  _CCCL_DEVICE _CCCL_FORCEINLINE
+  AtomicsBasedTilePrefixCallbackOp(ScanTileStateT& tile_status, TempStorage& temp_storage, ScanOpT scan_op)
+      : AtomicsBasedTilePrefixCallbackOp(tile_status, temp_storage, scan_op, blockIdx.x)
+  {}
+
+  // BlockScan prefix callback functor (called by the first warp)
+  _CCCL_DEVICE _CCCL_FORCEINLINE T operator()(T block_aggregate)
+  {
+    // Compute the inclusive tile prefix and update the status for this tile
+    T thread_exclusive_prefix{};
+    if (threadIdx.x == 0)
+    {
+      thread_exclusive_prefix = tile_status.atomic_add(block_aggregate);
+      exclusive_prefix = thread_exclusive_prefix;
+      inclusive_prefix = thread_exclusive_prefix + block_aggregate;
+      temp_storage.block_aggregate = block_aggregate;
+      temp_storage.exclusive_prefix = exclusive_prefix;
+      temp_storage.inclusive_prefix = inclusive_prefix;
+    }
+
+    // Broadcast exclusive_prefix to other threads
+    exclusive_prefix = __shfl_sync(0xffffffff, exclusive_prefix, 0, 32);
+
+    // Return exclusive_prefix
+    return exclusive_prefix;
+  }
+
+  // Get the exclusive prefix stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE T GetExclusivePrefix()
+  {
+    return temp_storage.exclusive_prefix;
+  }
+
+  // Get the inclusive prefix stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE T GetInclusivePrefix()
+  {
+    return temp_storage.inclusive_prefix;
+  }
+
+  // Get the block aggregate stored in temporary storage
+  _CCCL_DEVICE _CCCL_FORCEINLINE T GetBlockAggregate()
+  {
+    return temp_storage.block_aggregate;
+  }
+};
+
 } // namespace detail
 
 /**
@@ -645,7 +837,6 @@ struct ScanTileState<T, true>
    *
    * @param[in] d_temp_storage
    *   Device-accessible allocation of temporary storage.
-   *   When nullptr, the required allocation size is written to \p temp_storage_bytes and no work is
    * done.
    *
    * @param[in] temp_storage_bytes
@@ -849,9 +1040,7 @@ struct ScanTileState<T, false>
    *   Number of tiles
    *
    * @param[in] d_temp_storage
-   *   Device-accessible allocation of temporary storage.
-   *   When nullptr, the required allocation size is written to \p temp_storage_bytes and no work is
-   *   done.
+   *   Device-accessible allocation of temporary storage. When nullptr, no work is done.
    *
    * @param[in] temp_storage_bytes
    *   Size in bytes of \t d_temp_storage allocation
@@ -1061,8 +1250,7 @@ struct ReduceByKeyScanTileState<ValueT, KeyT, true>
    *   Number of tiles
    *
    * @param[in] d_temp_storage
-   *   Device-accessible allocation of temporary storage.  When nullptr, the required allocation size
-   *   is written to \p temp_storage_bytes and no work is done.
+   *   Device-accessible allocation of temporary storage.  When nullptr, no work is done.
    *
    * @param[in] temp_storage_bytes
    *   Size in bytes of \t d_temp_storage allocation
