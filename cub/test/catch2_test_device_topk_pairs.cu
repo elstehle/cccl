@@ -89,14 +89,14 @@ bool check_results(
   return res;
 }
 
-template <typename key_in_it, typename value_in_it, typename key_t, typename value_t, typename num_items_t>
+template <typename key_in_it, typename value_in_it, typename key_t, typename value_t, typename num_items_t, typename k_items_t>
 bool topk_with_iterator(
   key_in_it keys_in,
   value_in_it values_in,
   c2h::device_vector<key_t>& keys_out,
   c2h::device_vector<value_t>& values_out,
   num_items_t num_items,
-  num_items_t k,
+  k_items_t k,
   bool is_descending)
 {
   if (!is_descending)
@@ -125,13 +125,15 @@ bool topk_with_iterator(
   {
     auto keys_expected_it   = thrust::make_reverse_iterator(keys_in + num_items);
     auto values_expected_it = thrust::make_reverse_iterator(values_in + num_items);
-    res = check_results(keys_expected_it, values_expected_it, keys_out, values_out, num_items, k, is_descending);
+    res                     = check_results(
+      keys_expected_it, values_expected_it, keys_out, values_out, num_items, static_cast<num_items_t>(k), is_descending);
   }
   else
   {
     auto keys_expected_it   = keys_in;
     auto values_expected_it = values_in;
-    res = check_results(keys_expected_it, values_expected_it, keys_out, values_out, num_items, k, is_descending);
+    res                     = check_results(
+      keys_expected_it, values_expected_it, keys_out, values_out, num_items, static_cast<num_items_t>(k), is_descending);
   }
   return res;
 }
@@ -139,6 +141,7 @@ bool topk_with_iterator(
 using key_types       = c2h::type_list<cuda::std::uint16_t, float, cuda::std::uint64_t>;
 using value_types     = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
 using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+using k_items_types   = c2h::type_list<cuda::std::uint16_t, cuda::std::uint32_t>;
 
 C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_types, value_types)
 {
@@ -148,18 +151,15 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
 
   // Set input size
   constexpr num_items_t min_num_items = 1 << 2;
-  constexpr num_items_t max_num_items = 1 << 24;
-  const num_items_t num_items = GENERATE_COPY(values({min_num_items}), take(4, random(min_num_items, max_num_items)));
+  constexpr num_items_t max_num_items = 1 << 15;
+  const num_items_t num_items =
+    GENERATE_COPY(values({min_num_items, max_num_items}), take(1, random(min_num_items, max_num_items)));
 
   // Set the k value
-  constexpr num_items_t min_k = 1 << 3;
+  constexpr num_items_t min_k = 1 << 1;
   constexpr num_items_t max_k = 1 << 15;
-  num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
+  const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
-  if (k >= num_items)
-  {
-    SKIP("We only support the case where the variable K is smaller than the variable N.");
-  }
   // Allocate the device memory
   c2h::device_vector<key_t> keys_in(num_items);
   c2h::device_vector<key_t> keys_out(k);
@@ -248,18 +248,14 @@ C2H_TEST("DeviceTopK::TopKPairs: Works with iterators", "[pairs][topk][device]",
   // Set input size
   constexpr num_items_t min_num_items = 1 << 2;
   constexpr num_items_t max_num_items = 1 << 24;
-  const num_items_t num_items = GENERATE_COPY(values({min_num_items}), take(3, random(min_num_items, max_num_items)));
+  const num_items_t num_items =
+    GENERATE_COPY(values({min_num_items, max_num_items}), take(1, random(min_num_items, max_num_items)));
   // Large num_items will be in another test
 
   // Set the k value
-  constexpr num_items_t min_k = 1 << 3;
+  constexpr num_items_t min_k = 1 << 1;
   constexpr num_items_t max_k = 1 << 15;
-  num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
-
-  if (k >= num_items)
-  {
-    SKIP("We only support the case where the variable K is smaller than the variable N.");
-  }
+  const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
   auto keys_in =
@@ -290,12 +286,46 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for large num_items", "[pairs][topk][devic
   // Set the k value
   constexpr num_items_t min_k = 1 << 3;
   constexpr num_items_t max_k = 1 << 15;
-  num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
+  const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
-  if (k >= num_items)
-  {
-    SKIP("We only support the case where the variable K is smaller than the variable N.");
-  }
+  // Prepare input and output
+  auto keys_in =
+    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  auto values_in = thrust::make_counting_iterator(value_t{});
+  c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
+  c2h::device_vector<value_t> values_out(k, static_cast<value_t>(42));
+
+  // Run the device-wide API
+  const bool is_descending = GENERATE(false, true);
+  bool res                 = topk_with_iterator(keys_in, values_in, keys_out, values_out, num_items, k, is_descending);
+  REQUIRE(res == true);
+}
+
+C2H_TEST("DeviceTopK::TopKPairs: Test for different data types for num_items and k",
+         "[pairs][topk][device]",
+         k_items_types)
+{
+  using key_t       = uint32_t;
+  using value_t     = uint32_t;
+  using num_items_t = uint64_t;
+  using k_items_t   = c2h::get<0, TestType>;
+
+  // Set input size
+  constexpr num_items_t min_num_items = 1 << 2;
+  constexpr num_items_t max_num_items = 1 << 15;
+  const num_items_t num_items =
+    GENERATE_COPY(values({min_num_items, max_num_items}), take(1, random(min_num_items, max_num_items)));
+  // Large num_items will be in another test
+
+  // Set the k value
+  constexpr k_items_t min_k = 1 << 1;
+  k_items_t limit_k         = min(::cuda::std::numeric_limits<k_items_t>::max(), 1 << 15);
+  const k_items_t max_k =
+    num_items - 1 < ::cuda::std::numeric_limits<k_items_t>::max()
+      ? min(static_cast<k_items_t>(num_items - 1), limit_k)
+      : limit_k;
+  const k_items_t k = GENERATE_COPY(take(3, random(min_k, max_k)));
+
   // Prepare input and output
   auto keys_in =
     thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});

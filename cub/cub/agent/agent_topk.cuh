@@ -48,6 +48,20 @@ _CCCL_DEVICE _CCCL_FORCEINLINE unsigned long atomicAdd(unsigned long* address, u
   return (unsigned long) atomicAdd(reinterpret_cast<unsigned long long*>(address), (unsigned long long) val);
 }
 
+_CCCL_DEVICE _CCCL_FORCEINLINE uint16_t atomicAdd(uint16_t* address, uint16_t val)
+{
+  unsigned short int* address_as_us = (unsigned short int*) address;
+  unsigned short int old_as_us      = *address_as_us;
+  unsigned short int val_as_us      = (unsigned short int) val;
+  unsigned short int assumed;
+  do
+  {
+    assumed   = old_as_us;
+    old_as_us = atomicCAS(address_as_us, assumed, assumed + val_as_us);
+  } while (assumed != old_as_us);
+  return static_cast<uint16_t>(old_as_us);
+}
+
 /******************************************************************************
  * Tuning policy types
  ******************************************************************************/

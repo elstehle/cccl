@@ -22,6 +22,7 @@ DECLARE_LAUNCH_WRAPPER(cub::DeviceTopK::TopKMinKeys, topk_min_keys);
 
 using key_types       = c2h::type_list<cuda::std::uint16_t, float, cuda::std::uint64_t>;
 using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
+using k_items_types   = c2h::type_list<cuda::std::uint16_t, cuda::std::uint32_t>;
 
 C2H_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_types)
 {
@@ -30,15 +31,14 @@ C2H_TEST("DeviceTopK::TopKKeys: Basic testing", "[keys][topk][device]", key_type
 
   // Set input size
   constexpr num_items_t min_num_items = 1 << 2;
-  constexpr num_items_t max_num_items = 1 << 24;
+  constexpr num_items_t max_num_items = 1 << 15;
   const num_items_t num_items =
-    GENERATE_COPY(values({min_num_items, max_num_items}), take(5, random(min_num_items, max_num_items)));
+    GENERATE_COPY(values({min_num_items, max_num_items}), take(1, random(min_num_items, max_num_items)));
 
   // Set the k value
-  constexpr num_items_t min_k = 1 << 3;
+  constexpr num_items_t min_k = 1 << 1;
   constexpr num_items_t max_k = 1 << 15;
-  num_items_t k               = GENERATE_COPY(take(5, random(min_k, max_k)));
-  k                           = k > num_items ? num_items - 1 : k;
+  const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Allocate the device memory
   c2h::device_vector<key_t> keys_in(num_items);
@@ -122,14 +122,14 @@ C2H_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", k
   // Set input size
   constexpr num_items_t min_num_items = 1 << 2;
   constexpr num_items_t max_num_items = 1 << 24;
-  const num_items_t num_items = GENERATE_COPY(values({min_num_items}), take(3, random(min_num_items, max_num_items)));
+  const num_items_t num_items =
+    GENERATE_COPY(values({min_num_items, max_num_items}), take(1, random(min_num_items, max_num_items)));
   // Large num_items will be in another test
 
   // Set the k value
-  constexpr num_items_t min_k = 1 << 3;
-  constexpr num_items_t max_k = 1 << 5;
-  num_items_t k               = GENERATE_COPY(take(5, random(min_k, max_k)));
-  k                           = k > num_items ? num_items - 1 : k;
+  constexpr num_items_t min_k = 1 << 1;
+  constexpr num_items_t max_k = 1 << 15;
+  const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
   auto keys_in =
@@ -174,7 +174,7 @@ C2H_TEST("DeviceTopK::TopKKeys: works with iterators", "[keys][topk][device]", k
 
 C2H_TEST("DeviceTopK::TopKKeys: Test for large num_items", "[keys][topk][device]", num_items_types)
 {
-  using key_t       = float;
+  using key_t       = uint32_t;
   using num_items_t = c2h::get<0, TestType>;
 
   // Set input size
@@ -185,13 +185,78 @@ C2H_TEST("DeviceTopK::TopKKeys: Test for large num_items", "[keys][topk][device]
   const num_items_t num_items         = GENERATE_COPY(values({max_num_items}));
 
   // Set the k value
-  constexpr num_items_t min_k = 1 << 3;
-  constexpr num_items_t max_k = 1 << 5;
-  num_items_t k               = GENERATE_COPY(take(3, random(min_k, max_k)));
-  k                           = k > num_items ? num_items - 1 : k;
+  constexpr num_items_t min_k = 1 << 1;
+  constexpr num_items_t max_k = 1 << 15;
+  const num_items_t k         = GENERATE_COPY(take(3, random(min_k, min(num_items - 1, max_k))));
 
   // Prepare input and output
-  auto keys_in = thrust::make_counting_iterator(key_t{});
+  auto keys_in =
+    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
+  c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
+
+  // Run the device-wide API
+  const bool is_descending = GENERATE(false, true);
+  if (!is_descending)
+  {
+    topk_min_keys(keys_in, thrust::raw_pointer_cast(keys_out.data()), num_items, k);
+  }
+  else
+  {
+    topk_keys(keys_in, thrust::raw_pointer_cast(keys_out.data()), num_items, k);
+  }
+
+  // Verify results
+
+  /// Since the results of API TopKMinKeys() and TopKKeys() are not-sorted
+  /// We need to sort the results first.
+  c2h::host_vector<key_t> device_results(keys_out);
+  if (is_descending)
+  {
+    std::stable_sort(device_results.begin(), device_results.end(), std::greater<key_t>());
+  }
+  else
+  {
+    std::stable_sort(device_results.begin(), device_results.end(), std::less<key_t>());
+  }
+
+  if (is_descending)
+  {
+    auto keys_expected_it = thrust::make_reverse_iterator(keys_in + num_items);
+    REQUIRE(thrust::equal(device_results.cbegin(), device_results.cend(), keys_expected_it));
+  }
+  else
+  {
+    REQUIRE(thrust::equal(device_results.cbegin(), device_results.cend(), keys_in));
+  }
+}
+
+C2H_TEST("DeviceTopK::TopKKeys:  Test for different data types for num_items and k",
+         "[keys][topk][device]",
+         k_items_types)
+{
+  using key_t       = uint32_t;
+  using num_items_t = uint64_t;
+  using k_items_t   = c2h::get<0, TestType>;
+
+  // Set input size
+  constexpr num_items_t min_num_items = 1 << 2;
+  constexpr num_items_t max_num_items = 1 << 15;
+  const num_items_t num_items =
+    GENERATE_COPY(values({min_num_items, max_num_items}), take(1, random(min_num_items, max_num_items)));
+  // Large num_items will be in another test
+
+  // Set the k value
+  constexpr k_items_t min_k = 1 << 1;
+  k_items_t limit_k         = min(::cuda::std::numeric_limits<k_items_t>::max(), 1 << 15);
+  const k_items_t max_k =
+    num_items - 1 < ::cuda::std::numeric_limits<k_items_t>::max()
+      ? min(static_cast<k_items_t>(num_items - 1), limit_k)
+      : limit_k;
+  const k_items_t k = GENERATE_COPY(take(3, random(min_k, max_k)));
+
+  // Prepare input and output
+  auto keys_in =
+    thrust::make_transform_iterator(thrust::make_counting_iterator(num_items_t{}), inc_t<key_t>{num_items});
   c2h::device_vector<key_t> keys_out(k, static_cast<key_t>(42));
 
   // Run the device-wide API
