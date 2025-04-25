@@ -498,7 +498,7 @@ struct AgentSelectIf
     OffsetT (&selection_flags)[ITEMS_PER_THREAD],
     constant_t<USE_DISCONTINUITY> /*select_method*/)
   {
-    if (IS_FIRST_TILE && streaming_context.is_first_partition())
+    if ((tile_offset == 0 || IS_FIRST_TILE) && streaming_context.is_first_partition())
     {
       __syncthreads();
 
