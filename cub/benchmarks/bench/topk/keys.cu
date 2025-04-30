@@ -19,13 +19,13 @@
 #endif
 
 #if !TUNE_BASE
-template <class KeyInT, class NumItemsT>
+template <class KeyInT, class OffsetT>
 struct policy_hub_t
 {
   struct policy_t : cub::ChainedPolicy<300, policy_t, policy_t>
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = TUNE_ITEMS_PER_THREAD;
-    static constexpr int ITEMS_PER_THREAD = cuda::std::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
+    static constexpr int ITEMS_PER_THREAD = _CUDA_VSTD::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / sizeof(KeyInT)));
 
     static constexpr int BITS_PER_PASS          = cub::detail::topk::calc_bits_per_pass<KeyInT>();
     static constexpr int COEFFICIENT_FOR_BUFFER = 128;
@@ -43,27 +43,34 @@ struct policy_hub_t
 };
 #endif // !TUNE_BASE
 
-template <typename KeyT, typename NumItemsT, typename KItemsT>
-void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, NumItemsT, KItemsT>)
+template <typename KeyT, typename OffsetT, typename OutOffsetT>
+void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, OffsetT, OutOffsetT>)
 {
   using key_input_it_t      = const KeyT*;
   using key_output_it_t     = KeyT*;
-  using offset_t            = cub::detail::choose_offset_t<NumItemsT>;
-  using k_items_t           = KItemsT;
+  using offset_t            = cub::detail::choose_offset_t<OffsetT>;
+  using out_offset_t        = OutOffsetT;
   constexpr bool select_min = false;
 
 #if !TUNE_BASE
-  using policy_t   = policy_hub_t<KeyT, NumItemsT>;
-  using dispatch_t = cub::
-    DispatchTopK<key_input_it_t, key_output_it_t, cub::NullType*, cub::NullType*, offset_t, k_items_t, select_min, policy_t>;
+  using policy_t   = policy_hub_t<KeyT, OffsetT>;
+  using dispatch_t = cub::detail::topk::DispatchTopK<
+    key_input_it_t,
+    key_output_it_t,
+    cub::NullType*,
+    cub::NullType*,
+    offset_t,
+    out_offset_t,
+    select_min,
+    policy_t>;
 #else // TUNE_BASE
-  using dispatch_t =
-    cub::DispatchTopK<key_input_it_t, key_output_it_t, cub::NullType*, cub::NullType*, offset_t, k_items_t, select_min>;
+  using dispatch_t = cub::detail::topk::
+    DispatchTopK<key_input_it_t, key_output_it_t, cub::NullType*, cub::NullType*, offset_t, out_offset_t, select_min>;
 #endif // TUNE_BASE
 
   // Retrieve axis parameters
-  const auto elements          = static_cast<std::size_t>(state.get_int64("Elements{io}"));
-  const auto selected_elements = static_cast<std::size_t>(state.get_int64("SelectedElements"));
+  const auto elements          = static_cast<size_t>(state.get_int64("Elements{io}"));
+  const auto selected_elements = static_cast<size_t>(state.get_int64("SelectedElements"));
   const bit_entropy entropy    = str_to_entropy(state.get_string("Entropy"));
 
   // Skip benchmarks at runtime
@@ -84,7 +91,7 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, NumItemsT, KItems
   state.add_global_memory_writes<KeyT>(selected_elements, "OutputKeys");
 
   // allocate temporary storage
-  std::size_t temp_size;
+  size_t temp_size;
   dispatch_t::Dispatch(
     nullptr,
     temp_size,
@@ -115,7 +122,7 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, NumItemsT, KItems
 
 NVBENCH_BENCH_TYPES(topk_keys, NVBENCH_TYPE_AXES(fundamental_types, offset_types, offset_types))
   .set_name("base")
-  .set_type_axes_names({"KeyT{ct}", "NumItemsT{ct}", "KItemsT{ct}"})
+  .set_type_axes_names({"KeyT{ct}", "OffsetT{ct}", "OutOffsetT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(16, 28, 4))
   .add_int64_power_of_two_axis("SelectedElements", nvbench::range(3, 23, 4))
   .add_string_axis("Entropy", {"1.000", "0.544", "0.201", "0.000"});

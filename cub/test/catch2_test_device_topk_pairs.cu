@@ -30,11 +30,11 @@ void sort_keys_and_values(
   // Perform sort
   if (is_descending)
   {
-    stable_sort_keys(zipped_it, num_items, ::cuda::std::greater<>{});
+    stable_sort_keys(zipped_it, num_items, _CUDA_VSTD::greater<>{});
   }
   else
   {
-    stable_sort_keys(zipped_it, num_items, ::cuda::std::less<>{});
+    stable_sort_keys(zipped_it, num_items, _CUDA_VSTD::less<>{});
   }
 }
 
@@ -138,16 +138,16 @@ bool topk_with_iterator(
   return res;
 }
 
-using key_types       = c2h::type_list<cuda::std::uint16_t, float, cuda::std::uint64_t>;
-using value_types     = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
-using num_items_types = c2h::type_list<cuda::std::uint32_t, cuda::std::uint64_t>;
-using k_items_types   = c2h::type_list<cuda::std::uint16_t, cuda::std::uint32_t>;
+using key_types       = c2h::type_list<_CUDA_VSTD::uint16_t, float, _CUDA_VSTD::uint64_t>;
+using value_types     = c2h::type_list<_CUDA_VSTD::uint32_t, _CUDA_VSTD::uint64_t>;
+using num_items_types = c2h::type_list<_CUDA_VSTD::uint32_t, _CUDA_VSTD::uint64_t>;
+using k_items_types   = c2h::type_list<_CUDA_VSTD::uint16_t, _CUDA_VSTD::uint32_t>;
 
 C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_types, value_types)
 {
   using key_t       = c2h::get<0, TestType>;
   using value_t     = c2h::get<1, TestType>;
-  using num_items_t = cuda::std::uint32_t;
+  using num_items_t = _CUDA_VSTD::uint32_t;
 
   // Set input size
   constexpr num_items_t min_num_items = 1 << 2;
@@ -216,19 +216,19 @@ C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_ty
 template <typename T>
 struct inc_t
 {
-  std::size_t num_item;
+  size_t num_item;
   double value_increment;
 
-  inc_t(std::size_t num_item)
+  inc_t(size_t num_item)
       : num_item(num_item)
   {
-    if (num_item < ::cuda::std::numeric_limits<T>::max())
+    if (num_item < _CUDA_VSTD::numeric_limits<T>::max())
     {
       value_increment = 1;
     }
     else
     {
-      value_increment = double(::cuda::std::numeric_limits<T>::max()) / num_item;
+      value_increment = double(_CUDA_VSTD::numeric_limits<T>::max()) / num_item;
     }
   }
 
@@ -278,8 +278,8 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for large num_items", "[pairs][topk][devic
 
   // Set input size
   constexpr num_items_t max_num_items_ull =
-    std::min(static_cast<std::size_t>(::cuda::std::numeric_limits<num_items_t>::max()),
-             ::cuda::std::numeric_limits<std::uint32_t>::max() + static_cast<std::size_t>(2000000ULL));
+    _CUDA_VSTD::min(static_cast<size_t>(_CUDA_VSTD::numeric_limits<num_items_t>::max()),
+                    _CUDA_VSTD::numeric_limits<_CUDA_VSTD::uint32_t>::max() + static_cast<size_t>(2000000ULL));
   constexpr num_items_t max_num_items = static_cast<num_items_t>(max_num_items_ull);
   const num_items_t num_items         = GENERATE_COPY(values({max_num_items}));
 
@@ -319,9 +319,9 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for different data types for num_items and
 
   // Set the k value
   constexpr k_items_t min_k = 1 << 1;
-  k_items_t limit_k         = min(::cuda::std::numeric_limits<k_items_t>::max(), 1 << 15);
+  k_items_t limit_k         = min(_CUDA_VSTD::numeric_limits<k_items_t>::max(), 1 << 15);
   const k_items_t max_k =
-    num_items - 1 < ::cuda::std::numeric_limits<k_items_t>::max()
+    num_items - 1 < _CUDA_VSTD::numeric_limits<k_items_t>::max()
       ? min(static_cast<k_items_t>(num_items - 1), limit_k)
       : limit_k;
   const k_items_t k = GENERATE_COPY(take(3, random(min_k, max_k)));

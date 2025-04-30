@@ -74,7 +74,7 @@ struct DeviceTopK
   //! @tparam NumItemsT
   //! Type of variable num_items
   //!
-  //! @tparam KItemsT
+  //! @tparam NumOutItemsT
   //! Type of variable k
   //!
   //! @param[in] d_temp_storage
@@ -112,7 +112,7 @@ struct DeviceTopK
             typename ValueInputIteratorT,
             typename ValueOutputIteratorT,
             typename NumItemsT,
-            typename KItemsT>
+            typename NumOutItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
@@ -121,19 +121,19 @@ struct DeviceTopK
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    KItemsT k,
+    NumOutItemsT k,
     cudaStream_t stream = 0)
   {
     static constexpr bool select_min = false;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
 
-    return DispatchTopK<
+    return detail::topk::DispatchTopK<
       KeyInputIteratorT,
       KeyOutputIteratorT,
       ValueInputIteratorT,
       ValueOutputIteratorT,
       offset_t,
-      KItemsT,
+      NumOutItemsT,
       select_min>::Dispatch(d_temp_storage,
                             temp_storage_bytes,
                             d_keys_in,
@@ -160,7 +160,7 @@ struct DeviceTopK
   //! @tparam NumItemsT
   //! Type of variable num_items
   //!
-  //! @tparam KItemsT
+  //! @tparam NumOutItemsT
   //! Type of variable k
   //!
   //! @param[in] d_temp_storage
@@ -198,7 +198,7 @@ struct DeviceTopK
             typename ValueInputIteratorT,
             typename ValueOutputIteratorT,
             typename NumItemsT,
-            typename KItemsT>
+            typename NumOutItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKMinPairs(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
@@ -207,19 +207,19 @@ struct DeviceTopK
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     NumItemsT num_items,
-    KItemsT k,
+    NumOutItemsT k,
     cudaStream_t stream = 0)
   {
     static constexpr bool select_min = true;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
 
-    return DispatchTopK<
+    return detail::topk::DispatchTopK<
       KeyInputIteratorT,
       KeyOutputIteratorT,
       ValueInputIteratorT,
       ValueOutputIteratorT,
       offset_t,
-      KItemsT,
+      NumOutItemsT,
       select_min>::Dispatch(d_temp_storage,
                             temp_storage_bytes,
                             d_keys_in,
@@ -240,7 +240,7 @@ struct DeviceTopK
   //! @tparam NumItemsT
   //! Type of variable num_items
   //!
-  //! @tparam KItemsT
+  //! @tparam NumOutItemsT
   //! Type of variable k
   //!
   //! @param[in] d_temp_storage
@@ -266,29 +266,30 @@ struct DeviceTopK
   //!   @rst
   //!   **[optional]** CUDA stream to launch kernels within. Default is stream\ :sub:`0`.
   //!   @endrst
-  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT, typename KItemsT>
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT, typename NumOutItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKKeys(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
     KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     NumItemsT num_items,
-    KItemsT k,
+    NumOutItemsT k,
     cudaStream_t stream = 0)
   {
     static constexpr bool select_min = false;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
 
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, KItemsT, select_min>::
-      Dispatch(d_temp_storage,
-               temp_storage_bytes,
-               d_keys_in,
-               d_keys_out,
-               static_cast<NullType*>(nullptr),
-               static_cast<NullType*>(nullptr),
-               static_cast<offset_t>(num_items),
-               k,
-               stream);
+    return detail::topk::
+      DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, NumOutItemsT, select_min>::
+        Dispatch(d_temp_storage,
+                 temp_storage_bytes,
+                 d_keys_in,
+                 d_keys_out,
+                 static_cast<NullType*>(nullptr),
+                 static_cast<NullType*>(nullptr),
+                 static_cast<offset_t>(num_items),
+                 k,
+                 stream);
   }
 
   //! @tparam KeyInputIteratorT
@@ -300,7 +301,7 @@ struct DeviceTopK
   //! @tparam NumItemsT
   //! Type of variable num_items
   //!
-  //! @tparam KItemsT
+  //! @tparam NumOutItemsT
   //! Type of variable k
   //!
   //! @param[in] d_temp_storage
@@ -326,29 +327,30 @@ struct DeviceTopK
   //!   @rst
   //!   **[optional]** CUDA stream to launch kernels within. Default is stream\ :sub:`0`.
   //!   @endrst
-  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT, typename KItemsT>
+  template <typename KeyInputIteratorT, typename KeyOutputIteratorT, typename NumItemsT, typename NumOutItemsT>
   CUB_RUNTIME_FUNCTION static cudaError_t TopKMinKeys(
     void* d_temp_storage,
     size_t& temp_storage_bytes,
     KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     NumItemsT num_items,
-    KItemsT k,
+    NumOutItemsT k,
     cudaStream_t stream = 0)
   {
     static constexpr bool select_min = true;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
 
-    return DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, KItemsT, select_min>::
-      Dispatch(d_temp_storage,
-               temp_storage_bytes,
-               d_keys_in,
-               d_keys_out,
-               static_cast<NullType*>(nullptr),
-               static_cast<NullType*>(nullptr),
-               static_cast<offset_t>(num_items),
-               k,
-               stream);
+    return detail::topk::
+      DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, NumOutItemsT, select_min>::
+        Dispatch(d_temp_storage,
+                 temp_storage_bytes,
+                 d_keys_in,
+                 d_keys_out,
+                 static_cast<NullType*>(nullptr),
+                 static_cast<NullType*>(nullptr),
+                 static_cast<offset_t>(num_items),
+                 k,
+                 stream);
   }
 };
 

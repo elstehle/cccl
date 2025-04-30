@@ -11,6 +11,14 @@
 
 #include <cub/config.cuh>
 
+#if defined(_CCCL_IMPLICIT_SYSTEM_HEADER_GCC)
+#  pragma GCC system_header
+#elif defined(_CCCL_IMPLICIT_SYSTEM_HEADER_CLANG)
+#  pragma clang system_header
+#elif defined(_CCCL_IMPLICIT_SYSTEM_HEADER_MSVC)
+#  pragma system_header
+#endif // no system header
+
 #include <cub/agent/agent_topk.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/util_device.cuh>
@@ -21,14 +29,6 @@
 
 #include <cuda/cmath>
 
-#if defined(_CCCL_IMPLICIT_SYSTEM_HEADER_GCC)
-#  pragma GCC system_header
-#elif defined(_CCCL_IMPLICIT_SYSTEM_HEADER_CLANG)
-#  pragma clang system_header
-#elif defined(_CCCL_IMPLICIT_SYSTEM_HEADER_MSVC)
-#  pragma system_header
-#endif // no system header
-
 CUB_NAMESPACE_BEGIN
 
 namespace detail
@@ -37,7 +37,6 @@ namespace detail
 namespace topk
 {
 
-#define DEFAULT_NUM_THREADS 512
 template <class KeyT>
 constexpr int calc_bits_per_pass()
 {
@@ -47,10 +46,10 @@ constexpr int calc_bits_per_pass()
 template <class KeyInT>
 struct sm90_tuning
 {
-  static constexpr int threads = DEFAULT_NUM_THREADS; // Number of threads per block
+  static constexpr int threads = 512; // Number of threads per block
 
   static constexpr int nominal_4b_items_per_thread = 4;
-  static constexpr int items = cuda::std::max(1, (nominal_4b_items_per_thread * 4 / (int) sizeof(KeyInT)));
+  static constexpr int items = _CUDA_VSTD::max(1, (nominal_4b_items_per_thread * 4 / (int) sizeof(KeyInT)));
   // Try to load 16 Bytes per thread. (int64(items=2);int32(items=4);int16(items=8)).
 
   static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
@@ -59,23 +58,20 @@ struct sm90_tuning
   static constexpr BlockLoadAlgorithm load_algorithm = BLOCK_LOAD_VECTORIZE;
 };
 
-} // namespace topk
-} // namespace detail
-
-template <class KeyInT, class NumItemsT>
+template <class KeyInT, class OffsetT>
 struct device_topk_policy_hub
 {
   struct DefaultTuning
   {
     static constexpr int NOMINAL_4B_ITEMS_PER_THREAD = 4;
-    static constexpr int ITEMS_PER_THREAD            = cuda::std::min(
-      NOMINAL_4B_ITEMS_PER_THREAD, cuda::std::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / (int) sizeof(KeyInT))));
+    static constexpr int ITEMS_PER_THREAD            = _CUDA_VSTD::min(
+      NOMINAL_4B_ITEMS_PER_THREAD, _CUDA_VSTD::max(1, (NOMINAL_4B_ITEMS_PER_THREAD * 4 / (int) sizeof(KeyInT))));
 
     static constexpr int BITS_PER_PASS          = detail::topk::calc_bits_per_pass<KeyInT>();
     static constexpr int COEFFICIENT_FOR_BUFFER = 128;
 
-    using TopKPolicyT =
-      AgentTopKPolicy<DEFAULT_NUM_THREADS,
+    using topk_policy_t =
+      AgentTopKPolicy<512,
                       ITEMS_PER_THREAD,
                       BITS_PER_PASS,
                       COEFFICIENT_FOR_BUFFER,
@@ -91,8 +87,7 @@ struct device_topk_policy_hub
   struct Policy900 : ChainedPolicy<900, Policy900, Policy350>
   {
     using tuning = detail::topk::sm90_tuning<KeyInT>;
-
-    using TopKPolicyT =
+    using topk_policy_t =
       AgentTopKPolicy<tuning::threads,
                       tuning::items,
                       tuning::BITS_PER_PASS,
@@ -101,8 +96,9 @@ struct device_topk_policy_hub
                       BLOCK_SCAN_WARP_SCANS>;
   };
 
-  using MaxPolicy = Policy900;
+  using max_policy = Policy900;
 };
+
 /******************************************************************************
  * Kernel entry points
  *****************************************************************************/
@@ -123,10 +119,10 @@ struct device_topk_policy_hub
  * @tparam ValueOutputIteratorT
  *   **[inferred]** Random-access output iterator type for writing output values @iterator
  *
- * @tparam NumItemsT
+ * @tparam OffsetT
  *  Data Type for variables: num_items
  *
- * @tparam KItemsT
+ * @tparam OutOffsetT
  *  Data Type for variables: k
  *
  * @tparam KeyInT
@@ -191,47 +187,47 @@ template <typename ChainedPolicyT,
           typename KeyOutputIteratorT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
-          typename NumItemsT,
-          typename KItemsT,
+          typename OffsetT,
+          typename OutOffsetT,
           typename KeyInT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT,
           bool SelectMin,
           bool IsFirstPass>
-__launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
+__launch_bounds__(int(ChainedPolicyT::ActivePolicy::topk_policy_t::BLOCK_THREADS))
   CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKKernel(
     const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     KeyInT* in_buf,
-    NumItemsT* in_idx_buf,
+    OffsetT* in_idx_buf,
     KeyInT* out_buf,
-    NumItemsT* out_idx_buf,
-    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT, KItemsT>* counter,
-    NumItemsT* histogram,
-    NumItemsT num_items,
-    KItemsT k,
+    OffsetT* out_idx_buf,
+    Counter<detail::it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
+    OffsetT* histogram,
+    OffsetT num_items,
+    OutOffsetT k,
     ExtractBinOpT extract_bin_op,
     IdentifyCandidatesOpT identify_candidates_op,
     int pass)
 {
-  using AgentTopKPolicyT = typename ChainedPolicyT::ActivePolicy::TopKPolicyT;
-  using AgentTopKT =
-    AgentTopK<AgentTopKPolicyT,
+  using agent_topk_policy_t = typename ChainedPolicyT::ActivePolicy::topk_policy_t;
+  using agent_topk_t =
+    AgentTopK<agent_topk_policy_t,
               KeyInputIteratorT,
               KeyOutputIteratorT,
               ValueInputIteratorT,
               ValueOutputIteratorT,
               ExtractBinOpT,
               IdentifyCandidatesOpT,
-              NumItemsT,
-              KItemsT,
+              OffsetT,
+              OutOffsetT,
               SelectMin>;
 
   // Shared memory storage
-  __shared__ typename AgentTopKT::TempStorage temp_storage;
-  AgentTopKT(
+  __shared__ typename agent_topk_t::TempStorage temp_storage;
+  agent_topk_t(
     temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, extract_bin_op, identify_candidates_op)
     .InvokeOneSweep<IsFirstPass>(in_buf, in_idx_buf, out_buf, out_idx_buf, counter, histogram, pass);
 }
@@ -252,10 +248,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  * @tparam ValueOutputIteratorT
  *   **[inferred]** Random-access output iterator type for writing output values @iterator
  *
- * @tparam NumItemsT
+ * @tparam OffsetT
  *  Data Type for variables: num_items
  *
- * @tparam KItemsT
+ * @tparam OutOffsetT
  *  Data Type for variables: k
  *
  * @tparam KeyInT
@@ -308,44 +304,52 @@ template <typename ChainedPolicyT,
           typename KeyOutputIteratorT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
-          typename NumItemsT,
-          typename KItemsT,
+          typename OffsetT,
+          typename OutOffsetT,
           typename KeyInT,
           typename IdentifyCandidatesOpT,
           bool SelectMin>
-__launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
+__launch_bounds__(int(ChainedPolicyT::ActivePolicy::topk_policy_t::BLOCK_THREADS))
   CUB_DETAIL_KERNEL_ATTRIBUTES void DeviceTopKLastFilterKernel(
     const KeyInputIteratorT d_keys_in,
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     KeyInT* in_buf,
-    NumItemsT* in_idx_buf,
-    Counter<detail::it_value_t<KeyInputIteratorT>, NumItemsT, KItemsT>* counter,
-    NumItemsT* histogram,
-    NumItemsT num_items,
-    KItemsT k,
+    OffsetT* in_idx_buf,
+    Counter<detail::it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
+    OffsetT* histogram,
+    OffsetT num_items,
+    OutOffsetT k,
     IdentifyCandidatesOpT identify_candidates_op,
     int pass)
 {
-  using AgentTopKPolicyT = typename ChainedPolicyT::ActivePolicy::TopKPolicyT;
-  using ExtractBinOpT    = NullType;
-  using AgentTopKT =
-    AgentTopK<AgentTopKPolicyT,
+  using agent_topk_policy_t = typename ChainedPolicyT::ActivePolicy::topk_policy_t;
+  using extract_bin_op_t    = NullType;
+  using agent_topk_t =
+    AgentTopK<agent_topk_policy_t,
               KeyInputIteratorT,
               KeyOutputIteratorT,
               ValueInputIteratorT,
               ValueOutputIteratorT,
-              ExtractBinOpT, // ExtractBinOp operator (not used)
+              extract_bin_op_t, // ExtractBinOp operator (not used)
               IdentifyCandidatesOpT,
-              NumItemsT,
-              KItemsT,
+              OffsetT,
+              OutOffsetT,
               SelectMin>;
 
   // Shared memory storage
-  __shared__ typename AgentTopKT::TempStorage temp_storage;
-  AgentTopKT(
-    temp_storage, d_keys_in, d_keys_out, d_values_in, d_values_out, num_items, k, ExtractBinOpT{}, identify_candidates_op)
+  __shared__ typename agent_topk_t::TempStorage temp_storage;
+  agent_topk_t(
+    temp_storage,
+    d_keys_in,
+    d_keys_out,
+    d_values_in,
+    d_values_out,
+    num_items,
+    k,
+    extract_bin_op_t{},
+    identify_candidates_op)
     .InvokeLastFilter(in_buf, in_idx_buf, counter, histogram, k, pass);
 }
 
@@ -362,10 +366,10 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::TopKPolicyT::BLOCK_THREADS))
  * @tparam ValueOutputIteratorT
  *   **[inferred]** Random-access input iterator type for writing output values @iterator
  *
- * @tparam NumItemsT
+ * @tparam OffsetT
  *  Data Type for variables: num_items
  *
- * @tparam KItemsT
+ * @tparam OutOffsetT
  *  Data Type for variables: k
  *
  * @tparam SelectMin
@@ -405,10 +409,10 @@ template <typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
           typename ValueInputIteratorT,
           typename ValueOutputIteratorT,
-          typename NumItemsT,
-          typename KItemsT,
+          typename OffsetT,
+          typename OutOffsetT,
           bool SelectMin,
-          typename SelectedPolicy = device_topk_policy_hub<detail::it_value_t<KeyInputIteratorT>, NumItemsT>>
+          typename SelectedPolicy = detail::topk::device_topk_policy_hub<detail::it_value_t<KeyInputIteratorT>, OffsetT>>
 struct DispatchTopK : SelectedPolicy
 {
   /// Device-accessible allocation of temporary storage.
@@ -432,18 +436,18 @@ struct DispatchTopK : SelectedPolicy
   ValueOutputIteratorT d_values_out;
 
   /// Number of items to be processed
-  NumItemsT num_items;
+  OffsetT num_items;
 
   /// The K value. Will find K elements from num_items elements
-  KItemsT k;
+  OutOffsetT k;
 
   /// CUDA stream to launch kernels within. Default is stream<sub>0</sub>.
   cudaStream_t stream;
 
   int ptx_version;
 
-  using KeyInT                    = detail::it_value_t<KeyInputIteratorT>;
-  static constexpr bool KEYS_ONLY = std::is_same<ValueInputIteratorT, NullType>::value;
+  using key_in_t                  = detail::it_value_t<KeyInputIteratorT>;
+  static constexpr bool KEYS_ONLY = _CUDA_VSTD::is_same<ValueInputIteratorT, NullType>::value;
   /*
    *
    * @param[in] d_temp_storage
@@ -483,8 +487,8 @@ struct DispatchTopK : SelectedPolicy
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
-    NumItemsT num_items,
-    KItemsT k,
+    OffsetT num_items,
+    OutOffsetT k,
     cudaStream_t stream,
     int ptx_version)
       : d_temp_storage(d_temp_storage)
@@ -528,19 +532,19 @@ struct DispatchTopK : SelectedPolicy
          TopKKernelPtrT topk_kernel,
          TopKLastFilterKernelPtrT topk_lastfilter_kernel)
   {
-    using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
-    using Policy     = typename ActivePolicyT::TopKPolicyT;
+    using max_policy_t = typename SelectedPolicy::max_policy;
+    using policy       = typename ActivePolicyT::topk_policy_t;
 
     cudaError error = cudaSuccess;
 
-    constexpr int block_threads    = Policy::BLOCK_THREADS; // Threads per block
-    constexpr int items_per_thread = Policy::ITEMS_PER_THREAD; // Items per thread
+    constexpr int block_threads    = policy::BLOCK_THREADS; // Threads per block
+    constexpr int items_per_thread = policy::ITEMS_PER_THREAD; // Items per thread
     constexpr int tile_size        = block_threads * items_per_thread; // Items per block
     int num_tiles                  = static_cast<int>(::cuda::ceil_div(num_items, tile_size)); // Num of blocks
-    constexpr int num_passes       = CalcNumPasses<KeyInT, Policy::BITS_PER_PASS>();
-    int num_buckets                = 1 << Policy::BITS_PER_PASS;
+    constexpr int num_passes       = CalcNumPasses<key_in_t, policy::BITS_PER_PASS>();
+    constexpr int num_buckets      = 1 << policy::BITS_PER_PASS;
 
-    if (static_cast<NumItemsT>(k) >= num_items)
+    if (static_cast<OffsetT>(k) >= num_items)
     {
       // We only support the case where the variable K is smaller than the variable N.
       return cudaErrorInvalidValue;
@@ -549,17 +553,17 @@ struct DispatchTopK : SelectedPolicy
     do
     {
       // Specify temporary storage allocation requirements
-      size_t size_counter   = sizeof(Counter<KeyInT, NumItemsT, KItemsT>);
-      size_t size_histogram = num_buckets * sizeof(NumItemsT);
-      size_t num_candidates = cuda::std::max((size_t) 256, (size_t) num_items / Policy::COEFFICIENT_FOR_BUFFER);
+      size_t size_counter   = sizeof(Counter<key_in_t, OffsetT, OutOffsetT>);
+      size_t size_histogram = num_buckets * sizeof(OffsetT);
+      size_t num_candidates = _CUDA_VSTD::max((size_t) 256, (size_t) num_items / policy::COEFFICIENT_FOR_BUFFER);
 
       size_t allocation_sizes[6] = {
         size_counter,
         size_histogram,
-        num_candidates * sizeof(KeyInT),
-        num_candidates * sizeof(KeyInT),
-        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT),
-        KEYS_ONLY ? 0 : num_candidates * sizeof(NumItemsT)};
+        num_candidates * sizeof(key_in_t),
+        num_candidates * sizeof(key_in_t),
+        KEYS_ONLY ? 0 : num_candidates * sizeof(OffsetT),
+        KEYS_ONLY ? 0 : num_candidates * sizeof(OffsetT)};
 
       // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
       void* allocations[6] = {};
@@ -584,6 +588,28 @@ struct DispatchTopK : SelectedPolicy
         break;
       }
 
+      // Get grid size for scanning tiles
+      int device  = -1;
+      int num_sms = 0;
+
+      error = CubDebug(cudaGetDevice(&device));
+      if (cudaSuccess != error)
+      {
+        break;
+      }
+      error = CubDebug(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+      if (cudaSuccess != error)
+      {
+        break;
+      }
+
+      dim3 topk_grid_size;
+      topk_grid_size.z       = 1;
+      topk_grid_size.y       = 1;
+      int topk_blocks_per_sm = CalculateBlocksPerSM(topk_kernel, block_threads);
+      topk_grid_size.x       = _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
+                                         (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+
 // Log topk_kernel configuration @todo check the kernel launch
 #ifdef CUB_DETAIL_DEBUG_ENABLE_LOG
       {
@@ -605,51 +631,30 @@ struct DispatchTopK : SelectedPolicy
       }
 #endif // CUB_DETAIL_DEBUG_ENABLE_LOG
 
-      // Get grid size for scanning tiles
-      int device  = -1;
-      int num_sms = 0;
-
-      error = CubDebug(cudaGetDevice(&device));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-      error = CubDebug(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-
-      dim3 topk_grid_size;
-      topk_grid_size.z       = 1;
-      topk_grid_size.y       = 1;
-      int topk_blocks_per_sm = CalculateBlocksPerSM(topk_kernel, block_threads);
-      topk_grid_size.x       = cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
-                                        (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
       // Initialize address variables
-      Counter<KeyInT, NumItemsT, KItemsT>* counter;
+      Counter<key_in_t, OffsetT, OutOffsetT>* counter;
       counter = static_cast<decltype(counter)>(allocations[0]);
-      NumItemsT* histogram;
-      histogram              = static_cast<decltype(histogram)>(allocations[1]);
-      KeyInT* in_buf         = nullptr;
-      KeyInT* out_buf        = nullptr;
-      NumItemsT* in_idx_buf  = nullptr;
-      NumItemsT* out_idx_buf = nullptr;
-      int pass               = 0;
+      OffsetT* histogram;
+      histogram            = static_cast<decltype(histogram)>(allocations[1]);
+      key_in_t* in_buf     = nullptr;
+      key_in_t* out_buf    = nullptr;
+      OffsetT* in_idx_buf  = nullptr;
+      OffsetT* out_idx_buf = nullptr;
+      int pass             = 0;
       for (; pass < num_passes; pass++)
       {
         // Set operator
-        ExtractBinOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> extract_bin_op(pass);
-        IdentifyCandidatesOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(
+        ExtractBinOp<key_in_t, !SelectMin, policy::BITS_PER_PASS> extract_bin_op(pass);
+        IdentifyCandidatesOp<key_in_t, !SelectMin, policy::BITS_PER_PASS> identify_candidates_op(
           counter->kth_key_bits, pass);
 
         // Initialize address variables
-        in_buf  = static_cast<KeyInT*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
-        out_buf = pass == 0 ? nullptr : static_cast<KeyInT*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
+        in_buf  = static_cast<key_in_t*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
+        out_buf = pass == 0 ? nullptr : static_cast<key_in_t*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
         if (!KEYS_ONLY)
         {
-          in_idx_buf  = pass <= 1 ? nullptr : static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
-          out_idx_buf = pass == 0 ? nullptr : static_cast<NumItemsT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
+          in_idx_buf  = pass <= 1 ? nullptr : static_cast<OffsetT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
+          out_idx_buf = pass == 0 ? nullptr : static_cast<OffsetT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
         }
 
         // Invoke kernel
@@ -660,8 +665,8 @@ struct DispatchTopK : SelectedPolicy
           topk_firstpass_grid_size.z = 1;
           topk_firstpass_grid_size.y = 1;
           topk_firstpass_grid_size.x =
-            cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
-                           (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+            _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
+                            (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
           THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_firstpass_grid_size, block_threads, 0, stream)
             .doit(
               topk_firstpass_kernel,
@@ -704,11 +709,11 @@ struct DispatchTopK : SelectedPolicy
         }
       }
       // Set operator
-      IdentifyCandidatesOp<KeyInT, !SelectMin, Policy::BITS_PER_PASS> identify_candidates_op(
+      IdentifyCandidatesOp<key_in_t, !SelectMin, policy::BITS_PER_PASS> identify_candidates_op(
         counter->kth_key_bits, pass);
       topk_blocks_per_sm = CalculateBlocksPerSM(topk_lastfilter_kernel, block_threads);
-      topk_grid_size.x   = cuda::std::min((unsigned int) topk_blocks_per_sm * num_sms,
-                                        (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+      topk_grid_size.x   = _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
+                                         (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
       THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
         .doit(topk_lastfilter_kernel,
               d_keys_in,
@@ -730,44 +735,46 @@ struct DispatchTopK : SelectedPolicy
   template <typename ActivePolicyT>
   CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t Invoke()
   {
-    using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
+    using max_policy_t = typename SelectedPolicy::max_policy;
     return Invoke<ActivePolicyT>(
-      DeviceTopKKernel<MaxPolicyT,
-                       KeyInputIteratorT,
-                       KeyOutputIteratorT,
-                       ValueInputIteratorT,
-                       ValueOutputIteratorT,
-                       NumItemsT,
-                       KItemsT,
-                       KeyInT,
-                       ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       SelectMin,
-                       /*IsFirstPass*/ true>,
-
-      DeviceTopKKernel<MaxPolicyT,
-                       KeyInputIteratorT,
-                       KeyOutputIteratorT,
-                       ValueInputIteratorT,
-                       ValueOutputIteratorT,
-                       NumItemsT,
-                       KItemsT,
-                       KeyInT,
-                       ExtractBinOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
-                       SelectMin,
-                       /*IsFirstPass*/ false>,
-
-      DeviceTopKLastFilterKernel<
-        MaxPolicyT,
+      detail::topk::DeviceTopKKernel<
+        max_policy_t,
         KeyInputIteratorT,
         KeyOutputIteratorT,
         ValueInputIteratorT,
         ValueOutputIteratorT,
-        NumItemsT,
-        KItemsT,
-        KeyInT,
-        IdentifyCandidatesOp<KeyInT, !SelectMin, ActivePolicyT::TopKPolicyT::BITS_PER_PASS>,
+        OffsetT,
+        OutOffsetT,
+        key_in_t,
+        ExtractBinOp<key_in_t, !SelectMin, ActivePolicyT::topk_policy_t::BITS_PER_PASS>,
+        IdentifyCandidatesOp<key_in_t, !SelectMin, ActivePolicyT::topk_policy_t::BITS_PER_PASS>,
+        SelectMin,
+        /*IsFirstPass*/ true>,
+
+      detail::topk::DeviceTopKKernel<
+        max_policy_t,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        OffsetT,
+        OutOffsetT,
+        key_in_t,
+        ExtractBinOp<key_in_t, !SelectMin, ActivePolicyT::topk_policy_t::BITS_PER_PASS>,
+        IdentifyCandidatesOp<key_in_t, !SelectMin, ActivePolicyT::topk_policy_t::BITS_PER_PASS>,
+        SelectMin,
+        /*IsFirstPass*/ false>,
+
+      detail::topk::DeviceTopKLastFilterKernel<
+        max_policy_t,
+        KeyInputIteratorT,
+        KeyOutputIteratorT,
+        ValueInputIteratorT,
+        ValueOutputIteratorT,
+        OffsetT,
+        OutOffsetT,
+        key_in_t,
+        IdentifyCandidatesOp<key_in_t, !SelectMin, ActivePolicyT::topk_policy_t::BITS_PER_PASS>,
         SelectMin>);
   }
 
@@ -810,11 +817,11 @@ struct DispatchTopK : SelectedPolicy
     KeyOutputIteratorT d_keys_out,
     const ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
-    NumItemsT num_items,
-    KItemsT k,
+    OffsetT num_items,
+    OutOffsetT k,
     cudaStream_t stream)
   {
-    using MaxPolicyT = typename SelectedPolicy::MaxPolicy;
+    using max_policy_t = typename SelectedPolicy::max_policy;
 
     int ptx_version = 0;
     if (cudaError_t error = CubDebug(PtxVersion(ptx_version)))
@@ -834,8 +841,10 @@ struct DispatchTopK : SelectedPolicy
       stream,
       ptx_version);
 
-    return CubDebug(MaxPolicyT::Invoke(ptx_version, dispatch));
+    return CubDebug(max_policy_t::Invoke(ptx_version, dispatch));
   }
 };
 
+} // namespace topk
+} // namespace detail
 CUB_NAMESPACE_END
