@@ -141,7 +141,7 @@ bool topk_with_iterator(
 using key_types       = c2h::type_list<_CUDA_VSTD::uint16_t, float, _CUDA_VSTD::uint64_t>;
 using value_types     = c2h::type_list<_CUDA_VSTD::uint32_t, _CUDA_VSTD::uint64_t>;
 using num_items_types = c2h::type_list<_CUDA_VSTD::uint32_t, _CUDA_VSTD::uint64_t>;
-using k_items_types   = c2h::type_list<_CUDA_VSTD::uint16_t, _CUDA_VSTD::uint32_t>;
+using k_items_types   = c2h::type_list<_CUDA_VSTD::uint32_t, _CUDA_VSTD::uint64_t>;
 
 C2H_TEST("DeviceTopK::TopKPairs: Basic testing", "[pairs][topk][device]", key_types, value_types)
 {
@@ -319,7 +319,7 @@ C2H_TEST("DeviceTopK::TopKPairs: Test for different data types for num_items and
 
   // Set the k value
   constexpr k_items_t min_k = 1 << 1;
-  k_items_t limit_k         = min(_CUDA_VSTD::numeric_limits<k_items_t>::max(), 1 << 15);
+  k_items_t limit_k         = min(_CUDA_VSTD::numeric_limits<k_items_t>::max(), static_cast<k_items_t>(1 << 15));
   const k_items_t max_k =
     num_items - 1 < _CUDA_VSTD::numeric_limits<k_items_t>::max()
       ? min(static_cast<k_items_t>(num_items - 1), limit_k)

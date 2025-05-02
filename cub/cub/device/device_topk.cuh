@@ -126,14 +126,17 @@ struct DeviceTopK
   {
     static constexpr bool select_min = false;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
-
+    using out_offset_t =
+      std::conditional_t<sizeof(offset_t) < sizeof(detail::choose_offset_t<NumOutItemsT>),
+                         offset_t,
+                         detail::choose_offset_t<NumOutItemsT>>;
     return detail::topk::DispatchTopK<
       KeyInputIteratorT,
       KeyOutputIteratorT,
       ValueInputIteratorT,
       ValueOutputIteratorT,
       offset_t,
-      NumOutItemsT,
+      out_offset_t,
       select_min>::Dispatch(d_temp_storage,
                             temp_storage_bytes,
                             d_keys_in,
@@ -212,14 +215,17 @@ struct DeviceTopK
   {
     static constexpr bool select_min = true;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
-
+    using out_offset_t =
+      std::conditional_t<sizeof(offset_t) < sizeof(detail::choose_offset_t<NumOutItemsT>),
+                         offset_t,
+                         detail::choose_offset_t<NumOutItemsT>>;
     return detail::topk::DispatchTopK<
       KeyInputIteratorT,
       KeyOutputIteratorT,
       ValueInputIteratorT,
       ValueOutputIteratorT,
       offset_t,
-      NumOutItemsT,
+      out_offset_t,
       select_min>::Dispatch(d_temp_storage,
                             temp_storage_bytes,
                             d_keys_in,
@@ -278,9 +284,12 @@ struct DeviceTopK
   {
     static constexpr bool select_min = false;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
-
+    using out_offset_t =
+      std::conditional_t<sizeof(offset_t) < sizeof(detail::choose_offset_t<NumOutItemsT>),
+                         offset_t,
+                         detail::choose_offset_t<NumOutItemsT>>;
     return detail::topk::
-      DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, NumOutItemsT, select_min>::
+      DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, out_offset_t, select_min>::
         Dispatch(d_temp_storage,
                  temp_storage_bytes,
                  d_keys_in,
@@ -339,9 +348,12 @@ struct DeviceTopK
   {
     static constexpr bool select_min = true;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
-
+    using out_offset_t =
+      std::conditional_t<sizeof(offset_t) < sizeof(detail::choose_offset_t<NumOutItemsT>),
+                         offset_t,
+                         detail::choose_offset_t<NumOutItemsT>>;
     return detail::topk::
-      DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, NumOutItemsT, select_min>::
+      DispatchTopK<KeyInputIteratorT, KeyOutputIteratorT, NullType*, NullType*, offset_t, out_offset_t, select_min>::
         Dispatch(d_temp_storage,
                  temp_storage_bytes,
                  d_keys_in,

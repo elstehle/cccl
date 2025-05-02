@@ -532,17 +532,16 @@ struct DispatchTopK : SelectedPolicy
          TopKKernelPtrT topk_kernel,
          TopKLastFilterKernelPtrT topk_lastfilter_kernel)
   {
-    using max_policy_t = typename SelectedPolicy::max_policy;
-    using policy       = typename ActivePolicyT::topk_policy_t;
+    using policy_t = typename ActivePolicyT::topk_policy_t;
 
     cudaError error = cudaSuccess;
 
-    constexpr int block_threads    = policy::BLOCK_THREADS; // Threads per block
-    constexpr int items_per_thread = policy::ITEMS_PER_THREAD; // Items per thread
+    constexpr int block_threads    = policy_t::BLOCK_THREADS; // Threads per block
+    constexpr int items_per_thread = policy_t::ITEMS_PER_THREAD; // Items per thread
     constexpr int tile_size        = block_threads * items_per_thread; // Items per block
     int num_tiles                  = static_cast<int>(::cuda::ceil_div(num_items, tile_size)); // Num of blocks
-    constexpr int num_passes       = CalcNumPasses<key_in_t, policy::BITS_PER_PASS>();
-    constexpr int num_buckets      = 1 << policy::BITS_PER_PASS;
+    constexpr int num_passes       = CalcNumPasses<key_in_t, policy_t::BITS_PER_PASS>();
+    constexpr int num_buckets      = 1 << policy_t::BITS_PER_PASS;
 
     if (static_cast<OffsetT>(k) >= num_items)
     {
@@ -550,186 +549,184 @@ struct DispatchTopK : SelectedPolicy
       return cudaErrorInvalidValue;
     }
 
-    do
+    // Specify temporary storage allocation requirements
+    size_t size_counter   = sizeof(Counter<key_in_t, OffsetT, OutOffsetT>);
+    size_t size_histogram = num_buckets * sizeof(OffsetT);
+    size_t num_candidates = _CUDA_VSTD::max((size_t) 256, (size_t) num_items / policy_t::COEFFICIENT_FOR_BUFFER);
+
+    size_t allocation_sizes[6] = {
+      size_counter,
+      size_histogram,
+      num_candidates * sizeof(key_in_t),
+      num_candidates * sizeof(key_in_t),
+      KEYS_ONLY ? 0 : num_candidates * sizeof(OffsetT),
+      KEYS_ONLY ? 0 : num_candidates * sizeof(OffsetT)};
+
+    // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
+    void* allocations[6] = {};
+
+    error = CubDebug(detail::AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes));
+    if (cudaSuccess != error)
     {
-      // Specify temporary storage allocation requirements
-      size_t size_counter   = sizeof(Counter<key_in_t, OffsetT, OutOffsetT>);
-      size_t size_histogram = num_buckets * sizeof(OffsetT);
-      size_t num_candidates = _CUDA_VSTD::max((size_t) 256, (size_t) num_items / policy::COEFFICIENT_FOR_BUFFER);
+      return error;
+    }
 
-      size_t allocation_sizes[6] = {
-        size_counter,
-        size_histogram,
-        num_candidates * sizeof(key_in_t),
-        num_candidates * sizeof(key_in_t),
-        KEYS_ONLY ? 0 : num_candidates * sizeof(OffsetT),
-        KEYS_ONLY ? 0 : num_candidates * sizeof(OffsetT)};
+    if (d_temp_storage == nullptr)
+    {
+      // Return if the caller is simply requesting the size of the storage allocation
+      return cudaSuccess;
+    }
 
-      // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
-      void* allocations[6] = {};
+    // Init the buffer for descriptor and histogram
+    error = CubDebug(cudaMemsetAsync(
+      allocations[0], 0, static_cast<char*>(allocations[2]) - static_cast<char*>(allocations[0]), stream));
+    if (cudaSuccess != error)
+    {
+      return error;
+    }
 
-      error = CubDebug(detail::AliasTemporaries(d_temp_storage, temp_storage_bytes, allocations, allocation_sizes));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
+    // Get grid size for scanning tiles
+    int device  = -1;
+    int num_sms = 0;
 
-      if (d_temp_storage == nullptr)
-      {
-        // Return if the caller is simply requesting the size of the storage allocation
-        break;
-      }
+    error = CubDebug(cudaGetDevice(&device));
+    if (cudaSuccess != error)
+    {
+      return error;
+    }
+    error = CubDebug(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
+    if (cudaSuccess != error)
+    {
+      return error;
+    }
 
-      // Init the buffer for descriptor and histogram
-      error = CubDebug(cudaMemsetAsync(
-        allocations[0], 0, static_cast<char*>(allocations[2]) - static_cast<char*>(allocations[0]), stream));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-
-      // Get grid size for scanning tiles
-      int device  = -1;
-      int num_sms = 0;
-
-      error = CubDebug(cudaGetDevice(&device));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-      error = CubDebug(cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, device));
-      if (cudaSuccess != error)
-      {
-        break;
-      }
-
-      dim3 topk_grid_size;
-      topk_grid_size.z       = 1;
-      topk_grid_size.y       = 1;
-      int topk_blocks_per_sm = CalculateBlocksPerSM(topk_kernel, block_threads);
-      topk_grid_size.x       = _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
-                                         (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+    dim3 topk_grid_size;
+    topk_grid_size.z       = 1;
+    topk_grid_size.y       = 1;
+    int topk_blocks_per_sm = CalculateBlocksPerSM(topk_kernel, block_threads);
+    topk_grid_size.x =
+      _CUDA_VSTD::min(static_cast<unsigned int>(topk_blocks_per_sm * num_sms),
+                      static_cast<unsigned int>((num_items - 1) / (items_per_thread * block_threads) + 1));
 
 // Log topk_kernel configuration @todo check the kernel launch
-#ifdef CUB_DETAIL_DEBUG_ENABLE_LOG
+#ifdef CUB_DEBUG_LOG
+    {
+      // Get SM occupancy for select_if_kernel
+      if (cudaSuccess != error)
       {
-        // Get SM occupancy for select_if_kernel
-        if (cudaSuccess != error)
-        {
-          break;
-        }
-
-        _CubLog("Invoking topk_kernel<<<{%d,%d,%d}, %d, 0, "
-                "%lld>>>(), %d items per thread, %d SM occupancy\n",
-                topk_grid_size.x,
-                topk_grid_size.y,
-                topk_grid_size.z,
-                block_threads,
-                (long long) stream,
-                items_per_thread,
-                topk_blocks_per_sm);
+        return error;
       }
-#endif // CUB_DETAIL_DEBUG_ENABLE_LOG
+
+      _CubLog("Invoking topk_kernel<<<{%d,%d,%d}, %d, 0, "
+              "%lld>>>(), %d items per thread, %d SM occupancy\n",
+              topk_grid_size.x,
+              topk_grid_size.y,
+              topk_grid_size.z,
+              block_threads,
+              (long long) stream,
+              items_per_thread,
+              topk_blocks_per_sm);
+    }
+#endif // CUB_DEBUG_LOG
+
+    // Initialize address variables
+    Counter<key_in_t, OffsetT, OutOffsetT>* counter;
+    counter = static_cast<decltype(counter)>(allocations[0]);
+    OffsetT* histogram;
+    histogram            = static_cast<decltype(histogram)>(allocations[1]);
+    key_in_t* in_buf     = nullptr;
+    key_in_t* out_buf    = nullptr;
+    OffsetT* in_idx_buf  = nullptr;
+    OffsetT* out_idx_buf = nullptr;
+    int pass             = 0;
+    for (; pass < num_passes; pass++)
+    {
+      // Set operator
+      ExtractBinOp<key_in_t, !SelectMin, policy_t::BITS_PER_PASS> extract_bin_op(pass);
+      IdentifyCandidatesOp<key_in_t, !SelectMin, policy_t::BITS_PER_PASS> identify_candidates_op(
+        counter->kth_key_bits, pass);
 
       // Initialize address variables
-      Counter<key_in_t, OffsetT, OutOffsetT>* counter;
-      counter = static_cast<decltype(counter)>(allocations[0]);
-      OffsetT* histogram;
-      histogram            = static_cast<decltype(histogram)>(allocations[1]);
-      key_in_t* in_buf     = nullptr;
-      key_in_t* out_buf    = nullptr;
-      OffsetT* in_idx_buf  = nullptr;
-      OffsetT* out_idx_buf = nullptr;
-      int pass             = 0;
-      for (; pass < num_passes; pass++)
+      in_buf  = static_cast<key_in_t*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
+      out_buf = pass == 0 ? nullptr : static_cast<key_in_t*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
+      if (!KEYS_ONLY)
       {
-        // Set operator
-        ExtractBinOp<key_in_t, !SelectMin, policy::BITS_PER_PASS> extract_bin_op(pass);
-        IdentifyCandidatesOp<key_in_t, !SelectMin, policy::BITS_PER_PASS> identify_candidates_op(
-          counter->kth_key_bits, pass);
-
-        // Initialize address variables
-        in_buf  = static_cast<key_in_t*>(pass % 2 == 0 ? allocations[2] : allocations[3]);
-        out_buf = pass == 0 ? nullptr : static_cast<key_in_t*>(pass % 2 == 0 ? allocations[3] : allocations[2]);
-        if (!KEYS_ONLY)
-        {
-          in_idx_buf  = pass <= 1 ? nullptr : static_cast<OffsetT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
-          out_idx_buf = pass == 0 ? nullptr : static_cast<OffsetT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
-        }
-
-        // Invoke kernel
-        if (pass == 0)
-        {
-          int topk_blocks_per_sm = CalculateBlocksPerSM(topk_firstpass_kernel, block_threads);
-          dim3 topk_firstpass_grid_size;
-          topk_firstpass_grid_size.z = 1;
-          topk_firstpass_grid_size.y = 1;
-          topk_firstpass_grid_size.x =
-            _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
-                            (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
-          THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_firstpass_grid_size, block_threads, 0, stream)
-            .doit(
-              topk_firstpass_kernel,
-              d_keys_in,
-              d_keys_out,
-              d_values_in,
-              d_values_out,
-              in_buf,
-              in_idx_buf,
-              out_buf,
-              out_idx_buf,
-              counter,
-              histogram,
-              num_items,
-              k,
-              extract_bin_op,
-              identify_candidates_op,
-              pass);
-        }
-        else
-        {
-          THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
-            .doit(
-              topk_kernel,
-              d_keys_in,
-              d_keys_out,
-              d_values_in,
-              d_values_out,
-              in_buf,
-              in_idx_buf,
-              out_buf,
-              out_idx_buf,
-              counter,
-              histogram,
-              num_items,
-              k,
-              extract_bin_op,
-              identify_candidates_op,
-              pass);
-        }
+        in_idx_buf  = pass <= 1 ? nullptr : static_cast<OffsetT*>(pass % 2 == 0 ? allocations[4] : allocations[5]);
+        out_idx_buf = pass == 0 ? nullptr : static_cast<OffsetT*>(pass % 2 == 0 ? allocations[5] : allocations[4]);
       }
-      // Set operator
-      IdentifyCandidatesOp<key_in_t, !SelectMin, policy::BITS_PER_PASS> identify_candidates_op(
-        counter->kth_key_bits, pass);
-      topk_blocks_per_sm = CalculateBlocksPerSM(topk_lastfilter_kernel, block_threads);
-      topk_grid_size.x   = _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
-                                         (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
-      THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
-        .doit(topk_lastfilter_kernel,
-              d_keys_in,
-              d_keys_out,
-              d_values_in,
-              d_values_out,
-              out_buf,
-              out_idx_buf,
-              counter,
-              histogram,
-              num_items,
-              k,
-              identify_candidates_op,
-              pass);
-      // pass==num_passes to align with the usage of identify_candidates_op in previous passes.
-    } while (0);
+
+      // Invoke kernel
+      if (pass == 0)
+      {
+        int topk_blocks_per_sm = CalculateBlocksPerSM(topk_firstpass_kernel, block_threads);
+        dim3 topk_firstpass_grid_size;
+        topk_firstpass_grid_size.z = 1;
+        topk_firstpass_grid_size.y = 1;
+        topk_firstpass_grid_size.x =
+          _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
+                          (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+        THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_firstpass_grid_size, block_threads, 0, stream)
+          .doit(
+            topk_firstpass_kernel,
+            d_keys_in,
+            d_keys_out,
+            d_values_in,
+            d_values_out,
+            in_buf,
+            in_idx_buf,
+            out_buf,
+            out_idx_buf,
+            counter,
+            histogram,
+            num_items,
+            k,
+            extract_bin_op,
+            identify_candidates_op,
+            pass);
+      }
+      else
+      {
+        THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
+          .doit(
+            topk_kernel,
+            d_keys_in,
+            d_keys_out,
+            d_values_in,
+            d_values_out,
+            in_buf,
+            in_idx_buf,
+            out_buf,
+            out_idx_buf,
+            counter,
+            histogram,
+            num_items,
+            k,
+            extract_bin_op,
+            identify_candidates_op,
+            pass);
+      }
+    }
+    // Set operator
+    IdentifyCandidatesOp<key_in_t, !SelectMin, policy_t::BITS_PER_PASS> identify_candidates_op(
+      counter->kth_key_bits, pass);
+    topk_blocks_per_sm = CalculateBlocksPerSM(topk_lastfilter_kernel, block_threads);
+    topk_grid_size.x   = _CUDA_VSTD::min((unsigned int) topk_blocks_per_sm * num_sms,
+                                       (unsigned int) (num_items - 1) / (items_per_thread * block_threads) + 1);
+    THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(topk_grid_size, block_threads, 0, stream)
+      .doit(topk_lastfilter_kernel,
+            d_keys_in,
+            d_keys_out,
+            d_values_in,
+            d_values_out,
+            out_buf,
+            out_idx_buf,
+            counter,
+            histogram,
+            num_items,
+            k,
+            identify_candidates_op,
+            pass);
+    // pass==num_passes to align with the usage of identify_candidates_op in previous passes.
     return error;
   }
   template <typename ActivePolicyT>
