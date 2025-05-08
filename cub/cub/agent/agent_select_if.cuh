@@ -285,8 +285,6 @@ struct AgentSelectIf
   using DelayConstructorT = typename AgentSelectIfPolicyT::detail::delay_constructor_t;
   using TilePrefixCallbackOpT =
     AtomicsBasedTilePrefixCallbackOp<OffsetT, ::cuda::std::plus<>, MemoryOrderedTileStateT, DelayConstructorT>;
-  // using TilePrefixCallbackOpT =
-  //   TilePrefixCallbackOp<OffsetT, ::cuda::std::plus<>, MemoryOrderedTileStateT, DelayConstructorT>;
 
   // Item exchange type
   using ItemExchangeT = InputT[TILE_ITEMS];
@@ -920,14 +918,6 @@ struct AgentSelectIf
     OffsetT num_selections_prefix = prefix_op.GetExclusivePrefix();
     OffsetT num_rejected_prefix   = tile_offset - num_selections_prefix;
 
-    // Discount any out-of-bounds selections
-    // if (IS_LAST_TILE)
-    // {
-    //   int num_discount = TILE_ITEMS - num_tile_items;
-    //   num_selections -= num_discount;
-    //   num_tile_selections -= num_discount;
-    // }
-
     // note (only applies to in-place stream compaction): We can avoid having to introduce explicit memory order between
     // the look-back (i.e., loading previous tiles' states) and scattering items (which means, potentially overwriting
     // previous tiles' input items, in case of in-place compaction), because this is implicitly ensured through
@@ -968,14 +958,7 @@ struct AgentSelectIf
   ConsumeTile(int num_tile_items, int tile_idx, OffsetT tile_offset, MemoryOrderedTileStateT& tile_state_wrapper)
   {
     OffsetT num_selections;
-    // if (tile_idx == 0)
-    // {
-    //   num_selections = ConsumeFirstTile<IS_LAST_TILE>(num_tile_items, tile_offset, tile_state_wrapper);
-    // }
-    // else
-    // {
     num_selections = ConsumeSubsequentTile<IS_LAST_TILE>(num_tile_items, tile_idx, tile_offset, tile_state_wrapper);
-    // }
 
     return num_selections;
   }
@@ -1000,7 +983,7 @@ struct AgentSelectIf
   ConsumeRange(int num_tiles, ScanTileStateT& tile_state, NumSelectedIteratorT d_num_selected_out)
   {
     // Ensure consistent memory order across all tile status updates and loads
-    auto tile_state_wrapper = tile_state; // MemoryOrderedTileStateT{tile_state};
+    auto tile_state_wrapper = tile_state;
 
     // Blocks are launched in increasing order, so just assign one tile per block
     // TODO (elstehle): replacing this term with just `blockIdx.x` degrades perf for partition. Once we get to re-tune
@@ -1019,12 +1002,6 @@ struct AgentSelectIf
       // The last tile (possibly partially-full)
       OffsetT num_remaining = num_items - tile_offset;
       num_selections        = ConsumeTile<true>(num_remaining, tile_idx, tile_offset, tile_state_wrapper);
-
-      // if (threadIdx.x == 0)
-      // {
-      //   // Update the number of selected items with this partition's selections
-      //   streaming_context.update_num_selected(d_num_selected_out, num_selections);
-      // }
     }
     if (threadIdx.x == 0)
     {
