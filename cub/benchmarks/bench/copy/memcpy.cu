@@ -139,6 +139,69 @@ struct policy_hub_t
 };
 #endif
 
+template <typename InputBufferIt, typename OutputBufferIt, typename BufferSizeIteratorT, typename BufferOffsetT>
+void __global__ BaselineBatchMemCpyKernel(
+  InputBufferIt input_buffer_it,
+  OutputBufferIt output_buffer_it,
+  BufferSizeIteratorT buffer_sizes,
+  BufferOffsetT num_buffers)
+{
+  BufferOffsetT gtid = blockDim.x * blockIdx.x + threadIdx.x;
+  if (gtid >= num_buffers)
+  {
+    return;
+  }
+  for (BufferOffsetT i = 0; i < buffer_sizes[gtid]; i++)
+  {
+    reinterpret_cast<uint8_t*>(output_buffer_it[gtid])[i] = reinterpret_cast<uint8_t*>(input_buffer_it[gtid])[i];
+  }
+}
+
+template <typename InputBufferIt, typename OutputBufferIt, typename BufferSizeIteratorT>
+void InvokeBaselineBatchMemcpy(
+  InputBufferIt input_buffer_it,
+  OutputBufferIt output_buffer_it,
+  BufferSizeIteratorT buffer_sizes,
+  uint32_t num_buffers,
+  cudaStream_t stream)
+{
+  constexpr uint32_t block_threads = 128U;
+  uint32_t num_blocks              = (num_buffers + block_threads - 1) / block_threads;
+  BaselineBatchMemCpyKernel<<<num_blocks, block_threads>>>(input_buffer_it, output_buffer_it, buffer_sizes, num_buffers);
+}
+
+template <typename InputBufferIt, typename OutputBufferIt, typename BufferSizeIteratorT, typename BufferOffsetT>
+void __global__ BaselineBatchMemCpyPerBlockKernel(
+  InputBufferIt input_buffer_it,
+  OutputBufferIt output_buffer_it,
+  BufferSizeIteratorT buffer_sizes,
+  BufferOffsetT num_buffers)
+{
+  BufferOffsetT gbid = blockIdx.x;
+  if (gbid >= num_buffers)
+  {
+    return;
+  }
+  for (BufferOffsetT i = threadIdx.x; i < buffer_sizes[gbid]; i += blockDim.x)
+  {
+    output_buffer_it[gbid][i] = input_buffer_it[gbid][i];
+  }
+}
+
+template <typename InputBufferIt, typename OutputBufferIt, typename BufferSizeIteratorT>
+void InvokeBaselineBlockBatchMemcpy(
+  InputBufferIt input_buffer_it,
+  OutputBufferIt output_buffer_it,
+  BufferSizeIteratorT buffer_sizes,
+  uint32_t num_buffers,
+  cudaStream_t stream)
+{
+  constexpr uint32_t block_threads = 128U;
+  uint32_t num_blocks              = num_buffers;
+  BaselineBatchMemCpyPerBlockKernel<<<num_blocks, block_threads>>>(
+    input_buffer_it, output_buffer_it, buffer_sizes, num_buffers);
+}
+
 template <class T, class OffsetT>
 void gen_it(T* d_buffer,
             thrust::device_vector<T*>& output,
@@ -240,8 +303,11 @@ void copy(nvbench::state& state,
   thrust::device_vector<nvbench::uint8_t> temp_storage(temp_storage_bytes);
   d_temp_storage = thrust::raw_pointer_cast(temp_storage.data());
 
-  state.exec(nvbench::exec_tag::gpu | nvbench::exec_tag::no_batch | nvbench::exec_tag::sync,
-             [&](nvbench::launch& launch) {
+  state.exec(
+    nvbench::exec_tag::gpu | nvbench::exec_tag::no_batch | nvbench::exec_tag::sync, [&](nvbench::launch& launch) {
+#ifdef CUB_BENCHMARK_BASELINE
+      InvokeBaselineBlockBatchMemcpy(d_input_buffers, d_output_buffers, d_buffer_sizes, buffers, launch.get_stream());
+#else
                dispatch_t::Dispatch(
                  d_temp_storage,
                  temp_storage_bytes,
@@ -250,7 +316,8 @@ void copy(nvbench::state& state,
                  d_buffer_sizes,
                  buffers,
                  launch.get_stream());
-             });
+#endif
+    });
 }
 
 template <class T, class OffsetT>
@@ -282,14 +349,14 @@ void large(nvbench::state& state, nvbench::type_list<T, OffsetT> tl)
   copy(state, tl, elements, min_buffer_size, max_buffer_size, randomize_input, randomize_output);
 }
 
-using types = nvbench::type_list<nvbench::uint8_t, nvbench::uint32_t>;
+using types = nvbench::type_list<nvbench::uint8_t /*, nvbench::uint32_t*/>;
 
 NVBENCH_BENCH_TYPES(uniform, NVBENCH_TYPE_AXES(types, offset_types))
   .set_name("uniform")
   .set_type_axes_names({"T{ct}", "OffsetT{ct}"})
-  .add_int64_power_of_two_axis("Elements{io}", nvbench::range(25, 29, 2))
-  .add_int64_axis("MinBufferSizeRatio", {1, 99})
-  .add_int64_axis("MaxBufferSize", {8, 64, 256, 1024, 64 * 1024})
+  .add_int64_power_of_two_axis("Elements{io}", nvbench::range(20, 28, 2))
+  .add_int64_axis("MinBufferSizeRatio", {1})
+  .add_int64_axis("MaxBufferSize", {8, 64, 256, 64 * 1024})
   .add_int64_axis("Randomize", {0, 1});
 
 NVBENCH_BENCH_TYPES(large, NVBENCH_TYPE_AXES(types, offset_types))
