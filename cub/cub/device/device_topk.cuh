@@ -18,7 +18,6 @@
 #endif // no system header
 
 #include <cub/detail/choose_offset.cuh>
-#include <cub/detail/nvtx.cuh>
 #include <cub/device/dispatch/dispatch_topk.cuh>
 
 CUB_NAMESPACE_BEGIN
@@ -124,6 +123,8 @@ struct DeviceTopK
     NumOutItemsT k,
     cudaStream_t stream = 0)
   {
+    _CCCL_NVTX_RANGE_SCOPE_IF(d_temp_storage, "cub::DeviceTopK::TopKPairs");
+
     static constexpr bool select_min = false;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
     using out_offset_t =
@@ -213,6 +214,8 @@ struct DeviceTopK
     NumOutItemsT k,
     cudaStream_t stream = 0)
   {
+    _CCCL_NVTX_RANGE_SCOPE_IF(d_temp_storage, "cub::DeviceTopK::TopKMinPairs");
+
     static constexpr bool select_min = true;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
     using out_offset_t =
@@ -282,6 +285,8 @@ struct DeviceTopK
     NumOutItemsT k,
     cudaStream_t stream = 0)
   {
+    _CCCL_NVTX_RANGE_SCOPE_IF(d_temp_storage, "cub::DeviceTopK::TopKKeys");
+
     static constexpr bool select_min = false;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
     using out_offset_t =
@@ -346,6 +351,8 @@ struct DeviceTopK
     NumOutItemsT k,
     cudaStream_t stream = 0)
   {
+    _CCCL_NVTX_RANGE_SCOPE_IF(d_temp_storage, "cub::DeviceTopK::TopKMinKeys");
+
     static constexpr bool select_min = true;
     using offset_t                   = detail::choose_offset_t<NumItemsT>;
     using out_offset_t =
