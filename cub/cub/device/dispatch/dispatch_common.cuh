@@ -40,11 +40,15 @@ enum class SelectImpl
   Partition
 };
 
-// Options for forcing inclusive prefix-scan even when initial value has been provided
-enum class ForceInclusive
+// Options for specifying selection direction (e.g., for top-k selection).
+namespace detail::topk{
+enum class select
 {
-  Yes,
-  No
+  // Select the elements with the lowest values
+  min,
+  // Select the elements with the highest values
+  max
 };
+} // namespace detail::topk
 
 CUB_NAMESPACE_END
