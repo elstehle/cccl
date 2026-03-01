@@ -190,6 +190,8 @@ struct DeviceTopK
   //!
   //! - @devicestorage
   //!
+  //! .. versionadded:: 3.3.0
+  //!
   //! A Simple Example
   //! +++++++++++++++++++++++++++++++++++++++++++++
   //!
@@ -350,6 +352,8 @@ struct DeviceTopK
   //!    The behavior is undefined if the input and output ranges overlap in any way.
   //!
   //! - @devicestorage
+  //!
+  //! .. versionadded:: 3.3.0
   //!
   //! A Simple Example
   //! +++++++++++++++++++++++++++++++++++++++++++++
@@ -512,6 +516,8 @@ struct DeviceTopK
   //!
   //! - @devicestorage
   //!
+  //! .. versionadded:: 3.3.0
+  //!
   //! A Simple Example
   //! +++++++++++++++++++++++++++++++++++++++++++++
   //!
@@ -651,6 +657,8 @@ struct DeviceTopK
   //!    The behavior is undefined if the input and output ranges overlap in any way.
   //!
   //! - @devicestorage
+  //!
+  //! .. versionadded:: 3.3.0
   //!
   //! A Simple Example
   //! +++++++++++++++++++++++++++++++++++++++++++++

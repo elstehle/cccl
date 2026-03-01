@@ -21,8 +21,6 @@
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/util_type.cuh>
 
-#include <cuda/atomic>
-
 CUB_NAMESPACE_BEGIN
 
 namespace detail::topk

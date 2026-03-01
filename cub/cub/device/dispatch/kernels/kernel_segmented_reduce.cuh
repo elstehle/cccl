@@ -15,11 +15,14 @@
 
 #include <cub/agent/agent_reduce.cuh>
 #include <cub/device/dispatch/kernels/kernel_reduce.cuh> // finalize_and_store_aggregate
+#include <cub/device/dispatch/tuning/tuning_segmented_reduce.cuh>
 #include <cub/iterator/arg_index_input_iterator.cuh>
+
+#include <cuda/__device/arch_id.h>
 
 CUB_NAMESPACE_BEGIN
 
-namespace detail::reduce
+namespace detail::segmented_reduce
 {
 /// Normalize input iterator to segment offset
 template <typename T, typename OffsetT, typename IteratorT>
@@ -36,8 +39,8 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void NormalizeReductionOutput(
 
 /**
  * Segmented reduction (one block per segment)
- * @tparam ChainedPolicyT
- *   Chained tuning policy
+ * @tparam PolicySelector
+ *   Policy selector
  *
  * @tparam InputIteratorT
  *   Random-access input iterator type for reading input items @iterator
@@ -90,7 +93,7 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void NormalizeReductionOutput(
  * @param[in] init
  *   The initial value of the reduction
  */
-template <typename ChainedPolicyT,
+template <typename PolicySelector,
           typename InputIteratorT,
           typename OutputIteratorT,
           typename BeginOffsetIteratorT,
@@ -99,18 +102,33 @@ template <typename ChainedPolicyT,
           typename ReductionOpT,
           typename InitT,
           typename AccumT>
+#if _CCCL_HAS_CONCEPTS()
+  requires segmented_reduce_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
 CUB_DETAIL_KERNEL_ATTRIBUTES
-__launch_bounds__(int(ChainedPolicyT::ActivePolicy::ReducePolicy::BLOCK_THREADS)) void DeviceSegmentedReduceKernel(
-  InputIteratorT d_in,
-  OutputIteratorT d_out,
-  BeginOffsetIteratorT d_begin_offsets,
-  EndOffsetIteratorT d_end_offsets,
-  ReductionOpT reduction_op,
-  InitT init)
+__launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).segmented_reduce.block_threads)) //
+  void DeviceSegmentedReduceKernel(
+    InputIteratorT d_in,
+    OutputIteratorT d_out,
+    BeginOffsetIteratorT d_begin_offsets,
+    EndOffsetIteratorT d_end_offsets,
+    ReductionOpT reduction_op,
+    InitT init)
 {
+  static constexpr reduce::agent_reduce_policy policy =
+    PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).segmented_reduce;
+  // TODO(bgruber): pass policy directly as template argument to AgentReduce in C++20
+  using agent_policy_t =
+    AgentReducePolicy<policy.block_threads,
+                      policy.items_per_thread,
+                      AccumT,
+                      policy.vector_load_length,
+                      policy.block_algorithm,
+                      policy.load_modifier,
+                      NoScaling<policy.block_threads, policy.items_per_thread, AccumT>>;
+
   // Thread block type for reducing input tiles
-  using AgentReduceT =
-    AgentReduce<typename ChainedPolicyT::ActivePolicy::ReducePolicy, InputIteratorT, OffsetT, ReductionOpT, AccumT>;
+  using AgentReduceT = reduce::AgentReduce<agent_policy_t, InputIteratorT, OffsetT, ReductionOpT, AccumT>;
 
   // Shared memory storage
   __shared__ typename AgentReduceT::TempStorage temp_storage;
@@ -136,7 +154,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::ReducePolicy::BLOCK_THREADS)
 
   if (threadIdx.x == 0)
   {
-    finalize_and_store_aggregate(d_out + blockIdx.x, reduction_op, init, block_aggregate);
+    reduce::finalize_and_store_aggregate(d_out + blockIdx.x, reduction_op, init, block_aggregate);
   }
 }
 
@@ -178,6 +196,15 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::ReducePolicy::BLOCK_THREADS)
  *
  * @param[in] init
  *   The initial value of the reduction
+ *
+ * @param[out] d_partial_out
+ *  Pointer to store partial aggregates in two-phase reduction
+ *
+ * @param[in] full_chunk_size
+ *   The full chunk size processed by each block in two-phase reduction
+ *
+ * @param[in] blocks_per_segment
+ *   The number of blocks to be used for reducing each segment in two-phase reduction
  */
 template <typename ChainedPolicyT,
           typename InputIteratorT,
@@ -193,18 +220,22 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::ReducePolicy::BLOCK_THREADS)
   OffsetT segment_size,
   int num_segments,
   ReductionOpT reduction_op,
-  InitT init)
+  InitT init,
+  AccumT* d_partial_out,
+  int full_chunk_size,
+  int blocks_per_segment)
 {
   using ActivePolicyT = typename ChainedPolicyT::ActivePolicy;
 
   // Thread block type for reducing input tiles
-  using AgentReduceT = AgentReduce<typename ActivePolicyT::ReducePolicy, InputIteratorT, int, ReductionOpT, AccumT>;
+  using AgentReduceT =
+    reduce::AgentReduce<typename ActivePolicyT::ReducePolicy, InputIteratorT, int, ReductionOpT, AccumT>;
 
   using AgentMediumReduceT =
-    AgentWarpReduce<typename ActivePolicyT::MediumReducePolicy, InputIteratorT, int, ReductionOpT, AccumT>;
+    reduce::AgentWarpReduce<typename ActivePolicyT::MediumReducePolicy, InputIteratorT, int, ReductionOpT, AccumT>;
 
   using AgentSmallReduceT =
-    AgentWarpReduce<typename ActivePolicyT::SmallReducePolicy, InputIteratorT, int, ReductionOpT, AccumT>;
+    reduce::AgentWarpReduce<typename ActivePolicyT::SmallReducePolicy, InputIteratorT, int, ReductionOpT, AccumT>;
 
   constexpr auto segments_per_medium_block = ActivePolicyT::MediumReducePolicy::SEGMENTS_PER_BLOCK;
   constexpr auto medium_threads_per_warp   = ActivePolicyT::MediumReducePolicy::WARP_THREADS;
@@ -251,7 +282,7 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::ReducePolicy::BLOCK_THREADS)
 
       if (lane_id == 0)
       {
-        finalize_and_store_aggregate(d_out + global_segment_id, reduction_op, init, warp_aggregate);
+        reduce::finalize_and_store_aggregate(d_out + global_segment_id, reduction_op, init, warp_aggregate);
       }
     }
   }
@@ -272,24 +303,50 @@ __launch_bounds__(int(ChainedPolicyT::ActivePolicy::ReducePolicy::BLOCK_THREADS)
 
       if (lane_id == 0)
       {
-        finalize_and_store_aggregate(d_out + global_segment_id, reduction_op, init, warp_aggregate);
+        reduce::finalize_and_store_aggregate(d_out + global_segment_id, reduction_op, init, warp_aggregate);
       }
     }
   }
   else
   {
-    const auto segment_begin = static_cast<::cuda::std::int64_t>(bid) * segment_size;
-
-    // Consume input tiles
-    AccumT block_aggregate = AgentReduceT(temp_storage.large_storage, d_in + segment_begin, reduction_op)
-                               .ConsumeRange({}, static_cast<int>(segment_size));
-
-    if (tid == 0)
+    if (d_partial_out != nullptr) // two-phase reduction with partial aggregates
     {
-      finalize_and_store_aggregate(d_out + bid, reduction_op, init, block_aggregate);
+      const auto chunk_id             = bid % blocks_per_segment;
+      const bool is_last_chunk        = chunk_id == (blocks_per_segment - 1);
+      const bool has_incomplete_chunk = (segment_size % full_chunk_size != 0);
+
+      // If the last chunk is incomplete, only process the valid portion of the segment
+      const auto chunk_size =
+        (has_incomplete_chunk && is_last_chunk) ? (segment_size % full_chunk_size) : full_chunk_size;
+
+      const auto segment_id    = bid / blocks_per_segment;
+      const auto segment_begin = static_cast<::cuda::std::int64_t>(segment_id) * segment_size;
+
+      const auto chunk_offset = chunk_id * full_chunk_size;
+      const auto chunk_begin  = segment_begin + chunk_offset;
+
+      AccumT block_aggregate =
+        AgentReduceT(temp_storage.large_storage, d_in + chunk_begin, reduction_op).ConsumeRange({}, chunk_size);
+      if (tid == 0)
+      {
+        *(d_partial_out + bid) = block_aggregate;
+      }
+    }
+    else // single-phase reduction with direct write-out of final aggregate
+    {
+      const auto segment_begin = static_cast<::cuda::std::int64_t>(bid) * segment_size;
+
+      // Consume input tiles
+      AccumT block_aggregate = AgentReduceT(temp_storage.large_storage, d_in + segment_begin, reduction_op)
+                                 .ConsumeRange({}, static_cast<int>(segment_size));
+
+      if (tid == 0)
+      {
+        reduce::finalize_and_store_aggregate(d_out + bid, reduction_op, init, block_aggregate);
+      }
     }
   }
 }
-} // namespace detail::reduce
+} // namespace detail::segmented_reduce
 
 CUB_NAMESPACE_END
