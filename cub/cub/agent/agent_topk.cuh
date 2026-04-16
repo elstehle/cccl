@@ -1579,9 +1579,82 @@ private:
 };
 
 //---------------------------------------------------------------------
+// AgentTopKHistogram: dedicated agent for the histogram-only pass
+// (pass 0). Only needs the input iterator, extract_bin_op, and
+// histogram infrastructure — no output iterators, no sinks.
+//---------------------------------------------------------------------
+
+template <typename AgentTopKPolicyT,
+          typename KeyInputIteratorT,
+          typename ExtractBinOpT,
+          typename OffsetT,
+          typename OutOffsetT>
+struct AgentTopKHistogram
+{
+  using key_in_t = it_value_t<KeyInputIteratorT>;
+
+  static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
+  static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
+  static constexpr int bits_per_pass    = AgentTopKPolicyT::bits_per_pass;
+  static constexpr int num_buckets      = 1 << bits_per_pass;
+
+  using tile_loader_t   = BlockTileLoader<AgentTopKPolicyT, key_in_t, OffsetT>;
+  using prefix_sum_temp_t =
+    BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
+
+  struct _TempStorage
+  {
+    union
+    {
+      typename tile_loader_t::_TempStorage loader;
+      prefix_sum_temp_t prefix_sum;
+    };
+    OffsetT histogram[num_buckets];
+  };
+
+  struct TempStorage : Uninitialized<_TempStorage>
+  {};
+
+  _TempStorage& temp_storage;
+  KeyInputIteratorT d_keys_in;
+  OffsetT num_items;
+  OutOffsetT k;
+  ExtractBinOpT extract_bin_op;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopKHistogram(
+    TempStorage& temp_storage,
+    const KeyInputIteratorT d_keys_in,
+    OffsetT num_items,
+    OutOffsetT k,
+    ExtractBinOpT extract_bin_op)
+      : temp_storage(temp_storage.Alias())
+      , d_keys_in(d_keys_in)
+      , num_items(num_items)
+      , k(k)
+      , extract_bin_op(extract_bin_op)
+  {}
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void invoke(
+    Counter<key_in_t, OffsetT, OutOffsetT>* counter, OffsetT* global_histogram, int pass, bool is_last_pass)
+  {
+    process_histogram_only<AgentTopKPolicyT, key_in_t, ExtractBinOpT, OffsetT, OutOffsetT> proc(
+      temp_storage.prefix_sum, temp_storage.histogram, extract_bin_op);
+
+    tile_loader_t loader(temp_storage.loader);
+
+    proc.segment_prologue();
+    loader.consume(proc, d_keys_in, num_items);
+    proc.segment_epilogue(counter, global_histogram, k, pass, is_last_pass, [counter, this] {
+      counter->previous_len = num_items;
+      counter->filter_cnt   = 0;
+    });
+  }
+};
+
+//---------------------------------------------------------------------
 // AgentTopKRefactored: composes the extracted processors, sinks,
-// and free functions into a complete agent with the same public
-// interface as AgentTopK.
+// and free functions into a complete agent for the filter+histogram
+// and last-filter passes.
 //---------------------------------------------------------------------
 
 template <typename AgentTopKPolicyT,
@@ -1658,24 +1731,8 @@ struct AgentTopKRefactored
   {}
 
   //---------------------------------------------------------------------
-  // Public interface — same three entry points as AgentTopK
+  // Public interface — filter+histogram and last-filter entry points
   //---------------------------------------------------------------------
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE void invoke_histogram_only(
-    Counter<key_in_t, OffsetT, OutOffsetT>* counter, OffsetT* global_histogram, int pass, bool is_last_pass)
-  {
-    process_histogram_only<AgentTopKPolicyT, key_in_t, ExtractBinOpT, OffsetT, OutOffsetT> proc(
-      temp_storage.prefix_sum, temp_storage.histogram, extract_bin_op);
-
-    tile_loader_t loader(temp_storage.loader);
-
-    proc.segment_prologue();
-    loader.consume(proc, d_keys_in, num_items);
-    proc.segment_epilogue(counter, global_histogram, k, pass, is_last_pass, [counter, this] {
-      counter->previous_len = num_items;
-      counter->filter_cnt   = 0;
-    });
-  }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void invoke_filter_and_histogram(
     key_in_t* in_buf,
