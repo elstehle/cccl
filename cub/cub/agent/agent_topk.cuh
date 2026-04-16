@@ -1567,10 +1567,10 @@ private:
       const int num_thread_items =
         (num_remaining_elements == 0)
           ? items_per_thread
-          : static_cast<int>(::cuda::std::max(
-              OffsetT{0},
-              ::cuda::std::min(static_cast<OffsetT>(items_per_thread),
-                               num_items - thread_offset)));
+          : static_cast<int>((thread_offset >= num_items)
+              ? OffsetT{0}
+              : ::cuda::std::min(static_cast<OffsetT>(items_per_thread),
+                                 num_items - thread_offset));
 
       proc.process_tile(thread_data, thread_offset, num_thread_items);
       proc.tile_epilogue();
