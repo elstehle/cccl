@@ -275,15 +275,15 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                     policy.load_algorithm,
                     policy.scan_algorithm>;
   using agent_topk_t =
-    AgentTopK<agent_topk_policy_t,
-              KeyInputIteratorT,
-              KeyOutputIteratorT,
-              ValueInputIteratorT,
-              ValueOutputIteratorT,
-              ExtractBinOpT,
-              IdentifyCandidatesOpT,
-              OffsetT,
-              OutOffsetT>;
+    AgentTopKRefactored<agent_topk_policy_t,
+                        KeyInputIteratorT,
+                        KeyOutputIteratorT,
+                        ValueInputIteratorT,
+                        ValueOutputIteratorT,
+                        ExtractBinOpT,
+                        IdentifyCandidatesOpT,
+                        OffsetT,
+                        OutOffsetT>;
 
   __shared__ typename agent_topk_t::TempStorage temp_storage;
   agent_topk_t(
@@ -336,15 +336,15 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                     policy.scan_algorithm>;
   using identify_candidates_op_t = NullType;
   using agent_topk_t =
-    AgentTopK<agent_topk_policy_t,
-              KeyInputIteratorT,
-              KeyOutputIteratorT,
-              ValueInputIteratorT,
-              ValueOutputIteratorT,
-              ExtractBinOpT,
-              identify_candidates_op_t,
-              OffsetT,
-              OutOffsetT>;
+    AgentTopKRefactored<agent_topk_policy_t,
+                        KeyInputIteratorT,
+                        KeyOutputIteratorT,
+                        ValueInputIteratorT,
+                        ValueOutputIteratorT,
+                        ExtractBinOpT,
+                        identify_candidates_op_t,
+                        OffsetT,
+                        OutOffsetT>;
 
   __shared__ typename agent_topk_t::TempStorage temp_storage;
   agent_topk_t(
@@ -397,15 +397,15 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                     policy.scan_algorithm>;
   using extract_bin_op_t = NullType;
   using agent_topk_t =
-    AgentTopK<agent_topk_policy_t,
-              KeyInputIteratorT,
-              KeyOutputIteratorT,
-              ValueInputIteratorT,
-              ValueOutputIteratorT,
-              extract_bin_op_t, // ExtractBinOp operator (not used)
-              IdentifyCandidatesOpT,
-              OffsetT,
-              OutOffsetT>;
+    AgentTopKRefactored<agent_topk_policy_t,
+                        KeyInputIteratorT,
+                        KeyOutputIteratorT,
+                        ValueInputIteratorT,
+                        ValueOutputIteratorT,
+                        extract_bin_op_t,
+                        IdentifyCandidatesOpT,
+                        OffsetT,
+                        OutOffsetT>;
 
   __shared__ typename agent_topk_t::TempStorage temp_storage;
   agent_topk_t(
