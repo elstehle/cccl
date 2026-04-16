@@ -304,12 +304,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
 
 template <typename PolicySelector,
           typename KeyInputIteratorT,
-          typename KeyOutputIteratorT,
-          typename ValueInputIteratorT,
-          typename ValueOutputIteratorT,
           typename OffsetT,
           typename OutOffsetT,
-          typename KeyInT,
           typename ExtractBinOpT>
 #if _CCCL_HAS_CONCEPTS()
   requires topk_policy_selector<PolicySelector>
@@ -317,14 +313,10 @@ template <typename PolicySelector,
 __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void DeviceTopKHistogramKernel(
     _CCCL_GRID_CONSTANT const KeyInputIteratorT d_keys_in,
-    _CCCL_GRID_CONSTANT const KeyOutputIteratorT d_keys_out,
-    _CCCL_GRID_CONSTANT const ValueInputIteratorT d_values_in,
-    _CCCL_GRID_CONSTANT const ValueOutputIteratorT d_values_out,
     Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT OffsetT* const histogram,
     _CCCL_GRID_CONSTANT const OffsetT num_items,
     _CCCL_GRID_CONSTANT const OutOffsetT k,
-    _CCCL_GRID_CONSTANT const OffsetT buffer_length,
     ExtractBinOpT extract_bin_op,
     _CCCL_GRID_CONSTANT const int pass,
     _CCCL_GRID_CONSTANT const bool is_last_pass)
@@ -336,31 +328,16 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.bits_per_pass,
                     policy.load_algorithm,
                     policy.scan_algorithm>;
-  using identify_candidates_op_t = NullType;
-  using agent_topk_t =
-    AgentTopKRefactored<agent_topk_policy_t,
-                        KeyInputIteratorT,
-                        KeyOutputIteratorT,
-                        ValueInputIteratorT,
-                        ValueOutputIteratorT,
-                        ExtractBinOpT,
-                        identify_candidates_op_t,
-                        OffsetT,
-                        OutOffsetT>;
+  using agent_t =
+    AgentTopKHistogram<agent_topk_policy_t,
+                       KeyInputIteratorT,
+                       ExtractBinOpT,
+                       OffsetT,
+                       OutOffsetT>;
 
-  __shared__ typename agent_topk_t::TempStorage temp_storage;
-  agent_topk_t(
-    temp_storage,
-    d_keys_in,
-    d_keys_out,
-    d_values_in,
-    d_values_out,
-    num_items,
-    k,
-    buffer_length,
-    extract_bin_op,
-    identify_candidates_op_t{})
-    .invoke_histogram_only(counter, histogram, pass, is_last_pass);
+  __shared__ typename agent_t::TempStorage temp_storage;
+  agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)
+    .invoke(counter, histogram, pass, is_last_pass);
 }
 
 template <typename PolicySelector,
@@ -618,12 +595,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       auto histogram_kernel = DeviceTopKHistogramKernel<
         PolicySelector,
         KeyInputIteratorT,
-        KeyOutputIteratorT,
-        ValueInputIteratorT,
-        ValueOutputIteratorT,
         OffsetT,
         OutOffsetT,
-        key_in_t,
         extract_bin_op>;
 
       int histogram_kernel_blocks_per_sm = 0;
@@ -640,14 +613,10 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
             launcher_factory(histogram_grid_size, threads_per_block, 0, stream)
               .doit(histogram_kernel,
                     d_keys_in,
-                    d_keys_out,
-                    d_values_in,
-                    d_values_out,
                     counter,
                     histogram,
                     num_items,
                     k,
-                    candidate_buffer_length,
                     extract_op,
                     0,
                     num_passes == 1)))
