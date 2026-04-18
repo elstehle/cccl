@@ -13,6 +13,7 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cub/agent/topk/block_partition.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/device/dispatch/tuning/common.cuh>
@@ -56,12 +57,13 @@ struct topk_policy
   int bits_per_pass;
   BlockLoadAlgorithm load_algorithm;
   BlockScanAlgorithm scan_algorithm;
+  BlockPartitionStrategy partition_strategy = BlockPartitionStrategy::Atomics;
 
   [[nodiscard]] _CCCL_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
     return lhs.block_threads == rhs.block_threads && lhs.items_per_thread == rhs.items_per_thread
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.load_algorithm == rhs.load_algorithm
-        && lhs.scan_algorithm == rhs.scan_algorithm;
+        && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy;
   }
 
   [[nodiscard]] _CCCL_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -74,7 +76,8 @@ struct topk_policy
   {
     return os << "topk_policy { .block_threads = " << p.block_threads << ", .items_per_thread = " << p.items_per_thread
               << ", .bits_per_pass = " << p.bits_per_pass << ", .load_algorithm = " << p.load_algorithm
-              << ", .scan_algorithm = " << p.scan_algorithm << " }";
+              << ", .scan_algorithm = " << p.scan_algorithm
+              << ", .partition_strategy = " << static_cast<int>(p.partition_strategy) << " }";
   }
 #endif // !_CCCL_COMPILER(NVRTC)
 };

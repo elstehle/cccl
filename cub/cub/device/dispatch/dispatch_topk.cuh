@@ -246,6 +246,7 @@ template <typename PolicySelector,
           typename OffsetT,
           typename OutOffsetT,
           typename KeyInT,
+          typename ValueInT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT>
 #if _CCCL_HAS_CONCEPTS()
@@ -258,9 +259,9 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
     _CCCL_GRID_CONSTANT const ValueInputIteratorT d_values_in,
     _CCCL_GRID_CONSTANT const ValueOutputIteratorT d_values_out,
     _CCCL_GRID_CONSTANT KeyInT* const in_key_buf,
-    _CCCL_GRID_CONSTANT OffsetT* const in_idx_buf,
+    _CCCL_GRID_CONSTANT ValueInT* const in_val_buf,
     _CCCL_GRID_CONSTANT KeyInT* const out_key_buf,
-    _CCCL_GRID_CONSTANT OffsetT* const out_idx_buf,
+    _CCCL_GRID_CONSTANT ValueInT* const out_val_buf,
     Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT OffsetT* const histogram,
     _CCCL_GRID_CONSTANT const OffsetT num_items,
@@ -280,6 +281,8 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                     policy.load_algorithm,
                     policy.scan_algorithm>;
 
+  static constexpr BlockPartitionStrategy part_strat = policy.partition_strategy;
+
   // All four mode instantiations share the same _TempStorage layout (the agent's smem
   // union depends only on block_threads / items_per_thread / bits_per_pass). We declare
   // one `TempStorage` and reinterpret_cast for each branch.
@@ -292,7 +295,8 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                                                  IdentifyCandidatesOpT,
                                                  OffsetT,
                                                  OutOffsetT,
-                                                 sink_mode::buffered>;
+                                                 sink_mode::buffered,
+                                                 part_strat>;
   using agent_es_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -302,7 +306,8 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                                                  IdentifyCandidatesOpT,
                                                  OffsetT,
                                                  OutOffsetT,
-                                                 sink_mode::early_stop>;
+                                                 sink_mode::early_stop,
+                                                 part_strat>;
   using agent_ub_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -312,7 +317,8 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                                                  IdentifyCandidatesOpT,
                                                  OffsetT,
                                                  OutOffsetT,
-                                                 sink_mode::unbuffered>;
+                                                 sink_mode::unbuffered,
+                                                 part_strat>;
   using agent_lf_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -322,7 +328,8 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                                                  IdentifyCandidatesOpT,
                                                  OffsetT,
                                                  OutOffsetT,
-                                                 sink_mode::last_filter>;
+                                                 sink_mode::last_filter,
+                                                 part_strat>;
 
   union all_modes_ts_t
   {
@@ -356,10 +363,10 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
     return;
   }
 
-  OffsetT* effective_in_idx_buf = load_from_original_input ? nullptr : in_idx_buf;
+  ValueInT* effective_in_val_buf = load_from_original_input ? nullptr : in_val_buf;
 
-  KeyInT* effective_out_key_buf = (current_len > buffer_length) ? nullptr : out_key_buf;
-  OffsetT* effective_out_idx_buf = (current_len > buffer_length) ? nullptr : out_idx_buf;
+  KeyInT* effective_out_key_buf  = (current_len > buffer_length) ? nullptr : out_key_buf;
+  ValueInT* effective_out_val_buf = (current_len > buffer_length) ? nullptr : out_val_buf;
 
   // Counter update functor for the three non-last-filter modes.
   auto counter_update_fn = [counter, current_len, early_stop] {
@@ -384,9 +391,9 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                      d_values_in,
                      d_values_out,
                      in_key_buf,
-                     effective_in_idx_buf,
+                     effective_in_val_buf,
                      /*out_key_buf=*/ static_cast<KeyInT*>(nullptr),
-                     /*out_idx_buf=*/ static_cast<OffsetT*>(nullptr),
+                     /*out_val_buf=*/ static_cast<ValueInT*>(nullptr),
                      &counter->out_cnt,
                      &counter->out_back_cnt,
                      /*p_filter_cnt=*/ static_cast<OffsetT*>(nullptr),
@@ -408,9 +415,9 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                      d_values_in,
                      d_values_out,
                      in_key_buf,
-                     effective_in_idx_buf,
+                     effective_in_val_buf,
                      static_cast<KeyInT*>(nullptr),
-                     static_cast<OffsetT*>(nullptr),
+                     static_cast<ValueInT*>(nullptr),
                      &counter->out_cnt,
                      static_cast<OutOffsetT*>(nullptr),
                      static_cast<OffsetT*>(nullptr),
@@ -432,9 +439,9 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                      d_values_in,
                      d_values_out,
                      in_key_buf,
-                     effective_in_idx_buf,
+                     effective_in_val_buf,
                      effective_out_key_buf,
-                     effective_out_idx_buf,
+                     effective_out_val_buf,
                      &counter->out_cnt,
                      static_cast<OutOffsetT*>(nullptr),
                      &counter->filter_cnt,
@@ -456,9 +463,9 @@ __launch_bounds__(int(PolicySelector{}(::cuda::arch_id{CUB_PTX_ARCH / 10}).block
                      d_values_in,
                      d_values_out,
                      in_key_buf,
-                     effective_in_idx_buf,
+                     effective_in_val_buf,
                      static_cast<KeyInT*>(nullptr),
-                     static_cast<OffsetT*>(nullptr),
+                     static_cast<ValueInT*>(nullptr),
                      &counter->out_cnt,
                      static_cast<OutOffsetT*>(nullptr),
                      &counter->filter_cnt,
@@ -623,8 +630,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       candidate_buffer_length * sizeof(key_in_t)};
     if constexpr (!keys_only)
     {
-      allocation_sizes[4] = candidate_buffer_length * sizeof(OffsetT);
-      allocation_sizes[5] = candidate_buffer_length * sizeof(OffsetT);
+      allocation_sizes[4] = candidate_buffer_length * sizeof(value_in_t);
+      allocation_sizes[5] = candidate_buffer_length * sizeof(value_in_t);
     }
 
     // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
@@ -664,6 +671,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                              OffsetT,
                              OutOffsetT,
                              key_in_t,
+                             value_in_t,
                              extract_bin_op,
                              identify_candidates_op>;
 
@@ -728,10 +736,11 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     // Passes 1..num_passes-1: fused filter + histogram kernel
     // Current() = input buffer (read), Alternate() = output buffer (write)
     DoubleBuffer<key_in_t> key_bufs(static_cast<key_in_t*>(allocations[3]), static_cast<key_in_t*>(allocations[2]));
-    DoubleBuffer<OffsetT> idx_bufs;
+    DoubleBuffer<value_in_t> val_bufs;
     if constexpr (!keys_only)
     {
-      idx_bufs = DoubleBuffer<OffsetT>(static_cast<OffsetT*>(allocations[5]), static_cast<OffsetT*>(allocations[4]));
+      val_bufs =
+        DoubleBuffer<value_in_t>(static_cast<value_in_t*>(allocations[5]), static_cast<value_in_t*>(allocations[4]));
     }
 
     int pass = 1;
@@ -748,9 +757,9 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                     d_values_in,
                     d_values_out,
                     key_bufs.Current(),
-                    idx_bufs.Current(),
+                    val_bufs.Current(),
                     key_bufs.Alternate(),
-                    idx_bufs.Alternate(),
+                    val_bufs.Alternate(),
                     counter,
                     histogram,
                     num_items,
@@ -768,7 +777,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       key_bufs.selector ^= 1;
       if constexpr (!keys_only)
       {
-        idx_bufs.selector ^= 1;
+        val_bufs.selector ^= 1;
       }
     }
 
@@ -792,9 +801,9 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                   d_values_in,
                   d_values_out,
                   key_bufs.Current(),
-                  idx_bufs.Current(),
+                  val_bufs.Current(),
                   /*out_key_buf=*/ static_cast<key_in_t*>(nullptr),
-                  /*out_idx_buf=*/ static_cast<OffsetT*>(nullptr),
+                  /*out_val_buf=*/ static_cast<value_in_t*>(nullptr),
                   counter,
                   histogram,
                   num_items,

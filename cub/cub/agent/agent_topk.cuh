@@ -842,13 +842,9 @@ struct sink_flags
 // last-filter pass. Replaces the legacy sink-based AgentTopKRefactored.
 //
 // Compile-time specialized on sink_mode; the kernel switches to the matching
-// instantiation based on Counter state. All classify / histogram / scatter work
-// is inlined into process_tile with `if constexpr`-gated code paths.
-//
-// The per-item atomic scatter path mirrors BlockPartition's Atomics strategy --
-// the primitive is available as a drop-in replacement for future Staged/SharedMem
-// tuning work (see plan Q7 / deferred follow-ups) without changing this agent's
-// external interface.
+// instantiation based on Counter state. All classify / histogram work is inlined
+// into process_tile, scatter is delegated to BlockPartition (parameterized by
+// PartStrat) so Atomics / Staged / SharedMem flow the same way.
 //---------------------------------------------------------------------
 
 template <typename AgentTopKPolicyT,
@@ -860,10 +856,12 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename OffsetT,
           typename OutOffsetT,
-          sink_mode Mode>
+          sink_mode Mode,
+          BlockPartitionStrategy PartStrat = BlockPartitionStrategy::Atomics>
 struct agent_topk_filter_partition
 {
-  using key_in_t = it_value_t<KeyInputIteratorT>;
+  using key_in_t   = it_value_t<KeyInputIteratorT>;
+  using value_in_t = it_value_t<ValueInputIteratorT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -874,16 +872,50 @@ struct agent_topk_filter_partition
 
   using flags             = sink_flags<Mode>;
   using tile_loader_t     = BlockTileLoader<AgentTopKPolicyT, key_in_t, OffsetT>;
+  using value_loader_t    = BlockLoad<value_in_t, block_threads, items_per_thread, AgentTopKPolicyT::load_algorithm>;
   using prefix_sum_temp_t =
     BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
 
-  // BlockTileLoader and prefix_sum share smem via a union: they are only live during
-  // tile loading and segment_epilogue respectively, with __syncthreads between them.
+  // Compile-time mode/strategy plumbing for the per-tile partition primitive.
+  // - selected_offset_t  : OutOffsetT for all modes (out_cnt / out_back_cnt are OutOffsetT*).
+  // - candidate_offset_t : OffsetT in `buffered` (filter_cnt is OffsetT*); OutOffsetT otherwise.
+  // - has_candidates     : true for modes that actually scatter a separate candidate stream.
+  // - has_cap            : true only for `last_filter` (back-of-output candidate cap).
+  // - effective_strat    : `unbuffered` skips scatter entirely; force Atomics so the buffer_t
+  //                        in the temp-storage union stays empty.
+  static constexpr bool has_candidates = (Mode == sink_mode::buffered) || (Mode == sink_mode::last_filter);
+  static constexpr bool has_cap        = (Mode == sink_mode::last_filter);
+  using selected_offset_t              = OutOffsetT;
+  using candidate_offset_t             = ::cuda::std::conditional_t<Mode == sink_mode::buffered, OffsetT, OutOffsetT>;
+  static constexpr BlockPartitionStrategy effective_strat =
+    (Mode == sink_mode::unbuffered) ? BlockPartitionStrategy::Atomics : PartStrat;
+  // For `last_filter`, the candidate stream is written to the back of `d_keys_out` (and
+  // `d_values_out`); BlockPartition handles that via `WritesCandidatesToBack` so the
+  // candidate iterator stays the original raw pointer / iterator. This preserves the
+  // opportunity for vectorized cooperative stores (Q13) in the Staged/SharedMem flush.
+  static constexpr bool writes_candidates_to_back = (Mode == sink_mode::last_filter);
+  using partition_t                               = BlockPartition<key_in_t,
+                                     value_in_t,
+                                     selected_offset_t,
+                                     candidate_offset_t,
+                                     block_threads,
+                                     items_per_thread,
+                                     effective_strat,
+                                     has_candidates,
+                                     has_cap,
+                                     writes_candidates_to_back>;
+  using partition_buffer_t = typename partition_t::buffer_t;
+
+  // Smem layout: tile loader, value loader, partition buffer, and prefix-sum scratch are
+  // mutually exclusive in time (one __syncthreads between phases) and share a single
+  // union. Histogram is independent and lives outside the union.
   struct _TempStorage
   {
     union
     {
       typename tile_loader_t::_TempStorage loader;
+      typename value_loader_t::TempStorage value_loader;
+      partition_buffer_t partition_buf;
       prefix_sum_temp_t prefix_sum;
     };
     OffsetT histogram[num_buckets];
@@ -900,15 +932,15 @@ struct agent_topk_filter_partition
   ValueInputIteratorT d_values_in;
   ValueOutputIteratorT d_values_out;
   key_in_t* in_key_buf;
-  OffsetT* in_idx_buf;
+  value_in_t* in_val_buf;
   key_in_t* out_key_buf; // only used in buffered mode
-  OffsetT* out_idx_buf;
+  value_in_t* out_val_buf; // only used in buffered mode
 
   OutOffsetT* p_out_cnt;
   OutOffsetT* p_out_back_cnt; // only used in last_filter
   OffsetT* p_filter_cnt; // only used in buffered / unbuffered
 
-  OutOffsetT k_total; // only used in last_filter (to compute k-1-back_pos)
+  OutOffsetT k_total; // only used in last_filter; passed as BlockPartition's `back_anchor` so candidates land in [k_total - cap, k_total)
   OutOffsetT num_of_kth_needed; // only used in last_filter (candidate cap)
 
   OffsetT num_items;
@@ -926,9 +958,9 @@ struct agent_topk_filter_partition
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
     key_in_t* in_key_buf,
-    OffsetT* in_idx_buf,
+    value_in_t* in_val_buf,
     key_in_t* out_key_buf,
-    OffsetT* out_idx_buf,
+    value_in_t* out_val_buf,
     OutOffsetT* p_out_cnt,
     OutOffsetT* p_out_back_cnt,
     OffsetT* p_filter_cnt,
@@ -946,9 +978,9 @@ struct agent_topk_filter_partition
       , d_values_in(d_values_in)
       , d_values_out(d_values_out)
       , in_key_buf(in_key_buf)
-      , in_idx_buf(in_idx_buf)
+      , in_val_buf(in_val_buf)
       , out_key_buf(out_key_buf)
-      , out_idx_buf(out_idx_buf)
+      , out_val_buf(out_val_buf)
       , p_out_cnt(p_out_cnt)
       , p_out_back_cnt(p_out_back_cnt)
       , p_filter_cnt(p_filter_cnt)
@@ -962,104 +994,208 @@ struct agent_topk_filter_partition
       , global_histogram(global_histogram)
   {}
 
+private:
+  // Sequentially load the tile's values into registers from the active value channel
+  // (d_values_in for pass 1 / load_from_original_input, in_val_buf otherwise).
+  // Reuses the loader smem region (next phase will __syncthreads before partition).
+  _CCCL_DEVICE _CCCL_FORCEINLINE void load_values_for_tile(
+    OffsetT tile_base, OffsetT remaining, bool is_full_tile, value_in_t (&values)[items_per_thread])
+  {
+    if (load_from_original_input)
+    {
+      if (is_full_tile)
+      {
+        value_loader_t(storage.value_loader).Load(d_values_in + tile_base, values);
+      }
+      else
+      {
+        value_loader_t(storage.value_loader).Load(d_values_in + tile_base, values, remaining);
+      }
+    }
+    else
+    {
+      if (is_full_tile)
+      {
+        value_loader_t(storage.value_loader).Load(in_val_buf + tile_base, values);
+      }
+      else
+      {
+        value_loader_t(storage.value_loader).Load(in_val_buf + tile_base, values, remaining);
+      }
+    }
+  }
+
+  // Mode-specific scatter via BlockPartition. Mode determines:
+  //   - which output iterator pair (selected / candidate) and
+  //   - which counter pair to atomically advance.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void do_partition(
+    const key_in_t (&keys)[items_per_thread],
+    const value_in_t (&values)[items_per_thread],
+    const candidate_class (&classes)[items_per_thread])
+  {
+    partition_t partition;
+    if constexpr (Mode == sink_mode::early_stop)
+    {
+      // HasCandidates=false: selected and candidate fold into d_keys_out / d_values_out
+      // through p_out_cnt; candidate counter is unused.
+      if constexpr (effective_strat == BlockPartitionStrategy::Staged)
+      {
+        partition.PartitionKeys(
+          storage.partition_buf,
+          keys,
+          classes,
+          d_keys_out,
+          d_keys_out,
+          p_out_cnt,
+          static_cast<OutOffsetT*>(nullptr));
+        if constexpr (!keys_only)
+        {
+          partition.ScatterValues(storage.partition_buf, values, d_values_out, d_values_out);
+        }
+      }
+      else
+      {
+        partition.PartitionPairs(
+          storage.partition_buf,
+          keys,
+          values,
+          classes,
+          d_keys_out,
+          d_keys_out,
+          d_values_out,
+          d_values_out,
+          p_out_cnt,
+          static_cast<OutOffsetT*>(nullptr));
+      }
+    }
+    else if constexpr (Mode == sink_mode::buffered)
+    {
+      // selected -> d_keys_out / d_values_out via p_out_cnt;
+      // candidate -> out_key_buf / out_val_buf via p_filter_cnt; no cap.
+      if constexpr (effective_strat == BlockPartitionStrategy::Staged)
+      {
+        partition.PartitionKeys(
+          storage.partition_buf, keys, classes, d_keys_out, out_key_buf, p_out_cnt, p_filter_cnt);
+        if constexpr (!keys_only)
+        {
+          partition.ScatterValues(storage.partition_buf, values, d_values_out, out_val_buf);
+        }
+      }
+      else
+      {
+        partition.PartitionPairs(
+          storage.partition_buf,
+          keys,
+          values,
+          classes,
+          d_keys_out,
+          out_key_buf,
+          d_values_out,
+          out_val_buf,
+          p_out_cnt,
+          p_filter_cnt);
+      }
+    }
+    else // sink_mode::last_filter
+    {
+      // selected -> d_keys_out front via p_out_cnt;
+      // candidate -> back of d_keys_out (and d_values_out) via BlockPartition's
+      // `WritesCandidatesToBack` mode, capped at num_of_kth_needed. The candidate
+      // iterators are the original `d_keys_out`/`d_values_out` so raw-pointer cases
+      // remain raw pointers all the way down to the BlockPartition flush loops.
+      const auto back_anchor = static_cast<candidate_offset_t>(k_total);
+      if constexpr (effective_strat == BlockPartitionStrategy::Staged)
+      {
+        partition.PartitionKeys(
+          storage.partition_buf,
+          keys,
+          classes,
+          d_keys_out,
+          d_keys_out,
+          p_out_cnt,
+          p_out_back_cnt,
+          num_of_kth_needed,
+          back_anchor);
+        if constexpr (!keys_only)
+        {
+          partition.ScatterValues(storage.partition_buf, values, d_values_out, d_values_out);
+        }
+      }
+      else
+      {
+        partition.PartitionPairs(
+          storage.partition_buf,
+          keys,
+          values,
+          classes,
+          d_keys_out,
+          d_keys_out,
+          d_values_out,
+          d_values_out,
+          p_out_cnt,
+          p_out_back_cnt,
+          num_of_kth_needed,
+          back_anchor);
+      }
+    }
+  }
+
+public:
   // --- processor hook: one call per tile -----------------------------
+  // Steps (some elided per Mode via if constexpr):
+  //   1. Classify items -> classes[]; out-of-bounds entries forced to `rejected`.
+  //   2. Accumulate per-bucket histogram for `candidate` items.
+  //   3. (Only if writes_output) BlockLoad values from the active value channel.
+  //   4. (Only if writes_output) BlockPartition::PartitionPairs / ScatterValues.
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(
     const key_in_t (&items)[items_per_thread], OffsetT thread_offset, int num_thread_items)
   {
+    candidate_class classes[items_per_thread];
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < items_per_thread; ++j)
     {
-      if (j >= num_thread_items)
-      {
-        continue;
-      }
+      classes[j] =
+        (j < num_thread_items) ? identify_candidates_op(items[j]) : candidate_class::rejected;
+    }
 
-      const candidate_class result = identify_candidates_op(items[j]);
-      const key_in_t key           = items[j];
-      const OffsetT abs_i          = thread_offset + j;
-
-      if constexpr (flags::accumulate_histogram)
+    if constexpr (flags::accumulate_histogram)
+    {
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < items_per_thread; ++j)
       {
-        if (result == candidate_class::candidate)
+        if (classes[j] == candidate_class::candidate)
         {
-          const int bucket = extract_bin_op(key);
+          const int bucket = extract_bin_op(items[j]);
           atomicAdd(storage.histogram + bucket, OffsetT{1});
         }
       }
+    }
 
-      if (result == candidate_class::rejected)
+    if constexpr (!flags::writes_output)
+    {
+      // unbuffered: histogram only, nothing to scatter.
+      (void) thread_offset;
+      return;
+    }
+    else
+    {
+      [[maybe_unused]] value_in_t values[items_per_thread];
+      if constexpr (!keys_only)
       {
-        continue;
+        const OffsetT tile_base = thread_offset - static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+        const OffsetT remaining = input_length - tile_base;
+        const bool is_full_tile = remaining >= static_cast<OffsetT>(tile_items);
+
+        // Wait for all threads to be done with the keys load (loader smem) before
+        // overwriting it via the value loader.
+        __syncthreads();
+        load_values_for_tile(tile_base, remaining, is_full_tile, values);
       }
 
-      // Scatter paths, per sink_mode.
-      if constexpr (Mode == sink_mode::early_stop)
-      {
-        // selected | candidate -> d_keys_out front (selected path counter is out_cnt)
-        const OutOffsetT pos = atomicAdd(p_out_cnt, OutOffsetT{1});
-        d_keys_out[pos]      = key;
-        if constexpr (!keys_only)
-        {
-          const OffsetT index = load_from_original_input ? abs_i : in_idx_buf[abs_i];
-          d_values_out[pos]   = d_values_in[index];
-        }
-      }
-      else if constexpr (Mode == sink_mode::buffered)
-      {
-        if (result == candidate_class::candidate)
-        {
-          const OffsetT pos = atomicAdd(p_filter_cnt, OffsetT{1});
-          out_key_buf[pos]  = key;
-          if constexpr (!keys_only)
-          {
-            const OffsetT index = load_from_original_input ? abs_i : in_idx_buf[abs_i];
-            out_idx_buf[pos]    = index;
-          }
-        }
-        else // selected
-        {
-          const OutOffsetT pos = atomicAdd(p_out_cnt, OutOffsetT{1});
-          d_keys_out[pos]      = key;
-          if constexpr (!keys_only)
-          {
-            const OffsetT index = load_from_original_input ? abs_i : in_idx_buf[abs_i];
-            d_values_out[pos]   = d_values_in[index];
-          }
-        }
-      }
-      else if constexpr (Mode == sink_mode::unbuffered)
-      {
-        // no writes -- histogram already accumulated above
-        (void) key;
-        (void) abs_i;
-      }
-      else // sink_mode::last_filter
-      {
-        if (result == candidate_class::selected)
-        {
-          const OutOffsetT pos = atomicAdd(p_out_cnt, OutOffsetT{1});
-          d_keys_out[pos]      = key;
-          if constexpr (!keys_only)
-          {
-            const OffsetT index = load_from_original_input ? abs_i : in_idx_buf[abs_i];
-            d_values_out[pos]   = d_values_in[index];
-          }
-        }
-        else // candidate -> back of output, capped at num_of_kth_needed
-        {
-          const OutOffsetT back_pos = atomicAdd(p_out_back_cnt, OutOffsetT{1});
-          if (back_pos < num_of_kth_needed)
-          {
-            const OutOffsetT pos = k_total - OutOffsetT{1} - back_pos;
-            d_keys_out[pos]      = key;
-            if constexpr (!keys_only)
-            {
-              const OffsetT index = load_from_original_input ? abs_i : in_idx_buf[abs_i];
-              d_values_out[pos]   = d_values_in[index];
-            }
-          }
-        }
-      }
+      // Wait for all threads to finish the value load before reusing the smem region
+      // for the partition buffer.
+      __syncthreads();
+      do_partition(items, values, classes);
     }
   }
 
