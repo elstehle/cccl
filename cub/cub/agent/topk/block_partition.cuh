@@ -157,8 +157,9 @@ template <typename KeyT,
           int BlockThreads,
           int ItemsPerThread,
           BlockPartitionStrategy Strategy,
-          bool HasCandidates   = true,
-          bool HasCandidateCap = false>
+          bool HasCandidates           = true,
+          bool HasCandidateCap         = false,
+          bool WritesCandidatesToBack  = false>
 class BlockPartition;
 
 //---------------------------------------------------------------------
@@ -174,7 +175,8 @@ template <typename KeyT,
           int BlockThreads,
           int ItemsPerThread,
           bool HasCandidates,
-          bool HasCandidateCap>
+          bool HasCandidateCap,
+          bool WritesCandidatesToBack>
 class BlockPartition<KeyT,
                      ValueT,
                      SelectedOffsetT,
@@ -183,11 +185,31 @@ class BlockPartition<KeyT,
                      ItemsPerThread,
                      BlockPartitionStrategy::Atomics,
                      HasCandidates,
-                     HasCandidateCap>
+                     HasCandidateCap,
+                     WritesCandidatesToBack>
 {
   static_assert(!HasCandidateCap || HasCandidates, "HasCandidateCap requires HasCandidates");
+  static_assert(!WritesCandidatesToBack || HasCandidates, "WritesCandidatesToBack requires HasCandidates");
 
   static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, NullType>;
+
+  // Map an atomically-claimed front position to the actual destination index. For
+  // back-write callers (e.g. top-k's last_filter pass) the claim count tracks how many
+  // candidates have been written from the back; the i-th claim lands at
+  // `back_anchor - 1 - i`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE static CandidateOffsetT
+  candidate_dst_index(CandidateOffsetT pos, CandidateOffsetT back_anchor)
+  {
+    if constexpr (WritesCandidatesToBack)
+    {
+      return static_cast<CandidateOffsetT>(back_anchor - CandidateOffsetT{1} - pos);
+    }
+    else
+    {
+      (void) back_anchor;
+      return pos;
+    }
+  }
 
 public:
   static constexpr int tile_items = BlockThreads * ItemsPerThread;
@@ -202,7 +224,8 @@ public:
     CandKeyOutIt candidate_keys_out,
     SelectedOffsetT* selected_counter,
     CandidateOffsetT* candidate_counter,
-    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max())
+    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max(),
+    CandidateOffsetT back_anchor         = CandidateOffsetT{0})
   {
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < ItemsPerThread; ++j)
@@ -213,7 +236,7 @@ public:
       }
       if constexpr (!HasCandidates)
       {
-        const auto pos       = atomicAdd(selected_counter, SelectedOffsetT{1});
+        const auto pos         = atomicAdd(selected_counter, SelectedOffsetT{1});
         selected_keys_out[pos] = keys[j];
       }
       else
@@ -237,7 +260,7 @@ public:
           {
             (void) max_candidate_count;
           }
-          candidate_keys_out[pos] = keys[j];
+          candidate_keys_out[candidate_dst_index(pos, back_anchor)] = keys[j];
         }
       }
     }
@@ -255,7 +278,8 @@ public:
     CandValOutIt candidate_vals_out,
     SelectedOffsetT* selected_counter,
     CandidateOffsetT* candidate_counter,
-    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max())
+    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max(),
+    CandidateOffsetT back_anchor         = CandidateOffsetT{0})
   {
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < ItemsPerThread; ++j)
@@ -298,10 +322,11 @@ public:
           {
             (void) max_candidate_count;
           }
-          candidate_keys_out[pos] = keys[j];
+          const auto dst              = candidate_dst_index(pos, back_anchor);
+          candidate_keys_out[dst]     = keys[j];
           if constexpr (!keys_only)
           {
-            candidate_vals_out[pos] = values[j];
+            candidate_vals_out[dst] = values[j];
           }
         }
       }
@@ -328,7 +353,8 @@ template <typename KeyT,
           int BlockThreads,
           int ItemsPerThread,
           bool HasCandidates,
-          bool HasCandidateCap>
+          bool HasCandidateCap,
+          bool WritesCandidatesToBack>
 class BlockPartition<KeyT,
                      ValueT,
                      SelectedOffsetT,
@@ -337,9 +363,11 @@ class BlockPartition<KeyT,
                      ItemsPerThread,
                      BlockPartitionStrategy::Staged,
                      HasCandidates,
-                     HasCandidateCap>
+                     HasCandidateCap,
+                     WritesCandidatesToBack>
 {
   static_assert(!HasCandidateCap || HasCandidates, "HasCandidateCap requires HasCandidates");
+  static_assert(!WritesCandidatesToBack || HasCandidates, "WritesCandidatesToBack requires HasCandidates");
 
   static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, NullType>;
 
@@ -356,8 +384,12 @@ private:
   int candidate_cnt_ = 0;
 
   SelectedOffsetT selected_base_   = SelectedOffsetT{};
-  CandidateOffsetT candidate_base_ = CandidateOffsetT{};
-  CandidateOffsetT max_candidate_count_ = ::cuda::std::numeric_limits<CandidateOffsetT>::max();
+  // Number of candidates already written across all blocks before this one (returned by the
+  // global atomicAdd on candidate_counter). Used for the cap calculation below; the actual
+  // destination base for the flush loop is `candidate_write_base_`.
+  CandidateOffsetT candidate_base_       = CandidateOffsetT{};
+  CandidateOffsetT candidate_write_base_ = CandidateOffsetT{};
+  CandidateOffsetT max_candidate_count_  = ::cuda::std::numeric_limits<CandidateOffsetT>::max();
 
   template <typename SelKeyOutIt, typename CandKeyOutIt>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_keys_common(
@@ -368,7 +400,8 @@ private:
     CandKeyOutIt candidate_keys_out,
     SelectedOffsetT* selected_counter,
     CandidateOffsetT* candidate_counter,
-    CandidateOffsetT max_candidate_count)
+    CandidateOffsetT max_candidate_count,
+    CandidateOffsetT back_anchor)
   {
     if (threadIdx.x == 0)
     {
@@ -443,6 +476,20 @@ private:
     if constexpr (HasCandidates)
     {
       candidate_base_ = buffer.cnt.global_bases.candidate;
+      // Resolve the actual destination base for the flush loop. For front-write callers
+      // it is just the prev count; for back-write callers (e.g. top-k's last_filter pass)
+      // it is `back_anchor - prev - cand_to_write`, which lands the per-block contiguous
+      // chunk inside the cap-bounded back region [back_anchor - cap, back_anchor).
+      if constexpr (WritesCandidatesToBack)
+      {
+        const auto cand_to_write = static_cast<CandidateOffsetT>(candidate_write_count());
+        candidate_write_base_    = static_cast<CandidateOffsetT>(back_anchor - candidate_base_ - cand_to_write);
+      }
+      else
+      {
+        (void) back_anchor;
+        candidate_write_base_ = candidate_base_;
+      }
     }
 
     // Phase 3: cooperative coalesced store of keys.
@@ -456,7 +503,7 @@ private:
       const int cand_to_write = candidate_write_count();
       for (int i = static_cast<int>(threadIdx.x); i < cand_to_write; i += BlockThreads)
       {
-        candidate_keys_out[candidate_base_ + static_cast<CandidateOffsetT>(i)] =
+        candidate_keys_out[candidate_write_base_ + static_cast<CandidateOffsetT>(i)] =
           buffer.keys[tile_items - candidate_cnt_ + i];
       }
     }
@@ -493,10 +540,19 @@ public:
     CandKeyOutIt candidate_keys_out,
     SelectedOffsetT* selected_counter,
     CandidateOffsetT* candidate_counter,
-    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max())
+    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max(),
+    CandidateOffsetT back_anchor         = CandidateOffsetT{0})
   {
     partition_keys_common(
-      buffer, keys, classes, selected_keys_out, candidate_keys_out, selected_counter, candidate_counter, max_candidate_count);
+      buffer,
+      keys,
+      classes,
+      selected_keys_out,
+      candidate_keys_out,
+      selected_counter,
+      candidate_counter,
+      max_candidate_count,
+      back_anchor);
   }
 
   template <typename SelValOutIt, typename CandValOutIt>
@@ -537,7 +593,7 @@ public:
         const int cand_to_write = candidate_write_count();
         for (int i = static_cast<int>(threadIdx.x); i < cand_to_write; i += BlockThreads)
         {
-          candidate_vals_out[candidate_base_ + static_cast<CandidateOffsetT>(i)] =
+          candidate_vals_out[candidate_write_base_ + static_cast<CandidateOffsetT>(i)] =
             buffer.values[tile_items - candidate_cnt_ + i];
         }
       }
@@ -558,10 +614,19 @@ public:
     CandValOutIt candidate_vals_out,
     SelectedOffsetT* selected_counter,
     CandidateOffsetT* candidate_counter,
-    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max())
+    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max(),
+    CandidateOffsetT back_anchor         = CandidateOffsetT{0})
   {
     PartitionKeys(
-      buffer, keys, classes, selected_keys_out, candidate_keys_out, selected_counter, candidate_counter, max_candidate_count);
+      buffer,
+      keys,
+      classes,
+      selected_keys_out,
+      candidate_keys_out,
+      selected_counter,
+      candidate_counter,
+      max_candidate_count,
+      back_anchor);
     ScatterValues(buffer, values, selected_vals_out, candidate_vals_out);
   }
 };
@@ -580,7 +645,8 @@ template <typename KeyT,
           int BlockThreads,
           int ItemsPerThread,
           bool HasCandidates,
-          bool HasCandidateCap>
+          bool HasCandidateCap,
+          bool WritesCandidatesToBack>
 class BlockPartition<KeyT,
                      ValueT,
                      SelectedOffsetT,
@@ -589,9 +655,11 @@ class BlockPartition<KeyT,
                      ItemsPerThread,
                      BlockPartitionStrategy::SharedMem,
                      HasCandidates,
-                     HasCandidateCap>
+                     HasCandidateCap,
+                     WritesCandidatesToBack>
 {
   static_assert(!HasCandidateCap || HasCandidates, "HasCandidateCap requires HasCandidates");
+  static_assert(!WritesCandidatesToBack || HasCandidates, "WritesCandidatesToBack requires HasCandidates");
 
   static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, NullType>;
 
@@ -611,7 +679,8 @@ public:
     CandValOutIt candidate_vals_out,
     SelectedOffsetT* selected_counter,
     CandidateOffsetT* candidate_counter,
-    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max())
+    CandidateOffsetT max_candidate_count = ::cuda::std::numeric_limits<CandidateOffsetT>::max(),
+    CandidateOffsetT back_anchor         = CandidateOffsetT{0})
   {
     if (threadIdx.x == 0)
     {
@@ -684,6 +753,9 @@ public:
 
     if constexpr (HasCandidates)
     {
+      // `cb` is the prev count returned by the global atomicAdd: how many candidates were
+      // already written across all blocks before this one. Used both for the cap clamp
+      // and to compute the actual write base.
       const CandidateOffsetT cb = buffer.cnt.global_bases.candidate;
       int cand_to_write;
       if constexpr (HasCandidateCap)
@@ -698,12 +770,26 @@ public:
         cand_to_write = cc;
         (void) max_candidate_count;
       }
+      // Resolve the per-block destination base. Front-write callers land at `cb`; back-write
+      // callers (e.g. top-k's last_filter pass) place their cap-bounded chunk at
+      // `back_anchor - cb - cand_to_write` so the union of all blocks fills the back region
+      // [back_anchor - cap, back_anchor) with no gaps.
+      CandidateOffsetT write_base;
+      if constexpr (WritesCandidatesToBack)
+      {
+        write_base = static_cast<CandidateOffsetT>(back_anchor - cb - static_cast<CandidateOffsetT>(cand_to_write));
+      }
+      else
+      {
+        (void) back_anchor;
+        write_base = cb;
+      }
       for (int i = static_cast<int>(threadIdx.x); i < cand_to_write; i += BlockThreads)
       {
-        candidate_keys_out[cb + static_cast<CandidateOffsetT>(i)] = buffer.keys[tile_items - cc + i];
+        candidate_keys_out[write_base + static_cast<CandidateOffsetT>(i)] = buffer.keys[tile_items - cc + i];
         if constexpr (!keys_only)
         {
-          candidate_vals_out[cb + static_cast<CandidateOffsetT>(i)] = buffer.values[tile_items - cc + i];
+          candidate_vals_out[write_base + static_cast<CandidateOffsetT>(i)] = buffer.values[tile_items - cc + i];
         }
       }
     }
