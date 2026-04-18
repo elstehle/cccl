@@ -29,7 +29,8 @@ template <typename KeyT,
           topk::BlockPartitionStrategy Strategy,
           bool HasCandidates,
           bool HasCandidateCap,
-          bool KeysOnly>
+          bool KeysOnly,
+          bool WritesCandidatesToBack = false>
 __global__ void partition_kernel(
   const KeyT* d_keys_in,
   const ValueT* d_vals_in,
@@ -41,7 +42,8 @@ __global__ void partition_kernel(
   ValueT* d_cand_vals,
   unsigned int* d_sel_counter,
   unsigned int* d_cand_counter,
-  unsigned int max_candidate_count)
+  unsigned int max_candidate_count,
+  unsigned int back_anchor = 0)
 {
   using partition_t = topk::BlockPartition<KeyT,
                                            ::cuda::std::conditional_t<KeysOnly, cub::NullType, ValueT>,
@@ -51,7 +53,8 @@ __global__ void partition_kernel(
                                            ItemsPerThread,
                                            Strategy,
                                            HasCandidates,
-                                           HasCandidateCap>;
+                                           HasCandidateCap,
+                                           WritesCandidatesToBack>;
 
   __shared__ typename partition_t::buffer_t buffer;
 
@@ -85,12 +88,12 @@ __global__ void partition_kernel(
   {
     partition.PartitionPairs(
       buffer, keys, values, classes, d_sel_keys, d_cand_keys, d_sel_vals, d_cand_vals,
-      d_sel_counter, d_cand_counter, max_candidate_count);
+      d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
   }
   else if constexpr (Strategy == topk::BlockPartitionStrategy::Staged)
   {
     partition.PartitionKeys(
-      buffer, keys, classes, d_sel_keys, d_cand_keys, d_sel_counter, d_cand_counter, max_candidate_count);
+      buffer, keys, classes, d_sel_keys, d_cand_keys, d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
     if constexpr (!KeysOnly)
     {
       partition.ScatterValues(buffer, values, d_sel_vals, d_cand_vals);
@@ -101,13 +104,13 @@ __global__ void partition_kernel(
     if constexpr (KeysOnly)
     {
       partition.PartitionKeys(
-        buffer, keys, classes, d_sel_keys, d_cand_keys, d_sel_counter, d_cand_counter, max_candidate_count);
+        buffer, keys, classes, d_sel_keys, d_cand_keys, d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
     }
     else
     {
       partition.PartitionPairs(
         buffer, keys, values, classes, d_sel_keys, d_cand_keys, d_sel_vals, d_cand_vals,
-        d_sel_counter, d_cand_counter, max_candidate_count);
+        d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
     }
   }
 }
@@ -362,6 +365,155 @@ C2H_TEST("BlockPartition pairs (HasCandidateCap=true, last_filter mode)", "[bloc
   // Cap candidate writes to 10: items beyond that still bump the counter but are suppressed.
   run_partition_test<int, float, BlockThreads, ItemsPerThread, kStrategy, HasCandidates, HasCandidateCap, KeysOnly>(
     tile_items, keys, values, classes, /*max_candidate_count=*/10u);
+}
+
+// Exercises the WritesCandidatesToBack mode used by top-k's last_filter pass: candidates
+// land in [back_anchor - cap, back_anchor) of the candidate output (which is the same raw
+// pointer as the selected output in the agent), capped at `max_candidate_count`. We assert
+// (a) selected items appear in the front, (b) the cap-bounded back range contains a subset
+// of the eligible candidates with the right count, and (c) the buffer slots between front
+// and back stay untouched.
+template <typename KeyT, typename ValueT, int BlockThreads, int ItemsPerThread,
+          topk::BlockPartitionStrategy Strategy, bool KeysOnly>
+void run_back_write_partition_test(
+  int num_items,
+  const std::vector<KeyT>& keys,
+  const std::vector<ValueT>& values,
+  const std::vector<::cuda::std::int8_t>& classes,
+  unsigned int back_anchor,
+  unsigned int max_candidate_count)
+{
+  constexpr int tile_items = BlockThreads * ItemsPerThread;
+  REQUIRE(num_items <= tile_items);
+
+  std::vector<KeyT> expected_selected_keys;
+  std::vector<ValueT> expected_selected_vals;
+  std::vector<KeyT> eligible_candidate_keys;
+  std::vector<ValueT> eligible_candidate_vals;
+  unsigned int eligible_candidate_count = 0;
+  for (int i = 0; i < num_items; ++i)
+  {
+    const auto c = static_cast<topk::candidate_class>(classes[i]);
+    if (c == topk::candidate_class::selected)
+    {
+      expected_selected_keys.push_back(keys[i]);
+      expected_selected_vals.push_back(values[i]);
+    }
+    else if (c == topk::candidate_class::candidate)
+    {
+      eligible_candidate_keys.push_back(keys[i]);
+      eligible_candidate_vals.push_back(values[i]);
+      ++eligible_candidate_count;
+    }
+  }
+
+  thrust::device_vector<KeyT> d_keys_in(keys.begin(), keys.end());
+  thrust::device_vector<ValueT> d_vals_in(values.begin(), values.end());
+  thrust::device_vector<::cuda::std::int8_t> d_classes_in(classes.begin(), classes.end());
+
+  // Selected and candidate share a single combined output buffer of size `back_anchor`,
+  // matching how agent_topk's last_filter passes `d_keys_out` for both streams.
+  const KeyT key_sentinel     = static_cast<KeyT>(-1);
+  const ValueT val_sentinel   = static_cast<ValueT>(-1);
+  thrust::device_vector<KeyT> d_combined_keys(back_anchor, key_sentinel);
+  thrust::device_vector<ValueT> d_combined_vals(back_anchor, val_sentinel);
+  thrust::device_vector<unsigned int> d_sel_cnt(1, 0);
+  thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
+
+  partition_kernel<KeyT, ValueT, BlockThreads, ItemsPerThread, Strategy,
+                   /*HasCandidates=*/true, /*HasCandidateCap=*/true, KeysOnly,
+                   /*WritesCandidatesToBack=*/true>
+    <<<1, BlockThreads>>>(
+      thrust::raw_pointer_cast(d_keys_in.data()),
+      thrust::raw_pointer_cast(d_vals_in.data()),
+      thrust::raw_pointer_cast(d_classes_in.data()),
+      num_items,
+      thrust::raw_pointer_cast(d_combined_keys.data()),
+      thrust::raw_pointer_cast(d_combined_keys.data()),
+      thrust::raw_pointer_cast(d_combined_vals.data()),
+      thrust::raw_pointer_cast(d_combined_vals.data()),
+      thrust::raw_pointer_cast(d_sel_cnt.data()),
+      thrust::raw_pointer_cast(d_cand_cnt.data()),
+      max_candidate_count,
+      back_anchor);
+
+  REQUIRE(cudaSuccess == cudaPeekAtLastError());
+  REQUIRE(cudaSuccess == cudaDeviceSynchronize());
+
+  const unsigned int sel_cnt  = d_sel_cnt[0];
+  const unsigned int cand_cnt = d_cand_cnt[0];
+  REQUIRE(sel_cnt == expected_selected_keys.size());
+  REQUIRE(cand_cnt == eligible_candidate_count);
+
+  std::vector<KeyT> host_combined(d_combined_keys.begin(), d_combined_keys.end());
+
+  std::vector<KeyT> got_sel_keys(host_combined.begin(), host_combined.begin() + sel_cnt);
+  std::sort(got_sel_keys.begin(), got_sel_keys.end());
+  std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
+  REQUIRE(got_sel_keys == expected_selected_keys);
+
+  const unsigned int cand_written = std::min<unsigned int>(cand_cnt, max_candidate_count);
+  // Back range: [back_anchor - cand_written, back_anchor).
+  std::vector<KeyT> got_cand_keys(host_combined.end() - cand_written, host_combined.end());
+  std::sort(got_cand_keys.begin(), got_cand_keys.end());
+  std::sort(eligible_candidate_keys.begin(), eligible_candidate_keys.end());
+  REQUIRE(got_cand_keys.size() == cand_written);
+  REQUIRE(std::includes(
+    eligible_candidate_keys.begin(), eligible_candidate_keys.end(),
+    got_cand_keys.begin(), got_cand_keys.end()));
+
+  // Slots between the front (selected) region and the back (candidate) region must remain
+  // at their sentinel value -- back-write must not bleed past the cap.
+  const unsigned int back_start = back_anchor - cand_written;
+  for (unsigned int i = sel_cnt; i < back_start; ++i)
+  {
+    REQUIRE(host_combined[i] == key_sentinel);
+  }
+
+  if constexpr (!KeysOnly)
+  {
+    std::vector<ValueT> host_combined_vals(d_combined_vals.begin(), d_combined_vals.end());
+
+    std::vector<ValueT> got_sel_vals(host_combined_vals.begin(), host_combined_vals.begin() + sel_cnt);
+    std::sort(got_sel_vals.begin(), got_sel_vals.end());
+    std::sort(expected_selected_vals.begin(), expected_selected_vals.end());
+    REQUIRE(got_sel_vals == expected_selected_vals);
+
+    std::vector<ValueT> got_cand_vals(host_combined_vals.end() - cand_written, host_combined_vals.end());
+    std::sort(got_cand_vals.begin(), got_cand_vals.end());
+    std::sort(eligible_candidate_vals.begin(), eligible_candidate_vals.end());
+    REQUIRE(got_cand_vals.size() == cand_written);
+    REQUIRE(std::includes(
+      eligible_candidate_vals.begin(), eligible_candidate_vals.end(),
+      got_cand_vals.begin(), got_cand_vals.end()));
+
+    for (unsigned int i = sel_cnt; i < back_start; ++i)
+    {
+      REQUIRE(host_combined_vals[i] == val_sentinel);
+    }
+  }
+}
+
+C2H_TEST("BlockPartition writes candidates to back of output (last_filter mode)", "[block][topk]")
+{
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int tile_items     = BlockThreads * ItemsPerThread;
+  constexpr bool KeysOnly      = false;
+
+  std::vector<int> keys(tile_items);
+  std::vector<int> values(tile_items);
+  for (int i = 0; i < tile_items; ++i)
+  {
+    keys[i]   = i + 7;
+    values[i] = i + 1000;
+  }
+  auto classes = make_classes(tile_items, /*selected_every=*/4, /*candidate_every=*/3);
+
+  // back_anchor (k_total) sized so the back range comfortably holds all eligible candidates.
+  // Cap is well below the eligible count so the cap-clamp path is exercised.
+  run_back_write_partition_test<int, int, BlockThreads, ItemsPerThread, kStrategy, KeysOnly>(
+    tile_items, keys, values, classes, /*back_anchor=*/300u, /*max_candidate_count=*/12u);
 }
 
 C2H_TEST("BlockPartition handles partial last tile via rejected marker", "[block][topk]")
