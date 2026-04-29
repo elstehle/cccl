@@ -244,8 +244,12 @@ private:
     token_impl& operator=(const token_impl&) = delete;
     // NOLINTEND(modernize-use-equals-delete)
 
-    token_impl(token_impl&&)            = default;
-    token_impl& operator=(token_impl&&) = default;
+  public:
+    // Movable so callers can store the token in handle structs (e.g., the async
+    // TileDataSource handle in `cub::detail::topk`). Move is a no-op since the token
+    // carries no state -- it exists purely as a usage guard between Commit() and Wait().
+    _CCCL_DEVICE_API _CCCL_FORCEINLINE token_impl(token_impl&&) noexcept            = default;
+    _CCCL_DEVICE_API _CCCL_FORCEINLINE token_impl& operator=(token_impl&&) noexcept = default;
   };
 
 public:

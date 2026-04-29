@@ -2,235 +2,254 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Unit tests for the top-k-private BlockPartition primitive. Covers all three strategies
-//! (Atomics, Staged, SharedMem), keys-only and paired key/value flows, and the compile-time
-//! specializations derived from sink_mode (HasCandidates, HasCandidateCap).
+//! Unit tests for the top-k-private `BlockPartition` primitive in
+//! `cub/detail/topk/block_partition.cuh`. Sweeps strategy x HasCandidates x KeysOnly x
+//! reserve op x full/partial. See `[topk-foundation-impl_f95bebaa.plan.md] §12` for
+//! the test matrix.
 
-#include <cub/agent/topk/block_partition.cuh>
+#include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 
+#include <cuda/std/cstdint>
+#include <cuda/std/tuple>
+#include <cuda/std/utility>
+
 #include <algorithm>
-#include <cstdint>
 #include <vector>
 
 #include <c2h/catch2_test_helper.h>
 
 namespace topk = cub::detail::topk;
 
-// Kernel that wires BlockLoad-style striped reads into BlockPartition and applies the
-// strategy-appropriate entry point.
-template <typename KeyT,
-          typename ValueT,
-          int BlockThreads,
+//---------------------------------------------------------------------
+// Test scaffolding: identify_candidates_op, candidate callback, value channel.
+//---------------------------------------------------------------------
+
+// Driver classifier: returns the per-item class read out of a global `classes[]`
+// array. Indexed by a per-item global index passed via a closure-captured base.
+struct driver_identify_op
+{
+  const ::cuda::std::int8_t* d_classes;
+
+  // The classify path of BlockPartition only sees `key`; we encode the per-item
+  // global index by interpreting the key value as the index into d_classes. The
+  // test vectors are built so that `keys[i] == i + key_offset_`; we recover i.
+  int key_offset;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE topk::candidate_class operator()(int key) const
+  {
+    const int i = key - key_offset;
+    return static_cast<topk::candidate_class>(d_classes[i]);
+  }
+};
+
+// Counts every candidate-classified key into a global `callback_count` (atomic). Used
+// to assert the architecture §10.2 invariant that the callback fires
+// `eligible_candidate_count` times -- including ones the cap subsequently drops.
+struct counting_callback_op
+{
+  unsigned int* d_count;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(int /*key*/) const
+  {
+    atomicAdd(d_count, 1u);
+  }
+};
+
+struct identity_transform_op
+{
+  template <typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE T operator()(const T& x) const
+  {
+    return x;
+  }
+};
+
+struct noop_callback_op
+{
+  template <typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const T&) const
+  {}
+};
+
+// Value-channel test struct. Mirrors the agent's per-channel bundle: a TileDataSource,
+// selected/candidate output iterators, and per-stream value transforms.
+template <typename DataSourceT, typename SelOutT, typename CandOutT>
+struct test_value_channel
+{
+  using data_source_t = DataSourceT;
+  using value_t       = typename DataSourceT::value_t;
+
+  data_source_t data_source;
+  SelOutT selected_values_out;
+  CandOutT candidate_values_out;
+  identity_transform_op selected_value_transform;
+  identity_transform_op candidate_value_transform;
+};
+
+//---------------------------------------------------------------------
+// Kernel: drives one tile through BlockPartition.
+//---------------------------------------------------------------------
+
+template <int BlockThreads,
           int ItemsPerThread,
           topk::BlockPartitionStrategy Strategy,
           bool HasCandidates,
-          bool HasCandidateCap,
           bool KeysOnly,
-          bool WritesCandidatesToBack = false>
+          bool BackGrowCapped>
 __global__ void partition_kernel(
-  const KeyT* d_keys_in,
-  const ValueT* d_vals_in,
+  const int* d_keys_in,
+  const int* d_values_in,
   const ::cuda::std::int8_t* d_classes_in,
   int num_items,
-  KeyT* d_sel_keys,
-  KeyT* d_cand_keys,
-  ValueT* d_sel_vals,
-  ValueT* d_cand_vals,
+  int key_offset,
+  int* d_sel_keys,
+  int* d_cand_keys,
+  int* d_sel_vals,
+  int* d_cand_vals,
   unsigned int* d_sel_counter,
   unsigned int* d_cand_counter,
-  unsigned int max_candidate_count,
-  unsigned int back_anchor = 0)
+  unsigned int* d_callback_count,
+  unsigned int back_anchor,
+  unsigned int cap)
 {
-  using partition_t = topk::BlockPartition<KeyT,
-                                           ::cuda::std::conditional_t<KeysOnly, cub::NullType, ValueT>,
-                                           unsigned int,
-                                           unsigned int,
-                                           BlockThreads,
-                                           ItemsPerThread,
-                                           Strategy,
-                                           HasCandidates,
-                                           HasCandidateCap,
-                                           WritesCandidatesToBack>;
+  using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  __shared__ typename partition_t::buffer_t buffer;
+  using value_channel_t = test_value_channel<value_ds_t, int*, int*>;
+  using value_channels_tuple_t =
+    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_t>>;
 
-  KeyT keys[ItemsPerThread];
-  ValueT values[ItemsPerThread];
-  topk::candidate_class classes[ItemsPerThread];
+  using partition_t =
+    topk::BlockPartition<BlockThreads, ItemsPerThread, Strategy, int, unsigned int, unsigned int, value_channels_tuple_t>;
 
-  constexpr int tile_items = BlockThreads * ItemsPerThread;
+  __shared__ typename partition_t::ScratchStorage scratch;
 
-  // Blocked layout: thread t gets items [t*IPT, (t+1)*IPT).
+  // BLOCKED arrangement: thread t gets items [t*IPT, (t+1)*IPT).
+  int keys[ItemsPerThread];
   _CCCL_PRAGMA_UNROLL_FULL()
   for (int j = 0; j < ItemsPerThread; ++j)
   {
-    const int lane_idx = static_cast<int>(threadIdx.x) * ItemsPerThread + j;
-    if (lane_idx < num_items)
-    {
-      keys[j]   = d_keys_in[lane_idx];
-      values[j] = d_vals_in[lane_idx];
-      classes[j] = static_cast<topk::candidate_class>(d_classes_in[lane_idx]);
-    }
-    else
-    {
-      classes[j] = topk::candidate_class::rejected;
-    }
-    (void) tile_items;
+    const int idx = static_cast<int>(threadIdx.x) * ItemsPerThread + j;
+    keys[j]       = (idx < num_items) ? d_keys_in[idx] : 0;
   }
 
-  partition_t partition;
+  // Build the value channel tuple. `direct_data_source` has no default ctor, so we
+  // construct the tuple via its fully-initialized element. For keys-only the tuple
+  // is empty and trivially default-constructible.
+  // direct_data_source's TempStorage is empty so we can hand it a stack-local sink.
+  typename value_ds_t::TempStorage val_state{};
+  value_ds_t val_ds{d_values_in, val_state};
+  val_ds.set_tile_base(0);
 
-  if constexpr (Strategy == topk::BlockPartitionStrategy::SharedMem)
-  {
-    partition.PartitionPairs(
-      buffer, keys, values, classes, d_sel_keys, d_cand_keys, d_sel_vals, d_cand_vals,
-      d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
-  }
-  else if constexpr (Strategy == topk::BlockPartitionStrategy::Staged)
-  {
-    partition.PartitionKeys(
-      buffer, keys, classes, d_sel_keys, d_cand_keys, d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
-    if constexpr (!KeysOnly)
-    {
-      partition.ScatterValues(buffer, values, d_sel_vals, d_cand_vals);
-    }
-  }
-  else // Atomics
-  {
+  auto make_channels = [&] {
     if constexpr (KeysOnly)
     {
-      partition.PartitionKeys(
-        buffer, keys, classes, d_sel_keys, d_cand_keys, d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
+      return ::cuda::std::tuple<>{};
     }
     else
     {
-      partition.PartitionPairs(
-        buffer, keys, values, classes, d_sel_keys, d_cand_keys, d_sel_vals, d_cand_vals,
-        d_sel_counter, d_cand_counter, max_candidate_count, back_anchor);
+      return ::cuda::std::tuple<value_channel_t>{
+        value_channel_t{val_ds, d_sel_vals, d_cand_vals, identity_transform_op{}, identity_transform_op{}}};
+    }
+  };
+  value_channels_tuple_t channels = make_channels();
+
+  driver_identify_op identify_op{d_classes_in, key_offset};
+  counting_callback_op callback_op{d_callback_count};
+  identity_transform_op key_transform{};
+
+  partition_t partition{};
+
+  if constexpr (BackGrowCapped)
+  {
+    topk::atomic_reserve_range_op<unsigned int> reserve_sel{d_sel_counter};
+    topk::back_grow_capped_reserve_op<unsigned int> reserve_cand{d_cand_counter, back_anchor, cap};
+    if (num_items == BlockThreads * ItemsPerThread)
+    {
+      partition.template Partition<HasCandidates>(
+        scratch,
+        keys,
+        ::cuda::std::integral_constant<bool, HasCandidates>{},
+        identify_op,
+        callback_op,
+        reserve_sel,
+        reserve_cand,
+        key_transform,
+        key_transform,
+        d_sel_keys,
+        d_cand_keys,
+        channels);
+    }
+    else
+    {
+      partition.template Partition<HasCandidates>(
+        scratch,
+        keys,
+        num_items,
+        ::cuda::std::integral_constant<bool, HasCandidates>{},
+        identify_op,
+        callback_op,
+        reserve_sel,
+        reserve_cand,
+        key_transform,
+        key_transform,
+        d_sel_keys,
+        d_cand_keys,
+        channels);
+    }
+  }
+  else
+  {
+    topk::atomic_reserve_range_op<unsigned int> reserve_sel{d_sel_counter};
+    topk::atomic_reserve_range_op<unsigned int> reserve_cand{d_cand_counter};
+    if (num_items == BlockThreads * ItemsPerThread)
+    {
+      partition.template Partition<HasCandidates>(
+        scratch,
+        keys,
+        ::cuda::std::integral_constant<bool, HasCandidates>{},
+        identify_op,
+        callback_op,
+        reserve_sel,
+        reserve_cand,
+        key_transform,
+        key_transform,
+        d_sel_keys,
+        d_cand_keys,
+        channels);
+    }
+    else
+    {
+      partition.template Partition<HasCandidates>(
+        scratch,
+        keys,
+        num_items,
+        ::cuda::std::integral_constant<bool, HasCandidates>{},
+        identify_op,
+        callback_op,
+        reserve_sel,
+        reserve_cand,
+        key_transform,
+        key_transform,
+        d_sel_keys,
+        d_cand_keys,
+        channels);
     }
   }
 }
 
-template <typename KeyT,
-          typename ValueT,
-          int BlockThreads,
-          int ItemsPerThread,
-          topk::BlockPartitionStrategy Strategy,
-          bool HasCandidates,
-          bool HasCandidateCap,
-          bool KeysOnly>
-void run_partition_test(int num_items,
-                        const std::vector<KeyT>& keys,
-                        const std::vector<ValueT>& values,
-                        const std::vector<::cuda::std::int8_t>& classes,
-                        unsigned int max_candidate_count = ::cuda::std::numeric_limits<unsigned int>::max())
-{
-  constexpr int tile_items = BlockThreads * ItemsPerThread;
-  REQUIRE(num_items <= tile_items);
+//---------------------------------------------------------------------
+// Helpers
+//---------------------------------------------------------------------
 
-  // Build golden expectations.
-  // "Eligible" candidates: under HasCandidateCap, any `max_candidate_count` of them may
-  // be written (the specific set depends on nondeterministic atomic order), so we only
-  // assert subset membership + exact count. Without a cap, all eligible candidates must
-  // appear in the output.
-  std::vector<KeyT> expected_selected_keys;
-  std::vector<ValueT> expected_selected_vals;
-  std::vector<KeyT> eligible_candidate_keys;
-  std::vector<ValueT> eligible_candidate_vals;
-  unsigned int expected_candidate_counter = 0;
-  for (int i = 0; i < num_items; ++i)
-  {
-    const auto c = static_cast<topk::candidate_class>(classes[i]);
-    if (c == topk::candidate_class::selected
-        || (!HasCandidates && c == topk::candidate_class::candidate))
-    {
-      expected_selected_keys.push_back(keys[i]);
-      expected_selected_vals.push_back(values[i]);
-    }
-    else if (c == topk::candidate_class::candidate)
-    {
-      eligible_candidate_keys.push_back(keys[i]);
-      eligible_candidate_vals.push_back(values[i]);
-      ++expected_candidate_counter;
-    }
-  }
-
-  thrust::device_vector<KeyT> d_keys_in(keys.begin(), keys.end());
-  thrust::device_vector<ValueT> d_vals_in(values.begin(), values.end());
-  thrust::device_vector<::cuda::std::int8_t> d_classes_in(classes.begin(), classes.end());
-
-  const int out_capacity = tile_items + 1;
-  thrust::device_vector<KeyT> d_sel_keys(out_capacity, KeyT{});
-  thrust::device_vector<KeyT> d_cand_keys(out_capacity, KeyT{});
-  thrust::device_vector<ValueT> d_sel_vals(out_capacity, ValueT{});
-  thrust::device_vector<ValueT> d_cand_vals(out_capacity, ValueT{});
-  thrust::device_vector<unsigned int> d_sel_cnt(1, 0);
-  thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
-
-  partition_kernel<KeyT, ValueT, BlockThreads, ItemsPerThread, Strategy, HasCandidates, HasCandidateCap, KeysOnly>
-    <<<1, BlockThreads>>>(
-      thrust::raw_pointer_cast(d_keys_in.data()),
-      thrust::raw_pointer_cast(d_vals_in.data()),
-      thrust::raw_pointer_cast(d_classes_in.data()),
-      num_items,
-      thrust::raw_pointer_cast(d_sel_keys.data()),
-      thrust::raw_pointer_cast(d_cand_keys.data()),
-      thrust::raw_pointer_cast(d_sel_vals.data()),
-      thrust::raw_pointer_cast(d_cand_vals.data()),
-      thrust::raw_pointer_cast(d_sel_cnt.data()),
-      thrust::raw_pointer_cast(d_cand_cnt.data()),
-      max_candidate_count);
-
-  REQUIRE(cudaSuccess == cudaPeekAtLastError());
-  REQUIRE(cudaSuccess == cudaDeviceSynchronize());
-
-  // Validate final counters.
-  const unsigned int sel_cnt  = d_sel_cnt[0];
-  const unsigned int cand_cnt = d_cand_cnt[0];
-  REQUIRE(sel_cnt == expected_selected_keys.size());
-  REQUIRE(cand_cnt == expected_candidate_counter);
-
-  // Output is order-independent (atomic-based), so sort before compare.
-  std::vector<KeyT> got_sel_keys(d_sel_keys.begin(), d_sel_keys.begin() + sel_cnt);
-  std::sort(got_sel_keys.begin(), got_sel_keys.end());
-  std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
-  REQUIRE(got_sel_keys == expected_selected_keys);
-
-  const int cand_written = static_cast<int>(
-    std::min<unsigned int>(cand_cnt, HasCandidateCap ? max_candidate_count : cand_cnt));
-  std::vector<KeyT> got_cand_keys(d_cand_keys.begin(), d_cand_keys.begin() + cand_written);
-  std::sort(got_cand_keys.begin(), got_cand_keys.end());
-  std::sort(eligible_candidate_keys.begin(), eligible_candidate_keys.end());
-  REQUIRE(got_cand_keys.size() == static_cast<std::size_t>(cand_written));
-  // Written candidates must be a subset of the eligible ones.
-  REQUIRE(std::includes(
-    eligible_candidate_keys.begin(), eligible_candidate_keys.end(),
-    got_cand_keys.begin(), got_cand_keys.end()));
-
-  if constexpr (!KeysOnly)
-  {
-    std::vector<ValueT> got_sel_vals(d_sel_vals.begin(), d_sel_vals.begin() + sel_cnt);
-    std::sort(got_sel_vals.begin(), got_sel_vals.end());
-    std::sort(expected_selected_vals.begin(), expected_selected_vals.end());
-    REQUIRE(got_sel_vals == expected_selected_vals);
-
-    std::vector<ValueT> got_cand_vals(d_cand_vals.begin(), d_cand_vals.begin() + cand_written);
-    std::sort(got_cand_vals.begin(), got_cand_vals.end());
-    std::sort(eligible_candidate_vals.begin(), eligible_candidate_vals.end());
-    REQUIRE(got_cand_vals.size() == static_cast<std::size_t>(cand_written));
-    REQUIRE(std::includes(
-      eligible_candidate_vals.begin(), eligible_candidate_vals.end(),
-      got_cand_vals.begin(), got_cand_vals.end()));
-  }
-}
-
-// Generate a deterministic sprinkle of classes across the tile. Every ~3rd item is
-// selected, every ~5th is candidate, and the rest are rejected. Uses a small prime
-// stride so we hit all three classes for any tile_items >= 16.
+// Build a deterministic class pattern over `num_items` slots:
+//  every selected_every-th item is selected,
+//  every candidate_every-th item (that isn't selected) is candidate,
+//  everything else is rejected.
 static std::vector<::cuda::std::int8_t> make_classes(int num_items, int selected_every, int candidate_every)
 {
   std::vector<::cuda::std::int8_t> out(num_items);
@@ -253,8 +272,7 @@ static std::vector<::cuda::std::int8_t> make_classes(int num_items, int selected
 }
 
 // %PARAM% TEST_STRAT strat 0:1:2
-// 0 = Atomics, 1 = Staged, 2 = SharedMem
-
+// 0 = atomics, 1 = staged, 2 = shared_mem
 #if TEST_STRAT == 0
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Atomics;
 #elif TEST_STRAT == 1
@@ -263,238 +281,308 @@ constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy:
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
 #endif
 
-// Keys-only path. SharedMem has no PartitionKeys; we exercise it through PartitionPairs
-// with NullType values elided at compile time. Atomics/Staged use PartitionKeys directly.
-C2H_TEST("BlockPartition keys-only (HasCandidates=true) partitions and scatters", "[block][topk]")
-{
-  if constexpr (kStrategy == topk::BlockPartitionStrategy::SharedMem)
-  {
-    // SharedMem keys-only requires PartitionPairs; covered in the paired path too.
-    SUCCEED();
-    return;
-  }
-  constexpr int BlockThreads    = 64;
-  constexpr int ItemsPerThread  = 4;
-  constexpr int tile_items      = BlockThreads * ItemsPerThread;
-  constexpr bool HasCandidates  = true;
-  constexpr bool HasCandidateCap = false;
-  constexpr bool KeysOnly       = true;
-
-  std::vector<int> keys(tile_items);
-  std::vector<cub::NullType> values(tile_items);
-  for (int i = 0; i < tile_items; ++i)
-  {
-    keys[i] = i * 7 + 3;
-  }
-  auto classes = make_classes(tile_items, /*selected_every=*/3, /*candidate_every=*/5);
-
-  run_partition_test<int, cub::NullType, BlockThreads, ItemsPerThread, kStrategy, HasCandidates, HasCandidateCap, KeysOnly>(
-    tile_items, keys, values, classes);
-}
-
-C2H_TEST("BlockPartition pairs (HasCandidates=true) partitions keys and values", "[block][topk]")
-{
-  constexpr int BlockThreads    = 64;
-  constexpr int ItemsPerThread  = 4;
-  constexpr int tile_items      = BlockThreads * ItemsPerThread;
-  constexpr bool HasCandidates  = true;
-  constexpr bool HasCandidateCap = false;
-  constexpr bool KeysOnly       = false;
-
-  std::vector<int> keys(tile_items);
-  std::vector<float> values(tile_items);
-  for (int i = 0; i < tile_items; ++i)
-  {
-    keys[i]   = i * 7 + 3;
-    values[i] = static_cast<float>(i) + 0.5f;
-  }
-  auto classes = make_classes(tile_items, 3, 5);
-
-  run_partition_test<int, float, BlockThreads, ItemsPerThread, kStrategy, HasCandidates, HasCandidateCap, KeysOnly>(
-    tile_items, keys, values, classes);
-}
-
-C2H_TEST("BlockPartition pairs (HasCandidates=false, early_stop mode)", "[block][topk]")
-{
-  constexpr int BlockThreads     = 32;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int tile_items       = BlockThreads * ItemsPerThread;
-  constexpr bool HasCandidates   = false;
-  constexpr bool HasCandidateCap = false;
-  constexpr bool KeysOnly        = false;
-
-  std::vector<int> keys(tile_items);
-  std::vector<float> values(tile_items);
-  for (int i = 0; i < tile_items; ++i)
-  {
-    keys[i]   = i;
-    values[i] = static_cast<float>(i) * 0.25f;
-  }
-  // Early_stop mode: caller must fold candidate -> selected before calling. We simulate
-  // that here by only emitting selected or rejected.
-  std::vector<::cuda::std::int8_t> classes(tile_items);
-  for (int i = 0; i < tile_items; ++i)
-  {
-    classes[i] = (i % 2 == 0)
-                   ? static_cast<::cuda::std::int8_t>(topk::candidate_class::selected)
-                   : static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected);
-  }
-
-  run_partition_test<int, float, BlockThreads, ItemsPerThread, kStrategy, HasCandidates, HasCandidateCap, KeysOnly>(
-    tile_items, keys, values, classes);
-}
-
-C2H_TEST("BlockPartition pairs (HasCandidateCap=true, last_filter mode)", "[block][topk]")
-{
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int tile_items       = BlockThreads * ItemsPerThread;
-  constexpr bool HasCandidates   = true;
-  constexpr bool HasCandidateCap = true;
-  constexpr bool KeysOnly        = false;
-
-  std::vector<int> keys(tile_items);
-  std::vector<float> values(tile_items);
-  for (int i = 0; i < tile_items; ++i)
-  {
-    keys[i]   = i;
-    values[i] = static_cast<float>(i) + 1000.0f;
-  }
-  auto classes = make_classes(tile_items, 4, 3);
-
-  // Cap candidate writes to 10: items beyond that still bump the counter but are suppressed.
-  run_partition_test<int, float, BlockThreads, ItemsPerThread, kStrategy, HasCandidates, HasCandidateCap, KeysOnly>(
-    tile_items, keys, values, classes, /*max_candidate_count=*/10u);
-}
-
-// Exercises the WritesCandidatesToBack mode used by top-k's last_filter pass: candidates
-// land in [back_anchor - cap, back_anchor) of the candidate output (which is the same raw
-// pointer as the selected output in the agent), capped at `max_candidate_count`. We assert
-// (a) selected items appear in the front, (b) the cap-bounded back range contains a subset
-// of the eligible candidates with the right count, and (c) the buffer slots between front
-// and back stay untouched.
-template <typename KeyT, typename ValueT, int BlockThreads, int ItemsPerThread,
-          topk::BlockPartitionStrategy Strategy, bool KeysOnly>
-void run_back_write_partition_test(
-  int num_items,
-  const std::vector<KeyT>& keys,
-  const std::vector<ValueT>& values,
-  const std::vector<::cuda::std::int8_t>& classes,
-  unsigned int back_anchor,
-  unsigned int max_candidate_count)
+// Drive a single (Strategy, HasCandidates, KeysOnly, full|partial, atomic) configuration:
+// full when num_items == tile_items.
+template <int BlockThreads, int ItemsPerThread, bool HasCandidates, bool KeysOnly>
+void run_atomic_partition_test(int num_items,
+                               const std::vector<int>& keys,
+                               const std::vector<int>& values,
+                               const std::vector<::cuda::std::int8_t>& classes)
 {
   constexpr int tile_items = BlockThreads * ItemsPerThread;
   REQUIRE(num_items <= tile_items);
 
-  std::vector<KeyT> expected_selected_keys;
-  std::vector<ValueT> expected_selected_vals;
-  std::vector<KeyT> eligible_candidate_keys;
-  std::vector<ValueT> eligible_candidate_vals;
-  unsigned int eligible_candidate_count = 0;
+  // Host-side golden expectations.
+  std::vector<int> expected_selected_keys;
+  std::vector<int> expected_candidate_keys;
+  std::vector<int> expected_selected_vals;
+  std::vector<int> expected_candidate_vals;
+  unsigned int expected_callback_count = 0;
   for (int i = 0; i < num_items; ++i)
   {
     const auto c = static_cast<topk::candidate_class>(classes[i]);
-    if (c == topk::candidate_class::selected)
+    if (c == topk::candidate_class::selected || (!HasCandidates && c == topk::candidate_class::candidate))
     {
       expected_selected_keys.push_back(keys[i]);
       expected_selected_vals.push_back(values[i]);
     }
     else if (c == topk::candidate_class::candidate)
     {
-      eligible_candidate_keys.push_back(keys[i]);
-      eligible_candidate_vals.push_back(values[i]);
-      ++eligible_candidate_count;
+      expected_candidate_keys.push_back(keys[i]);
+      expected_candidate_vals.push_back(values[i]);
+      ++expected_callback_count;
     }
   }
 
-  thrust::device_vector<KeyT> d_keys_in(keys.begin(), keys.end());
-  thrust::device_vector<ValueT> d_vals_in(values.begin(), values.end());
+  thrust::device_vector<int> d_keys_in(keys.begin(), keys.end());
+  thrust::device_vector<int> d_values_in(values.begin(), values.end());
   thrust::device_vector<::cuda::std::int8_t> d_classes_in(classes.begin(), classes.end());
 
-  // Selected and candidate share a single combined output buffer of size `back_anchor`,
-  // matching how agent_topk's last_filter passes `d_keys_out` for both streams.
-  const KeyT key_sentinel     = static_cast<KeyT>(-1);
-  const ValueT val_sentinel   = static_cast<ValueT>(-1);
-  thrust::device_vector<KeyT> d_combined_keys(back_anchor, key_sentinel);
-  thrust::device_vector<ValueT> d_combined_vals(back_anchor, val_sentinel);
+  const int out_capacity = tile_items + 1;
+  thrust::device_vector<int> d_sel_keys(out_capacity, 0);
+  thrust::device_vector<int> d_cand_keys(out_capacity, 0);
+  thrust::device_vector<int> d_sel_vals(out_capacity, 0);
+  thrust::device_vector<int> d_cand_vals(out_capacity, 0);
   thrust::device_vector<unsigned int> d_sel_cnt(1, 0);
   thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
+  thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
 
-  partition_kernel<KeyT, ValueT, BlockThreads, ItemsPerThread, Strategy,
-                   /*HasCandidates=*/true, /*HasCandidateCap=*/true, KeysOnly,
-                   /*WritesCandidatesToBack=*/true>
+  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, HasCandidates, KeysOnly, /*BackGrowCapped=*/false>
     <<<1, BlockThreads>>>(
       thrust::raw_pointer_cast(d_keys_in.data()),
-      thrust::raw_pointer_cast(d_vals_in.data()),
+      thrust::raw_pointer_cast(d_values_in.data()),
       thrust::raw_pointer_cast(d_classes_in.data()),
       num_items,
+      /*key_offset=*/0,
+      thrust::raw_pointer_cast(d_sel_keys.data()),
+      thrust::raw_pointer_cast(d_cand_keys.data()),
+      thrust::raw_pointer_cast(d_sel_vals.data()),
+      thrust::raw_pointer_cast(d_cand_vals.data()),
+      thrust::raw_pointer_cast(d_sel_cnt.data()),
+      thrust::raw_pointer_cast(d_cand_cnt.data()),
+      thrust::raw_pointer_cast(d_callback_cnt.data()),
+      /*back_anchor=*/0u,
+      /*cap=*/0u);
+  REQUIRE(cudaSuccess == cudaPeekAtLastError());
+  REQUIRE(cudaSuccess == cudaDeviceSynchronize());
+
+  // Counter assertions.
+  REQUIRE(d_sel_cnt[0] == expected_selected_keys.size());
+  if constexpr (HasCandidates)
+  {
+    REQUIRE(d_cand_cnt[0] == expected_candidate_keys.size());
+    REQUIRE(d_callback_cnt[0] == expected_callback_count);
+  }
+
+  // Output-set assertions (atomic strategies are order-independent).
+  std::vector<int> got_sel_keys(d_sel_keys.begin(), d_sel_keys.begin() + d_sel_cnt[0]);
+  std::sort(got_sel_keys.begin(), got_sel_keys.end());
+  std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
+  REQUIRE(got_sel_keys == expected_selected_keys);
+
+  if constexpr (HasCandidates)
+  {
+    std::vector<int> got_cand_keys(d_cand_keys.begin(), d_cand_keys.begin() + d_cand_cnt[0]);
+    std::sort(got_cand_keys.begin(), got_cand_keys.end());
+    std::sort(expected_candidate_keys.begin(), expected_candidate_keys.end());
+    REQUIRE(got_cand_keys == expected_candidate_keys);
+  }
+
+  if constexpr (!KeysOnly)
+  {
+    std::vector<int> got_sel_vals(d_sel_vals.begin(), d_sel_vals.begin() + d_sel_cnt[0]);
+    std::sort(got_sel_vals.begin(), got_sel_vals.end());
+    std::sort(expected_selected_vals.begin(), expected_selected_vals.end());
+    REQUIRE(got_sel_vals == expected_selected_vals);
+
+    if constexpr (HasCandidates)
+    {
+      std::vector<int> got_cand_vals(d_cand_vals.begin(), d_cand_vals.begin() + d_cand_cnt[0]);
+      std::sort(got_cand_vals.begin(), got_cand_vals.end());
+      std::sort(expected_candidate_vals.begin(), expected_candidate_vals.end());
+      REQUIRE(got_cand_vals == expected_candidate_vals);
+    }
+  }
+}
+
+template <int BlockThreads, int ItemsPerThread, bool KeysOnly>
+void run_back_grow_capped_partition_test(
+  int num_items,
+  const std::vector<int>& keys,
+  const std::vector<int>& values,
+  const std::vector<::cuda::std::int8_t>& classes,
+  unsigned int back_anchor,
+  unsigned int cap)
+{
+  constexpr int tile_items = BlockThreads * ItemsPerThread;
+  REQUIRE(num_items <= tile_items);
+
+  std::vector<int> expected_selected_keys;
+  std::vector<int> eligible_candidate_keys;
+  unsigned int expected_callback_count = 0;
+  for (int i = 0; i < num_items; ++i)
+  {
+    const auto c = static_cast<topk::candidate_class>(classes[i]);
+    if (c == topk::candidate_class::selected)
+    {
+      expected_selected_keys.push_back(keys[i]);
+    }
+    else if (c == topk::candidate_class::candidate)
+    {
+      eligible_candidate_keys.push_back(keys[i]);
+      ++expected_callback_count;
+    }
+  }
+
+  thrust::device_vector<int> d_keys_in(keys.begin(), keys.end());
+  thrust::device_vector<int> d_values_in(values.begin(), values.end());
+  thrust::device_vector<::cuda::std::int8_t> d_classes_in(classes.begin(), classes.end());
+
+  // Selected and candidate share a single combined output of size `back_anchor`,
+  // matching how agent_topk's last_filter passes `d_keys_out` for both streams.
+  const int sentinel = -1;
+  thrust::device_vector<int> d_combined_keys(back_anchor, sentinel);
+  thrust::device_vector<int> d_combined_vals(back_anchor, sentinel);
+  thrust::device_vector<unsigned int> d_sel_cnt(1, 0);
+  thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
+  thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
+
+  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, /*HasCandidates=*/true, KeysOnly, /*BackGrowCapped=*/true>
+    <<<1, BlockThreads>>>(
+      thrust::raw_pointer_cast(d_keys_in.data()),
+      thrust::raw_pointer_cast(d_values_in.data()),
+      thrust::raw_pointer_cast(d_classes_in.data()),
+      num_items,
+      /*key_offset=*/0,
       thrust::raw_pointer_cast(d_combined_keys.data()),
       thrust::raw_pointer_cast(d_combined_keys.data()),
       thrust::raw_pointer_cast(d_combined_vals.data()),
       thrust::raw_pointer_cast(d_combined_vals.data()),
       thrust::raw_pointer_cast(d_sel_cnt.data()),
       thrust::raw_pointer_cast(d_cand_cnt.data()),
-      max_candidate_count,
-      back_anchor);
-
+      thrust::raw_pointer_cast(d_callback_cnt.data()),
+      back_anchor,
+      cap);
   REQUIRE(cudaSuccess == cudaPeekAtLastError());
   REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
-  const unsigned int sel_cnt  = d_sel_cnt[0];
-  const unsigned int cand_cnt = d_cand_cnt[0];
-  REQUIRE(sel_cnt == expected_selected_keys.size());
-  REQUIRE(cand_cnt == eligible_candidate_count);
+  REQUIRE(d_sel_cnt[0] == expected_selected_keys.size());
+  // Candidate counter is bumped by the unclamped count (architecture §8.2).
+  REQUIRE(d_cand_cnt[0] == expected_callback_count);
+  REQUIRE(d_callback_cnt[0] == expected_callback_count);
 
-  std::vector<KeyT> host_combined(d_combined_keys.begin(), d_combined_keys.end());
+  std::vector<int> host_combined(d_combined_keys.begin(), d_combined_keys.end());
 
-  std::vector<KeyT> got_sel_keys(host_combined.begin(), host_combined.begin() + sel_cnt);
+  // Selected items at the front.
+  std::vector<int> got_sel_keys(host_combined.begin(), host_combined.begin() + d_sel_cnt[0]);
   std::sort(got_sel_keys.begin(), got_sel_keys.end());
   std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
   REQUIRE(got_sel_keys == expected_selected_keys);
 
-  const unsigned int cand_written = std::min<unsigned int>(cand_cnt, max_candidate_count);
-  // Back range: [back_anchor - cand_written, back_anchor).
-  std::vector<KeyT> got_cand_keys(host_combined.end() - cand_written, host_combined.end());
+  const unsigned int cand_written = std::min<unsigned int>(d_cand_cnt[0], cap);
+  std::vector<int> got_cand_keys(host_combined.end() - cand_written, host_combined.end());
   std::sort(got_cand_keys.begin(), got_cand_keys.end());
   std::sort(eligible_candidate_keys.begin(), eligible_candidate_keys.end());
   REQUIRE(got_cand_keys.size() == cand_written);
   REQUIRE(std::includes(
-    eligible_candidate_keys.begin(), eligible_candidate_keys.end(),
-    got_cand_keys.begin(), got_cand_keys.end()));
+    eligible_candidate_keys.begin(),
+    eligible_candidate_keys.end(),
+    got_cand_keys.begin(),
+    got_cand_keys.end()));
 
-  // Slots between the front (selected) region and the back (candidate) region must remain
-  // at their sentinel value -- back-write must not bleed past the cap.
+  // Slots between the front (selected) region and the back (candidate) region must
+  // remain at their sentinel value -- back-write must not bleed past the cap.
   const unsigned int back_start = back_anchor - cand_written;
-  for (unsigned int i = sel_cnt; i < back_start; ++i)
+  for (unsigned int i = d_sel_cnt[0]; i < back_start; ++i)
   {
-    REQUIRE(host_combined[i] == key_sentinel);
-  }
-
-  if constexpr (!KeysOnly)
-  {
-    std::vector<ValueT> host_combined_vals(d_combined_vals.begin(), d_combined_vals.end());
-
-    std::vector<ValueT> got_sel_vals(host_combined_vals.begin(), host_combined_vals.begin() + sel_cnt);
-    std::sort(got_sel_vals.begin(), got_sel_vals.end());
-    std::sort(expected_selected_vals.begin(), expected_selected_vals.end());
-    REQUIRE(got_sel_vals == expected_selected_vals);
-
-    std::vector<ValueT> got_cand_vals(host_combined_vals.end() - cand_written, host_combined_vals.end());
-    std::sort(got_cand_vals.begin(), got_cand_vals.end());
-    std::sort(eligible_candidate_vals.begin(), eligible_candidate_vals.end());
-    REQUIRE(got_cand_vals.size() == cand_written);
-    REQUIRE(std::includes(
-      eligible_candidate_vals.begin(), eligible_candidate_vals.end(),
-      got_cand_vals.begin(), got_cand_vals.end()));
-
-    for (unsigned int i = sel_cnt; i < back_start; ++i)
-    {
-      REQUIRE(host_combined_vals[i] == val_sentinel);
-    }
+    REQUIRE(host_combined[i] == sentinel);
   }
 }
 
-C2H_TEST("BlockPartition writes candidates to back of output (last_filter mode)", "[block][topk]")
+//---------------------------------------------------------------------
+// Test cases: full sweep
+//---------------------------------------------------------------------
+
+C2H_TEST("BlockPartition keys-only with HasCandidates=true partitions a full tile",
+         "[block][topk]")
+{
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int tile_items     = BlockThreads * ItemsPerThread;
+
+  std::vector<int> keys(tile_items);
+  std::vector<int> values(tile_items, 0);
+  for (int i = 0; i < tile_items; ++i)
+  {
+    keys[i] = i;
+  }
+  auto classes = make_classes(tile_items, /*selected_every=*/3, /*candidate_every=*/5);
+
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/true>(
+    tile_items, keys, values, classes);
+}
+
+C2H_TEST("BlockPartition paired with HasCandidates=true partitions a full tile",
+         "[block][topk]")
+{
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int tile_items     = BlockThreads * ItemsPerThread;
+
+  std::vector<int> keys(tile_items);
+  std::vector<int> values(tile_items);
+  for (int i = 0; i < tile_items; ++i)
+  {
+    keys[i]   = i;
+    values[i] = i + 1000;
+  }
+  auto classes = make_classes(tile_items, 3, 5);
+
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/false>(
+    tile_items, keys, values, classes);
+}
+
+C2H_TEST("BlockPartition paired with HasCandidates=false folds candidate -> selected",
+         "[block][topk]")
+{
+  constexpr int BlockThreads   = 32;
+  constexpr int ItemsPerThread = 4;
+  constexpr int tile_items     = BlockThreads * ItemsPerThread;
+
+  std::vector<int> keys(tile_items);
+  std::vector<int> values(tile_items);
+  for (int i = 0; i < tile_items; ++i)
+  {
+    keys[i]   = i;
+    values[i] = i + 1000;
+  }
+  // Use the same class pattern as the HasCandidates=true case; the implementation
+  // collapses candidate -> selected when HasCandidates == false (architecture §9.2).
+  auto classes = make_classes(tile_items, 3, 5);
+
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/false, /*KeysOnly=*/false>(
+    tile_items, keys, values, classes);
+}
+
+C2H_TEST("BlockPartition partial tile leaves OOB items unscattered",
+         "[block][topk]")
+{
+  constexpr int BlockThreads   = 32;
+  constexpr int ItemsPerThread = 4;
+  constexpr int tile_items     = BlockThreads * ItemsPerThread;
+
+  // Partial tile with `tile_items - 17` valid items. The partition's `Partition()`
+  // partial overload computes per-thread valid counts; OOB items are forced to
+  // `rejected` and never appear in either output.
+  const int num_items = tile_items - 17;
+
+  std::vector<int> keys(tile_items, 0);
+  std::vector<int> values(tile_items, 0);
+  for (int i = 0; i < tile_items; ++i)
+  {
+    // Fill all slots so OOB items are distinguishable from in-bounds ones if the
+    // implementation accidentally classifies them as non-rejected.
+    keys[i]   = i;
+    values[i] = i + 1000;
+  }
+  std::vector<::cuda::std::int8_t> classes(tile_items,
+                                            static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
+  for (int i = 0; i < num_items; ++i)
+  {
+    classes[i] = (i % 3 == 0)
+                   ? static_cast<::cuda::std::int8_t>(topk::candidate_class::selected)
+                   : ((i % 5 == 0)
+                        ? static_cast<::cuda::std::int8_t>(topk::candidate_class::candidate)
+                        : static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
+  }
+
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/false>(
+    num_items, keys, values, classes);
+}
+
+C2H_TEST("BlockPartition back_grow_capped reserve op clamps candidate writes "
+         "and stacks them at the back",
+         "[block][topk]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -505,47 +593,15 @@ C2H_TEST("BlockPartition writes candidates to back of output (last_filter mode)"
   std::vector<int> values(tile_items);
   for (int i = 0; i < tile_items; ++i)
   {
-    keys[i]   = i + 7;
+    // Keys must equal their index for the driver_identify_op to work (it recovers the
+    // per-item index from the key value to look up the per-item class).
+    keys[i]   = i;
     values[i] = i + 1000;
   }
   auto classes = make_classes(tile_items, /*selected_every=*/4, /*candidate_every=*/3);
 
-  // back_anchor (k_total) sized so the back range comfortably holds all eligible candidates.
-  // Cap is well below the eligible count so the cap-clamp path is exercised.
-  run_back_write_partition_test<int, int, BlockThreads, ItemsPerThread, kStrategy, KeysOnly>(
-    tile_items, keys, values, classes, /*back_anchor=*/300u, /*max_candidate_count=*/12u);
-}
-
-C2H_TEST("BlockPartition handles partial last tile via rejected marker", "[block][topk]")
-{
-  constexpr int BlockThreads     = 32;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int tile_items       = BlockThreads * ItemsPerThread;
-  constexpr bool HasCandidates   = true;
-  constexpr bool HasCandidateCap = false;
-  constexpr bool KeysOnly        = false;
-
-  // num_items less than a full tile; remaining lanes are classed as rejected by the kernel.
-  const int num_items = tile_items - 17;
-
-  std::vector<int> keys(tile_items, 0);
-  std::vector<float> values(tile_items, 0.0f);
-  for (int i = 0; i < num_items; ++i)
-  {
-    keys[i]   = i + 100;
-    values[i] = static_cast<float>(i) + 0.125f;
-  }
-  std::vector<::cuda::std::int8_t> classes(tile_items,
-                                           static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
-  for (int i = 0; i < num_items; ++i)
-  {
-    classes[i] = (i % 3 == 0)
-                   ? static_cast<::cuda::std::int8_t>(topk::candidate_class::selected)
-                   : ((i % 5 == 0)
-                        ? static_cast<::cuda::std::int8_t>(topk::candidate_class::candidate)
-                        : static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
-  }
-
-  run_partition_test<int, float, BlockThreads, ItemsPerThread, kStrategy, HasCandidates, HasCandidateCap, KeysOnly>(
-    num_items, keys, values, classes);
+  // back_anchor sized so the back range comfortably holds all eligible candidates.
+  // cap is set well below the eligible count so the cap-clamp path is exercised.
+  run_back_grow_capped_partition_test<BlockThreads, ItemsPerThread, KeysOnly>(
+    tile_items, keys, values, classes, /*back_anchor=*/300u, /*cap=*/12u);
 }

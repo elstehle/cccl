@@ -281,7 +281,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.load_algorithm,
-                    policy.scan_algorithm>;
+                    policy.scan_algorithm,
+                    policy.keys_tile_load_kind>;
 
   static constexpr BlockPartitionStrategy part_strat = policy.partition_strategy;
 
@@ -508,7 +509,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.load_algorithm,
-                    policy.scan_algorithm>;
+                    policy.scan_algorithm,
+                    policy.keys_tile_load_kind>;
   using agent_t =
     AgentTopKHistogram<agent_topk_policy_t,
                        KeyInputIteratorT,
