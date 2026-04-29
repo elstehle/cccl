@@ -13,9 +13,10 @@
 #  pragma system_header
 #endif // no system header
 
-#include <cub/agent/topk/block_partition.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
+#include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/device/dispatch/tuning/common.cuh>
 #include <cub/util_device.cuh>
 
@@ -47,6 +48,19 @@ _CCCL_HOST_DEVICE_API constexpr int calc_bits_per_pass()
   return calc_bits_per_pass(int{sizeof(KeyT)});
 }
 
+// Map a `BlockLoadAlgorithm` enum value to the equivalent `tile_load_kind` value, so
+// per-arch defaults expressed in terms of `BlockLoadAlgorithm` (the legacy convention)
+// preserve the same load behavior under the unified `tile_load_kind` knob.
+[[nodiscard]] _CCCL_API constexpr tile_load_kind block_load_algorithm_to_tile_load_kind(BlockLoadAlgorithm algo)
+{
+  return (algo == BLOCK_LOAD_DIRECT)            ? tile_load_kind::block_load_direct
+       : (algo == BLOCK_LOAD_STRIPED)           ? tile_load_kind::block_load_striped
+       : (algo == BLOCK_LOAD_VECTORIZE)         ? tile_load_kind::block_load_vectorize
+       : (algo == BLOCK_LOAD_TRANSPOSE)         ? tile_load_kind::block_load_transpose
+       : (algo == BLOCK_LOAD_WARP_TRANSPOSE)    ? tile_load_kind::block_load_warp_transpose
+                                                 : tile_load_kind::block_load_warp_transpose_timesliced;
+}
+
 struct topk_policy
 {
   int threads_per_block;
@@ -55,12 +69,17 @@ struct topk_policy
   BlockLoadAlgorithm load_algorithm;
   BlockScanAlgorithm scan_algorithm;
   BlockPartitionStrategy partition_strategy = BlockPartitionStrategy::Atomics;
+  // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
+  // Defaults to the equivalent of `load_algorithm` so per-arch tunings expressed in
+  // terms of the legacy enum preserve their behavior without explicit migration.
+  tile_load_kind keys_tile_load_kind = block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE);
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.load_algorithm == rhs.load_algorithm
-        && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy;
+        && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
+        && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -74,7 +93,8 @@ struct topk_policy
     return os << "topk_policy { .threads_per_block = " << p.threads_per_block
               << ", .items_per_thread = " << p.items_per_thread << ", .bits_per_pass = " << p.bits_per_pass
               << ", .load_algorithm = " << p.load_algorithm << ", .scan_algorithm = " << p.scan_algorithm
-              << ", .partition_strategy = " << static_cast<int>(p.partition_strategy) << " }";
+              << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
+              << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind) << " }";
   }
 #endif // _CCCL_HOSTED()
 };
@@ -97,13 +117,25 @@ struct policy_selector
     {
       // Try to load 16 bytes per thread: int64 -> 2, int32 -> 4, int16 -> 8.
       const int items_per_thread = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
-      return topk_policy{512, items_per_thread, bits_per_pass, BLOCK_LOAD_VECTORIZE, BLOCK_SCAN_WARP_SCANS};
+      return topk_policy{512,
+                         items_per_thread,
+                         bits_per_pass,
+                         BLOCK_LOAD_VECTORIZE,
+                         BLOCK_SCAN_WARP_SCANS,
+                         BlockPartitionStrategy::Atomics,
+                         block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
     }
 
     // Default tuning used on older architectures.
     const int items_per_thread =
       ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size, 1, nominal_4b_items_per_thread);
-    return topk_policy{512, items_per_thread, bits_per_pass, BLOCK_LOAD_VECTORIZE, BLOCK_SCAN_WARP_SCANS};
+    return topk_policy{512,
+                       items_per_thread,
+                       bits_per_pass,
+                       BLOCK_LOAD_VECTORIZE,
+                       BLOCK_SCAN_WARP_SCANS,
+                       BlockPartitionStrategy::Atomics,
+                       block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
   }
 };
 

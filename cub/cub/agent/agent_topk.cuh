@@ -15,11 +15,12 @@
 #  pragma system_header
 #endif // no system header
 
-#include <cub/agent/topk/block_partition.cuh>
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/block/block_store.cuh>
 #include <cub/block/radix_rank_sort_operations.cuh>
+#include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
@@ -51,7 +52,8 @@ template <int ThreadsPerBlock,
           int ItemsPerThread,
           int BitsPerPass,
           BlockLoadAlgorithm LoadAlgorithm,
-          BlockScanAlgorithm ScanAlgorithm>
+          BlockScanAlgorithm ScanAlgorithm,
+          tile_load_kind KeysTileLoadKind = tile_load_kind::block_load_vectorize>
 struct AgentTopKPolicy
 {
   static constexpr int threads_per_block             = ThreadsPerBlock;
@@ -59,6 +61,11 @@ struct AgentTopKPolicy
   static constexpr int bits_per_pass                 = BitsPerPass;
   static constexpr BlockLoadAlgorithm load_algorithm = LoadAlgorithm;
   static constexpr BlockScanAlgorithm SCAN_ALGORITHM = ScanAlgorithm;
+  // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
+  // Used by the new agents to pick a TileDataSource specialization for the keys
+  // stream. Defaults to the legacy `BLOCK_LOAD_VECTORIZE` mapping so existing call
+  // sites that don't set it preserve current behavior.
+  static constexpr tile_load_kind keys_tile_load_kind = KeysTileLoadKind;
 };
 
 template <typename KeyT, bool CanTwiddle = detail::radix::can_twiddle<KeyT>>
@@ -189,7 +196,7 @@ struct alignas(128) Counter
   // especially for the segment version.
 };
 
-// candidate_class is defined in <cub/agent/topk/block_partition.cuh>.
+// candidate_class is defined in <cub/detail/topk/block_partition.cuh>.
 
 //---------------------------------------------------------------------
 // Free functions for common histogram operations
@@ -369,375 +376,10 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void finalize_pass(
 }
 
 //---------------------------------------------------------------------
-// process_histogram_only: tile processor that builds a radix histogram
-//---------------------------------------------------------------------
-
-template <typename AgentTopKPolicyT,
-          typename KeyInT,
-          typename ExtractBinOpT,
-          typename OffsetT,
-          typename OutOffsetT>
-struct process_histogram_only
-{
-  static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
-  static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
-  static constexpr int bits_per_pass    = AgentTopKPolicyT::bits_per_pass;
-  static constexpr int num_buckets      = 1 << bits_per_pass;
-
-  using prefix_sum_temp_t =
-    BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
-
-  struct _TempStorage
-  {
-    prefix_sum_temp_t prefix_sum;
-    OffsetT histogram[num_buckets];
-  };
-
-  struct TempStorage : Uninitialized<_TempStorage>
-  {};
-
-  prefix_sum_temp_t& prefix_sum;
-  OffsetT* histogram;
-  ExtractBinOpT extract_bin_op;
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE
-  process_histogram_only(TempStorage& ts, ExtractBinOpT extract_bin_op)
-      : prefix_sum(ts.Alias().prefix_sum)
-      , histogram(ts.Alias().histogram)
-      , extract_bin_op(extract_bin_op)
-  {}
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE
-  process_histogram_only(prefix_sum_temp_t& prefix_sum, OffsetT* histogram, ExtractBinOpT extract_bin_op)
-      : prefix_sum(prefix_sum)
-      , histogram(histogram)
-      , extract_bin_op(extract_bin_op)
-  {}
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE void segment_prologue()
-  {
-    init_histogram<block_threads, num_buckets>(histogram);
-    __syncthreads();
-  }
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(
-    const KeyInT (&items)[items_per_thread], OffsetT /*thread_offset*/, int num_thread_items)
-  {
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < items_per_thread; ++j)
-    {
-      if (j < num_thread_items)
-      {
-        const int bucket = extract_bin_op(items[j]);
-        atomicAdd(histogram + bucket, OffsetT{1});
-      }
-    }
-  }
-
-  template <typename CounterUpdateFn>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void segment_epilogue(
-    Counter<KeyInT, OffsetT, OutOffsetT>* counter,
-    OffsetT* global_histogram,
-    OutOffsetT current_k,
-    int pass,
-    bool is_last_pass,
-    CounterUpdateFn counter_update_fn)
-  {
-    __syncthreads();
-
-    merge_histogram<block_threads, num_buckets>(histogram, global_histogram);
-
-    finalize_pass(
-      prefix_sum,
-      histogram,
-      counter,
-      global_histogram,
-      current_k,
-      pass,
-      is_last_pass,
-      counter_update_fn);
-  }
-};
-
-//---------------------------------------------------------------------
-// input_channel: wraps multiple iterators of the same value type with
-// a runtime selector. Allows BlockTileLoader::consume to accept a
-// single argument instead of branching at the call site.
-//---------------------------------------------------------------------
-
-template <typename... IteratorTs>
-struct input_channel
-{
-  ::cuda::std::tuple<IteratorTs...> iterators;
-  int active;
-};
-
-template <typename... IteratorTs>
-_CCCL_DEVICE _CCCL_FORCEINLINE auto make_input_channel(int active, IteratorTs... its)
-  -> input_channel<IteratorTs...>
-{
-  return {::cuda::std::tuple<IteratorTs...>{its...}, active};
-}
-
-//---------------------------------------------------------------------
-// TileQueueT strategies for BlockTileLoader.
-//
-// grid_stride_queue reproduces the hardcoded grid-stride loop of the legacy loader.
-// It is the default and the only strategy shipped today; atomic-counter /
-// UGETNEXTWORKID / segmented variants (see plan Q10) plug into the same interface
-// without touching the loader.
-//
-// Required interface:
-//   OffsetT next_tile_id();                 // returns sentinel (OffsetT max) when done
-//   bool    crosses_segment_boundary();     // true iff the next tile changes segments
-//   Any     current_segment();              // identifier of the current segment
-//---------------------------------------------------------------------
-
-template <typename OffsetT>
-struct grid_stride_queue
-{
-  static constexpr OffsetT sentinel = ::cuda::std::numeric_limits<OffsetT>::max();
-
-  OffsetT next_block_;
-  OffsetT grid_size_;
-  OffsetT total_blocks_;
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE grid_stride_queue(OffsetT total_blocks)
-      : next_block_(static_cast<OffsetT>(blockIdx.x))
-      , grid_size_(static_cast<OffsetT>(gridDim.x))
-      , total_blocks_(total_blocks)
-  {}
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE OffsetT next_tile_id()
-  {
-    const OffsetT ret = next_block_;
-    if (ret >= total_blocks_)
-    {
-      return sentinel;
-    }
-    next_block_ += grid_size_;
-    return ret;
-  }
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE bool crosses_segment_boundary() const
-  {
-    return false;
-  }
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE int current_segment() const
-  {
-    return 0;
-  }
-};
-
-//---------------------------------------------------------------------
-// LoadStrategyT tags for BlockTileLoader.
-//
-// sync_load_strategy is the only strategy shipped today: one synchronous BlockLoad per
-// tile, items arrive in the processor's registers via process_tile. The abstraction
-// point exists so an async_load_strategy (double-buffered BlockLoadToShared for TMA
-// overlap; see plan Q9) can drop in later without changing the loader interface.
-//---------------------------------------------------------------------
-
-struct sync_load_strategy
-{};
-
-// Detects whether the processor has an on_segment_change(int) hook.
-template <typename P, typename = void>
-struct processor_has_on_segment_change : ::cuda::std::false_type
-{};
-template <typename P>
-struct processor_has_on_segment_change<
-  P,
-  ::cuda::std::void_t<decltype(::cuda::std::declval<P&>().on_segment_change(0))>>
-    : ::cuda::std::true_type
-{};
-
-template <typename P, typename SegmentIdT>
-_CCCL_DEVICE _CCCL_FORCEINLINE void maybe_on_segment_change(P& proc, SegmentIdT segment_id)
-{
-  if constexpr (processor_has_on_segment_change<P>::value)
-  {
-    proc.on_segment_change(static_cast<int>(segment_id));
-  }
-  else
-  {
-    (void) proc;
-    (void) segment_id;
-  }
-}
-
-//---------------------------------------------------------------------
-// BlockTileLoader: standalone building block that iterates over a range in tiles
-// driven by a TileQueueT, loads each tile via the chosen LoadStrategyT, and
-// delegates per-tile processing to a caller-supplied processor.
-//
-// ProcessorT must provide:
-//   void process_tile(const KeyT (&items)[items_per_thread],
-//                     OffsetT thread_offset, int num_thread_items);
-//
-// ProcessorT MAY provide:
-//   void on_segment_change(int segment_id);
-// (called by segment-aware queues when crosses_segment_boundary() returns true)
-//---------------------------------------------------------------------
-
-template <typename AgentTopKPolicyT,
-          typename KeyT,
-          typename OffsetT,
-          typename TileQueueT    = grid_stride_queue<OffsetT>,
-          typename LoadStrategyT = sync_load_strategy>
-struct BlockTileLoader
-{
-  static_assert(::cuda::std::is_same_v<LoadStrategyT, sync_load_strategy>,
-                "Only sync_load_strategy is implemented today; async is a deferred plan Q9 follow-up.");
-
-  static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
-  static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
-  static constexpr int tile_items       = block_threads * items_per_thread;
-
-  using block_load_t = BlockLoad<KeyT, block_threads, items_per_thread, AgentTopKPolicyT::load_algorithm>;
-
-  struct _TempStorage
-  {
-    typename block_load_t::TempStorage load;
-  };
-
-  struct TempStorage : Uninitialized<_TempStorage>
-  {};
-
-  _TempStorage& temp_storage;
-  TileQueueT queue_;
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockTileLoader(_TempStorage& temp_storage, TileQueueT queue)
-      : temp_storage(temp_storage)
-      , queue_(queue)
-  {}
-
-  // Convenience constructor for the default grid_stride_queue: derive total_blocks from num_items.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockTileLoader(_TempStorage& temp_storage, OffsetT num_items)
-      : temp_storage(temp_storage)
-      , queue_(::cuda::ceil_div(num_items, static_cast<OffsetT>(tile_items)))
-  {}
-
-  // Plain iterator overload
-  template <typename ProcessorT, typename InputItT>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void consume(ProcessorT& proc, InputItT in, OffsetT num_items)
-  {
-    consume_impl(proc, in, num_items);
-  }
-
-  // input_channel overload -- same tiling loop, branch at the Load site
-  template <typename ProcessorT, typename... IteratorTs>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void consume(
-    ProcessorT& proc, input_channel<IteratorTs...> channel, OffsetT num_items)
-  {
-    consume_impl(proc, channel, num_items);
-  }
-
-private:
-  template <typename InputItT>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void load_tile(InputItT in, OffsetT tile_base, KeyT (&thread_data)[items_per_thread])
-  {
-    block_load_t(temp_storage.load).Load(in + tile_base, thread_data);
-  }
-
-  template <typename InputItT>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void load_tile(
-    InputItT in, OffsetT tile_base, KeyT (&thread_data)[items_per_thread], OffsetT valid_items)
-  {
-    block_load_t(temp_storage.load).Load(in + tile_base, thread_data, valid_items);
-  }
-
-  template <typename... IteratorTs>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void load_tile(
-    input_channel<IteratorTs...>& channel, OffsetT tile_base, KeyT (&thread_data)[items_per_thread])
-  {
-    channel_dispatch(channel, [&](auto& it) {
-      block_load_t(temp_storage.load).Load(it + tile_base, thread_data);
-    });
-  }
-
-  template <typename... IteratorTs>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void load_tile(
-    input_channel<IteratorTs...>& channel,
-    OffsetT tile_base,
-    KeyT (&thread_data)[items_per_thread],
-    OffsetT valid_items)
-  {
-    channel_dispatch(channel, [&](auto& it) {
-      block_load_t(temp_storage.load).Load(it + tile_base, thread_data, valid_items);
-    });
-  }
-
-  template <typename... IteratorTs, typename Fn>
-  _CCCL_DEVICE _CCCL_FORCEINLINE static void channel_dispatch(input_channel<IteratorTs...>& channel, Fn fn)
-  {
-    channel_dispatch_impl(channel, fn, ::cuda::std::index_sequence_for<IteratorTs...>{});
-  }
-
-  template <typename... IteratorTs, typename Fn, ::cuda::std::size_t... Is>
-  _CCCL_DEVICE _CCCL_FORCEINLINE static void channel_dispatch_impl(
-    input_channel<IteratorTs...>& channel, Fn fn, ::cuda::std::index_sequence<Is...>)
-  {
-    ((channel.active == static_cast<int>(Is)
-        ? (fn(::cuda::std::get<Is>(channel.iterators)), false)
-        : true) && ...);
-  }
-
-  // Single tiling loop driven by the pluggable TileQueueT. Calls the optional
-  // on_segment_change hook when the queue reports a boundary crossing.
-  template <typename ProcessorT, typename InputSourceT>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void consume_impl(ProcessorT& proc, InputSourceT& in, OffsetT num_items)
-  {
-    KeyT thread_data[items_per_thread];
-    constexpr OffsetT sentinel = ::cuda::std::numeric_limits<OffsetT>::max();
-
-    while (true)
-    {
-      const OffsetT block_id = queue_.next_tile_id();
-      if (block_id == sentinel)
-      {
-        break;
-      }
-
-      if (queue_.crosses_segment_boundary())
-      {
-        maybe_on_segment_change(proc, queue_.current_segment());
-      }
-
-      const OffsetT tile_base  = block_id * static_cast<OffsetT>(tile_items);
-      const OffsetT remaining  = num_items - tile_base;
-      const bool is_full_tile  = remaining >= static_cast<OffsetT>(tile_items);
-
-      __syncthreads();
-
-      if (is_full_tile)
-      {
-        load_tile(in, tile_base, thread_data);
-      }
-      else
-      {
-        load_tile(in, tile_base, thread_data, remaining);
-      }
-
-      const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
-      const int num_thread_items =
-        is_full_tile
-          ? items_per_thread
-          : static_cast<int>(
-              (thread_offset >= num_items)
-                ? OffsetT{0}
-                : ::cuda::std::min(static_cast<OffsetT>(items_per_thread), num_items - thread_offset));
-
-      proc.process_tile(thread_data, thread_offset, num_thread_items);
-    }
-  }
-};
-
-//---------------------------------------------------------------------
-// AgentTopKHistogram: dedicated agent for the histogram-only pass
-// (pass 0). Only needs the input iterator, extract_bin_op, and
-// histogram infrastructure — no output iterators, no sinks.
+// AgentTopKHistogram (rewritten): dedicated agent for the histogram-only pass
+// (pass 0). Owns _TempStorage, instantiates a TileDataSource for the keys stream
+// (per `AgentTopKPolicyT::keys_tile_load_kind`), and runs the §4.3 tile loop with
+// full/partial dispatch into `process_tile`.
 //---------------------------------------------------------------------
 
 template <typename AgentTopKPolicyT,
@@ -753,19 +395,25 @@ struct AgentTopKHistogram
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
   static constexpr int bits_per_pass    = AgentTopKPolicyT::bits_per_pass;
   static constexpr int num_buckets      = 1 << bits_per_pass;
+  static constexpr int tile_items       = block_threads * items_per_thread;
 
-  using tile_loader_t   = BlockTileLoader<AgentTopKPolicyT, key_in_t, OffsetT>;
+  using keys_source_t =
+    tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using prefix_sum_temp_t =
     BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
 
   struct _TempStorage
   {
+    // Persistent region (architecture §2.2).
+    OffsetT histogram[num_buckets];
+    typename keys_source_t::TempStorage keys_source_state;
+
+    // Method-call scratch (mutually exclusive in time).
     union
     {
-      typename tile_loader_t::_TempStorage loader;
+      typename keys_source_t::ScratchStorage keys_source_scratch;
       prefix_sum_temp_t prefix_sum;
-    };
-    OffsetT histogram[num_buckets];
+    } scratch;
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -778,32 +426,99 @@ struct AgentTopKHistogram
   ExtractBinOpT extract_bin_op;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopKHistogram(
-    TempStorage& temp_storage,
+    TempStorage& ts,
     const KeyInputIteratorT d_keys_in,
     OffsetT num_items,
     OutOffsetT k,
     ExtractBinOpT extract_bin_op)
-      : temp_storage(temp_storage.Alias())
+      : temp_storage(ts.Alias())
       , d_keys_in(d_keys_in)
       , num_items(num_items)
       , k(k)
       , extract_bin_op(extract_bin_op)
   {}
 
+  // process_tile: classify + per-bucket atomicAdd into smem histogram. Full overload
+  // omits the per-item bound check; partial overload bound-checks against
+  // `num_thread_items`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_full(const key_in_t (&items)[items_per_thread])
+  {
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < items_per_thread; ++j)
+    {
+      const int bucket = extract_bin_op(items[j]);
+      atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
+    }
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  process_tile_partial(const key_in_t (&items)[items_per_thread], int num_thread_items)
+  {
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < items_per_thread; ++j)
+    {
+      if (j < num_thread_items)
+      {
+        const int bucket = extract_bin_op(items[j]);
+        atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
+      }
+    }
+  }
+
   _CCCL_DEVICE _CCCL_FORCEINLINE void invoke(
     Counter<key_in_t, OffsetT, OutOffsetT>* counter, OffsetT* global_histogram, int pass, bool is_last_pass)
   {
-    process_histogram_only<AgentTopKPolicyT, key_in_t, ExtractBinOpT, OffsetT, OutOffsetT> proc(
-      temp_storage.prefix_sum, temp_storage.histogram, extract_bin_op);
+    init_histogram<block_threads, num_buckets>(temp_storage.histogram);
+    __syncthreads();
 
-    tile_loader_t loader(temp_storage.loader, num_items);
+    keys_source_t keys_source{d_keys_in, temp_storage.keys_source_state};
 
-    proc.segment_prologue();
-    loader.consume(proc, d_keys_in, num_items);
-    proc.segment_epilogue(counter, global_histogram, k, pass, is_last_pass, [counter, this] {
-      counter->previous_len = num_items;
-      counter->filter_cnt   = 0;
-    });
+    const OffsetT num_tiles = ::cuda::ceil_div(num_items, static_cast<OffsetT>(tile_items));
+    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_tiles; tile_id += static_cast<OffsetT>(gridDim.x))
+    {
+      const OffsetT tile_base   = tile_id * static_cast<OffsetT>(tile_items);
+      const OffsetT remaining   = num_items - tile_base;
+      const bool is_full        = remaining >= static_cast<OffsetT>(tile_items);
+      const OffsetT valid_items = is_full ? static_cast<OffsetT>(tile_items) : remaining;
+
+      keys_source.set_tile_base(tile_base);
+
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      if (is_full)
+      {
+        auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch);
+        h.complete_load(items);
+        // Synchronize before the first thread overwrites scratch on the next iteration.
+        process_tile_full(items);
+      }
+      else
+      {
+        auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch, valid_items);
+        h.complete_load(items);
+        const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+        const int num_thread_items =
+          (thread_offset >= num_items)
+            ? 0
+            : static_cast<int>((::cuda::std::min) (static_cast<OffsetT>(items_per_thread), num_items - thread_offset));
+        process_tile_partial(items, num_thread_items);
+      }
+    }
+
+    __syncthreads();
+    merge_histogram<block_threads, num_buckets>(temp_storage.histogram, global_histogram);
+
+    finalize_pass(temp_storage.scratch.prefix_sum,
+                  temp_storage.histogram,
+                  counter,
+                  global_histogram,
+                  k,
+                  pass,
+                  is_last_pass,
+                  [counter, this] {
+                    counter->previous_len = num_items;
+                    counter->filter_cnt   = 0;
+                  });
   }
 };
 
@@ -838,14 +553,59 @@ struct sink_flags
 };
 
 //---------------------------------------------------------------------
-// agent_topk_filter_partition: unified agent for passes 1..num_passes-1 plus the
-// last-filter pass. Replaces the legacy sink-based AgentTopKRefactored.
+// AgentTopKFilterPartition (new): unified agent for passes 1..num_passes-1 plus the
+// last-filter pass.
 //
 // Compile-time specialized on sink_mode; the kernel switches to the matching
-// instantiation based on Counter state. All classify / histogram work is inlined
-// into process_tile, scatter is delegated to BlockPartition (parameterized by
-// PartStrat) so Atomics / Staged / SharedMem flow the same way.
+// instantiation based on Counter state. Owns the tile loop with full/partial
+// dispatch (architecture §4.3); keys come in via a `multi_source_data_source` over
+// `(d_keys_in, in_key_buf)` selected at runtime by `load_from_original_input`. The
+// per-tile partition is delegated to `BlockPartitionV2` with strategy = `PartStrat`,
+// per-mode reserve ops, and a candidate callback that performs the histogram update
+// (architecture §10.2) inline.
 //---------------------------------------------------------------------
+
+// Identity transform helper used as the per-stream key/value transform op.
+struct topk_identity_transform_op
+{
+  template <typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE T operator()(const T& x) const
+  {
+    return x;
+  }
+};
+
+// No-op candidate callback used by `early_stop` (HasCandidates=false collapses the
+// candidate stream onto selected; the callback is statically guaranteed never to
+// fire, but the partition primitive still requires a callable).
+struct topk_noop_candidate_callback_op
+{
+  template <typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const T&) const
+  {}
+};
+
+// Histogram callback: increments the agent's smem histogram for every
+// `candidate`-classified key. Mirrors the legacy `process_tile`'s inline atomicAdd
+// per item; architecture §10.2 describes the same pattern as a callback.
+template <typename ExtractBinOpT, typename CounterT>
+struct topk_histogram_callback_op
+{
+  ExtractBinOpT extract_bin_op;
+  CounterT* smem_histogram;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE topk_histogram_callback_op(ExtractBinOpT eb, CounterT* hist)
+      : extract_bin_op(eb)
+      , smem_histogram(hist)
+  {}
+
+  template <typename KeyT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const KeyT& key) const
+  {
+    const int bucket = extract_bin_op(key);
+    atomicAdd(smem_histogram + bucket, CounterT{1});
+  }
+};
 
 template <typename AgentTopKPolicyT,
           typename KeyInputIteratorT,
@@ -871,54 +631,83 @@ struct agent_topk_filter_partition
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
   using flags             = sink_flags<Mode>;
-  using tile_loader_t     = BlockTileLoader<AgentTopKPolicyT, key_in_t, OffsetT>;
-  using value_loader_t    = BlockLoad<value_in_t, block_threads, items_per_thread, AgentTopKPolicyT::load_algorithm>;
   using prefix_sum_temp_t =
     BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
 
-  // Compile-time mode/strategy plumbing for the per-tile partition primitive.
-  // - selected_offset_t  : OutOffsetT for all modes (out_cnt / out_back_cnt are OutOffsetT*).
-  // - candidate_offset_t : OffsetT in `buffered` (filter_cnt is OffsetT*); OutOffsetT otherwise.
-  // - has_candidates     : true for modes that actually scatter a separate candidate stream.
-  // - has_cap            : true only for `last_filter` (back-of-output candidate cap).
-  // - effective_strat    : `unbuffered` skips scatter entirely; force Atomics so the buffer_t
-  //                        in the temp-storage union stays empty.
+  // Compile-time mode plumbing.
+  //   has_candidates  : true for modes that actually scatter a separate candidate stream.
+  //   selected_offset_t / candidate_offset_t: pointer types of the global counters.
+  //   effective_strat : `unbuffered` skips scatter entirely; force Atomics so the
+  //                     ScratchStorage in the temp-storage union stays small.
   static constexpr bool has_candidates = (Mode == sink_mode::buffered) || (Mode == sink_mode::last_filter);
-  static constexpr bool has_cap        = (Mode == sink_mode::last_filter);
   using selected_offset_t              = OutOffsetT;
   using candidate_offset_t             = ::cuda::std::conditional_t<Mode == sink_mode::buffered, OffsetT, OutOffsetT>;
   static constexpr BlockPartitionStrategy effective_strat =
     (Mode == sink_mode::unbuffered) ? BlockPartitionStrategy::Atomics : PartStrat;
-  // For `last_filter`, the candidate stream is written to the back of `d_keys_out` (and
-  // `d_values_out`); BlockPartition handles that via `WritesCandidatesToBack` so the
-  // candidate iterator stays the original raw pointer / iterator. This preserves the
-  // opportunity for vectorized cooperative stores (Q13) in the Staged/SharedMem flush.
-  static constexpr bool writes_candidates_to_back = (Mode == sink_mode::last_filter);
-  using partition_t                               = BlockPartition<key_in_t,
-                                     value_in_t,
-                                     selected_offset_t,
-                                     candidate_offset_t,
-                                     block_threads,
+  // Keys data source: multi_source over (d_keys_in source, in_key_buf source). The
+  // `d_keys_in` branch obeys the policy's `keys_tile_load_kind` (with generative
+  // downgrade via `tile_data_source_t` factory); `in_key_buf` is always a raw
+  // `key_in_t*` and uses the same configured kind.
+  using key_source_a_t =
+    tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+  using key_source_b_t =
+    tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+  using keys_source_t = multi_source_data_source<key_source_a_t, key_source_b_t, OffsetT>;
+
+  // Value channel: multi_source over (d_values_in, in_val_buf), each wrapped in
+  // `direct_data_source` per the plan. For keys-only the value channel tuple stays
+  // empty.
+  using val_source_a_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
+  using val_source_b_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+  using value_source_t = multi_source_data_source<val_source_a_t, val_source_b_t, OffsetT>;
+
+  // Per-stream value output iterator. For `last_filter` both selected and candidate
+  // values write to the same combined `d_values_out`; for `buffered` candidates go to
+  // `out_val_buf`; for `early_stop` (HasCandidates=false) the candidate path is
+  // statically elided.
+  using val_out_t = ValueOutputIteratorT;
+  // For `buffered` the candidate iterator is `value_in_t*` (the back-buffer); for the
+  // other modes it's `ValueOutputIteratorT`.
+  using cand_val_out_t =
+    ::cuda::std::conditional_t<Mode == sink_mode::buffered, value_in_t*, ValueOutputIteratorT>;
+
+  struct value_channel_t
+  {
+    using data_source_t = value_source_t;
+    using value_t       = value_in_t;
+
+    data_source_t data_source;
+    val_out_t selected_values_out;
+    cand_val_out_t candidate_values_out;
+    topk_identity_transform_op selected_value_transform;
+    topk_identity_transform_op candidate_value_transform;
+  };
+
+  using value_channels_tuple_t =
+    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_t>>;
+
+  using partition_t = BlockPartition<block_threads,
                                      items_per_thread,
                                      effective_strat,
-                                     has_candidates,
-                                     has_cap,
-                                     writes_candidates_to_back>;
-  using partition_buffer_t = typename partition_t::buffer_t;
+                                     key_in_t,
+                                     selected_offset_t,
+                                     candidate_offset_t,
+                                     value_channels_tuple_t>;
 
-  // Smem layout: tile loader, value loader, partition buffer, and prefix-sum scratch are
-  // mutually exclusive in time (one __syncthreads between phases) and share a single
-  // union. Histogram is independent and lives outside the union.
+  // Smem layout: histogram + keys-source persistent state in the persistent region;
+  // method-call scratch is a union of the keys-source scratch, prefix-sum scratch,
+  // and the partition's scratch.
   struct _TempStorage
   {
+    OffsetT histogram[num_buckets];
+    typename keys_source_t::TempStorage keys_source_state;
+
     union
     {
-      typename tile_loader_t::_TempStorage loader;
-      typename value_loader_t::TempStorage value_loader;
-      partition_buffer_t partition_buf;
+      typename keys_source_t::ScratchStorage keys_source_scratch;
       prefix_sum_temp_t prefix_sum;
-    };
-    OffsetT histogram[num_buckets];
+      typename partition_t::ScratchStorage partition_buf;
+    } scratch;
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -995,210 +784,205 @@ struct agent_topk_filter_partition
   {}
 
 private:
-  // Sequentially load the tile's values into registers from the active value channel
-  // (d_values_in for pass 1 / load_from_original_input, in_val_buf otherwise).
-  // Reuses the loader smem region (next phase will __syncthreads before partition).
-  _CCCL_DEVICE _CCCL_FORCEINLINE void load_values_for_tile(
-    OffsetT tile_base, OffsetT remaining, bool is_full_tile, value_in_t (&values)[items_per_thread])
+  // Build the value channel tuple (empty for keys-only). The tuple stores a single
+  // `value_channel_t`; the multi_source picks between `d_values_in` and `in_val_buf`
+  // based on `load_from_original_input`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channels()
   {
-    if (load_from_original_input)
+    if constexpr (keys_only)
     {
-      if (is_full_tile)
-      {
-        value_loader_t(storage.value_loader).Load(d_values_in + tile_base, values);
-      }
-      else
-      {
-        value_loader_t(storage.value_loader).Load(d_values_in + tile_base, values, remaining);
-      }
+      return ::cuda::std::tuple<>{};
     }
     else
     {
-      if (is_full_tile)
+      // direct_data_source has empty TempStorage; we hand it a stack-local sink.
+      typename val_source_a_t::TempStorage val_state_a{};
+      typename val_source_b_t::TempStorage val_state_b{};
+      val_source_a_t val_a{d_values_in, val_state_a};
+      val_source_b_t val_b{in_val_buf, val_state_b};
+      value_source_t val_src{val_a, val_b, /*pick_b=*/!load_from_original_input};
+
+      // For `buffered` the candidate iterator is the back-buffer raw pointer; for the
+      // other modes (early_stop / last_filter) it's the agent's `d_values_out`.
+      [[maybe_unused]] cand_val_out_t cand_out{};
+      if constexpr (Mode == sink_mode::buffered)
       {
-        value_loader_t(storage.value_loader).Load(in_val_buf + tile_base, values);
+        cand_out = out_val_buf;
       }
       else
       {
-        value_loader_t(storage.value_loader).Load(in_val_buf + tile_base, values, remaining);
+        cand_out = d_values_out;
       }
+      return ::cuda::std::tuple<value_channel_t>{value_channel_t{
+        val_src,
+        d_values_out,
+        cand_out,
+        topk_identity_transform_op{},
+        topk_identity_transform_op{}}};
     }
   }
 
-  // Mode-specific scatter via BlockPartition. Mode determines:
-  //   - which output iterator pair (selected / candidate) and
-  //   - which counter pair to atomically advance.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void do_partition(
-    const key_in_t (&keys)[items_per_thread],
-    const value_in_t (&values)[items_per_thread],
-    const candidate_class (&classes)[items_per_thread])
+  // Mode-specific partition call. Builds the per-mode reserve ops and dispatches to
+  // the matching `BlockPartitionV2::Partition()` overload.
+  template <bool IsFull>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  do_partition(const key_in_t (&keys)[items_per_thread], OffsetT num_items_in_tile, value_channels_tuple_t& channels)
   {
-    partition_t partition;
+    partition_t partition{};
+    topk_identity_transform_op key_transform{};
+
     if constexpr (Mode == sink_mode::early_stop)
     {
-      // HasCandidates=false: selected and candidate fold into d_keys_out / d_values_out
-      // through p_out_cnt; candidate counter is unused.
-      if constexpr (effective_strat == BlockPartitionStrategy::Staged)
+      // HasCandidates=false: selected and candidate fold into d_keys_out via
+      // p_out_cnt; the candidate-side machinery is statically elided.
+      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_out_cnt};
+      atomic_reserve_range_op<candidate_offset_t> reserve_cand{
+        reinterpret_cast<candidate_offset_t*>(p_out_cnt)}; // unused by partition when HasCandidates=false
+      topk_noop_candidate_callback_op cb{};
+      if constexpr (IsFull)
       {
-        partition.PartitionKeys(
-          storage.partition_buf,
+        partition.template Partition<false>(
+          storage.scratch.partition_buf,
           keys,
-          classes,
+          ::cuda::std::integral_constant<bool, false>{},
+          identify_candidates_op,
+          cb,
+          reserve_sel,
+          reserve_cand,
+          key_transform,
+          key_transform,
           d_keys_out,
           d_keys_out,
-          p_out_cnt,
-          static_cast<OutOffsetT*>(nullptr));
-        if constexpr (!keys_only)
-        {
-          partition.ScatterValues(storage.partition_buf, values, d_values_out, d_values_out);
-        }
+          channels);
       }
       else
       {
-        partition.PartitionPairs(
-          storage.partition_buf,
+        partition.template Partition<false>(
+          storage.scratch.partition_buf,
           keys,
-          values,
-          classes,
+          num_items_in_tile,
+          ::cuda::std::integral_constant<bool, false>{},
+          identify_candidates_op,
+          cb,
+          reserve_sel,
+          reserve_cand,
+          key_transform,
+          key_transform,
           d_keys_out,
           d_keys_out,
-          d_values_out,
-          d_values_out,
-          p_out_cnt,
-          static_cast<OutOffsetT*>(nullptr));
+          channels);
       }
     }
     else if constexpr (Mode == sink_mode::buffered)
     {
-      // selected -> d_keys_out / d_values_out via p_out_cnt;
-      // candidate -> out_key_buf / out_val_buf via p_filter_cnt; no cap.
-      if constexpr (effective_strat == BlockPartitionStrategy::Staged)
+      // selected -> d_keys_out via p_out_cnt; candidate -> out_key_buf via
+      // p_filter_cnt; histogram callback fires per candidate.
+      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_out_cnt};
+      atomic_reserve_range_op<candidate_offset_t> reserve_cand{p_filter_cnt};
+      topk_histogram_callback_op<ExtractBinOpT, OffsetT> cb{extract_bin_op, storage.histogram};
+      if constexpr (IsFull)
       {
-        partition.PartitionKeys(
-          storage.partition_buf, keys, classes, d_keys_out, out_key_buf, p_out_cnt, p_filter_cnt);
-        if constexpr (!keys_only)
-        {
-          partition.ScatterValues(storage.partition_buf, values, d_values_out, out_val_buf);
-        }
+        partition.template Partition<true>(
+          storage.scratch.partition_buf,
+          keys,
+          ::cuda::std::integral_constant<bool, true>{},
+          identify_candidates_op,
+          cb,
+          reserve_sel,
+          reserve_cand,
+          key_transform,
+          key_transform,
+          d_keys_out,
+          out_key_buf,
+          channels);
       }
       else
       {
-        partition.PartitionPairs(
-          storage.partition_buf,
+        partition.template Partition<true>(
+          storage.scratch.partition_buf,
           keys,
-          values,
-          classes,
+          num_items_in_tile,
+          ::cuda::std::integral_constant<bool, true>{},
+          identify_candidates_op,
+          cb,
+          reserve_sel,
+          reserve_cand,
+          key_transform,
+          key_transform,
           d_keys_out,
           out_key_buf,
-          d_values_out,
-          out_val_buf,
-          p_out_cnt,
-          p_filter_cnt);
+          channels);
       }
     }
     else // sink_mode::last_filter
     {
-      // selected -> d_keys_out front via p_out_cnt;
-      // candidate -> back of d_keys_out (and d_values_out) via BlockPartition's
-      // `WritesCandidatesToBack` mode, capped at num_of_kth_needed. The candidate
-      // iterators are the original `d_keys_out`/`d_values_out` so raw-pointer cases
-      // remain raw pointers all the way down to the BlockPartition flush loops.
-      const auto back_anchor = static_cast<candidate_offset_t>(k_total);
-      if constexpr (effective_strat == BlockPartitionStrategy::Staged)
+      // selected -> d_keys_out front via p_out_cnt; candidate -> back of d_keys_out
+      // via back_grow_capped reserve op (cap = num_of_kth_needed, anchor = k_total).
+      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_out_cnt};
+      back_grow_capped_reserve_op<candidate_offset_t> reserve_cand{
+        p_out_back_cnt,
+        static_cast<candidate_offset_t>(k_total),
+        static_cast<candidate_offset_t>(num_of_kth_needed)};
+      topk_noop_candidate_callback_op cb{}; // last_filter doesn't accumulate histogram
+      if constexpr (IsFull)
       {
-        partition.PartitionKeys(
-          storage.partition_buf,
+        partition.template Partition<true>(
+          storage.scratch.partition_buf,
           keys,
-          classes,
+          ::cuda::std::integral_constant<bool, true>{},
+          identify_candidates_op,
+          cb,
+          reserve_sel,
+          reserve_cand,
+          key_transform,
+          key_transform,
           d_keys_out,
           d_keys_out,
-          p_out_cnt,
-          p_out_back_cnt,
-          num_of_kth_needed,
-          back_anchor);
-        if constexpr (!keys_only)
-        {
-          partition.ScatterValues(storage.partition_buf, values, d_values_out, d_values_out);
-        }
+          channels);
       }
       else
       {
-        partition.PartitionPairs(
-          storage.partition_buf,
+        partition.template Partition<true>(
+          storage.scratch.partition_buf,
           keys,
-          values,
-          classes,
+          num_items_in_tile,
+          ::cuda::std::integral_constant<bool, true>{},
+          identify_candidates_op,
+          cb,
+          reserve_sel,
+          reserve_cand,
+          key_transform,
+          key_transform,
           d_keys_out,
           d_keys_out,
-          d_values_out,
-          d_values_out,
-          p_out_cnt,
-          p_out_back_cnt,
-          num_of_kth_needed,
-          back_anchor);
+          channels);
       }
     }
   }
 
-public:
-  // --- processor hook: one call per tile -----------------------------
-  // Steps (some elided per Mode via if constexpr):
-  //   1. Classify items -> classes[]; out-of-bounds entries forced to `rejected`.
-  //   2. Accumulate per-bucket histogram for `candidate` items.
-  //   3. (Only if writes_output) BlockLoad values from the active value channel.
-  //   4. (Only if writes_output) BlockPartition::PartitionPairs / ScatterValues.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(
-    const key_in_t (&items)[items_per_thread], OffsetT thread_offset, int num_thread_items)
+  // unbuffered mode: classify + per-bucket atomicAdd into smem histogram. No
+  // partition call (architecture §12 buffered/unbuffered table).
+  template <bool IsFull>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  do_histogram_only(const key_in_t (&items)[items_per_thread], int num_thread_items)
   {
-    candidate_class classes[items_per_thread];
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < items_per_thread; ++j)
     {
-      classes[j] =
-        (j < num_thread_items) ? identify_candidates_op(items[j]) : candidate_class::rejected;
-    }
-
-    if constexpr (flags::accumulate_histogram)
-    {
-      _CCCL_PRAGMA_UNROLL_FULL()
-      for (int j = 0; j < items_per_thread; ++j)
+      const bool is_valid = IsFull ? true : (j < num_thread_items);
+      if (is_valid)
       {
-        if (classes[j] == candidate_class::candidate)
+        const auto c = identify_candidates_op(items[j]);
+        if (c == candidate_class::candidate)
         {
           const int bucket = extract_bin_op(items[j]);
           atomicAdd(storage.histogram + bucket, OffsetT{1});
         }
       }
     }
-
-    if constexpr (!flags::writes_output)
-    {
-      // unbuffered: histogram only, nothing to scatter.
-      (void) thread_offset;
-      return;
-    }
-    else
-    {
-      [[maybe_unused]] value_in_t values[items_per_thread];
-      if constexpr (!keys_only)
-      {
-        const OffsetT tile_base = thread_offset - static_cast<OffsetT>(threadIdx.x) * items_per_thread;
-        const OffsetT remaining = input_length - tile_base;
-        const bool is_full_tile = remaining >= static_cast<OffsetT>(tile_items);
-
-        // Wait for all threads to be done with the keys load (loader smem) before
-        // overwriting it via the value loader.
-        __syncthreads();
-        load_values_for_tile(tile_base, remaining, is_full_tile, values);
-      }
-
-      // Wait for all threads to finish the value load before reusing the smem region
-      // for the partition buffer.
-      __syncthreads();
-      do_partition(items, values, classes);
-    }
   }
 
+public:
   // --- entry point ----------------------------------------------------
   template <typename CounterUpdateFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void run(
@@ -1214,9 +998,68 @@ public:
       __syncthreads();
     }
 
-    tile_loader_t loader(storage.loader, input_length);
-    const int channel_active = load_from_original_input ? 0 : 1;
-    loader.consume(*this, make_input_channel(channel_active, d_keys_in, in_key_buf), input_length);
+    // Construct keys data source (multi_source over d_keys_in / in_key_buf).
+    key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
+    key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
+    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/!load_from_original_input};
+
+    // Tile loop (architecture §4.3) with full / partial dispatch.
+    const OffsetT num_tiles =
+      ::cuda::ceil_div(input_length, static_cast<OffsetT>(tile_items));
+    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_tiles;
+         tile_id += static_cast<OffsetT>(gridDim.x))
+    {
+      const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
+      const OffsetT remaining = input_length - tile_base;
+      const bool is_full      = remaining >= static_cast<OffsetT>(tile_items);
+      const OffsetT valid     = is_full ? static_cast<OffsetT>(tile_items) : remaining;
+
+      keys_source.set_tile_base(tile_base);
+      // Build per-tile value channels (the inner direct_data_sources track the tile
+      // base via their own set_tile_base; we set it on the multi_source which cascades).
+      value_channels_tuple_t channels = make_value_channels();
+      if constexpr (!keys_only)
+      {
+        ::cuda::std::get<0>(channels).data_source.set_tile_base(tile_base);
+      }
+
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      if (is_full)
+      {
+        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
+        h.complete_load(items);
+        __syncthreads();
+        if constexpr (flags::writes_output)
+        {
+          do_partition</*IsFull=*/true>(items, valid, channels);
+        }
+        else
+        {
+          do_histogram_only</*IsFull=*/true>(items, items_per_thread);
+        }
+      }
+      else
+      {
+        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, valid);
+        h.complete_load(items);
+        __syncthreads();
+        const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+        const int num_thread_items =
+          (thread_offset >= input_length)
+            ? 0
+            : static_cast<int>(
+                (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), input_length - thread_offset));
+        if constexpr (flags::writes_output)
+        {
+          do_partition</*IsFull=*/false>(items, valid, channels);
+        }
+        else
+        {
+          do_histogram_only</*IsFull=*/false>(items, num_thread_items);
+        }
+      }
+    }
 
     if constexpr (flags::accumulate_histogram)
     {
@@ -1226,7 +1069,7 @@ public:
 
     if constexpr (flags::needs_finalize)
     {
-      finalize_pass(storage.prefix_sum,
+      finalize_pass(storage.scratch.prefix_sum,
                     storage.histogram,
                     counter,
                     global_histogram,
