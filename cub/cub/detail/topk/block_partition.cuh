@@ -450,74 +450,150 @@ private:
           : static_cast<int>((::cuda::std::min) (ItemsPerThread, num_items - tb_offset));
     }
 
-    // Step 1: classify items + fire candidate callback for `candidate`-classified items.
-    // OOB items (partial path) are forced to `rejected` so they're never scattered.
-    candidate_class classes[ItemsPerThread];
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < ItemsPerThread; ++j)
-    {
-      const bool is_valid =
-        IsFull ? true : (j < num_thread_items);
-      classes[j] = is_valid ? identify_candidates_op(keys[j]) : candidate_class::rejected;
-
-      if constexpr (HasCandidates)
-      {
-        // Architecture §10.2: callback fires for every `candidate`-classified item,
-        // including ones the candidate reserve op subsequently drops (cap clamp).
-        if (is_valid && classes[j] == candidate_class::candidate)
-        {
-          candidate_callback_op(keys[j]);
-        }
-      }
-      else
-      {
-        // HasCandidates == false: collapse `candidate` onto `selected`. The callback
-        // is statically guaranteed never to fire.
-        if (is_valid && classes[j] == candidate_class::candidate)
-        {
-          classes[j] = candidate_class::selected;
-        }
-      }
-    }
-
-    // Step 2: scatter. Strategy-specific; sub-brokers value-channel scratch out of
-    // the brokered ScratchStorage where applicable.
+    // The Atomics strategy doesn't need a materialized `classes[]` array; classify +
+    // callback + scatter can all happen inline per item. Skipping `classes[]` removes
+    // an `ItemsPerThread`-element register-resident buffer and lets the `keys[]` array
+    // die earlier in modes where `identify_candidates_op` is cheap (small key types
+    // with simple radix paths) -- which is where the new agent's register pressure
+    // hurts most. For the staged / shared-mem strategies the `classes[]` array is
+    // still useful (it's read multiple times during smem-scatter coordination), so
+    // they keep the precompute.
     if constexpr (Strategy == BlockPartitionStrategy::Atomics)
     {
-      partition_atomics<HasCandidates>(
+      partition_atomics_fused<IsFull, HasCandidates>(
         buffer,
         keys,
-        classes,
+        num_thread_items,
+        identify_candidates_op,
+        candidate_callback_op,
         reserve_selected,
         reserve_candidate,
         selected_key_transform,
         candidate_key_transform,
         selected_keys_out,
         candidate_keys_out,
-        value_channels,
-        num_items);
-    }
-    else if constexpr (Strategy == BlockPartitionStrategy::Staged)
-    {
-      partition_staged<IsFull, HasCandidates>(
-        buffer,
-        keys,
-        classes,
-        reserve_selected,
-        reserve_candidate,
-        selected_key_transform,
-        candidate_key_transform,
-        selected_keys_out,
-        candidate_keys_out,
-        value_channels,
-        num_items);
+        value_channels);
     }
     else
     {
-      partition_shared_mem<IsFull, HasCandidates>(
-        buffer,
+      // Step 1: classify items + fire candidate callback for `candidate`-classified items.
+      // OOB items (partial path) are forced to `rejected` so they're never scattered.
+      candidate_class classes[ItemsPerThread];
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
+      {
+        const bool is_valid =
+          IsFull ? true : (j < num_thread_items);
+        classes[j] = is_valid ? identify_candidates_op(keys[j]) : candidate_class::rejected;
+
+        if constexpr (HasCandidates)
+        {
+          // Architecture §10.2: callback fires for every `candidate`-classified item,
+          // including ones the candidate reserve op subsequently drops (cap clamp).
+          if (is_valid && classes[j] == candidate_class::candidate)
+          {
+            candidate_callback_op(keys[j]);
+          }
+        }
+        else
+        {
+          // HasCandidates == false: collapse `candidate` onto `selected`. The callback
+          // is statically guaranteed never to fire.
+          if (is_valid && classes[j] == candidate_class::candidate)
+          {
+            classes[j] = candidate_class::selected;
+          }
+        }
+      }
+
+      // Step 2: scatter (Atomics handled above via the fused path).
+      if constexpr (Strategy == BlockPartitionStrategy::Staged)
+      {
+        partition_staged<IsFull, HasCandidates>(
+          buffer,
+          keys,
+          classes,
+          reserve_selected,
+          reserve_candidate,
+          selected_key_transform,
+          candidate_key_transform,
+          selected_keys_out,
+          candidate_keys_out,
+          value_channels,
+          num_items);
+      }
+      else
+      {
+        partition_shared_mem<IsFull, HasCandidates>(
+          buffer,
+          keys,
+          classes,
+          reserve_selected,
+          reserve_candidate,
+          selected_key_transform,
+          candidate_key_transform,
+          selected_keys_out,
+          candidate_keys_out,
+          value_channels,
+          num_items);
+      }
+    }
+  }
+
+  // -----------------------------------------------------------------
+  // Atomics strategy (fused): classify + candidate-callback + scatter inline per item,
+  // without materializing a `classes[ItemsPerThread]` array. The per-item
+  // `candidate_class` is recomputed at the point of use via `identify_candidates_op`,
+  // which lets ptxas keep `keys[j]` live for fewer instructions and frees the
+  // registers that would otherwise hold `classes[]`. Used only for the Atomics
+  // strategy; staged / shared-mem still use the precomputed-classes path.
+  // -----------------------------------------------------------------
+  template <bool IsFull,
+            bool HasCandidates,
+            typename IdentifyCandidatesOp,
+            typename CandidateCallbackOp,
+            typename SelectedReserveOp,
+            typename CandidateReserveOp,
+            typename SelectedKeyOutTransformOp,
+            typename CandidateKeyOutTransformOp,
+            typename SelectedKeyOutIt,
+            typename CandidateKeyOutIt>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused(
+    ScratchStorage& /*buffer*/,
+    const KeyT (&keys)[ItemsPerThread],
+    int num_thread_items,
+    IdentifyCandidatesOp& identify_candidates_op,
+    CandidateCallbackOp& candidate_callback_op,
+    SelectedReserveOp& reserve_selected,
+    CandidateReserveOp& reserve_candidate,
+    SelectedKeyOutTransformOp& selected_key_transform,
+    CandidateKeyOutTransformOp& candidate_key_transform,
+    SelectedKeyOutIt selected_keys_out,
+    CandidateKeyOutIt candidate_keys_out,
+    ValueChannelsTuple& value_channels)
+  {
+    // Atomics strategy doesn't load value channels into smem -- it scatters each value
+    // as soon as it claims a global slot. Materialize the channel's values here via
+    // its data source; for `direct_data_source` the sub-brokered scratch is empty.
+    static_assert(num_value_channels <= 1,
+                  "atomics partition supports keys-only or single-value-channel "
+                  "today; multi-channel needs a per-channel value array.");
+
+    if constexpr (num_value_channels == 1)
+    {
+      auto& ch        = ::cuda::std::get<0>(value_channels);
+      using channel_t = ::cuda::std::remove_reference_t<decltype(ch)>;
+      using value_t   = typename channel_t::value_t;
+      typename channel_t::data_source_t::ScratchStorage chan_scratch{};
+      auto h = ch.data_source.submit_load(chan_scratch);
+      value_t values[ItemsPerThread]{};
+      h.complete_load(values);
+
+      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false>(
         keys,
-        classes,
+        num_thread_items,
+        identify_candidates_op,
+        candidate_callback_op,
         reserve_selected,
         reserve_candidate,
         selected_key_transform,
@@ -525,7 +601,145 @@ private:
         selected_keys_out,
         candidate_keys_out,
         value_channels,
-        num_items);
+        values);
+    }
+    else
+    {
+      int unused_dummy[1]{};
+      (void) unused_dummy;
+      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/true>(
+        keys,
+        num_thread_items,
+        identify_candidates_op,
+        candidate_callback_op,
+        reserve_selected,
+        reserve_candidate,
+        selected_key_transform,
+        candidate_key_transform,
+        selected_keys_out,
+        candidate_keys_out,
+        value_channels,
+        unused_dummy);
+    }
+  }
+
+  // Fused classify + callback + scatter loop. Mirrors `partition_atomics_scatter`'s
+  // two-branch structure (no per-item 3-way dispatch -> no compiler-emitted indirect
+  // branch table in `c[0x2]`), but computes the `candidate_class` inline at the point
+  // of use rather than reading from a precomputed `classes[]` array.
+  template <bool IsFull,
+            bool HasCandidates,
+            bool KeysOnly,
+            typename IdentifyCandidatesOp,
+            typename CandidateCallbackOp,
+            typename SelectedReserveOp,
+            typename CandidateReserveOp,
+            typename SelectedKeyOutTransformOp,
+            typename CandidateKeyOutTransformOp,
+            typename SelectedKeyOutIt,
+            typename CandidateKeyOutIt,
+            typename ValuesArr>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused_scatter(
+    const KeyT (&keys)[ItemsPerThread],
+    int num_thread_items,
+    IdentifyCandidatesOp& identify_candidates_op,
+    CandidateCallbackOp& candidate_callback_op,
+    SelectedReserveOp& reserve_selected,
+    CandidateReserveOp& reserve_candidate,
+    SelectedKeyOutTransformOp& selected_key_transform,
+    CandidateKeyOutTransformOp& candidate_key_transform,
+    SelectedKeyOutIt selected_keys_out,
+    CandidateKeyOutIt candidate_keys_out,
+    ValueChannelsTuple& value_channels,
+    ValuesArr& values)
+  {
+    if constexpr (HasCandidates)
+    {
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
+      {
+        const bool is_valid = IsFull ? true : (j < num_thread_items);
+        // Items past `num_thread_items` short-circuit to `rejected` so they're never
+        // scattered nor counted.
+        const candidate_class c =
+          is_valid ? identify_candidates_op(keys[j]) : candidate_class::rejected;
+
+        // Architecture §10.2: callback fires for every `candidate`-classified item,
+        // including ones the candidate reserve op subsequently drops (cap clamp).
+        if (c == candidate_class::candidate)
+        {
+          candidate_callback_op(keys[j]);
+        }
+
+        if (c == candidate_class::selected)
+        {
+          const auto r = reserve_selected(SelectedOffsetT{1});
+          bool granted = true;
+          if constexpr (SelectedReserveOp::may_grant_less)
+          {
+            granted = (r.second != SelectedOffsetT{0});
+          }
+          if (granted)
+          {
+            selected_keys_out[r.first] = selected_key_transform(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& ch                        = ::cuda::std::get<0>(value_channels);
+              ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
+            }
+          }
+        }
+        if (c == candidate_class::candidate)
+        {
+          const auto r = reserve_candidate(CandidateOffsetT{1});
+          bool granted = true;
+          if constexpr (CandidateReserveOp::may_grant_less)
+          {
+            granted = (r.second != CandidateOffsetT{0});
+          }
+          if (granted)
+          {
+            candidate_keys_out[r.first] = candidate_key_transform(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& ch                         = ::cuda::std::get<0>(value_channels);
+              ch.candidate_values_out[r.first] = ch.candidate_value_transform(values[j]);
+            }
+          }
+        }
+      }
+    }
+    else
+    {
+      // `!HasCandidates`: `candidate`-classified items collapse onto `selected`. A
+      // single `!= rejected` guard suffices; the callback is statically a no-op and
+      // doesn't fire.
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
+      {
+        const bool is_valid = IsFull ? true : (j < num_thread_items);
+        const candidate_class c =
+          is_valid ? identify_candidates_op(keys[j]) : candidate_class::rejected;
+
+        if (c != candidate_class::rejected)
+        {
+          const auto r = reserve_selected(SelectedOffsetT{1});
+          bool granted = true;
+          if constexpr (SelectedReserveOp::may_grant_less)
+          {
+            granted = (r.second != SelectedOffsetT{0});
+          }
+          if (granted)
+          {
+            selected_keys_out[r.first] = selected_key_transform(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& ch                        = ::cuda::std::get<0>(value_channels);
+              ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
+            }
+          }
+        }
+      }
     }
   }
 
