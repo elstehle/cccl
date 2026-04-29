@@ -622,50 +622,83 @@ private:
     ValueChannelsTuple& value_channels,
     ValuesArr& values)
   {
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < ItemsPerThread; ++j)
+    // The unrolled scatter is structured as two independent 2-way (do/skip) branches
+    // per item, gated on `HasCandidates` at compile time. Doing it this way (rather
+    // than a 3-way `rejected` / `selected` / `candidate` cascade with `continue`s)
+    // avoids ptxas materializing a per-item indirect-branch table in `c[0x2]` for the
+    // `candidate_class` enum dispatch -- which otherwise scales as
+    // `ItemsPerThread * 16 bytes` of compiler-private constant memory and pulls in an
+    // `LDC c[0x2] + BRX` per unrolled iteration. The per-item runtime work is the same
+    // (each non-rejected item still does exactly one atomic reserve + one scatter).
+    if constexpr (HasCandidates)
     {
-      if (classes[j] == candidate_class::rejected)
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
       {
-        continue;
-      }
-      const bool is_selected =
-        (!HasCandidates) || (classes[j] == candidate_class::selected);
-
-      if (is_selected)
-      {
-        const auto r = reserve_selected(SelectedOffsetT{1});
-        // `granted` is statically 1 for `atomic_reserve_range_op` (may_grant_less ==
-        // false); for general reserve ops we conservatively check.
-        if constexpr (SelectedReserveOp::may_grant_less)
+        if (classes[j] == candidate_class::selected)
         {
-          if (r.second == SelectedOffsetT{0})
+          const auto r = reserve_selected(SelectedOffsetT{1});
+          // `granted` is statically `true` for `atomic_reserve_range_op` (may_grant_less
+          // == false); for general reserve ops we conservatively check.
+          bool granted = true;
+          if constexpr (SelectedReserveOp::may_grant_less)
           {
-            continue;
+            granted = (r.second != SelectedOffsetT{0});
+          }
+          if (granted)
+          {
+            selected_keys_out[r.first] = selected_key_transform(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& ch                        = ::cuda::std::get<0>(value_channels);
+              ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
+            }
           }
         }
-        selected_keys_out[r.first] = selected_key_transform(keys[j]);
-        if constexpr (!KeysOnly)
+        if (classes[j] == candidate_class::candidate)
         {
-          auto& ch                 = ::cuda::std::get<0>(value_channels);
-          ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
-        }
-      }
-      else
-      {
-        const auto r = reserve_candidate(CandidateOffsetT{1});
-        if constexpr (CandidateReserveOp::may_grant_less)
-        {
-          if (r.second == CandidateOffsetT{0})
+          const auto r = reserve_candidate(CandidateOffsetT{1});
+          bool granted = true;
+          if constexpr (CandidateReserveOp::may_grant_less)
           {
-            continue;
+            granted = (r.second != CandidateOffsetT{0});
+          }
+          if (granted)
+          {
+            candidate_keys_out[r.first] = candidate_key_transform(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& ch                         = ::cuda::std::get<0>(value_channels);
+              ch.candidate_values_out[r.first] = ch.candidate_value_transform(values[j]);
+            }
           }
         }
-        candidate_keys_out[r.first] = candidate_key_transform(keys[j]);
-        if constexpr (!KeysOnly)
+      }
+    }
+    else
+    {
+      // `!HasCandidates`: the caller has already collapsed `candidate` onto `selected`
+      // in `classes[]`, so a single `!= rejected` guard suffices.
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
+      {
+        if (classes[j] != candidate_class::rejected)
         {
-          auto& ch                  = ::cuda::std::get<0>(value_channels);
-          ch.candidate_values_out[r.first] = ch.candidate_value_transform(values[j]);
+          const auto r = reserve_selected(SelectedOffsetT{1});
+          bool granted = true;
+          if constexpr (SelectedReserveOp::may_grant_less)
+          {
+            granted = (r.second != SelectedOffsetT{0});
+          }
+          if (granted)
+          {
+            selected_keys_out[r.first] = selected_key_transform(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& ch                        = ::cuda::std::get<0>(value_channels);
+              ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
+            }
+          }
         }
       }
     }
