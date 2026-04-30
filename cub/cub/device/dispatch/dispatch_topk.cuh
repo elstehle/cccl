@@ -27,6 +27,8 @@
 #include <cub/util_temporary_storage.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
+#include <cuda/__iterator/counting_iterator.h>
+#include <cuda/__iterator/transform_output_iterator.h>
 #include <cuda/std/__algorithm/max.h>
 #include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__host_stdlib/sstream>
@@ -38,6 +40,48 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
+
+// Gathers a value from the user's input iterator using an index. Used as the
+// function object for `cuda::transform_output_iterator` on the indexed value
+// path: the agent stores `OffsetT` indices in the candidate buffer and writes
+// them to the wrapped output iterator; the wrapper turns each `out[pos] = idx`
+// into `user_d_values_out[pos] = user_d_values_in[idx]`. Captures the user
+// input iterator by value so the wrapper stays trivially copyable for the
+// `_CCCL_GRID_CONSTANT` kernel-parameter slot.
+template <typename ValueInputIteratorT>
+struct topk_index_gather_op
+{
+  ValueInputIteratorT user_values_in;
+
+  template <typename IndexT>
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto operator()(IndexT index) const -> it_value_t<ValueInputIteratorT>
+  {
+    return user_values_in[index];
+  }
+};
+
+// Picks the value-channel iterator types passed to the kernels based on the
+// resolved `value_carrier_mode`. Specialized to avoid eagerly instantiating
+// `cuda::transform_output_iterator<topk_index_gather_op<...>, ...>` on the
+// non-indexed (or keys-only) path -- the non-indexed branch never names the
+// indexed-mode types, so they aren't required to be instantiable when the
+// dispatch's `indexed` flag is `false`.
+template <bool Indexed, typename ValueInputIteratorT, typename ValueOutputIteratorT, typename OffsetT>
+struct effective_value_iterators
+{
+  using in_t    = ValueInputIteratorT;
+  using out_t   = ValueOutputIteratorT;
+  using value_t = it_value_t<ValueInputIteratorT>;
+};
+
+template <typename ValueInputIteratorT, typename ValueOutputIteratorT, typename OffsetT>
+struct effective_value_iterators<true, ValueInputIteratorT, ValueOutputIteratorT, OffsetT>
+{
+  using in_t    = ::cuda::counting_iterator<OffsetT>;
+  using out_t   = ::cuda::transform_output_iterator<topk_index_gather_op<ValueInputIteratorT>, ValueOutputIteratorT>;
+  using value_t = OffsetT;
+};
+
 // Used in the bin ID calculation to exclude bits unrelated to the current pass
 template <typename T, int BitsPerPass>
 [[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr unsigned calc_mask(const int pass)
@@ -661,6 +705,29 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     using value_in_t                           = it_value_t<ValueInputIteratorT>;
     static constexpr bool keys_only            = ::cuda::std::is_same_v<value_in_t, NullType>;
 
+    // Resolve the value-channel carrier mode. The agent / kernels are iterator-
+    // agnostic; the only behavioral difference between `indexed` and
+    // `materialized` is which iterator types the kernels are instantiated with
+    // (and, transitively, the per-record size of the candidate back-buffer).
+    //
+    //   indexed      -- the value channel is rewired so the candidate buffer
+    //                   stores `OffsetT` indices; the value-output iterator is
+    //                   wrapped in a `cuda::transform_output_iterator` that
+    //                   gathers from the user's input iterator on each write
+    //                   (matches `main`'s behavior; the default).
+    //   materialized -- value channel uses the user's iterators directly; the
+    //                   candidate buffer holds full `value_in_t` records.
+    //
+    // Forced to `materialized` when keys_only so the existing keys-only path
+    // (which never instantiates the value channel) keeps all of its types
+    // pointing at the original `NullType*` iterators.
+    static constexpr bool indexed = !keys_only && active_policy.value_carrier == value_carrier_mode::indexed;
+    using effective_value_iterators_t =
+      effective_value_iterators<indexed, ValueInputIteratorT, ValueOutputIteratorT, OffsetT>;
+    using effective_value_in_t        = typename effective_value_iterators_t::value_t;
+    using effective_value_input_it_t  = typename effective_value_iterators_t::in_t;
+    using effective_value_output_it_t = typename effective_value_iterators_t::out_t;
+
     // atomicAdd does not implement overloads for all integer types, so we limit OffsetT to uint32_t or unsigned long
     // long
     static_assert(
@@ -694,6 +761,35 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     using common_offset_t = ::cuda::std::common_type_t<OffsetT, OutOffsetT>;
     k = static_cast<OutOffsetT>((::cuda::std::min) (common_offset_t{k}, static_cast<common_offset_t>(num_items)));
 
+    // Construct the effective value-channel iterators. On the indexed path
+    // these wrap the user's iterators so the kernels see a generative
+    // `counting_iterator<OffsetT>` for input and a
+    // `transform_output_iterator{d_values_out, topk_index_gather_op{d_values_in}}`
+    // for output -- the wrapper turns every `out[pos] = idx` the agent issues
+    // into `d_values_out[pos] = d_values_in[idx]`. On the materialized /
+    // keys-only paths the lambdas return the user iterators unchanged.
+    auto effective_d_values_in = [&]() -> effective_value_input_it_t {
+      if constexpr (indexed)
+      {
+        return effective_value_input_it_t{OffsetT{0}};
+      }
+      else
+      {
+        return d_values_in;
+      }
+    }();
+    auto effective_d_values_out = [&]() -> effective_value_output_it_t {
+      if constexpr (indexed)
+      {
+        using gather_op_t = topk_index_gather_op<ValueInputIteratorT>;
+        return effective_value_output_it_t{d_values_out, gather_op_t{d_values_in}};
+      }
+      else
+      {
+        return d_values_out;
+      }
+    }();
+
     // Specify temporary storage allocation requirements
     using counter_t             = Counter<key_in_t, OffsetT, OutOffsetT>;
     const size_t size_counter   = sizeof(counter_t);
@@ -709,8 +805,11 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       candidate_buffer_length * sizeof(key_in_t)};
     if constexpr (!keys_only)
     {
-      allocation_sizes[4] = candidate_buffer_length * sizeof(value_in_t);
-      allocation_sizes[5] = candidate_buffer_length * sizeof(value_in_t);
+      // `effective_value_in_t` is `OffsetT` on the indexed path and the user's
+      // value type on the materialized path -- shrinking the candidate buffer
+      // when values are wider than offsets is the whole point of indexed mode.
+      allocation_sizes[4] = candidate_buffer_length * sizeof(effective_value_in_t);
+      allocation_sizes[5] = candidate_buffer_length * sizeof(effective_value_in_t);
     }
 
     // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
@@ -745,12 +844,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       DeviceTopKFilterKernel<PolicySelector,
                              KeyInputIteratorT,
                              KeyOutputIteratorT,
-                             ValueInputIteratorT,
-                             ValueOutputIteratorT,
+                             effective_value_input_it_t,
+                             effective_value_output_it_t,
                              OffsetT,
                              OutOffsetT,
                              key_in_t,
-                             value_in_t,
+                             effective_value_in_t,
                              extract_bin_op,
                              identify_candidates_op>;
 
@@ -815,11 +914,11 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     // Passes 1..num_passes-1: fused filter + histogram kernel
     // Current() = input buffer (read), Alternate() = output buffer (write)
     DoubleBuffer<key_in_t> key_bufs(static_cast<key_in_t*>(allocations[3]), static_cast<key_in_t*>(allocations[2]));
-    DoubleBuffer<value_in_t> val_bufs;
+    DoubleBuffer<effective_value_in_t> val_bufs;
     if constexpr (!keys_only)
     {
-      val_bufs =
-        DoubleBuffer<value_in_t>(static_cast<value_in_t*>(allocations[5]), static_cast<value_in_t*>(allocations[4]));
+      val_bufs = DoubleBuffer<effective_value_in_t>(static_cast<effective_value_in_t*>(allocations[5]),
+                                                    static_cast<effective_value_in_t*>(allocations[4]));
     }
 
     int pass = 1;
@@ -833,8 +932,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
               .doit(topk_kernel,
                     d_keys_in,
                     d_keys_out,
-                    d_values_in,
-                    d_values_out,
+                    effective_d_values_in,
+                    effective_d_values_out,
                     key_bufs.Current(),
                     val_bufs.Current(),
                     key_bufs.Alternate(),
@@ -866,12 +965,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       DeviceTopKLastFilterKernel<PolicySelector,
                                  KeyInputIteratorT,
                                  KeyOutputIteratorT,
-                                 ValueInputIteratorT,
-                                 ValueOutputIteratorT,
+                                 effective_value_input_it_t,
+                                 effective_value_output_it_t,
                                  OffsetT,
                                  OutOffsetT,
                                  key_in_t,
-                                 value_in_t,
+                                 effective_value_in_t,
                                  identify_candidates_op>;
 
     int last_filter_kernel_blocks_per_sm = 0;
@@ -887,8 +986,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
             .doit(last_filter_kernel,
                   d_keys_in,
                   d_keys_out,
-                  d_values_in,
-                  d_values_out,
+                  effective_d_values_in,
+                  effective_d_values_out,
                   key_bufs.Current(),
                   val_bufs.Current(),
                   counter,
