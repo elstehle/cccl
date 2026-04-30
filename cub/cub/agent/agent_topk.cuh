@@ -617,7 +617,8 @@ template <typename AgentTopKPolicyT,
           typename OffsetT,
           typename OutOffsetT,
           sink_mode Mode,
-          BlockPartitionStrategy PartStrat = BlockPartitionStrategy::Atomics>
+          BlockPartitionStrategy PartStrat       = BlockPartitionStrategy::Atomics,
+          BlockPartitionClassifyMode ClassifyMode = BlockPartitionClassifyMode::precomputed>
 struct agent_topk_filter_partition
 {
   using key_in_t   = it_value_t<KeyInputIteratorT>;
@@ -644,6 +645,13 @@ struct agent_topk_filter_partition
   using candidate_offset_t             = ::cuda::std::conditional_t<Mode == sink_mode::buffered, OffsetT, OutOffsetT>;
   static constexpr BlockPartitionStrategy effective_strat =
     (Mode == sink_mode::unbuffered) ? BlockPartitionStrategy::Atomics : PartStrat;
+  // The `inlined` classify mode is only valid with the Atomics scatter strategy. When
+  // the agent is forced onto a different strategy (Staged / SharedMem), silently fall
+  // back to `precomputed` so the agent type still instantiates cleanly.
+  static constexpr BlockPartitionClassifyMode effective_classify =
+    (effective_strat == BlockPartitionStrategy::Atomics)
+      ? ClassifyMode
+      : BlockPartitionClassifyMode::precomputed;
   // Keys data source: multi_source over (d_keys_in source, in_key_buf source). The
   // `d_keys_in` branch obeys the policy's `keys_tile_load_kind` (with generative
   // downgrade via `tile_data_source_t` factory); `in_key_buf` is always a raw
@@ -692,7 +700,8 @@ struct agent_topk_filter_partition
                                      key_in_t,
                                      selected_offset_t,
                                      candidate_offset_t,
-                                     value_channels_tuple_t>;
+                                     value_channels_tuple_t,
+                                     effective_classify>;
 
   // Smem layout: histogram + keys-source persistent state in the persistent region;
   // method-call scratch is a union of the keys-source scratch, prefix-sum scratch,

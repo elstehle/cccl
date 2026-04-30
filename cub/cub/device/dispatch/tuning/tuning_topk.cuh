@@ -73,13 +73,20 @@ struct topk_policy
   // Defaults to the equivalent of `load_algorithm` so per-arch tunings expressed in
   // terms of the legacy enum preserve their behavior without explicit migration.
   tile_load_kind keys_tile_load_kind = block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE);
+  // Selects how `BlockPartition` materializes the per-item classification: either
+  // precompute a `classes[ItemsPerThread]` array up front (smaller code, +1 register
+  // pass over the keys), or recompute it inline at each scatter use-site (frees the
+  // array's registers; pays for one extra `identify_candidates_op` evaluation per
+  // item). `inlined` is only honored when `partition_strategy` is `Atomics`. Placed
+  // last so existing positional initializers (which omit it) keep working.
+  BlockPartitionClassifyMode classify_mode = BlockPartitionClassifyMode::precomputed;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.load_algorithm == rhs.load_algorithm
         && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
-        && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind;
+        && lhs.classify_mode == rhs.classify_mode && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -94,6 +101,7 @@ struct topk_policy
               << ", .items_per_thread = " << p.items_per_thread << ", .bits_per_pass = " << p.bits_per_pass
               << ", .load_algorithm = " << p.load_algorithm << ", .scan_algorithm = " << p.scan_algorithm
               << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
+              << ", .classify_mode = " << static_cast<int>(p.classify_mode)
               << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind) << " }";
   }
 #endif // _CCCL_HOSTED()
