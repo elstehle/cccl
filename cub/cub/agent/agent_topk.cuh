@@ -706,7 +706,19 @@ struct agent_topk_filter_partition
   // Smem layout: histogram + keys-source persistent state in the persistent region;
   // method-call scratch is a union of the keys-source scratch, prefix-sum scratch,
   // and the partition's scratch.
-  struct _TempStorage
+  //
+  // The `histogram[num_buckets]` array and the `prefix_sum` scratch are only needed
+  // when the mode either accumulates a histogram or runs the post-pass `finalize_pass`
+  // (which scans the histogram and broadcasts the kth-key bits). The `last_filter`
+  // mode does neither, so its `_TempStorage` drops both members. For an 11-bit pass
+  // with `OffsetT = u64` this is a 16 KiB savings on the persistent histogram (plus
+  // whatever space `prefix_sum` would have demanded inside the scratch union); for
+  // the unsigned char (8-bit pass) case the savings are 1-2 KiB. Either way it
+  // restores the historical zero-smem footprint of the dedicated last-filter kernel
+  // and avoids the smem-driven occupancy cliff.
+  static constexpr bool needs_histogram = flags::accumulate_histogram || flags::needs_finalize;
+
+  struct _TempStorage_with_histogram
   {
     OffsetT histogram[num_buckets];
     typename keys_source_t::TempStorage keys_source_state;
@@ -718,6 +730,20 @@ struct agent_topk_filter_partition
       typename partition_t::ScratchStorage partition_buf;
     } scratch;
   };
+
+  struct _TempStorage_no_histogram
+  {
+    typename keys_source_t::TempStorage keys_source_state;
+
+    union
+    {
+      typename keys_source_t::ScratchStorage keys_source_scratch;
+      typename partition_t::ScratchStorage partition_buf;
+    } scratch;
+  };
+
+  using _TempStorage =
+    ::cuda::std::conditional_t<needs_histogram, _TempStorage_with_histogram, _TempStorage_no_histogram>;
 
   struct TempStorage : Uninitialized<_TempStorage>
   {};
