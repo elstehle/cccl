@@ -48,6 +48,23 @@ _CCCL_HOST_DEVICE_API constexpr int calc_bits_per_pass()
   return calc_bits_per_pass(int{sizeof(KeyT)});
 }
 
+// Selects how the top-k value channel propagates through the candidate buffer.
+//   indexed      -- candidate buffer stores `OffsetT` indices; values are
+//                   gathered from the user's input iterator at write time
+//                   (matches `main`'s behavior; default).
+//   materialized -- candidate buffer stores full `value_in_t` records.
+// Ignored entirely on the keys-only path. The choice is implemented purely as
+// dispatch-side iterator rewiring: in `indexed` mode the agent receives a
+// `cuda::counting_iterator<OffsetT>` for the value input and a
+// `cuda::transform_output_iterator` for the value output, so the agent itself
+// remains unaware of the mode. Lives in this header alongside `tile_load_kind`
+// so the tuning policy can store it without pulling in `agent_topk.cuh`.
+enum class value_carrier_mode
+{
+  indexed,
+  materialized,
+};
+
 // Map a `BlockLoadAlgorithm` enum value to the equivalent `tile_load_kind` value, so
 // per-arch defaults expressed in terms of `BlockLoadAlgorithm` (the legacy convention)
 // preserve the same load behavior under the unified `tile_load_kind` knob.
@@ -80,13 +97,20 @@ struct topk_policy
   // item). `inlined` is only honored when `partition_strategy` is `Atomics`. Placed
   // last so existing positional initializers (which omit it) keep working.
   BlockPartitionClassifyMode classify_mode = BlockPartitionClassifyMode::precomputed;
+  // Selects how the value channel propagates through the candidate buffer.
+  // Defaults to `indexed` (matches `main`; restores pairs perf for wide value
+  // types). `materialized` is the alternative for tuning overrides. Ignored on
+  // the keys-only path. Placed last so existing positional initializers (which
+  // omit it) keep working.
+  value_carrier_mode value_carrier = value_carrier_mode::indexed;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.load_algorithm == rhs.load_algorithm
         && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
-        && lhs.classify_mode == rhs.classify_mode && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind;
+        && lhs.classify_mode == rhs.classify_mode && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
+        && lhs.value_carrier == rhs.value_carrier;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -102,7 +126,8 @@ struct topk_policy
               << ", .load_algorithm = " << p.load_algorithm << ", .scan_algorithm = " << p.scan_algorithm
               << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
               << ", .classify_mode = " << static_cast<int>(p.classify_mode)
-              << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind) << " }";
+              << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
+              << ", .value_carrier = " << static_cast<int>(p.value_carrier) << " }";
   }
 #endif // _CCCL_HOSTED()
 };
