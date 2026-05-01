@@ -453,7 +453,16 @@ public:
 
   // Full-tile overload: no per-item bound check inside the classify loop; each
   // value-channel data source is invoked with the no-arg submit_load.
+  //
+  // `LazyValueLoad` (default `false`) controls whether the per-thread
+  // `values[ItemsPerThread]` register array is populated up front via the value
+  // channel's `data_source.complete_load(...)` (eager) or skipped, with the
+  // scatter loop calling `data_source.gather_one(j)` only for non-rejected
+  // items (lazy). Lazy mimics `main`'s legacy "only fetch values that survive"
+  // behavior; eager is the current branch's default. Only honored on the
+  // Atomics strategy with at most one value channel.
   template <bool HasCandidates,
+            bool LazyValueLoad = false,
             typename IdentifyCandidatesOp,
             typename CandidateCallbackOp,
             typename SelectedReserveOp,
@@ -476,7 +485,7 @@ public:
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelsTuple& value_channels)
   {
-    partition_impl<true, HasCandidates>(
+    partition_impl<true, HasCandidates, LazyValueLoad>(
       buffer,
       keys,
       /*num_items=*/tile_items,
@@ -493,7 +502,9 @@ public:
 
   // Partial-tile overload: classify loop bound-checks against num_items; each
   // value-channel data source is invoked with the (scratch, num_items) submit_load.
+  // See the full-tile overload for `LazyValueLoad` semantics.
   template <bool HasCandidates,
+            bool LazyValueLoad = false,
             typename NumItemsT,
             typename IdentifyCandidatesOp,
             typename CandidateCallbackOp,
@@ -518,7 +529,7 @@ public:
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelsTuple& value_channels)
   {
-    partition_impl<false, HasCandidates>(
+    partition_impl<false, HasCandidates, LazyValueLoad>(
       buffer,
       keys,
       static_cast<int>(num_items),
@@ -537,8 +548,11 @@ private:
   // Shared body for both overloads. `IsFull` is the compile-time switch that elides
   // the per-item classify-loop bound check on the hot full-tile path. `num_items` is
   // the runtime per-tile valid count (only used when `IsFull == false`).
+  // `LazyValueLoad` propagates from the public `Partition` overloads into
+  // `partition_atomics_fused`; ignored by the Staged / SharedMem strategies.
   template <bool IsFull,
             bool HasCandidates,
+            bool LazyValueLoad,
             typename IdentifyCandidatesOp,
             typename CandidateCallbackOp,
             typename SelectedReserveOp,
@@ -589,7 +603,7 @@ private:
       if constexpr (ClassifyMode == BlockPartitionClassifyMode::inlined)
       {
         auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_candidates_op, num_thread_items);
-        partition_atomics_fused<IsFull, HasCandidates>(
+        partition_atomics_fused<IsFull, HasCandidates, LazyValueLoad>(
           buffer,
           keys,
           num_thread_items,
@@ -608,7 +622,7 @@ private:
         bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull, HasCandidates> classifier{
           keys, num_thread_items, identify_candidates_op, candidate_callback_op};
         bp_detail::noop_callback_op noop_cb{};
-        partition_atomics_fused<IsFull, HasCandidates>(
+        partition_atomics_fused<IsFull, HasCandidates, LazyValueLoad>(
           buffer,
           keys,
           num_thread_items,
@@ -700,6 +714,7 @@ private:
   // -----------------------------------------------------------------
   template <bool IsFull,
             bool HasCandidates,
+            bool LazyValueLoad,
             typename Classifier,
             typename CandidateCallbackOp,
             typename SelectedReserveOp,
@@ -723,41 +738,68 @@ private:
     ValueChannelsTuple& value_channels)
   {
     // Atomics strategy doesn't load value channels into smem -- it scatters each value
-    // as soon as it claims a global slot. Materialize the channel's values here via
-    // its data source; for `direct_data_source` the sub-brokered scratch is empty.
+    // as soon as it claims a global slot. With `LazyValueLoad == false` (default) we
+    // materialize the channel's values here via its data source (eager `complete_load`
+    // into a per-thread `values[ItemsPerThread]` array). With `LazyValueLoad == true`
+    // we skip the upfront load entirely and the scatter loop calls
+    // `data_source.gather_one(j)` for each non-rejected item -- restores `main`'s
+    // legacy "only fetch values that survive the filter" behavior.
     static_assert(num_value_channels <= 1,
                   "atomics partition supports keys-only or single-value-channel "
                   "today; multi-channel needs a per-channel value array.");
 
     if constexpr (num_value_channels == 1)
     {
-      auto& ch        = ::cuda::std::get<0>(value_channels);
-      using channel_t = ::cuda::std::remove_reference_t<decltype(ch)>;
-      using value_t   = typename channel_t::value_t;
-      typename channel_t::data_source_t::ScratchStorage chan_scratch{};
-      auto h = ch.data_source.submit_load(chan_scratch);
-      value_t values[ItemsPerThread]{};
-      h.complete_load(values);
+      if constexpr (LazyValueLoad)
+      {
+        // Lazy: skip the upfront load. The scatter pulls each surviving value via
+        // `ch.data_source.gather_one(j)` directly. We pass an unused sentinel array
+        // to satisfy the scatter's signature; it's not read on the lazy path.
+        int unused_values[1]{};
+        partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false, /*Lazy=*/true>(
+          keys,
+          num_thread_items,
+          classifier,
+          candidate_callback_op,
+          reserve_selected,
+          reserve_candidate,
+          selected_key_transform,
+          candidate_key_transform,
+          selected_keys_out,
+          candidate_keys_out,
+          value_channels,
+          unused_values);
+      }
+      else
+      {
+        auto& ch        = ::cuda::std::get<0>(value_channels);
+        using channel_t = ::cuda::std::remove_reference_t<decltype(ch)>;
+        using value_t   = typename channel_t::value_t;
+        typename channel_t::data_source_t::ScratchStorage chan_scratch{};
+        auto h = ch.data_source.submit_load(chan_scratch);
+        value_t values[ItemsPerThread]{};
+        h.complete_load(values);
 
-      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false>(
-        keys,
-        num_thread_items,
-        classifier,
-        candidate_callback_op,
-        reserve_selected,
-        reserve_candidate,
-        selected_key_transform,
-        candidate_key_transform,
-        selected_keys_out,
-        candidate_keys_out,
-        value_channels,
-        values);
+        partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false, /*Lazy=*/false>(
+          keys,
+          num_thread_items,
+          classifier,
+          candidate_callback_op,
+          reserve_selected,
+          reserve_candidate,
+          selected_key_transform,
+          candidate_key_transform,
+          selected_keys_out,
+          candidate_keys_out,
+          value_channels,
+          values);
+      }
     }
     else
     {
       int unused_dummy[1]{};
       (void) unused_dummy;
-      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/true>(
+      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/true, /*Lazy=*/false>(
         keys,
         num_thread_items,
         classifier,
@@ -791,6 +833,7 @@ private:
   template <bool IsFull,
             bool HasCandidates,
             bool KeysOnly,
+            bool LazyValueLoad,
             typename Classifier,
             typename CandidateCallbackOp,
             typename SelectedReserveOp,
@@ -814,6 +857,22 @@ private:
     ValueChannelsTuple& value_channels,
     ValuesArr& values)
   {
+    // Helper: fetch the per-item value either from the pre-loaded register array
+    // (`LazyValueLoad == false`) or via on-demand single-item gather through the
+    // value channel's data source (`LazyValueLoad == true`). For keys-only paths
+    // the helper is never called (statically guarded).
+    auto get_value = [&](int j) {
+      if constexpr (LazyValueLoad)
+      {
+        auto& ch = ::cuda::std::get<0>(value_channels);
+        return ch.data_source.gather_one(j);
+      }
+      else
+      {
+        return values[j];
+      }
+    };
+
     if constexpr (HasCandidates)
     {
       _CCCL_PRAGMA_UNROLL_FULL()
@@ -845,7 +904,7 @@ private:
             if constexpr (!KeysOnly)
             {
               auto& ch                        = ::cuda::std::get<0>(value_channels);
-              ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
+              ch.selected_values_out[r.first] = ch.selected_value_transform(get_value(j));
             }
           }
         }
@@ -863,7 +922,7 @@ private:
             if constexpr (!KeysOnly)
             {
               auto& ch                         = ::cuda::std::get<0>(value_channels);
-              ch.candidate_values_out[r.first] = ch.candidate_value_transform(values[j]);
+              ch.candidate_values_out[r.first] = ch.candidate_value_transform(get_value(j));
             }
           }
         }
@@ -893,7 +952,7 @@ private:
             if constexpr (!KeysOnly)
             {
               auto& ch                        = ::cuda::std::get<0>(value_channels);
-              ch.selected_values_out[r.first] = ch.selected_value_transform(values[j]);
+              ch.selected_values_out[r.first] = ch.selected_value_transform(get_value(j));
             }
           }
         }

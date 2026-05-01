@@ -96,13 +96,21 @@ struct topk_policy
   // array's registers; pays for one extra `identify_candidates_op` evaluation per
   // item). `inlined` is only honored when `partition_strategy` is `Atomics`. Placed
   // last so existing positional initializers (which omit it) keep working.
-  BlockPartitionClassifyMode classify_mode = BlockPartitionClassifyMode::precomputed;
+  BlockPartitionClassifyMode classify_mode = BlockPartitionClassifyMode::inlined;
   // Selects how the value channel propagates through the candidate buffer.
   // Defaults to `indexed` (matches `main`; restores pairs perf for wide value
   // types). `materialized` is the alternative for tuning overrides. Ignored on
   // the keys-only path. Placed last so existing positional initializers (which
   // omit it) keep working.
   value_carrier_mode value_carrier = value_carrier_mode::indexed;
+  // Experimental: when `true`, the per-tile value-channel `complete_load` is
+  // skipped and the partition's scatter loop pulls each surviving value via a
+  // single-item `gather_one(j)` from the value channel's data source. Mimics
+  // `main`'s legacy "only fetch values that survive the filter" behavior at
+  // the cost of less coalesced per-output gathers. Defaults to `false`
+  // (current branch's eager-load behavior). Forced off for keys-only and for
+  // non-Atomics partition strategies.
+  bool lazy_value_load = false;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
@@ -110,7 +118,7 @@ struct topk_policy
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.load_algorithm == rhs.load_algorithm
         && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
         && lhs.classify_mode == rhs.classify_mode && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
-        && lhs.value_carrier == rhs.value_carrier;
+        && lhs.value_carrier == rhs.value_carrier && lhs.lazy_value_load == rhs.lazy_value_load;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -127,7 +135,8 @@ struct topk_policy
               << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
               << ", .classify_mode = " << static_cast<int>(p.classify_mode)
               << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
-              << ", .value_carrier = " << static_cast<int>(p.value_carrier) << " }";
+              << ", .value_carrier = " << static_cast<int>(p.value_carrier)
+              << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
   }
 #endif // _CCCL_HOSTED()
 };

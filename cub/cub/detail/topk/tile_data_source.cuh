@@ -330,6 +330,21 @@ public:
     return partial_load_handle{it_ + tile_base_, num_items};
   }
 
+  // On-demand single-item gather. Used by the lazy value-load path in
+  // `BlockPartition::partition_atomics_fused_scatter`: instead of loading the
+  // full per-thread `values[ItemsPerThread]` array up front, the scatter loop
+  // calls this for each non-rejected item, fetching only the values that will
+  // actually be written. Mirrors the access pattern of `full_load_handle`
+  // (BLOCKED layout): thread `t` owns items `[t*IPT, (t+1)*IPT)` of the tile.
+  // The caller is responsible for not gathering past `num_thread_items` on
+  // partial tiles -- the partition primitive enforces this by classifying
+  // out-of-range items as `rejected`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
+  {
+    const OffsetT idx = tile_base_ + static_cast<OffsetT>(threadIdx.x) * ItemsPerThread + item_idx;
+    return it_[idx];
+  }
+
 private:
   InputIt it_;
   OffsetT tile_base_{};
@@ -601,6 +616,14 @@ public:
       return partial_load_handle{{}, b_.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s), num_items), true};
     }
     return partial_load_handle{a_.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s), num_items), {}, false};
+  }
+
+  // On-demand single-item gather. Dispatches to whichever underlying source is
+  // active (`pick_b_` is set once at construction, so the branch is constant
+  // within a kernel launch and ptxas eliminates the dead arm).
+  _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
+  {
+    return pick_b_ ? b_.gather_one(item_idx) : a_.gather_one(item_idx);
   }
 
 private:

@@ -617,8 +617,15 @@ template <typename AgentTopKPolicyT,
           typename OffsetT,
           typename OutOffsetT,
           sink_mode Mode,
-          BlockPartitionStrategy PartStrat       = BlockPartitionStrategy::Atomics,
-          BlockPartitionClassifyMode ClassifyMode = BlockPartitionClassifyMode::precomputed>
+          BlockPartitionStrategy PartStrat        = BlockPartitionStrategy::Atomics,
+          BlockPartitionClassifyMode ClassifyMode = BlockPartitionClassifyMode::precomputed,
+          // Experimental: when `true`, the per-tile `values[ItemsPerThread]`
+          // register array is NOT pre-loaded; the partition's scatter loop
+          // instead pulls each surviving value via the value channel's
+          // `data_source.gather_one(j)`. Mimics `main`'s legacy "only fetch
+          // values that survive the filter" behavior. Defaults to `false`
+          // (current branch's eager-load behavior). Forced off for keys-only.
+          bool LazyValueLoad = false>
 struct agent_topk_filter_partition
 {
   using key_in_t   = it_value_t<KeyInputIteratorT>;
@@ -652,6 +659,12 @@ struct agent_topk_filter_partition
     (effective_strat == BlockPartitionStrategy::Atomics)
       ? ClassifyMode
       : BlockPartitionClassifyMode::precomputed;
+  // Lazy value-load only makes sense on the Atomics path (the smem-coordinating
+  // strategies precompute everything cooperatively) and only when there is
+  // actually a value channel to load lazily. Forced off otherwise so the agent
+  // template still instantiates cleanly across all configurations.
+  static constexpr bool effective_lazy_value_load =
+    LazyValueLoad && !keys_only && (effective_strat == BlockPartitionStrategy::Atomics);
   // Keys data source: multi_source over (d_keys_in source, in_key_buf source). The
   // `d_keys_in` branch obeys the policy's `keys_tile_load_kind` (with generative
   // downgrade via `tile_data_source_t` factory); `in_key_buf` is always a raw
@@ -876,7 +889,7 @@ private:
       topk_noop_candidate_callback_op cb{};
       if constexpr (IsFull)
       {
-        partition.template Partition<false>(
+        partition.template Partition<false, effective_lazy_value_load>(
           storage.scratch.partition_buf,
           keys,
           ::cuda::std::integral_constant<bool, false>{},
@@ -892,7 +905,7 @@ private:
       }
       else
       {
-        partition.template Partition<false>(
+        partition.template Partition<false, effective_lazy_value_load>(
           storage.scratch.partition_buf,
           keys,
           num_items_in_tile,
@@ -917,7 +930,7 @@ private:
       topk_histogram_callback_op<ExtractBinOpT, OffsetT> cb{extract_bin_op, storage.histogram};
       if constexpr (IsFull)
       {
-        partition.template Partition<true>(
+        partition.template Partition<true, effective_lazy_value_load>(
           storage.scratch.partition_buf,
           keys,
           ::cuda::std::integral_constant<bool, true>{},
@@ -933,7 +946,7 @@ private:
       }
       else
       {
-        partition.template Partition<true>(
+        partition.template Partition<true, effective_lazy_value_load>(
           storage.scratch.partition_buf,
           keys,
           num_items_in_tile,
@@ -961,7 +974,7 @@ private:
       topk_noop_candidate_callback_op cb{}; // last_filter doesn't accumulate histogram
       if constexpr (IsFull)
       {
-        partition.template Partition<true>(
+        partition.template Partition<true, effective_lazy_value_load>(
           storage.scratch.partition_buf,
           keys,
           ::cuda::std::integral_constant<bool, true>{},
@@ -977,7 +990,7 @@ private:
       }
       else
       {
-        partition.template Partition<true>(
+        partition.template Partition<true, effective_lazy_value_load>(
           storage.scratch.partition_buf,
           keys,
           num_items_in_tile,

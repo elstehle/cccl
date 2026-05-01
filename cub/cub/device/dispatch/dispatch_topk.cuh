@@ -327,8 +327,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.scan_algorithm,
                     policy.keys_tile_load_kind>;
 
-  static constexpr BlockPartitionStrategy part_strat            = policy.partition_strategy;
+  static constexpr BlockPartitionStrategy part_strat             = policy.partition_strategy;
   static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
+  static constexpr bool lazy_value_load                          = policy.lazy_value_load;
 
   // All three mode instantiations share the same _TempStorage layout (the agent's smem
   // union depends only on block_threads / items_per_thread / bits_per_pass). We declare
@@ -344,7 +345,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                                                  OutOffsetT,
                                                  sink_mode::buffered,
                                                  part_strat,
-                                                 part_classify_mode>;
+                                                 part_classify_mode,
+                                                 lazy_value_load>;
   using agent_es_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -356,7 +358,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                                                  OutOffsetT,
                                                  sink_mode::early_stop,
                                                  part_strat,
-                                                 part_classify_mode>;
+                                                 part_classify_mode,
+                                                 lazy_value_load>;
   using agent_ub_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -368,7 +371,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                                                  OutOffsetT,
                                                  sink_mode::unbuffered,
                                                  part_strat,
-                                                 part_classify_mode>;
+                                                 part_classify_mode,
+                                                 lazy_value_load>;
 
   union all_modes_ts_t
   {
@@ -529,8 +533,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
                     policy.scan_algorithm,
                     policy.keys_tile_load_kind>;
 
-  static constexpr BlockPartitionStrategy part_strat            = policy.partition_strategy;
+  static constexpr BlockPartitionStrategy part_strat             = policy.partition_strategy;
   static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
+  static constexpr bool lazy_value_load                          = policy.lazy_value_load;
 
   // The last-filter agent ignores `extract_bin_op`; pass `NullType` to keep the agent's
   // template footprint minimal.
@@ -546,7 +551,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
                                                        OutOffsetT,
                                                        sink_mode::last_filter,
                                                        part_strat,
-                                                       part_classify_mode>;
+                                                       part_classify_mode,
+                                                       lazy_value_load>;
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
 
