@@ -331,9 +331,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
   static constexpr bool lazy_value_load                          = policy.lazy_value_load;
 
-  // All three mode instantiations share the same _TempStorage layout (the agent's smem
-  // union depends only on block_threads / items_per_thread / bits_per_pass). We declare
-  // one `TempStorage` and reinterpret_cast for each branch.
+  // All three filter modes share the same _TempStorage layout (it depends only on
+  // block_threads / items_per_thread / bits_per_pass and the chosen partition
+  // strategy). We declare one `TempStorage` once and reinterpret_cast it for each
+  // branch via a union.
   using agent_bf_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -426,14 +427,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                      d_values_out,
                      in_key_buf,
                      effective_in_val_buf,
-                     static_cast<KeyInT*>(nullptr),
-                     static_cast<ValueInT*>(nullptr),
                      &counter->out_cnt,
-                     static_cast<OutOffsetT*>(nullptr),
-                     static_cast<OffsetT*>(nullptr),
-                     OutOffsetT{0},
-                     OutOffsetT{0},
-                     num_items,
                      input_length,
                      load_from_original_input,
                      extract_bin_op,
@@ -450,20 +444,20 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                      d_values_out,
                      in_key_buf,
                      effective_in_val_buf,
-                     effective_out_key_buf,
-                     effective_out_val_buf,
                      &counter->out_cnt,
-                     static_cast<OutOffsetT*>(nullptr),
-                     &counter->filter_cnt,
-                     OutOffsetT{0},
-                     OutOffsetT{0},
-                     num_items,
                      input_length,
                      load_from_original_input,
                      extract_bin_op,
                      identify_candidates_op,
                      histogram);
-    agent.run(counter, current_k, pass, is_last_pass, counter_update_fn);
+    agent.run(counter,
+              current_k,
+              pass,
+              is_last_pass,
+              counter_update_fn,
+              effective_out_key_buf,
+              effective_out_val_buf,
+              &counter->filter_cnt);
   }
   else
   {
@@ -474,14 +468,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                      d_values_out,
                      in_key_buf,
                      effective_in_val_buf,
-                     static_cast<KeyInT*>(nullptr),
-                     static_cast<ValueInT*>(nullptr),
                      &counter->out_cnt,
-                     static_cast<OutOffsetT*>(nullptr),
-                     &counter->filter_cnt,
-                     OutOffsetT{0},
-                     OutOffsetT{0},
-                     num_items,
                      input_length,
                      load_from_original_input,
                      extract_bin_op,
@@ -491,11 +478,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   }
 }
 
-// Dedicated last-filter kernel. Runs `agent_topk_filter_partition<sink_mode::last_filter>`
-// only; it scatters surviving "selected" candidates to the front of `d_keys_out` and the
-// remaining `kth`-class candidates to the back of `d_keys_out` (capped at `num_of_kth_needed`).
-// The agent's `flags::accumulate_histogram` and `flags::needs_finalize` are both `false` for
-// `sink_mode::last_filter`, so this kernel does not touch the histogram nor finalize the pass.
+// Dedicated last-filter kernel. Runs `agent_topk_last_filter` only; it scatters surviving
+// "selected" candidates to the front of `d_keys_out` and the remaining `kth`-class
+// candidates to the back of `d_keys_out` (capped at `num_of_kth_needed`). The agent
+// neither accumulates a histogram nor finalizes the pass, so this kernel touches no
+// histogram smem.
 template <typename PolicySelector,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
@@ -537,26 +524,20 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
   static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
   static constexpr bool lazy_value_load                          = policy.lazy_value_load;
 
-  // The last-filter agent ignores `extract_bin_op`; pass `NullType` to keep the agent's
-  // template footprint minimal.
-  using extract_bin_op_t = NullType;
-  using agent_lf_t       = agent_topk_filter_partition<agent_topk_policy_t,
-                                                       KeyInputIteratorT,
-                                                       KeyOutputIteratorT,
-                                                       ValueInputIteratorT,
-                                                       ValueOutputIteratorT,
-                                                       extract_bin_op_t,
-                                                       IdentifyCandidatesOpT,
-                                                       OffsetT,
-                                                       OutOffsetT,
-                                                       sink_mode::last_filter,
-                                                       part_strat,
-                                                       part_classify_mode,
-                                                       lazy_value_load>;
+  using agent_lf_t = agent_topk_last_filter<agent_topk_policy_t,
+                                            KeyInputIteratorT,
+                                            KeyOutputIteratorT,
+                                            ValueInputIteratorT,
+                                            ValueOutputIteratorT,
+                                            IdentifyCandidatesOpT,
+                                            OffsetT,
+                                            OutOffsetT,
+                                            part_strat,
+                                            part_classify_mode,
+                                            lazy_value_load>;
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
 
-  const OutOffsetT current_k = counter->k;
   const OffsetT previous_len = counter->previous_len;
 
   const bool load_from_original_input = (pass <= 1) || previous_len > buffer_length;
@@ -571,10 +552,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 
   const OutOffsetT num_of_kth_needed = static_cast<OutOffsetT>(counter->k);
 
-  // `flags::needs_finalize` is `false` for `sink_mode::last_filter`, so the agent never
-  // calls this functor; pass an empty lambda to satisfy the run() signature.
-  auto counter_update_fn = [] {};
-
   agent_lf_t agent(temp_storage,
                    d_keys_in,
                    d_keys_out,
@@ -582,20 +559,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
                    d_values_out,
                    in_key_buf,
                    effective_in_val_buf,
-                   /*out_key_buf=*/ static_cast<KeyInT*>(nullptr),
-                   /*out_val_buf=*/ static_cast<ValueInT*>(nullptr),
                    &counter->out_cnt,
-                   &counter->out_back_cnt,
-                   /*p_filter_cnt=*/ static_cast<OffsetT*>(nullptr),
-                   /*k_total=*/ k,
-                   num_of_kth_needed,
-                   num_items,
                    input_length,
                    load_from_original_input,
-                   extract_bin_op_t{},
-                   identify_candidates_op,
-                   /*global_histogram=*/ static_cast<OffsetT*>(nullptr));
-  agent.run(counter, current_k, pass, /*is_last_pass=*/ false, counter_update_fn);
+                   identify_candidates_op);
+  agent.run(&counter->out_back_cnt, k, num_of_kth_needed);
 }
 
 template <typename PolicySelector,
@@ -964,8 +932,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       }
     }
 
-    // Last filter pass: dedicated DeviceTopKLastFilterKernel running
-    // agent_topk_filter_partition<sink_mode::last_filter> only.
+    // Last filter pass: dedicated DeviceTopKLastFilterKernel running agent_topk_last_filter only.
     identify_candidates_op identify_op(&counter->kth_key_bits, pass, total_bits, decomposer);
     auto last_filter_kernel =
       DeviceTopKLastFilterKernel<PolicySelector,
