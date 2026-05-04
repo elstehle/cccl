@@ -473,28 +473,47 @@ struct AgentTopKHistogram
 
     keys_source_t keys_source{d_keys_in, temp_storage.keys_source_state};
 
-    const OffsetT num_tiles = ::cuda::ceil_div(num_items, static_cast<OffsetT>(tile_items));
-    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_tiles; tile_id += static_cast<OffsetT>(gridDim.x))
+    // Split the tile space into full tiles and a possible single trailing
+    // partial tile. The hot-path loop below processes only full tiles. The
+    // partial tile, if any, is handled exactly once after the loop by the
+    // unique block that would have owned it under the original grid-strided
+    // schedule.
+    const OffsetT num_full_tiles = num_items / static_cast<OffsetT>(tile_items);
+    const OffsetT partial_items  = num_items - num_full_tiles * static_cast<OffsetT>(tile_items);
+
+    // --- full-tile loop --------------------------------------------------
+    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_full_tiles;
+         tile_id += static_cast<OffsetT>(gridDim.x))
     {
-      const OffsetT tile_base   = tile_id * static_cast<OffsetT>(tile_items);
-      const OffsetT remaining   = num_items - tile_base;
-      const bool is_full        = remaining >= static_cast<OffsetT>(tile_items);
-      const OffsetT valid_items = is_full ? static_cast<OffsetT>(tile_items) : remaining;
+      const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
 
       keys_source.set_tile_base(tile_base);
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      if (is_full)
+      auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch);
+      h.complete_load(items);
+      process_tile_full(items);
+    }
+
+    // --- trailing partial tile (handled by exactly one block) ------------
+    //
+    // Under the original grid-strided schedule the partial tile (tile_id =
+    // num_full_tiles) was claimed by the block whose blockIdx.x equals
+    // num_full_tiles % gridDim.x. We preserve that ownership.
+    if (partial_items > 0)
+    {
+      const unsigned partial_owner =
+        static_cast<unsigned>(num_full_tiles % static_cast<OffsetT>(gridDim.x));
+      if (blockIdx.x == partial_owner)
       {
-        auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch);
-        h.complete_load(items);
-        // Synchronize before the first thread overwrites scratch on the next iteration.
-        process_tile_full(items);
-      }
-      else
-      {
-        auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch, valid_items);
+        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
+
+        keys_source.set_tile_base(tile_base);
+
+        __syncthreads();
+        key_in_t items[items_per_thread];
+        auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
         const int num_thread_items =
