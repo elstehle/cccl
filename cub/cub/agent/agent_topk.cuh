@@ -968,16 +968,19 @@ public:
     key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
     keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/!load_from_original_input};
 
-    // Tile loop with full / partial dispatch.
-    const OffsetT num_tiles =
-      ::cuda::ceil_div(input_length, static_cast<OffsetT>(tile_items));
-    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_tiles;
+    // Split the tile space into full tiles and a possible single trailing
+    // partial tile. The hot-path loop below processes only full tiles (no
+    // per-iteration full/partial branch). The partial tile, if any, is
+    // handled exactly once after the loop by the unique block that would
+    // have owned it under the original grid-strided schedule.
+    const OffsetT num_full_tiles = input_length / static_cast<OffsetT>(tile_items);
+    const OffsetT partial_items  = input_length - num_full_tiles * static_cast<OffsetT>(tile_items);
+
+    // --- full-tile loop --------------------------------------------------
+    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_full_tiles;
          tile_id += static_cast<OffsetT>(gridDim.x))
     {
       const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
-      const OffsetT remaining = input_length - tile_base;
-      const bool is_full      = remaining >= static_cast<OffsetT>(tile_items);
-      const OffsetT valid     = is_full ? static_cast<OffsetT>(tile_items) : remaining;
 
       keys_source.set_tile_base(tile_base);
       value_channels_tuple_t channels = make_value_channels(out_val_buf);
@@ -988,37 +991,57 @@ public:
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      if (is_full)
+      auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
+      h.complete_load(items);
+      __syncthreads();
+      if constexpr (flags::writes_output)
       {
-        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
-        h.complete_load(items);
-        __syncthreads();
-        if constexpr (flags::writes_output)
-        {
-          do_partition</*IsFull=*/true>(items, valid, channels, out_key_buf, p_filter_cnt);
-        }
-        else
-        {
-          do_histogram_only</*IsFull=*/true>(items, items_per_thread);
-        }
+        do_partition</*IsFull=*/true>(items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_filter_cnt);
       }
       else
       {
-        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, valid);
+        do_histogram_only</*IsFull=*/true>(items, items_per_thread);
+      }
+    }
+
+    // --- trailing partial tile (handled by exactly one block) ------------
+    //
+    // Under the original grid-strided schedule the partial tile (tile_id =
+    // num_full_tiles) was claimed by the block whose blockIdx.x equals
+    // num_full_tiles % gridDim.x. We preserve that ownership so the work
+    // distribution across blocks is unchanged.
+    if (partial_items > 0)
+    {
+      const unsigned partial_owner =
+        static_cast<unsigned>(num_full_tiles % static_cast<OffsetT>(gridDim.x));
+      if (blockIdx.x == partial_owner)
+      {
+        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
+
+        keys_source.set_tile_base(tile_base);
+        value_channels_tuple_t channels = make_value_channels(out_val_buf);
+        if constexpr (!keys_only)
+        {
+          ::cuda::std::get<0>(channels).data_source.set_tile_base(tile_base);
+        }
+
+        __syncthreads();
+        key_in_t items[items_per_thread];
+        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         __syncthreads();
-        const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
-        const int num_thread_items =
-          (thread_offset >= input_length)
-            ? 0
-            : static_cast<int>(
-                (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), input_length - thread_offset));
         if constexpr (flags::writes_output)
         {
-          do_partition</*IsFull=*/false>(items, valid, channels, out_key_buf, p_filter_cnt);
+          do_partition</*IsFull=*/false>(items, partial_items, channels, out_key_buf, p_filter_cnt);
         }
         else
         {
+          const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+          const int num_thread_items =
+            (thread_offset >= input_length)
+              ? 0
+              : static_cast<int>(
+                  (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), input_length - thread_offset));
           do_histogram_only</*IsFull=*/false>(items, num_thread_items);
         }
       }
@@ -1274,15 +1297,19 @@ public:
     key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
     keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/!load_from_original_input};
 
-    const OffsetT num_tiles =
-      ::cuda::ceil_div(input_length, static_cast<OffsetT>(tile_items));
-    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_tiles;
+    // Split the tile space into full tiles and a possible single trailing
+    // partial tile. The hot-path loop below processes only full tiles. The
+    // partial tile, if any, is handled exactly once after the loop by the
+    // unique block that would have owned it under the original grid-strided
+    // schedule.
+    const OffsetT num_full_tiles = input_length / static_cast<OffsetT>(tile_items);
+    const OffsetT partial_items  = input_length - num_full_tiles * static_cast<OffsetT>(tile_items);
+
+    // --- full-tile loop --------------------------------------------------
+    for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_full_tiles;
          tile_id += static_cast<OffsetT>(gridDim.x))
     {
       const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
-      const OffsetT remaining = input_length - tile_base;
-      const bool is_full      = remaining >= static_cast<OffsetT>(tile_items);
-      const OffsetT valid     = is_full ? static_cast<OffsetT>(tile_items) : remaining;
 
       keys_source.set_tile_base(tile_base);
       value_channels_tuple_t channels = make_value_channels();
@@ -1293,19 +1320,44 @@ public:
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      if (is_full)
+      auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
+      h.complete_load(items);
+      __syncthreads();
+      do_partition</*IsFull=*/true>(items,
+                                    static_cast<OffsetT>(tile_items),
+                                    channels,
+                                    p_out_back_cnt,
+                                    k_total,
+                                    num_of_kth_needed);
+    }
+
+    // --- trailing partial tile (handled by exactly one block) ------------
+    if (partial_items > 0)
+    {
+      const unsigned partial_owner =
+        static_cast<unsigned>(num_full_tiles % static_cast<OffsetT>(gridDim.x));
+      if (blockIdx.x == partial_owner)
       {
-        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
+        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
+
+        keys_source.set_tile_base(tile_base);
+        value_channels_tuple_t channels = make_value_channels();
+        if constexpr (!keys_only)
+        {
+          ::cuda::std::get<0>(channels).data_source.set_tile_base(tile_base);
+        }
+
+        __syncthreads();
+        key_in_t items[items_per_thread];
+        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         __syncthreads();
-        do_partition</*IsFull=*/true>(items, valid, channels, p_out_back_cnt, k_total, num_of_kth_needed);
-      }
-      else
-      {
-        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, valid);
-        h.complete_load(items);
-        __syncthreads();
-        do_partition</*IsFull=*/false>(items, valid, channels, p_out_back_cnt, k_total, num_of_kth_needed);
+        do_partition</*IsFull=*/false>(items,
+                                       partial_items,
+                                       channels,
+                                       p_out_back_cnt,
+                                       k_total,
+                                       num_of_kth_needed);
       }
     }
   }
