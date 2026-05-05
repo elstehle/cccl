@@ -381,17 +381,79 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void finalize_pass(
 }
 
 //---------------------------------------------------------------------
-// AgentTopKHistogram (rewritten): dedicated agent for the histogram-only pass
-// (pass 0). Owns _TempStorage, instantiates a TileDataSource for the keys stream
-// (per `AgentTopKPolicyT::keys_tile_load_kind`), and runs the §4.3 tile loop with
-// full/partial dispatch into `process_tile`.
+// AgentTopKHistogram filter helpers
+//---------------------------------------------------------------------
+//
+// The histogram agent accepts an arbitrary unary predicate `FilterOpT(key) ->
+// bool` that decides whether a given key contributes to the histogram. The two
+// canonical specializations live here:
+//
+//   * `topk_pass_through_filter_op` -- pass-0 default. Always returns `true`,
+//     so the optimizer can fold the predicate call away and the inner tile
+//     loop reduces to "extract bucket + atomicAdd" exactly as it did before
+//     this generalization. SASS for the pass-0 hot loop must remain identical
+//     and is verified externally.
+//
+//   * `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used
+//     by the unbuffered filter pass. It wraps the kernel's
+//     `identify_candidates_op` and returns `true` only for keys classified as
+//     `candidate_class::candidate`, replicating what `do_histogram_only` did
+//     in the previous `agent_topk_filter_partition` unbuffered specialization.
+
+struct topk_pass_through_filter_op
+{
+  template <typename T>
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr bool operator()(const T&) const
+  {
+    return true;
+  }
+};
+
+template <typename IdentifyCandidatesOpT>
+struct topk_candidate_filter_op
+{
+  IdentifyCandidatesOpT identify_candidates_op;
+
+  template <typename T>
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE bool operator()(const T& key) const
+  {
+    return identify_candidates_op(key) == candidate_class::candidate;
+  }
+};
+
+//---------------------------------------------------------------------
+// AgentTopKHistogram: histogram agent shared by pass 0 and the unbuffered
+// filter passes. Owns _TempStorage, instantiates a TileDataSource for the
+// keys stream (per `AgentTopKPolicyT::keys_tile_load_kind`), and runs the
+// §4.3 tile loop with full/partial dispatch into `process_tile`.
+//
+// Each input key is gated by the `FilterOpT` predicate before contributing
+// to the histogram. The pass-0 caller leaves the default
+// `topk_pass_through_filter_op` in place; the unbuffered filter caller
+// supplies a `topk_candidate_filter_op` that wraps its
+// `identify_candidates_op`.
+//
+// Single-source invariant for the unbuffered usage: the unbuffered filter
+// branch is reached only when the surviving candidate count exceeds the
+// back-buffer capacity (`current_len > buffer_length`). The candidate set is
+// monotonically non-increasing across passes, so once an unbuffered pass is
+// taken, every prior pass was also unbuffered, which means no candidate has
+// ever been written to `in_key_buf`. Therefore the unbuffered path always
+// loads from the original `d_keys_in`, and a single `tile_data_source_t<
+// KeyInputIteratorT, ...>` is sufficient -- we don't need the
+// `multi_source_data_source` machinery the partition agent uses. If we ever
+// allow unbuffered passes to follow buffered ones (e.g. an adaptive
+// strategy that pauses output writes mid-decode), this agent will need to
+// be re-templated on the keys data source so the caller can hand in a
+// multi_source over `(d_keys_in, in_key_buf)`.
 //---------------------------------------------------------------------
 
 template <typename AgentTopKPolicyT,
           typename KeyInputIteratorT,
           typename ExtractBinOpT,
           typename OffsetT,
-          typename OutOffsetT>
+          typename OutOffsetT,
+          typename FilterOpT = topk_pass_through_filter_op>
 struct AgentTopKHistogram
 {
   using key_in_t = it_value_t<KeyInputIteratorT>;
@@ -429,30 +491,38 @@ struct AgentTopKHistogram
   OffsetT num_items;
   OutOffsetT k;
   ExtractBinOpT extract_bin_op;
+  FilterOpT filter_op;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE AgentTopKHistogram(
     TempStorage& ts,
     const KeyInputIteratorT d_keys_in,
     OffsetT num_items,
     OutOffsetT k,
-    ExtractBinOpT extract_bin_op)
+    ExtractBinOpT extract_bin_op,
+    FilterOpT filter_op = {})
       : temp_storage(ts.Alias())
       , d_keys_in(d_keys_in)
       , num_items(num_items)
       , k(k)
       , extract_bin_op(extract_bin_op)
+      , filter_op(filter_op)
   {}
 
-  // process_tile: classify + per-bucket atomicAdd into smem histogram. Full overload
-  // omits the per-item bound check; partial overload bound-checks against
-  // `num_thread_items`.
+  // process_tile: filter + classify + per-bucket atomicAdd into smem histogram.
+  // The full overload omits the per-item bound check; the partial overload
+  // bound-checks against `num_thread_items`. The default `FilterOpT` returns a
+  // constexpr `true`, so the predicate call folds away and the pass-0 inner
+  // loop reduces to the original `extract_bin_op + atomicAdd` sequence.
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_full(const key_in_t (&items)[items_per_thread])
   {
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < items_per_thread; ++j)
     {
-      const int bucket = extract_bin_op(items[j]);
-      atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
+      if (filter_op(items[j]))
+      {
+        const int bucket = extract_bin_op(items[j]);
+        atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
+      }
     }
   }
 
@@ -462,7 +532,7 @@ struct AgentTopKHistogram
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < items_per_thread; ++j)
     {
-      if (j < num_thread_items)
+      if (j < num_thread_items && filter_op(items[j]))
       {
         const int bucket = extract_bin_op(items[j]);
         atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
@@ -470,8 +540,17 @@ struct AgentTopKHistogram
     }
   }
 
+  // `counter_update_fn` runs on thread 0 of the last finishing block, inside
+  // `finalize_pass`. The pass-0 caller passes a lambda that resets
+  // `previous_len`/`filter_cnt`; the unbuffered caller passes its
+  // mode-dependent counter update (early-stop vs non-early-stop logic).
+  template <typename CounterUpdateFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void invoke(
-    Counter<key_in_t, OffsetT, OutOffsetT>* counter, OffsetT* global_histogram, int pass, bool is_last_pass)
+    Counter<key_in_t, OffsetT, OutOffsetT>* counter,
+    OffsetT* global_histogram,
+    int pass,
+    bool is_last_pass,
+    CounterUpdateFn counter_update_fn)
   {
     init_histogram<block_threads, num_buckets>(temp_storage.histogram);
     __syncthreads();
@@ -539,10 +618,7 @@ struct AgentTopKHistogram
                   k,
                   pass,
                   is_last_pass,
-                  [counter, this] {
-                    counter->previous_len = num_items;
-                    counter->filter_cnt   = 0;
-                  });
+                  counter_update_fn);
   }
 };
 
@@ -550,27 +626,20 @@ struct AgentTopKHistogram
 // sink_mode: compile-time selector for agent_topk_filter_partition.
 //
 // Each mode corresponds to one behavior of the legacy sink_* family and drives a
-// single-kernel runtime switch in DeviceTopKFilterKernel. `unbuffered` is the "scout"
-// mode that only builds the histogram; `early_stop` is the final collapsed pass;
-// `buffered` writes output and stages remaining candidates into a back buffer.
+// single-kernel runtime switch in DeviceTopKFilterKernel. `early_stop` is the final
+// collapsed pass; `buffered` writes output and stages remaining candidates into a
+// back buffer. The "scout" mode that only builds a histogram (formerly
+// `unbuffered`) is now handled by `AgentTopKHistogram` with a candidate filter,
+// and is intentionally no longer part of this enum.
+//
 // The dedicated last-filter pass lives in its own agent (`agent_topk_last_filter`)
-// and is intentionally not part of this enum.
+// and is intentionally not part of this enum either.
 //---------------------------------------------------------------------
 
 enum class sink_mode
 {
   early_stop, // selected + candidate -> d_keys_out front; no histogram
   buffered, // selected -> d_keys_out; candidate -> out_buf; histogram over candidates
-  unbuffered, // no writes; histogram over candidates only
-};
-
-// Compile-time flag bundle derived from sink_mode. Keeps the agent's `if constexpr`
-// branches readable.
-template <sink_mode Mode>
-struct sink_flags
-{
-  static constexpr bool writes_output        = (Mode != sink_mode::unbuffered);
-  static constexpr bool accumulate_histogram = (Mode == sink_mode::buffered) || (Mode == sink_mode::unbuffered);
 };
 
 //---------------------------------------------------------------------
@@ -666,24 +735,23 @@ struct agent_topk_filter_partition
   static constexpr int num_buckets      = 1 << bits_per_pass;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
-  using flags             = sink_flags<Mode>;
   using prefix_sum_temp_t =
     BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
 
   // Compile-time mode plumbing.
   //   selected_offset_t / candidate_offset_t : pointer types of the global counters.
-  //   effective_strat   : `unbuffered` skips scatter entirely; force Atomics so the
-  //                       ScratchStorage in the temp-storage union stays small.
+  //   accumulate_histogram : `buffered` accumulates a histogram over candidates;
+  //                          `early_stop` does not.
+  static constexpr bool accumulate_histogram = (Mode == sink_mode::buffered);
+
   using selected_offset_t  = OutOffsetT;
 
   using candidate_offset_t = ::cuda::std::conditional_t<Mode == sink_mode::buffered, OffsetT, OutOffsetT>;
-  static constexpr BlockPartitionStrategy effective_strat =
-    (Mode == sink_mode::unbuffered) ? BlockPartitionStrategy::Atomics : PartStrat;
   // The `inlined` classify mode is only valid with the Atomics scatter strategy. When
-  // the agent is forced onto a different strategy (Staged / SharedMem), silently fall
-  // back to `precomputed` so the agent type still instantiates cleanly.
+  // the agent is configured with a different strategy (Staged / SharedMem), silently
+  // fall back to `precomputed` so the agent type still instantiates cleanly.
   static constexpr BlockPartitionClassifyMode effective_classify =
-    (effective_strat == BlockPartitionStrategy::Atomics)
+    (PartStrat == BlockPartitionStrategy::Atomics)
       ? ClassifyMode
       : BlockPartitionClassifyMode::precomputed;
   // Lazy value-load only makes sense on the Atomics path (the smem-coordinating
@@ -691,7 +759,7 @@ struct agent_topk_filter_partition
   // actually a value channel to load lazily. Forced off otherwise so the agent
   // template still instantiates cleanly across all configurations.
   static constexpr bool effective_lazy_value_load =
-    LazyValueLoad && !keys_only && (effective_strat == BlockPartitionStrategy::Atomics);
+    LazyValueLoad && !keys_only && (PartStrat == BlockPartitionStrategy::Atomics);
 
   // Keys data source: multi_source over (d_keys_in source, in_key_buf source).
   using key_source_a_t =
@@ -709,7 +777,7 @@ struct agent_topk_filter_partition
 
   using val_out_t = ValueOutputIteratorT;
   // For `buffered` the candidate iterator is `value_in_t*` (the back-buffer); for
-  // the other two modes (early_stop / unbuffered) it's `ValueOutputIteratorT`.
+  // `early_stop` it's `ValueOutputIteratorT`.
   using cand_val_out_t =
     ::cuda::std::conditional_t<Mode == sink_mode::buffered, value_in_t*, ValueOutputIteratorT>;
 
@@ -730,7 +798,7 @@ struct agent_topk_filter_partition
 
   using partition_t = BlockPartition<block_threads,
                                      items_per_thread,
-                                     effective_strat,
+                                     PartStrat,
                                      key_in_t,
                                      selected_offset_t,
                                      candidate_offset_t,
@@ -739,9 +807,9 @@ struct agent_topk_filter_partition
 
   // Smem layout: histogram + keys-source persistent state in the persistent
   // region; method-call scratch is a union of the keys-source scratch, the
-  // prefix-sum scratch, and the partition's scratch. All three remaining modes
-  // need the histogram array (either to accumulate it directly or to consume
-  // it during finalize_pass).
+  // prefix-sum scratch, and the partition's scratch. Both modes need the
+  // histogram array (either to accumulate it directly or to consume it during
+  // finalize_pass).
   struct _TempStorage
   {
     OffsetT histogram[num_buckets];
@@ -760,7 +828,7 @@ struct agent_topk_filter_partition
 
   _TempStorage& storage;
 
-  // Inputs/outputs shared across all three modes.
+  // Inputs/outputs shared across both modes.
   KeyInputIteratorT d_keys_in;
   KeyOutputIteratorT d_keys_out;
   ValueInputIteratorT d_values_in;
@@ -942,35 +1010,13 @@ private:
     }
   }
 
-  // unbuffered mode: classify + per-bucket atomicAdd into smem histogram. No
-  // partition call.
-  template <bool IsFull>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  do_histogram_only(const key_in_t (&items)[items_per_thread], int num_thread_items)
-  {
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < items_per_thread; ++j)
-    {
-      const bool is_valid = IsFull ? true : (j < num_thread_items);
-      if (is_valid)
-      {
-        const auto c = identify_candidates_op(items[j]);
-        if (c == candidate_class::candidate)
-        {
-          const int bucket = extract_bin_op(items[j]);
-          atomicAdd(storage.histogram + bucket, OffsetT{1});
-        }
-      }
-    }
-  }
-
 public:
   // --- entry point ----------------------------------------------------
   //
   // The buffered-mode-only outputs (`out_key_buf`, `out_val_buf`,
   // `p_filter_cnt`) flow through the run signature. They default to nullptr
-  // for the early_stop and unbuffered callers, which never consume them
-  // (gated by `if constexpr (Mode == sink_mode::buffered)` inside the agent).
+  // for the early_stop caller, which never consumes them (gated by
+  // `if constexpr (Mode == sink_mode::buffered)` inside the agent).
   template <typename CounterUpdateFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void run(
     Counter<key_in_t, OffsetT, OutOffsetT>* counter,
@@ -982,7 +1028,7 @@ public:
     value_in_t* out_val_buf = nullptr,
     OffsetT*   p_filter_cnt = nullptr)
   {
-    if constexpr (flags::accumulate_histogram)
+    if constexpr (accumulate_histogram)
     {
       init_histogram<block_threads, num_buckets>(storage.histogram);
       __syncthreads();
@@ -1019,14 +1065,7 @@ public:
       auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
       h.complete_load(items);
       __syncthreads();
-      if constexpr (flags::writes_output)
-      {
-        do_partition</*IsFull=*/true>(items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_filter_cnt);
-      }
-      else
-      {
-        do_histogram_only</*IsFull=*/true>(items, items_per_thread);
-      }
+      do_partition</*IsFull=*/true>(items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_filter_cnt);
     }
 
     // --- trailing partial tile (handled by exactly one block) ------------
@@ -1055,24 +1094,11 @@ public:
         auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         __syncthreads();
-        if constexpr (flags::writes_output)
-        {
-          do_partition</*IsFull=*/false>(items, partial_items, channels, out_key_buf, p_filter_cnt);
-        }
-        else
-        {
-          const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
-          const int num_thread_items =
-            (thread_offset >= input_length)
-              ? 0
-              : static_cast<int>(
-                  (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), input_length - thread_offset));
-          do_histogram_only</*IsFull=*/false>(items, num_thread_items);
-        }
+        do_partition</*IsFull=*/false>(items, partial_items, channels, out_key_buf, p_filter_cnt);
       }
     }
 
-    if constexpr (flags::accumulate_histogram)
+    if constexpr (accumulate_histogram)
     {
       __syncthreads();
       merge_histogram<block_threads, num_buckets>(storage.histogram, global_histogram);

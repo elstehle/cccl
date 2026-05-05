@@ -282,8 +282,11 @@ struct identify_candidates_op_t<T, SelectDirection, BitsPerPass, DecomposerT, fa
 
 // Filter kernel covering passes 1..num_passes-1. The kernel reads Counter state once,
 // computes the sink_mode (early_stop / buffered / unbuffered), and dispatches to the
-// matching agent instantiation. All three mode TempStorages share the same __shared__
-// buffer via a union. The last-filter pass is handled by `DeviceTopKLastFilterKernel`.
+// matching agent instantiation. The unbuffered "scout" mode is handled by the
+// shared `AgentTopKHistogram` (driven by a candidate-filter predicate), while the
+// other two modes use `agent_topk_filter_partition`. All three TempStorages share
+// the same __shared__ buffer via a union. The last-filter pass is handled by
+// `DeviceTopKLastFilterKernel`.
 template <typename PolicySelector,
           typename KeyInputIteratorT,
           typename KeyOutputIteratorT,
@@ -331,10 +334,13 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
   static constexpr bool lazy_value_load                          = policy.lazy_value_load;
 
-  // All three filter modes share the same _TempStorage layout (it depends only on
-  // block_threads / items_per_thread / bits_per_pass and the chosen partition
-  // strategy). We declare one `TempStorage` once and reinterpret_cast it for each
-  // branch via a union.
+  // The two output-writing filter modes share the same partition-agent
+  // _TempStorage layout (it depends only on block_threads / items_per_thread /
+  // bits_per_pass and the chosen partition strategy). The unbuffered scout mode
+  // is handled by `AgentTopKHistogram` driven by a candidate filter; its
+  // _TempStorage is a strict subset of the partition agent's (no partition
+  // scratch, no candidate channel state). All three layouts share the same
+  // __shared__ buffer via a union.
   using agent_bf_t = agent_topk_filter_partition<agent_topk_policy_t,
                                                  KeyInputIteratorT,
                                                  KeyOutputIteratorT,
@@ -361,19 +367,20 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                                                  part_strat,
                                                  part_classify_mode,
                                                  lazy_value_load>;
-  using agent_ub_t = agent_topk_filter_partition<agent_topk_policy_t,
-                                                 KeyInputIteratorT,
-                                                 KeyOutputIteratorT,
-                                                 ValueInputIteratorT,
-                                                 ValueOutputIteratorT,
-                                                 ExtractBinOpT,
-                                                 IdentifyCandidatesOpT,
-                                                 OffsetT,
-                                                 OutOffsetT,
-                                                 sink_mode::unbuffered,
-                                                 part_strat,
-                                                 part_classify_mode,
-                                                 lazy_value_load>;
+
+  // Unbuffered scout mode: drive the histogram agent with a candidate-filter
+  // predicate that wraps `identify_candidates_op`. See the single-source
+  // invariant comment on `AgentTopKHistogram` for why this is sound -- the
+  // unbuffered branch is reachable only when `current_len > buffer_length`,
+  // which by induction implies no prior pass wrote to `in_key_buf`, so we
+  // always load from `d_keys_in`.
+  using filter_op_t = topk_candidate_filter_op<IdentifyCandidatesOpT>;
+  using agent_ub_t = AgentTopKHistogram<agent_topk_policy_t,
+                                        KeyInputIteratorT,
+                                        ExtractBinOpT,
+                                        OffsetT,
+                                        OutOffsetT,
+                                        filter_op_t>;
 
   union all_modes_ts_t
   {
@@ -461,20 +468,21 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   }
   else
   {
+    // Unbuffered scout pass: histogram-only, gated by a candidate filter. The
+    // single-source invariant on `AgentTopKHistogram` (see its block comment)
+    // guarantees `load_from_original_input` is true on this path; we assert it
+    // in debug builds rather than threading `in_key_buf` / `load_from_original_input`
+    // through to a single-source agent that can't act on them.
+    _CCCL_ASSERT(load_from_original_input,
+                 "Unbuffered filter passes must always load from d_keys_in");
+    filter_op_t filter_op{identify_candidates_op};
     agent_ub_t agent(temp_storage.ub,
                      d_keys_in,
-                     d_keys_out,
-                     d_values_in,
-                     d_values_out,
-                     in_key_buf,
-                     effective_in_val_buf,
-                     &counter->out_cnt,
                      input_length,
-                     load_from_original_input,
+                     current_k,
                      extract_bin_op,
-                     identify_candidates_op,
-                     histogram);
-    agent.run(counter, current_k, pass, is_last_pass, counter_update_fn);
+                     filter_op);
+    agent.invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
   }
 }
 
@@ -601,8 +609,16 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                        OutOffsetT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
+
+  // Pass-0 counter update: record the input length as the previous-pass length
+  // for the upcoming filter passes, and reset the candidate-filter counter.
+  auto counter_update_fn = [counter, num_items] {
+    counter->previous_len = num_items;
+    counter->filter_cnt   = 0;
+  };
+
   agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)
-    .invoke(counter, histogram, pass, is_last_pass);
+    .invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
 }
 
 //! @tparam SelectDirection
