@@ -218,24 +218,29 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void init_histogram(CounterT* histogram)
   }
 }
 
-// Atomically merge a block-local histogram into a global histogram
-template <int BlockThreads, int NumBuckets, typename CounterT>
-_CCCL_DEVICE _CCCL_FORCEINLINE void merge_histogram(const CounterT* local_histogram, CounterT* global_histogram)
+// Atomically merge a block-local histogram into a global histogram. The local and global counters
+// may have different types (e.g. a 32-bit local histogram merged into a 32- or 64-bit global one);
+// each non-zero local value is widened to the global counter type before the atomic add.
+template <int BlockThreads, int NumBuckets, typename LocalCounterT, typename GlobalCounterT>
+_CCCL_DEVICE _CCCL_FORCEINLINE void
+merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_histogram)
 {
   int histo_offset = 0;
   _CCCL_PRAGMA_UNROLL_FULL()
   for (; histo_offset + BlockThreads <= NumBuckets; histo_offset += BlockThreads)
   {
-    if (local_histogram[histo_offset + threadIdx.x] != 0)
+    const LocalCounterT local_value = local_histogram[histo_offset + threadIdx.x];
+    if (local_value != 0)
     {
-      atomicAdd(global_histogram + (histo_offset + threadIdx.x), local_histogram[histo_offset + threadIdx.x]);
+      atomicAdd(global_histogram + (histo_offset + threadIdx.x), static_cast<GlobalCounterT>(local_value));
     }
   }
   if ((NumBuckets % BlockThreads != 0) && (histo_offset + static_cast<int>(threadIdx.x) < NumBuckets))
   {
-    if (local_histogram[histo_offset + threadIdx.x] != 0)
+    const LocalCounterT local_value = local_histogram[histo_offset + threadIdx.x];
+    if (local_value != 0)
     {
-      atomicAdd(global_histogram + (histo_offset + threadIdx.x), local_histogram[histo_offset + threadIdx.x]);
+      atomicAdd(global_histogram + (histo_offset + threadIdx.x), static_cast<GlobalCounterT>(local_value));
     }
   }
 }
@@ -670,6 +675,7 @@ struct agent_topk_filter_partition
   //   effective_strat   : `unbuffered` skips scatter entirely; force Atomics so the
   //                       ScratchStorage in the temp-storage union stays small.
   using selected_offset_t  = OutOffsetT;
+
   using candidate_offset_t = ::cuda::std::conditional_t<Mode == sink_mode::buffered, OffsetT, OutOffsetT>;
   static constexpr BlockPartitionStrategy effective_strat =
     (Mode == sink_mode::unbuffered) ? BlockPartitionStrategy::Atomics : PartStrat;
