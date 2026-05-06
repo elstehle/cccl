@@ -129,8 +129,7 @@ C2H_TEST("topk phase_aggregate keeps coexisting tenants distinct", "[block][topk
   thrust::device_vector<cuda::std::int32_t> out_uba(2, 0);
   thrust::device_vector<cuda::std::int64_t> out_v(1, 0);
 
-  phase_aggregate_kernel<<<1, 32>>>(
-    thrust::raw_pointer_cast(out_uba.data()), thrust::raw_pointer_cast(out_v.data()));
+  phase_aggregate_kernel<<<1, 32>>>(thrust::raw_pointer_cast(out_uba.data()), thrust::raw_pointer_cast(out_v.data()));
   REQUIRE(cudaSuccess == cudaPeekAtLastError());
   REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
@@ -149,11 +148,8 @@ static_assert(tds::back_grow_capped_reserve_op<unsigned>::may_grant_less == true
               "back_grow_capped_reserve_op may grant less");
 
 template <typename Op>
-__global__ void run_reserve_kernel(Op op,
-                                   const unsigned* d_requests,
-                                   int num_requests,
-                                   unsigned* d_bases,
-                                   unsigned* d_grants)
+__global__ void
+run_reserve_kernel(Op op, const unsigned* d_requests, int num_requests, unsigned* d_bases, unsigned* d_grants)
 {
   // Single-threaded: walk the request sequence sequentially and record (base, granted).
   // The op already does the atomicAdd against its `counter` member; sequencing on
@@ -179,11 +175,12 @@ C2H_TEST("topk atomic_reserve_range_op returns (prev, n)", "[block][topk][founda
 
   tds::atomic_reserve_range_op<unsigned> op{thrust::raw_pointer_cast(d_counter.data())};
 
-  run_reserve_kernel<<<1, 32>>>(op,
-                                thrust::raw_pointer_cast(d_req.data()),
-                                static_cast<int>(req.size()),
-                                thrust::raw_pointer_cast(d_bases.data()),
-                                thrust::raw_pointer_cast(d_grants.data()));
+  run_reserve_kernel<<<1, 32>>>(
+    op,
+    thrust::raw_pointer_cast(d_req.data()),
+    static_cast<int>(req.size()),
+    thrust::raw_pointer_cast(d_bases.data()),
+    thrust::raw_pointer_cast(d_grants.data()));
   REQUIRE(cudaSuccess == cudaPeekAtLastError());
   REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
@@ -194,8 +191,7 @@ C2H_TEST("topk atomic_reserve_range_op returns (prev, n)", "[block][topk][founda
   REQUIRE(d_counter[0] == 9u);
 }
 
-C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwards",
-         "[block][topk][foundation]")
+C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwards", "[block][topk][foundation]")
 {
   // Cap at 7 items, back_anchor at 100. Three requests of 4, 4, 4:
   //   req 0: prev=0, writable=7,  granted=min(4,7)=4, base=100-0-4=96.
@@ -211,11 +207,12 @@ C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwa
   tds::back_grow_capped_reserve_op<unsigned> op{
     thrust::raw_pointer_cast(d_counter.data()), /*back_anchor=*/100u, /*cap=*/7u};
 
-  run_reserve_kernel<<<1, 32>>>(op,
-                                thrust::raw_pointer_cast(d_req.data()),
-                                static_cast<int>(req.size()),
-                                thrust::raw_pointer_cast(d_bases.data()),
-                                thrust::raw_pointer_cast(d_grants.data()));
+  run_reserve_kernel<<<1, 32>>>(
+    op,
+    thrust::raw_pointer_cast(d_req.data()),
+    static_cast<int>(req.size()),
+    thrust::raw_pointer_cast(d_bases.data()),
+    thrust::raw_pointer_cast(d_grants.data()));
   REQUIRE(cudaSuccess == cudaPeekAtLastError());
   REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
@@ -226,8 +223,7 @@ C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwa
   REQUIRE(d_counter[0] == 12u);
 }
 
-C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit",
-         "[block][topk][foundation]")
+C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block][topk][foundation]")
 {
   {
     // cap=0: every grant is 0; bases follow `back_anchor - prev` (with `prev` growing
@@ -242,11 +238,12 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit",
 
     tds::back_grow_capped_reserve_op<unsigned> op{
       thrust::raw_pointer_cast(d_counter.data()), /*back_anchor=*/50u, /*cap=*/0u};
-    run_reserve_kernel<<<1, 32>>>(op,
-                                  thrust::raw_pointer_cast(d_req.data()),
-                                  static_cast<int>(req.size()),
-                                  thrust::raw_pointer_cast(d_bases.data()),
-                                  thrust::raw_pointer_cast(d_grants.data()));
+    run_reserve_kernel<<<1, 32>>>(
+      op,
+      thrust::raw_pointer_cast(d_req.data()),
+      static_cast<int>(req.size()),
+      thrust::raw_pointer_cast(d_bases.data()),
+      thrust::raw_pointer_cast(d_grants.data()));
     REQUIRE(cudaSuccess == cudaPeekAtLastError());
     REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
@@ -268,11 +265,12 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit",
 
     tds::back_grow_capped_reserve_op<unsigned> op{
       thrust::raw_pointer_cast(d_counter.data()), /*back_anchor=*/100u, /*cap=*/10u};
-    run_reserve_kernel<<<1, 32>>>(op,
-                                  thrust::raw_pointer_cast(d_req.data()),
-                                  static_cast<int>(req.size()),
-                                  thrust::raw_pointer_cast(d_bases.data()),
-                                  thrust::raw_pointer_cast(d_grants.data()));
+    run_reserve_kernel<<<1, 32>>>(
+      op,
+      thrust::raw_pointer_cast(d_req.data()),
+      static_cast<int>(req.size()),
+      thrust::raw_pointer_cast(d_bases.data()),
+      thrust::raw_pointer_cast(d_grants.data()));
     REQUIRE(cudaSuccess == cudaPeekAtLastError());
     REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
@@ -293,39 +291,31 @@ static_assert(cd::is_generative_iterator_v<cuda::counting_iterator<long long>>,
               "counting_iterator<long long> must be detected as generative");
 static_assert(cd::is_generative_iterator_v<const cuda::counting_iterator<int>>,
               "const-qualified counting_iterator must be detected as generative");
-static_assert(!cd::is_generative_iterator_v<int*>,
-              "raw pointer is not generative");
-static_assert(!cd::is_generative_iterator_v<const int*>,
-              "raw const pointer is not generative");
+static_assert(!cd::is_generative_iterator_v<int*>, "raw pointer is not generative");
+static_assert(!cd::is_generative_iterator_v<const int*>, "raw const pointer is not generative");
 
 // Factory must downgrade counting_iterator to direct_data_source regardless of the
 // requested tile_load_kind.
-static_assert(cuda::std::is_same_v<
-                tds::tile_data_source_t<cuda::counting_iterator<int>,
-                                        tds::tile_load_kind::block_load_vectorize,
-                                        128,
-                                        4>,
-                tds::direct_data_source<cuda::counting_iterator<int>, 128, 4>>,
-              "factory must downgrade counting_iterator to direct_data_source");
+static_assert(
+  cuda::std::is_same_v<
+    tds::tile_data_source_t<cuda::counting_iterator<int>, tds::tile_load_kind::block_load_vectorize, 128, 4>,
+    tds::direct_data_source<cuda::counting_iterator<int>, 128, 4>>,
+  "factory must downgrade counting_iterator to direct_data_source");
 
-static_assert(cuda::std::is_same_v<
-                tds::tile_data_source_t<cuda::counting_iterator<int>,
-                                        tds::tile_load_kind::block_load_to_shared_async,
-                                        128,
-                                        4>,
-                tds::direct_data_source<cuda::counting_iterator<int>, 128, 4>>,
-              "factory must downgrade counting_iterator to direct_data_source even when "
-              "the requested kind is async TMA");
+static_assert(
+  cuda::std::is_same_v<
+    tds::tile_data_source_t<cuda::counting_iterator<int>, tds::tile_load_kind::block_load_to_shared_async, 128, 4>,
+    tds::direct_data_source<cuda::counting_iterator<int>, 128, 4>>,
+  "factory must downgrade counting_iterator to direct_data_source even when "
+  "the requested kind is async TMA");
 
 // For a raw pointer the factory must honor the configured kind.
-static_assert(cuda::std::is_same_v<
-                tds::tile_data_source_t<int*, tds::tile_load_kind::direct, 128, 4>,
-                tds::direct_data_source<int*, 128, 4>>,
+static_assert(cuda::std::is_same_v<tds::tile_data_source_t<int*, tds::tile_load_kind::direct, 128, 4>,
+                                   tds::direct_data_source<int*, 128, 4>>,
               "factory honors `direct` for raw pointers");
 
-static_assert(cuda::std::is_same_v<
-                tds::tile_data_source_t<int*, tds::tile_load_kind::block_load_vectorize, 128, 4>,
-                tds::sync_block_load_data_source<int*, 128, 4, cub::BLOCK_LOAD_VECTORIZE>>,
+static_assert(cuda::std::is_same_v<tds::tile_data_source_t<int*, tds::tile_load_kind::block_load_vectorize, 128, 4>,
+                                   tds::sync_block_load_data_source<int*, 128, 4, cub::BLOCK_LOAD_VECTORIZE>>,
               "factory honors `block_load_vectorize` for raw pointers");
 
 //---------------------------------------------------------------------
@@ -392,13 +382,8 @@ __global__ void sync_block_load_kernel(const ValueT* in, ValueT* out, OffsetT ti
 }
 
 template <typename ValueT, int BlockThreads, int ItemsPerThread, typename OffsetT>
-__global__ void multi_source_kernel(const ValueT* in_a,
-                                    const ValueT* in_b,
-                                    ValueT* out,
-                                    OffsetT tile_base,
-                                    OffsetT num_items,
-                                    bool is_full,
-                                    bool pick_b)
+__global__ void multi_source_kernel(
+  const ValueT* in_a, const ValueT* in_b, ValueT* out, OffsetT tile_base, OffsetT num_items, bool is_full, bool pick_b)
 {
   using src_a_t = tds::direct_data_source<const ValueT*, BlockThreads, ItemsPerThread, OffsetT>;
   using src_b_t =
@@ -490,21 +475,21 @@ void sweep_sync(sync_kind kind, int num_items)
     thrust::device_vector<ValueT> d_out(tile_items, ValueT{});
     if (kind == sync_kind::direct)
     {
-      direct_kernel<ValueT, BlockThreads, ItemsPerThread, OffsetT>
-        <<<1, BlockThreads>>>(thrust::raw_pointer_cast(d_input.data()),
-                              thrust::raw_pointer_cast(d_out.data()),
-                              static_cast<OffsetT>(tile_base),
-                              static_cast<OffsetT>(num_valid),
-                              is_full);
+      direct_kernel<ValueT, BlockThreads, ItemsPerThread, OffsetT><<<1, BlockThreads>>>(
+        thrust::raw_pointer_cast(d_input.data()),
+        thrust::raw_pointer_cast(d_out.data()),
+        static_cast<OffsetT>(tile_base),
+        static_cast<OffsetT>(num_valid),
+        is_full);
     }
     else
     {
-      sync_block_load_kernel<ValueT, BlockThreads, ItemsPerThread, OffsetT>
-        <<<1, BlockThreads>>>(thrust::raw_pointer_cast(d_input.data()),
-                              thrust::raw_pointer_cast(d_out.data()),
-                              static_cast<OffsetT>(tile_base),
-                              static_cast<OffsetT>(num_valid),
-                              is_full);
+      sync_block_load_kernel<ValueT, BlockThreads, ItemsPerThread, OffsetT><<<1, BlockThreads>>>(
+        thrust::raw_pointer_cast(d_input.data()),
+        thrust::raw_pointer_cast(d_out.data()),
+        static_cast<OffsetT>(tile_base),
+        static_cast<OffsetT>(num_valid),
+        is_full);
     }
     REQUIRE(cudaSuccess == cudaPeekAtLastError());
     REQUIRE(cudaSuccess == cudaDeviceSynchronize());
@@ -515,8 +500,7 @@ void sweep_sync(sync_kind kind, int num_items)
   }
 }
 
-C2H_TEST("topk direct_data_source delivers BLOCKED items across full and partial tiles",
-         "[block][topk][foundation]")
+C2H_TEST("topk direct_data_source delivers BLOCKED items across full and partial tiles", "[block][topk][foundation]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -541,8 +525,7 @@ C2H_TEST("topk sync_block_load_data_source delivers BLOCKED items across full an
   }
 }
 
-C2H_TEST("topk multi_source_data_source forwards to the active source on both branches",
-         "[block][topk][foundation]")
+C2H_TEST("topk multi_source_data_source forwards to the active source on both branches", "[block][topk][foundation]")
 {
   using OffsetT                = cuda::std::int64_t;
   constexpr int BlockThreads   = 64;
@@ -571,14 +554,14 @@ C2H_TEST("topk multi_source_data_source forwards to the active source on both br
       for (bool pick_b : {false, true})
       {
         thrust::device_vector<int> d_out(tile_items, 0);
-        multi_source_kernel<int, BlockThreads, ItemsPerThread, OffsetT>
-          <<<1, BlockThreads>>>(thrust::raw_pointer_cast(d_a.data()),
-                                thrust::raw_pointer_cast(d_b.data()),
-                                thrust::raw_pointer_cast(d_out.data()),
-                                static_cast<OffsetT>(tile_base),
-                                static_cast<OffsetT>(num_valid),
-                                is_full,
-                                pick_b);
+        multi_source_kernel<int, BlockThreads, ItemsPerThread, OffsetT><<<1, BlockThreads>>>(
+          thrust::raw_pointer_cast(d_a.data()),
+          thrust::raw_pointer_cast(d_b.data()),
+          thrust::raw_pointer_cast(d_out.data()),
+          static_cast<OffsetT>(tile_base),
+          static_cast<OffsetT>(num_valid),
+          is_full,
+          pick_b);
         REQUIRE(cudaSuccess == cudaPeekAtLastError());
         REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
@@ -595,19 +578,14 @@ template <int BlockThreads, int ItemsPerThread, typename OffsetT>
 __global__ void counting_iterator_factory_kernel(int* out, OffsetT tile_base)
 {
   using counting_t = cuda::counting_iterator<int>;
-  using ds_t       = tds::tile_data_source_t<counting_t,
-                                       tds::tile_load_kind::block_load_vectorize,
-                                       BlockThreads,
-                                       ItemsPerThread,
-                                       OffsetT>;
+  using ds_t =
+    tds::tile_data_source_t<counting_t, tds::tile_load_kind::block_load_vectorize, BlockThreads, ItemsPerThread, OffsetT>;
   __shared__ typename ds_t::TempStorage state;
   __shared__ typename ds_t::ScratchStorage scratch;
 
-  auto ds = tds::make_tile_data_source<counting_t,
-                                       tds::tile_load_kind::block_load_vectorize,
-                                       BlockThreads,
-                                       ItemsPerThread,
-                                       OffsetT>(counting_t{0}, state);
+  auto ds = tds::
+    make_tile_data_source<counting_t, tds::tile_load_kind::block_load_vectorize, BlockThreads, ItemsPerThread, OffsetT>(
+      counting_t{0}, state);
   ds.set_tile_base(tile_base);
 
   auto h = ds.submit_load(scratch);
@@ -621,8 +599,7 @@ __global__ void counting_iterator_factory_kernel(int* out, OffsetT tile_base)
   }
 }
 
-C2H_TEST("topk make_tile_data_source over counting_iterator yields per-thread arithmetic",
-         "[block][topk][foundation]")
+C2H_TEST("topk make_tile_data_source over counting_iterator yields per-thread arithmetic", "[block][topk][foundation]")
 {
   using OffsetT                = cuda::std::int64_t;
   constexpr int BlockThreads   = 32;
@@ -654,11 +631,9 @@ C2H_TEST("topk make_tile_data_source over counting_iterator yields per-thread ar
 //---------------------------------------------------------------------
 
 template <typename ValueT, int BlockThreads, int ItemsPerThread, typename OffsetT>
-__global__ void async_to_shared_kernel(
-  const ValueT* in, ValueT* out, OffsetT tile_base, OffsetT num_items, bool is_full)
+__global__ void async_to_shared_kernel(const ValueT* in, ValueT* out, OffsetT tile_base, OffsetT num_items, bool is_full)
 {
-  using ds_t =
-    tds::async_to_shared_data_source<const ValueT*, BlockThreads, ItemsPerThread, alignof(ValueT), OffsetT>;
+  using ds_t = tds::async_to_shared_data_source<const ValueT*, BlockThreads, ItemsPerThread, alignof(ValueT), OffsetT>;
   __shared__ typename ds_t::TempStorage state;
   __shared__ typename ds_t::ScratchStorage scratch;
 
@@ -705,12 +680,12 @@ void sweep_async_tma(int num_items)
     const bool is_full  = (num_valid == tile_items);
 
     thrust::device_vector<ValueT> d_out(tile_items, ValueT{});
-    async_to_shared_kernel<ValueT, BlockThreads, ItemsPerThread, OffsetT>
-      <<<1, BlockThreads>>>(thrust::raw_pointer_cast(d_input.data()),
-                            thrust::raw_pointer_cast(d_out.data()),
-                            static_cast<OffsetT>(tile_base),
-                            static_cast<OffsetT>(num_valid),
-                            is_full);
+    async_to_shared_kernel<ValueT, BlockThreads, ItemsPerThread, OffsetT><<<1, BlockThreads>>>(
+      thrust::raw_pointer_cast(d_input.data()),
+      thrust::raw_pointer_cast(d_out.data()),
+      static_cast<OffsetT>(tile_base),
+      static_cast<OffsetT>(num_valid),
+      is_full);
     REQUIRE(cudaSuccess == cudaPeekAtLastError());
     REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 

@@ -70,12 +70,13 @@ enum class value_carrier_mode
 // preserve the same load behavior under the unified `tile_load_kind` knob.
 [[nodiscard]] _CCCL_API constexpr tile_load_kind block_load_algorithm_to_tile_load_kind(BlockLoadAlgorithm algo)
 {
-  return (algo == BLOCK_LOAD_DIRECT)            ? tile_load_kind::block_load_direct
-       : (algo == BLOCK_LOAD_STRIPED)           ? tile_load_kind::block_load_striped
-       : (algo == BLOCK_LOAD_VECTORIZE)         ? tile_load_kind::block_load_vectorize
-       : (algo == BLOCK_LOAD_TRANSPOSE)         ? tile_load_kind::block_load_transpose
-       : (algo == BLOCK_LOAD_WARP_TRANSPOSE)    ? tile_load_kind::block_load_warp_transpose
-                                                 : tile_load_kind::block_load_warp_transpose_timesliced;
+  return (algo == BLOCK_LOAD_DIRECT)    ? tile_load_kind::block_load_direct
+       : (algo == BLOCK_LOAD_STRIPED)   ? tile_load_kind::block_load_striped
+       : (algo == BLOCK_LOAD_VECTORIZE) ? tile_load_kind::block_load_vectorize
+       : (algo == BLOCK_LOAD_TRANSPOSE) ? tile_load_kind::block_load_transpose
+       : (algo == BLOCK_LOAD_WARP_TRANSPOSE)
+         ? tile_load_kind::block_load_warp_transpose
+         : tile_load_kind::block_load_warp_transpose_timesliced;
 }
 
 struct topk_policy
@@ -129,14 +130,15 @@ struct topk_policy
 #if _CCCL_HOSTED()
   friend ::std::ostream& operator<<(::std::ostream& os, const topk_policy& p)
   {
-    return os << "topk_policy { .threads_per_block = " << p.threads_per_block
-              << ", .items_per_thread = " << p.items_per_thread << ", .bits_per_pass = " << p.bits_per_pass
-              << ", .load_algorithm = " << p.load_algorithm << ", .scan_algorithm = " << p.scan_algorithm
-              << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
-              << ", .classify_mode = " << static_cast<int>(p.classify_mode)
-              << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
-              << ", .value_carrier = " << static_cast<int>(p.value_carrier)
-              << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
+    return os
+        << "topk_policy { .threads_per_block = " << p.threads_per_block
+        << ", .items_per_thread = " << p.items_per_thread << ", .bits_per_pass = " << p.bits_per_pass
+        << ", .load_algorithm = " << p.load_algorithm << ", .scan_algorithm = " << p.scan_algorithm
+        << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
+        << ", .classify_mode = " << static_cast<int>(p.classify_mode)
+        << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
+        << ", .value_carrier = " << static_cast<int>(p.value_carrier)
+        << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
   }
 #endif // _CCCL_HOSTED()
 };
@@ -159,25 +161,27 @@ struct policy_selector
     {
       // Try to load 16 bytes per thread: int64 -> 2, int32 -> 4, int16 -> 8.
       const int items_per_thread = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
-      return topk_policy{512,
-                         items_per_thread,
-                         bits_per_pass,
-                         BLOCK_LOAD_VECTORIZE,
-                         BLOCK_SCAN_WARP_SCANS,
-                         BlockPartitionStrategy::Atomics,
-                         block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
+      return topk_policy{
+        512,
+        items_per_thread,
+        bits_per_pass,
+        BLOCK_LOAD_VECTORIZE,
+        BLOCK_SCAN_WARP_SCANS,
+        BlockPartitionStrategy::Atomics,
+        block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
     }
 
     // Default tuning used on older architectures.
     const int items_per_thread =
       ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size, 1, nominal_4b_items_per_thread);
-    return topk_policy{512,
-                       items_per_thread,
-                       bits_per_pass,
-                       BLOCK_LOAD_VECTORIZE,
-                       BLOCK_SCAN_WARP_SCANS,
-                       BlockPartitionStrategy::Atomics,
-                       block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
+    return topk_policy{
+      512,
+      items_per_thread,
+      bits_per_pass,
+      BLOCK_LOAD_VECTORIZE,
+      BLOCK_SCAN_WARP_SCANS,
+      BlockPartitionStrategy::Atomics,
+      block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
   }
 };
 

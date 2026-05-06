@@ -284,10 +284,11 @@ constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy:
 // Drive a single (Strategy, HasCandidates, KeysOnly, full|partial, atomic) configuration:
 // full when num_items == tile_items.
 template <int BlockThreads, int ItemsPerThread, bool HasCandidates, bool KeysOnly>
-void run_atomic_partition_test(int num_items,
-                               const std::vector<int>& keys,
-                               const std::vector<int>& values,
-                               const std::vector<::cuda::std::int8_t>& classes)
+void run_atomic_partition_test(
+  int num_items,
+  const std::vector<int>& keys,
+  const std::vector<int>& values,
+  const std::vector<::cuda::std::int8_t>& classes)
 {
   constexpr int tile_items = BlockThreads * ItemsPerThread;
   REQUIRE(num_items <= tile_items);
@@ -465,10 +466,7 @@ void run_back_grow_capped_partition_test(
   std::sort(eligible_candidate_keys.begin(), eligible_candidate_keys.end());
   REQUIRE(got_cand_keys.size() == cand_written);
   REQUIRE(std::includes(
-    eligible_candidate_keys.begin(),
-    eligible_candidate_keys.end(),
-    got_cand_keys.begin(),
-    got_cand_keys.end()));
+    eligible_candidate_keys.begin(), eligible_candidate_keys.end(), got_cand_keys.begin(), got_cand_keys.end()));
 
   // Slots between the front (selected) region and the back (candidate) region must
   // remain at their sentinel value -- back-write must not bleed past the cap.
@@ -483,8 +481,7 @@ void run_back_grow_capped_partition_test(
 // Test cases: full sweep
 //---------------------------------------------------------------------
 
-C2H_TEST("BlockPartition keys-only with HasCandidates=true partitions a full tile",
-         "[block][topk]")
+C2H_TEST("BlockPartition keys-only with HasCandidates=true partitions a full tile", "[block][topk]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -502,8 +499,7 @@ C2H_TEST("BlockPartition keys-only with HasCandidates=true partitions a full til
     tile_items, keys, values, classes);
 }
 
-C2H_TEST("BlockPartition paired with HasCandidates=true partitions a full tile",
-         "[block][topk]")
+C2H_TEST("BlockPartition paired with HasCandidates=true partitions a full tile", "[block][topk]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -522,8 +518,7 @@ C2H_TEST("BlockPartition paired with HasCandidates=true partitions a full tile",
     tile_items, keys, values, classes);
 }
 
-C2H_TEST("BlockPartition paired with HasCandidates=false folds candidate -> selected",
-         "[block][topk]")
+C2H_TEST("BlockPartition paired with HasCandidates=false folds candidate -> selected", "[block][topk]")
 {
   constexpr int BlockThreads   = 32;
   constexpr int ItemsPerThread = 4;
@@ -544,8 +539,7 @@ C2H_TEST("BlockPartition paired with HasCandidates=false folds candidate -> sele
     tile_items, keys, values, classes);
 }
 
-C2H_TEST("BlockPartition partial tile leaves OOB items unscattered",
-         "[block][topk]")
+C2H_TEST("BlockPartition partial tile leaves OOB items unscattered", "[block][topk]")
 {
   constexpr int BlockThreads   = 32;
   constexpr int ItemsPerThread = 4;
@@ -565,15 +559,14 @@ C2H_TEST("BlockPartition partial tile leaves OOB items unscattered",
     keys[i]   = i;
     values[i] = i + 1000;
   }
-  std::vector<::cuda::std::int8_t> classes(tile_items,
-                                            static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
+  std::vector<::cuda::std::int8_t> classes(
+    tile_items, static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
   for (int i = 0; i < num_items; ++i)
   {
     classes[i] = (i % 3 == 0)
-                   ? static_cast<::cuda::std::int8_t>(topk::candidate_class::selected)
-                   : ((i % 5 == 0)
-                        ? static_cast<::cuda::std::int8_t>(topk::candidate_class::candidate)
-                        : static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
+                 ? static_cast<::cuda::std::int8_t>(topk::candidate_class::selected)
+                 : ((i % 5 == 0) ? static_cast<::cuda::std::int8_t>(topk::candidate_class::candidate)
+                                 : static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
   }
 
   run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/false>(
