@@ -138,7 +138,10 @@ struct key_prefix_storage_t<KeyT, false>
   }
 };
 
-template <typename KeyT, int BitsPerPass>
+// Template parameters are ordered with `BitsPerPass` first so callers only have
+// to spell the non-deducible compile-time constant; `KeyT` is deduced from the
+// `key_prefix_storage_t<KeyT>&` argument.
+template <int BitsPerPass, typename KeyT>
 _CCCL_DEVICE _CCCL_FORCEINLINE void
 set_kth_key_bits(key_prefix_storage_t<KeyT>& prefix, const int pass, const int bin_index)
 {
@@ -180,7 +183,7 @@ struct alignas(128) Counter
 
   // For a row inside a batch, we may launch multiple thread blocks. This counter is
   // used to determine if the current block is the last running block. If so, this block
-  // will execute choose_bucket().
+  // will execute the `BlockFinalizeTopKPass` epilogue (prefix sum + bucket selection).
   alignas(128) unsigned int finished_block_cnt;
 
   // Record how many elements have been written to the front of `out`. Elements less (if
@@ -245,22 +248,34 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 }
 
 //---------------------------------------------------------------------
-// choose_bucket: prefix-sum the per-bin histogram and identify the bucket
-// containing the k-th element.
+// BlockFinalizeTopKPass: per-block epilogue for one top-k radix pass.
 //
-// Layout: with `BLOCK_LOAD_TRANSPOSE`, thread `tid` holds the contiguous
-// blocked chunk of bins `[tid*bins_per_thread, (tid+1)*bins_per_thread)`,
-// and `BlockScan::InclusiveSum` over that per-thread array keeps the
-// prefix sums in registers in the same blocked layout. Within a thread,
-// the `prev` for bin `i > 0` is just `thread_data[i-1]`; the only
-// cross-thread value needed is each thread's last prefix sum, which its
-// right neighbour reads as the `prev` for its bin 0. We therefore write
-// only `BlockThreads` boundary entries to smem instead of round-tripping
-// all `num_buckets` prefix sums through a `BlockStore`.
+// Owns the smem footprint of the prefix-sum + bucket-selection step and
+// exposes a single `run()` entry point that streams the next-pass inputs out
+// through caller-provided pointers. The epilogue does, in order:
+//   1) cooperative `BlockLoad<TRANSPOSE>` of the per-bin counts from
+//      `input_histogram` into a per-thread blocked chunk;
+//   2) `BlockScan::InclusiveSum` over that chunk, keeping prefix sums in
+//      registers;
+//   3) one boundary write/read per thread so each thread's right neighbour
+//      can use its right-edge prefix sum as the `prev` for its bin 0;
+//   4) per-thread search for the bucket whose prefix-sum range straddles
+//      `current_k`, with the result written through the output pointers.
+//
+// Layout note: `BLOCK_LOAD_TRANSPOSE` produces a blocked layout where thread
+// `tid` owns the contiguous bin chunk `[tid*bins_per_thread,
+// (tid+1)*bins_per_thread)`. Because `BlockScan::InclusiveSum` over a
+// per-thread array preserves the blocked layout, we only need one
+// `BlockThreads`-sized boundary buffer instead of round-tripping all
+// `num_buckets` prefix sums through a `BlockStore`.
 //---------------------------------------------------------------------
 
-template <int BlockThreads, int BitsPerPass, BlockScanAlgorithm ScanAlgorithm, typename OffsetT>
-struct BinPrefixSumTempStorage
+template <int BlockThreads,
+          int BitsPerPass,
+          BlockScanAlgorithm ScanAlgorithm,
+          typename OffsetT,
+          typename OutOffsetT>
+struct BlockFinalizeTopKPass
 {
   static constexpr int num_buckets     = 1 << BitsPerPass;
   static constexpr int bins_per_thread = ::cuda::ceil_div(num_buckets, BlockThreads);
@@ -270,118 +285,118 @@ struct BinPrefixSumTempStorage
 
   // The boundary buffer shares storage with the load/scan scratch since the
   // boundary exchange runs strictly after both have completed.
-  union
+  struct TempStorage
   {
-    typename block_load_t::TempStorage load;
-    typename block_scan_t::TempStorage scan;
-    OffsetT boundaries[BlockThreads];
-  };
-};
-
-template <int BlockThreads,
-          int BitsPerPass,
-          BlockScanAlgorithm ScanAlgorithm,
-          typename KeyInT,
-          typename OffsetT,
-          typename OutOffsetT>
-_CCCL_DEVICE _CCCL_FORCEINLINE void choose_bucket(
-  BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>& temp,
-  const OffsetT* input_histogram,
-  Counter<KeyInT, OffsetT, OutOffsetT>* counter,
-  const OutOffsetT k,
-  const int pass)
-{
-  using storage_t                      = BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>;
-  static constexpr int num_buckets     = storage_t::num_buckets;
-  static constexpr int bins_per_thread = storage_t::bins_per_thread;
-
-  // Cooperative load + register-resident inclusive prefix sum. OOB lanes (when
-  // `num_buckets` is not a multiple of `BlockThreads`) are zero-initialized so
-  // they neither perturb the scan nor falsely identify themselves as the
-  // selected bucket below.
-  OffsetT thread_data[bins_per_thread]{};
-  typename storage_t::block_load_t(temp.load).Load(input_histogram, thread_data, num_buckets);
-  __syncthreads();
-  typename storage_t::block_scan_t(temp.scan).InclusiveSum(thread_data, thread_data);
-  __syncthreads();
-
-  // Publish each thread's right-edge prefix sum so its right neighbour can
-  // read it as the `prev` for its leftmost bin.
-  temp.boundaries[threadIdx.x] = thread_data[bins_per_thread - 1];
-  __syncthreads();
-  const OffsetT prev_boundary = (threadIdx.x == 0) ? OffsetT{0} : temp.boundaries[threadIdx.x - 1];
-
-  const int base_bin = static_cast<int>(threadIdx.x) * bins_per_thread;
-
-  static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
-
-  _CCCL_PRAGMA_UNROLL_FULL()
-  for (int i = 0; i < bins_per_thread; ++i)
-  {
-    const int bin_index = base_bin + i;
-    if (is_full_tile || bin_index < num_buckets)
+    union
     {
-      const OffsetT prev = (i == 0) ? prev_boundary : thread_data[i - 1];
-      const OffsetT cur  = thread_data[i];
-      if (prev < k && cur >= k)
+      typename block_load_t::TempStorage load;
+      typename block_scan_t::TempStorage scan;
+      OffsetT boundaries[BlockThreads];
+    };
+  };
+
+  TempStorage& storage;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE explicit BlockFinalizeTopKPass(TempStorage& s)
+      : storage(s)
+  {}
+
+  // Inclusive-prefix-sums `input_histogram`, identifies the bucket containing
+  // the `current_k`-th element, and writes the discovered next-pass inputs
+  // through the provided pointers.
+  //
+  //   num_remaining_k_out         : the new k -- top-k items that still have to
+  //                                 be identified after the next filter pass
+  //                                 finishes writing its surviving candidates
+  //   num_output_candidates_out   : number of candidates the next filter pass
+  //                                 will write
+  //   key_prefix_storage          : bit accumulator for the k-th-key prefix;
+  //                                 `KeyT` is deduced from the storage type
+  //                                 (so the class template no longer needs it)
+  template <typename KeyPrefixStorageT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void run(
+    const OffsetT* input_histogram,
+    OutOffsetT current_k,
+    int pass,
+    OutOffsetT* num_remaining_k_out,
+    OffsetT* num_output_candidates_out,
+    KeyPrefixStorageT* key_prefix_storage)
+  {
+    // Cooperative load + register-resident inclusive prefix sum. OOB lanes
+    // (when `num_buckets` is not a multiple of `BlockThreads`) are
+    // zero-initialized so they neither perturb the scan nor falsely identify
+    // themselves as the selected bucket below.
+    OffsetT thread_data[bins_per_thread]{};
+    block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
+    __syncthreads();
+    block_scan_t(storage.scan).InclusiveSum(thread_data, thread_data);
+    __syncthreads();
+
+    // Publish each thread's right-edge prefix sum so its right neighbour can
+    // read it as the `prev` for its leftmost bin.
+    storage.boundaries[threadIdx.x] = thread_data[bins_per_thread - 1];
+    __syncthreads();
+    const OffsetT prev_boundary =
+      (threadIdx.x == 0) ? OffsetT{0} : storage.boundaries[threadIdx.x - 1];
+
+    const int base_bin = static_cast<int>(threadIdx.x) * bins_per_thread;
+
+    // Full vs partial specialization: when the BLOCKED tile has no padding
+    // lanes (`BlockThreads * bins_per_thread == num_buckets`), `is_full_tile`
+    // short-circuits the per-bin bound check away at compile time. Otherwise
+    // the residual `bin_index < num_buckets` check reproduces the trailing
+    // partial iteration of the original strided loop.
+    static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
+
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int i = 0; i < bins_per_thread; ++i)
+    {
+      const int bin_index = base_bin + i;
+      if (is_full_tile || bin_index < num_buckets)
       {
-        counter->k   = static_cast<OutOffsetT>(k - prev);
-        counter->len = static_cast<OffsetT>(cur - prev);
-        set_kth_key_bits<KeyInT, BitsPerPass>(
-          counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
+        const OffsetT prev = (i == 0) ? prev_boundary : thread_data[i - 1];
+        const OffsetT cur  = thread_data[i];
+        if (prev < current_k && cur >= current_k)
+        {
+          *num_remaining_k_out       = static_cast<OutOffsetT>(current_k - prev);
+          *num_output_candidates_out = static_cast<OffsetT>(cur - prev);
+          set_kth_key_bits<BitsPerPass>(
+            *key_prefix_storage, pass, static_cast<unsigned int>(bin_index));
+        }
       }
     }
   }
-}
+};
 
 //---------------------------------------------------------------------
-// finalize_pass: last-block coordination after histogram accumulation
+// finalize_pass: last-block coordination primitive.
+//
+// Fences pending writes, atomically detects the unique last-finishing block
+// via `retired_block_counter`, and invokes `epilogue_op` exactly once on that
+// block. Stateless; the epilogue owns whatever smem it needs and decides what
+// "finalization" means (top-k uses it to run `BlockFinalizeTopKPass::run` plus
+// any per-mode counter bookkeeping). `expected_block_count` is the number of
+// blocks expected to retire (typically `gridDim.x`, but parameterizing it
+// keeps the primitive usable for segmented/per-row coordination where each
+// row owns a slice of the grid).
 //---------------------------------------------------------------------
-
-// Ensures global visibility of histogram writes, detects the last finishing block,
-// runs the merged prefix sum + bucket selection, and resets the histogram for
-// the next pass. counter_update_fn runs on thread 0 of the last block.
-template <int BlockThreads,
-          int BitsPerPass,
-          BlockScanAlgorithm ScanAlgorithm,
-          typename KeyInT,
-          typename OffsetT,
-          typename OutOffsetT,
-          typename CounterUpdateFn>
-_CCCL_DEVICE _CCCL_FORCEINLINE void finalize_pass(
-  BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>& prefix_sum_temp,
-  Counter<KeyInT, OffsetT, OutOffsetT>* counter,
-  OffsetT* global_histogram,
-  OutOffsetT current_k,
-  int pass,
-  bool is_last_pass,
-  CounterUpdateFn counter_update_fn)
+template <typename BlockCountT, typename EpilogueOpT>
+_CCCL_DEVICE _CCCL_FORCEINLINE void
+finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_count, EpilogueOpT epilogue_op)
 {
-  static constexpr int num_buckets = 1 << BitsPerPass;
-
   __threadfence();
 
   bool is_last_block = false;
   if (threadIdx.x == 0)
   {
-    unsigned int finished = atomicInc(&counter->finished_block_cnt, gridDim.x - 1);
-    is_last_block         = (finished == (gridDim.x - 1));
+    const unsigned int wrap_at = expected_block_count - 1u;
+    const unsigned int retired = atomicInc(retired_block_counter, wrap_at);
+    is_last_block              = (retired == wrap_at);
   }
 
   if (__syncthreads_or(is_last_block))
   {
-    if (threadIdx.x == 0)
-    {
-      counter_update_fn();
-    }
-
-    choose_bucket<BlockThreads, BitsPerPass, ScanAlgorithm>(
-      prefix_sum_temp, global_histogram, counter, current_k, pass);
-
-    if (!is_last_pass)
-    {
-      init_histogram<BlockThreads, num_buckets>(global_histogram);
-    }
+    epilogue_op();
   }
 }
 
@@ -471,8 +486,8 @@ struct AgentTopKHistogram
 
   using keys_source_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using prefix_sum_temp_t =
-    BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
+  using finalize_pass_t =
+    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT, OutOffsetT>;
 
   struct _TempStorage
   {
@@ -484,7 +499,7 @@ struct AgentTopKHistogram
     union
     {
       typename keys_source_t::ScratchStorage keys_source_scratch;
-      prefix_sum_temp_t prefix_sum;
+      typename finalize_pass_t::TempStorage prefix_sum;
     } scratch;
   };
 
@@ -616,13 +631,23 @@ struct AgentTopKHistogram
     __syncthreads();
     merge_histogram<block_threads, num_buckets>(temp_storage.histogram, global_histogram);
 
-    finalize_pass(temp_storage.scratch.prefix_sum,
-                  counter,
-                  global_histogram,
-                  k,
-                  pass,
-                  is_last_pass,
-                  counter_update_fn);
+    // Last-block epilogue: per-mode counter update on thread 0, then the
+    // prefix-sum + bucket selection that streams the next-pass inputs through
+    // pointers, then optional histogram reset for the next pass.
+    auto epilogue_op = [&] {
+      if (threadIdx.x == 0)
+      {
+        counter_update_fn();
+      }
+      finalize_pass_t{temp_storage.scratch.prefix_sum}.run(
+        global_histogram, k, pass, &counter->k, &counter->len, &counter->kth_key_bits);
+      if (!is_last_pass)
+      {
+        init_histogram<block_threads, num_buckets>(global_histogram);
+      }
+    };
+
+    finalize_pass(&counter->finished_block_cnt, gridDim.x, epilogue_op);
   }
 };
 
@@ -739,8 +764,8 @@ struct agent_topk_filter_partition
   static constexpr int num_buckets      = 1 << bits_per_pass;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
-  using prefix_sum_temp_t =
-    BinPrefixSumTempStorage<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT>;
+  using finalize_pass_t =
+    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT, OutOffsetT>;
 
   // Compile-time mode plumbing.
   //   selected_offset_t / candidate_offset_t : pointer types of the global counters.
@@ -822,7 +847,7 @@ struct agent_topk_filter_partition
     union
     {
       typename keys_source_t::ScratchStorage keys_source_scratch;
-      prefix_sum_temp_t prefix_sum;
+      typename finalize_pass_t::TempStorage prefix_sum;
       typename partition_t::ScratchStorage partition_buf;
     } scratch;
   };
@@ -1108,13 +1133,23 @@ public:
       merge_histogram<block_threads, num_buckets>(storage.histogram, global_histogram);
     }
 
-    finalize_pass(storage.scratch.prefix_sum,
-                  counter,
-                  global_histogram,
-                  current_k,
-                  pass,
-                  is_last_pass,
-                  counter_update_fn);
+    // Last-block epilogue: per-mode counter update on thread 0, then the
+    // prefix-sum + bucket selection that streams the next-pass inputs through
+    // pointers, then optional histogram reset for the next pass.
+    auto epilogue_op = [&] {
+      if (threadIdx.x == 0)
+      {
+        counter_update_fn();
+      }
+      finalize_pass_t{storage.scratch.prefix_sum}.run(
+        global_histogram, current_k, pass, &counter->k, &counter->len, &counter->kth_key_bits);
+      if (!is_last_pass)
+      {
+        init_histogram<block_threads, num_buckets>(global_histogram);
+      }
+    };
+
+    finalize_pass(&counter->finished_block_cnt, gridDim.x, epilogue_op);
   }
 };
 
