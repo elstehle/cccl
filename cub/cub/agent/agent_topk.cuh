@@ -17,7 +17,6 @@
 
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
-#include <cub/block/block_store.cuh>
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
@@ -181,7 +180,7 @@ struct alignas(128) Counter
 
   // For a row inside a batch, we may launch multiple thread blocks. This counter is
   // used to determine if the current block is the last running block. If so, this block
-  // will execute compute_bin_offsets() and choose_bucket().
+  // will execute choose_bucket().
   alignas(128) unsigned int finished_block_cnt;
 
   // Record how many elements have been written to the front of `out`. Elements less (if
@@ -246,7 +245,18 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 }
 
 //---------------------------------------------------------------------
-// Prefix sum over histogram bins: temp storage and compute function
+// choose_bucket: prefix-sum the per-bin histogram and identify the bucket
+// containing the k-th element.
+//
+// Layout: with `BLOCK_LOAD_TRANSPOSE`, thread `tid` holds the contiguous
+// blocked chunk of bins `[tid*bins_per_thread, (tid+1)*bins_per_thread)`,
+// and `BlockScan::InclusiveSum` over that per-thread array keeps the
+// prefix sums in registers in the same blocked layout. Within a thread,
+// the `prev` for bin `i > 0` is just `thread_data[i-1]`; the only
+// cross-thread value needed is each thread's last prefix sum, which its
+// right neighbour reads as the `prev` for its bin 0. We therefore write
+// only `BlockThreads` boundary entries to smem instead of round-tripping
+// all `num_buckets` prefix sums through a `BlockStore`.
 //---------------------------------------------------------------------
 
 template <int BlockThreads, int BitsPerPass, BlockScanAlgorithm ScanAlgorithm, typename OffsetT>
@@ -255,74 +265,72 @@ struct BinPrefixSumTempStorage
   static constexpr int num_buckets     = 1 << BitsPerPass;
   static constexpr int bins_per_thread = ::cuda::ceil_div(num_buckets, BlockThreads);
 
-  using block_load_t  = BlockLoad<OffsetT, BlockThreads, bins_per_thread, BLOCK_LOAD_TRANSPOSE>;
-  using block_scan_t  = BlockScan<OffsetT, BlockThreads, ScanAlgorithm>;
-  using block_store_t = BlockStore<OffsetT, BlockThreads, bins_per_thread, BLOCK_STORE_TRANSPOSE>;
+  using block_load_t = BlockLoad<OffsetT, BlockThreads, bins_per_thread, BLOCK_LOAD_TRANSPOSE>;
+  using block_scan_t = BlockScan<OffsetT, BlockThreads, ScanAlgorithm>;
 
+  // The boundary buffer shares storage with the load/scan scratch since the
+  // boundary exchange runs strictly after both have completed.
   union
   {
     typename block_load_t::TempStorage load;
     typename block_scan_t::TempStorage scan;
-    typename block_store_t::TempStorage store;
+    OffsetT boundaries[BlockThreads];
   };
 };
 
-// Compute inclusive prefix sum over histogram bin counts.
-// Reads from input_histogram (global), writes prefix sums to output_histogram (shared).
-template <int BlockThreads, int BitsPerPass, BlockScanAlgorithm ScanAlgorithm, typename OffsetT>
-_CCCL_DEVICE _CCCL_FORCEINLINE void compute_bin_offsets(
-  BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>& temp,
-  volatile OffsetT* input_histogram,
-  OffsetT* output_histogram)
-{
-  using storage_t                        = BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>;
-  static constexpr int num_buckets_local = storage_t::num_buckets;
-  static constexpr int bins_per_thread   = storage_t::bins_per_thread;
-
-  OffsetT thread_data[bins_per_thread]{};
-  typename storage_t::block_load_t(temp.load).Load(input_histogram, thread_data, num_buckets_local);
-  __syncthreads();
-  typename storage_t::block_scan_t(temp.scan).InclusiveSum(thread_data, thread_data);
-  __syncthreads();
-  typename storage_t::block_store_t(temp.store).Store(output_histogram, thread_data, num_buckets_local);
-}
-
-//---------------------------------------------------------------------
-// choose_bucket: identify the bucket containing the k-th element
-//---------------------------------------------------------------------
-
-template <int BlockThreads, int BitsPerPass, typename KeyInT, typename OffsetT, typename OutOffsetT>
+template <int BlockThreads,
+          int BitsPerPass,
+          BlockScanAlgorithm ScanAlgorithm,
+          typename KeyInT,
+          typename OffsetT,
+          typename OutOffsetT>
 _CCCL_DEVICE _CCCL_FORCEINLINE void choose_bucket(
-  const OffsetT* prefix_sum_histogram,
+  BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>& temp,
+  const OffsetT* input_histogram,
   Counter<KeyInT, OffsetT, OutOffsetT>* counter,
   const OutOffsetT k,
   const int pass)
 {
-  static constexpr int num_buckets = 1 << BitsPerPass;
-  int histo_offset                 = 0;
+  using storage_t                      = BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>;
+  static constexpr int num_buckets     = storage_t::num_buckets;
+  static constexpr int bins_per_thread = storage_t::bins_per_thread;
 
-  auto body = [&] {
-    const int bin_idx  = histo_offset + threadIdx.x;
-    const OffsetT prev = (bin_idx == 0) ? 0 : prefix_sum_histogram[bin_idx - 1];
-    const OffsetT cur  = prefix_sum_histogram[bin_idx];
+  // Cooperative load + register-resident inclusive prefix sum. OOB lanes (when
+  // `num_buckets` is not a multiple of `BlockThreads`) are zero-initialized so
+  // they neither perturb the scan nor falsely identify themselves as the
+  // selected bucket below.
+  OffsetT thread_data[bins_per_thread]{};
+  typename storage_t::block_load_t(temp.load).Load(input_histogram, thread_data, num_buckets);
+  __syncthreads();
+  typename storage_t::block_scan_t(temp.scan).InclusiveSum(thread_data, thread_data);
+  __syncthreads();
 
-    if (prev < k && cur >= k)
-    {
-      counter->k   = k - prev;
-      counter->len = cur - prev;
-      set_kth_key_bits<KeyInT, BitsPerPass>(
-        counter->kth_key_bits, pass, static_cast<unsigned int>(bin_idx));
-    }
-  };
+  // Publish each thread's right-edge prefix sum so its right neighbour can
+  // read it as the `prev` for its leftmost bin.
+  temp.boundaries[threadIdx.x] = thread_data[bins_per_thread - 1];
+  __syncthreads();
+  const OffsetT prev_boundary = (threadIdx.x == 0) ? OffsetT{0} : temp.boundaries[threadIdx.x - 1];
+
+  const int base_bin = static_cast<int>(threadIdx.x) * bins_per_thread;
+
+  static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
 
   _CCCL_PRAGMA_UNROLL_FULL()
-  for (; histo_offset + BlockThreads <= num_buckets; histo_offset += BlockThreads)
+  for (int i = 0; i < bins_per_thread; ++i)
   {
-    body();
-  }
-  if ((num_buckets % BlockThreads != 0) && (histo_offset + static_cast<int>(threadIdx.x) < num_buckets))
-  {
-    body();
+    const int bin_index = base_bin + i;
+    if (is_full_tile || bin_index < num_buckets)
+    {
+      const OffsetT prev = (i == 0) ? prev_boundary : thread_data[i - 1];
+      const OffsetT cur  = thread_data[i];
+      if (prev < k && cur >= k)
+      {
+        counter->k   = static_cast<OutOffsetT>(k - prev);
+        counter->len = static_cast<OffsetT>(cur - prev);
+        set_kth_key_bits<KeyInT, BitsPerPass>(
+          counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
+      }
+    }
   }
 }
 
@@ -331,7 +339,7 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void choose_bucket(
 //---------------------------------------------------------------------
 
 // Ensures global visibility of histogram writes, detects the last finishing block,
-// runs the prefix sum, identifies the k-th bucket, and resets the histogram for
+// runs the merged prefix sum + bucket selection, and resets the histogram for
 // the next pass. counter_update_fn runs on thread 0 of the last block.
 template <int BlockThreads,
           int BitsPerPass,
@@ -342,7 +350,6 @@ template <int BlockThreads,
           typename CounterUpdateFn>
 _CCCL_DEVICE _CCCL_FORCEINLINE void finalize_pass(
   BinPrefixSumTempStorage<BlockThreads, BitsPerPass, ScanAlgorithm, OffsetT>& prefix_sum_temp,
-  OffsetT* histogram_smem,
   Counter<KeyInT, OffsetT, OutOffsetT>* counter,
   OffsetT* global_histogram,
   OutOffsetT current_k,
@@ -368,10 +375,8 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void finalize_pass(
       counter_update_fn();
     }
 
-    compute_bin_offsets(prefix_sum_temp, global_histogram, histogram_smem);
-    __syncthreads();
-
-    choose_bucket<BlockThreads, BitsPerPass>(histogram_smem, counter, current_k, pass);
+    choose_bucket<BlockThreads, BitsPerPass, ScanAlgorithm>(
+      prefix_sum_temp, global_histogram, counter, current_k, pass);
 
     if (!is_last_pass)
     {
@@ -612,7 +617,6 @@ struct AgentTopKHistogram
     merge_histogram<block_threads, num_buckets>(temp_storage.histogram, global_histogram);
 
     finalize_pass(temp_storage.scratch.prefix_sum,
-                  temp_storage.histogram,
                   counter,
                   global_histogram,
                   k,
@@ -1105,7 +1109,6 @@ public:
     }
 
     finalize_pass(storage.scratch.prefix_sum,
-                  storage.histogram,
                   counter,
                   global_histogram,
                   current_k,
