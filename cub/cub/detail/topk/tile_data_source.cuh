@@ -61,7 +61,6 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail
 {
-
 //---------------------------------------------------------------------
 // 1. Compositional storage helpers (architecture §2.1.1).
 //
@@ -150,7 +149,6 @@ inline constexpr bool is_generative_iterator_v = is_generative_iterator<It>::val
 
 namespace topk
 {
-
 //---------------------------------------------------------------------
 // 3. Reserve callbacks (architecture §8).
 //
@@ -252,8 +250,7 @@ struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose>
 template <>
 struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose_timesliced>
 {
-  static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value =
-    CUB_NS_QUALIFIER::BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED;
+  static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED;
 };
 } // namespace detail_tds
 
@@ -668,17 +665,13 @@ struct factory_impl<tile_load_kind::block_load_to_shared_async, /*IsGenerative=*
   using data_source_t = async_to_shared_data_source<It, BlockThreads, ItemsPerThread, GmemAlign, OffsetT>;
 };
 
-#define _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(Kind)                                                                   \
-  template <>                                                                                                    \
-  struct factory_impl<Kind, /*IsGenerative=*/false>                                                              \
-  {                                                                                                              \
-    template <typename It,                                                                                       \
-              int BlockThreads,                                                                                  \
-              int ItemsPerThread,                                                                                \
-              typename OffsetT,                                                                                  \
-              ::cuda::std::size_t /*GmemAlign*/>                                                                 \
-    using data_source_t =                                                                                        \
-      sync_block_load_data_source<It, BlockThreads, ItemsPerThread, sync_block_load_algo<Kind>::value, OffsetT>; \
+#define _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(Kind)                                                                        \
+  template <>                                                                                                         \
+  struct factory_impl<Kind, /*IsGenerative=*/false>                                                                   \
+  {                                                                                                                   \
+    template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT, ::cuda::std::size_t /*GmemAlign*/> \
+    using data_source_t =                                                                                             \
+      sync_block_load_data_source<It, BlockThreads, ItemsPerThread, sync_block_load_algo<Kind>::value, OffsetT>;      \
   }
 
 _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_direct);
@@ -689,7 +682,6 @@ _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_warp_transpose);
 _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_warp_transpose_timesliced);
 
 #undef _CUB_DETAIL_TOPK_SYNC_BL_FACTORY
-
 } // namespace detail_tds
 
 // Type alias selecting the concrete TileDataSource type for the given configuration.
@@ -701,10 +693,10 @@ template <typename It,
           int ItemsPerThread,
           typename OffsetT              = ::cuda::std::int64_t,
           ::cuda::std::size_t GmemAlign = alignof(CUB_NS_QUALIFIER::detail::it_value_t<It>)>
-using tile_data_source_t = typename detail_tds::factory_impl<
-  ConfiguredKind,
-  CUB_NS_QUALIFIER::detail::is_generative_iterator_v<::cuda::std::remove_cv_t<It>>>::
-  template data_source_t<It, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>;
+using tile_data_source_t =
+  typename detail_tds::factory_impl<ConfiguredKind,
+                                    CUB_NS_QUALIFIER::detail::is_generative_iterator_v<::cuda::std::remove_cv_t<It>>>::
+    template data_source_t<It, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>;
 
 template <typename It,
           tile_load_kind ConfiguredKind,
@@ -712,15 +704,13 @@ template <typename It,
           int ItemsPerThread,
           typename OffsetT              = ::cuda::std::int64_t,
           ::cuda::std::size_t GmemAlign = alignof(CUB_NS_QUALIFIER::detail::it_value_t<It>)>
-_CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto
-make_tile_data_source(It it,
-                      typename tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>::
-                        TempStorage& state)
+_CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto make_tile_data_source(
+  It it,
+  typename tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>::TempStorage& state)
 {
   using data_source_t = tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>;
   return data_source_t{it, state};
 }
-
 } // namespace topk
 } // namespace detail
 

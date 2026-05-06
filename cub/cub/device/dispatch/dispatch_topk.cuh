@@ -40,7 +40,6 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-
 // Gathers a value from the user's input iterator using an index. Used as the
 // function object for `cuda::transform_output_iterator` on the indexed value
 // path: the agent stores `OffsetT` indices in the candidate buffer and writes
@@ -341,32 +340,34 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   // _TempStorage is a strict subset of the partition agent's (no partition
   // scratch, no candidate channel state). All three layouts share the same
   // __shared__ buffer via a union.
-  using agent_bf_t = agent_topk_filter_partition<agent_topk_policy_t,
-                                                 KeyInputIteratorT,
-                                                 KeyOutputIteratorT,
-                                                 ValueInputIteratorT,
-                                                 ValueOutputIteratorT,
-                                                 ExtractBinOpT,
-                                                 IdentifyCandidatesOpT,
-                                                 OffsetT,
-                                                 OutOffsetT,
-                                                 sink_mode::buffered,
-                                                 part_strat,
-                                                 part_classify_mode,
-                                                 lazy_value_load>;
-  using agent_es_t = agent_topk_filter_partition<agent_topk_policy_t,
-                                                 KeyInputIteratorT,
-                                                 KeyOutputIteratorT,
-                                                 ValueInputIteratorT,
-                                                 ValueOutputIteratorT,
-                                                 ExtractBinOpT,
-                                                 IdentifyCandidatesOpT,
-                                                 OffsetT,
-                                                 OutOffsetT,
-                                                 sink_mode::early_stop,
-                                                 part_strat,
-                                                 part_classify_mode,
-                                                 lazy_value_load>;
+  using agent_bf_t = agent_topk_filter_partition<
+    agent_topk_policy_t,
+    KeyInputIteratorT,
+    KeyOutputIteratorT,
+    ValueInputIteratorT,
+    ValueOutputIteratorT,
+    ExtractBinOpT,
+    IdentifyCandidatesOpT,
+    OffsetT,
+    OutOffsetT,
+    sink_mode::buffered,
+    part_strat,
+    part_classify_mode,
+    lazy_value_load>;
+  using agent_es_t = agent_topk_filter_partition<
+    agent_topk_policy_t,
+    KeyInputIteratorT,
+    KeyOutputIteratorT,
+    ValueInputIteratorT,
+    ValueOutputIteratorT,
+    ExtractBinOpT,
+    IdentifyCandidatesOpT,
+    OffsetT,
+    OutOffsetT,
+    sink_mode::early_stop,
+    part_strat,
+    part_classify_mode,
+    lazy_value_load>;
 
   // Unbuffered scout mode: drive the histogram agent with a candidate-filter
   // predicate that wraps `identify_candidates_op`. See the single-source
@@ -375,12 +376,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   // which by induction implies no prior pass wrote to `in_key_buf`, so we
   // always load from `d_keys_in`.
   using filter_op_t = topk_candidate_filter_op<IdentifyCandidatesOpT>;
-  using agent_ub_t = AgentTopKHistogram<agent_topk_policy_t,
-                                        KeyInputIteratorT,
-                                        ExtractBinOpT,
-                                        OffsetT,
-                                        OutOffsetT,
-                                        filter_op_t>;
+  using agent_ub_t =
+    AgentTopKHistogram<agent_topk_policy_t, KeyInputIteratorT, ExtractBinOpT, OffsetT, OutOffsetT, filter_op_t>;
 
   union all_modes_ts_t
   {
@@ -408,7 +405,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
 
   ValueInT* effective_in_val_buf = load_from_original_input ? nullptr : in_val_buf;
 
-  KeyInT* effective_out_key_buf  = (current_len > buffer_length) ? nullptr : out_key_buf;
+  KeyInT* effective_out_key_buf   = (current_len > buffer_length) ? nullptr : out_key_buf;
   ValueInT* effective_out_val_buf = (current_len > buffer_length) ? nullptr : out_val_buf;
 
   // Counter update functor for the three filter modes.
@@ -427,44 +424,47 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
 
   if (early_stop)
   {
-    agent_es_t agent(temp_storage.es,
-                     d_keys_in,
-                     d_keys_out,
-                     d_values_in,
-                     d_values_out,
-                     in_key_buf,
-                     effective_in_val_buf,
-                     &counter->out_cnt,
-                     input_length,
-                     load_from_original_input,
-                     extract_bin_op,
-                     identify_candidates_op,
-                     histogram);
+    agent_es_t agent(
+      temp_storage.es,
+      d_keys_in,
+      d_keys_out,
+      d_values_in,
+      d_values_out,
+      in_key_buf,
+      effective_in_val_buf,
+      &counter->out_cnt,
+      input_length,
+      load_from_original_input,
+      extract_bin_op,
+      identify_candidates_op,
+      histogram);
     agent.run(counter, current_k, pass, is_last_pass, counter_update_fn);
   }
   else if (effective_out_key_buf != nullptr)
   {
-    agent_bf_t agent(temp_storage.bf,
-                     d_keys_in,
-                     d_keys_out,
-                     d_values_in,
-                     d_values_out,
-                     in_key_buf,
-                     effective_in_val_buf,
-                     &counter->out_cnt,
-                     input_length,
-                     load_from_original_input,
-                     extract_bin_op,
-                     identify_candidates_op,
-                     histogram);
-    agent.run(counter,
-              current_k,
-              pass,
-              is_last_pass,
-              counter_update_fn,
-              effective_out_key_buf,
-              effective_out_val_buf,
-              &counter->filter_cnt);
+    agent_bf_t agent(
+      temp_storage.bf,
+      d_keys_in,
+      d_keys_out,
+      d_values_in,
+      d_values_out,
+      in_key_buf,
+      effective_in_val_buf,
+      &counter->out_cnt,
+      input_length,
+      load_from_original_input,
+      extract_bin_op,
+      identify_candidates_op,
+      histogram);
+    agent.run(
+      counter,
+      current_k,
+      pass,
+      is_last_pass,
+      counter_update_fn,
+      effective_out_key_buf,
+      effective_out_val_buf,
+      &counter->filter_cnt);
   }
   else
   {
@@ -473,15 +473,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     // guarantees `load_from_original_input` is true on this path; we assert it
     // in debug builds rather than threading `in_key_buf` / `load_from_original_input`
     // through to a single-source agent that can't act on them.
-    _CCCL_ASSERT(load_from_original_input,
-                 "Unbuffered filter passes must always load from d_keys_in");
+    _CCCL_ASSERT(load_from_original_input, "Unbuffered filter passes must always load from d_keys_in");
     filter_op_t filter_op{identify_candidates_op};
-    agent_ub_t agent(temp_storage.ub,
-                     d_keys_in,
-                     input_length,
-                     current_k,
-                     extract_bin_op,
-                     filter_op);
+    agent_ub_t agent(temp_storage.ub, d_keys_in, input_length, current_k, extract_bin_op, filter_op);
     agent.invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
   }
 }
@@ -532,17 +526,18 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
   static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
   static constexpr bool lazy_value_load                          = policy.lazy_value_load;
 
-  using agent_lf_t = agent_topk_last_filter<agent_topk_policy_t,
-                                            KeyInputIteratorT,
-                                            KeyOutputIteratorT,
-                                            ValueInputIteratorT,
-                                            ValueOutputIteratorT,
-                                            IdentifyCandidatesOpT,
-                                            OffsetT,
-                                            OutOffsetT,
-                                            part_strat,
-                                            part_classify_mode,
-                                            lazy_value_load>;
+  using agent_lf_t = agent_topk_last_filter<
+    agent_topk_policy_t,
+    KeyInputIteratorT,
+    KeyOutputIteratorT,
+    ValueInputIteratorT,
+    ValueOutputIteratorT,
+    IdentifyCandidatesOpT,
+    OffsetT,
+    OutOffsetT,
+    part_strat,
+    part_classify_mode,
+    lazy_value_load>;
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
 
@@ -560,25 +555,22 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 
   const OutOffsetT num_of_kth_needed = static_cast<OutOffsetT>(counter->k);
 
-  agent_lf_t agent(temp_storage,
-                   d_keys_in,
-                   d_keys_out,
-                   d_values_in,
-                   d_values_out,
-                   in_key_buf,
-                   effective_in_val_buf,
-                   &counter->out_cnt,
-                   input_length,
-                   load_from_original_input,
-                   identify_candidates_op);
+  agent_lf_t agent(
+    temp_storage,
+    d_keys_in,
+    d_keys_out,
+    d_values_in,
+    d_values_out,
+    in_key_buf,
+    effective_in_val_buf,
+    &counter->out_cnt,
+    input_length,
+    load_from_original_input,
+    identify_candidates_op);
   agent.run(&counter->out_back_cnt, k, num_of_kth_needed);
 }
 
-template <typename PolicySelector,
-          typename KeyInputIteratorT,
-          typename OffsetT,
-          typename OutOffsetT,
-          typename ExtractBinOpT>
+template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT, typename OutOffsetT, typename ExtractBinOpT>
 #if _CCCL_HAS_CONCEPTS()
   requires topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
@@ -601,12 +593,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.load_algorithm,
                     policy.scan_algorithm,
                     policy.keys_tile_load_kind>;
-  using agent_t =
-    AgentTopKHistogram<agent_topk_policy_t,
-                       KeyInputIteratorT,
-                       ExtractBinOpT,
-                       OffsetT,
-                       OutOffsetT>;
+  using agent_t = AgentTopKHistogram<agent_topk_policy_t, KeyInputIteratorT, ExtractBinOpT, OffsetT, OutOffsetT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
@@ -830,18 +817,18 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       return error;
     }
 
-    auto topk_kernel =
-      DeviceTopKFilterKernel<PolicySelector,
-                             KeyInputIteratorT,
-                             KeyOutputIteratorT,
-                             effective_value_input_it_t,
-                             effective_value_output_it_t,
-                             OffsetT,
-                             OutOffsetT,
-                             key_in_t,
-                             effective_value_in_t,
-                             extract_bin_op,
-                             identify_candidates_op>;
+    auto topk_kernel = DeviceTopKFilterKernel<
+      PolicySelector,
+      KeyInputIteratorT,
+      KeyOutputIteratorT,
+      effective_value_input_it_t,
+      effective_value_output_it_t,
+      OffsetT,
+      OutOffsetT,
+      key_in_t,
+      effective_value_in_t,
+      extract_bin_op,
+      identify_candidates_op>;
 
     int main_kernel_blocks_per_sm = 0;
     if (const auto error =
@@ -868,12 +855,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
 
     // Pass 0: dedicated histogram-only kernel over the full input
     {
-      auto histogram_kernel = DeviceTopKHistogramKernel<
-        PolicySelector,
-        KeyInputIteratorT,
-        OffsetT,
-        OutOffsetT,
-        extract_bin_op>;
+      auto histogram_kernel =
+        DeviceTopKHistogramKernel<PolicySelector, KeyInputIteratorT, OffsetT, OutOffsetT, extract_bin_op>;
 
       int histogram_kernel_blocks_per_sm = 0;
       if (const auto error = CubDebug(
@@ -887,15 +870,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       extract_bin_op extract_op(0, total_bits, decomposer);
       if (const auto error = CubDebug(
             launcher_factory(histogram_grid_size, threads_per_block, 0, stream)
-              .doit(histogram_kernel,
-                    d_keys_in,
-                    counter,
-                    histogram,
-                    num_items,
-                    k,
-                    extract_op,
-                    0,
-                    num_passes == 1)))
+              .doit(histogram_kernel, d_keys_in, counter, histogram, num_items, k, extract_op, 0, num_passes == 1)))
       {
         return error;
       }
@@ -907,8 +882,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     DoubleBuffer<effective_value_in_t> val_bufs;
     if constexpr (!keys_only)
     {
-      val_bufs = DoubleBuffer<effective_value_in_t>(static_cast<effective_value_in_t*>(allocations[5]),
-                                                    static_cast<effective_value_in_t*>(allocations[4]));
+      val_bufs = DoubleBuffer<effective_value_in_t>(
+        static_cast<effective_value_in_t*>(allocations[5]), static_cast<effective_value_in_t*>(allocations[4]));
     }
 
     int pass = 1;
@@ -950,17 +925,17 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
 
     // Last filter pass: dedicated DeviceTopKLastFilterKernel running agent_topk_last_filter only.
     identify_candidates_op identify_op(&counter->kth_key_bits, pass, total_bits, decomposer);
-    auto last_filter_kernel =
-      DeviceTopKLastFilterKernel<PolicySelector,
-                                 KeyInputIteratorT,
-                                 KeyOutputIteratorT,
-                                 effective_value_input_it_t,
-                                 effective_value_output_it_t,
-                                 OffsetT,
-                                 OutOffsetT,
-                                 key_in_t,
-                                 effective_value_in_t,
-                                 identify_candidates_op>;
+    auto last_filter_kernel = DeviceTopKLastFilterKernel<
+      PolicySelector,
+      KeyInputIteratorT,
+      KeyOutputIteratorT,
+      effective_value_input_it_t,
+      effective_value_output_it_t,
+      OffsetT,
+      OutOffsetT,
+      key_in_t,
+      effective_value_in_t,
+      identify_candidates_op>;
 
     int last_filter_kernel_blocks_per_sm = 0;
     if (const auto error = CubDebug(

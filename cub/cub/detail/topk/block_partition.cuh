@@ -58,7 +58,6 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-
 //---------------------------------------------------------------------
 // Shared types
 //---------------------------------------------------------------------
@@ -117,7 +116,6 @@ enum class BlockPartitionClassifyMode
 
 namespace bp_detail
 {
-
 // Counters for the staged / shared_mem strategies. Phase 1 uses 32-bit smem atomics
 // (`int counters[2]`); Phase 2 uses the actual offset types for the global bases. The
 // two phases are separated by `__syncthreads()` so the union reuse is safe. `cnt`
@@ -221,8 +219,7 @@ struct staged_scratch
   union phase_t
   {
     KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_union<map_tuple_t<staged_channel_phase, ValueChannelsTuple, TileItems>>
-      per_channel;
+    CUB_NS_QUALIFIER::detail::phase_union<map_tuple_t<staged_channel_phase, ValueChannelsTuple, TileItems>> per_channel;
 
     _CCCL_HOST_DEVICE phase_t() {}
     _CCCL_HOST_DEVICE ~phase_t() {}
@@ -298,8 +295,7 @@ struct strategy_scratch_selector<BlockPartitionStrategy::SharedMem,
 // for every element of the tuple. Used by BlockPartition for sub-brokering value-channel
 // scratch and propagating per-channel calls.
 template <typename Tuple, typename Fn, ::cuda::std::size_t... Is>
-_CCCL_DEVICE _CCCL_FORCEINLINE void
-tuple_for_each_impl(Tuple&& t, Fn&& f, ::cuda::std::index_sequence<Is...>)
+_CCCL_DEVICE _CCCL_FORCEINLINE void tuple_for_each_impl(Tuple&& t, Fn&& f, ::cuda::std::index_sequence<Is...>)
 {
   (f(::cuda::std::get<Is>(t), ::cuda::std::integral_constant<::cuda::std::size_t, Is>{}), ...);
 }
@@ -308,7 +304,8 @@ template <typename Tuple, typename Fn>
 _CCCL_DEVICE _CCCL_FORCEINLINE void tuple_for_each(Tuple&& t, Fn&& f)
 {
   constexpr auto sz = ::cuda::std::tuple_size<::cuda::std::remove_reference_t<Tuple>>::value;
-  tuple_for_each_impl(::cuda::std::forward<Tuple>(t), ::cuda::std::forward<Fn>(f), ::cuda::std::make_index_sequence<sz>{});
+  tuple_for_each_impl(
+    ::cuda::std::forward<Tuple>(t), ::cuda::std::forward<Fn>(f), ::cuda::std::make_index_sequence<sz>{});
 }
 
 // Adapter that lets `partition_atomics_fused_scatter` be a single function template
@@ -339,8 +336,7 @@ struct inlined_classifier
 };
 
 template <bool IsFull, typename Op>
-_CCCL_DEVICE _CCCL_FORCEINLINE inlined_classifier<IsFull, Op>
-make_inlined_classifier(Op& op, int num_thread_items)
+_CCCL_DEVICE _CCCL_FORCEINLINE inlined_classifier<IsFull, Op> make_inlined_classifier(Op& op, int num_thread_items)
 {
   return inlined_classifier<IsFull, Op>{op, num_thread_items};
 }
@@ -408,7 +404,6 @@ struct noop_callback_op
   _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(KeyT /*key*/) const
   {}
 };
-
 } // namespace bp_detail
 
 //---------------------------------------------------------------------
@@ -421,33 +416,27 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename CandidateOffsetT,
-          typename ValueChannelsTuple                = ::cuda::std::tuple<>,
-          BlockPartitionClassifyMode ClassifyMode    = BlockPartitionClassifyMode::precomputed>
+          typename ValueChannelsTuple             = ::cuda::std::tuple<>,
+          BlockPartitionClassifyMode ClassifyMode = BlockPartitionClassifyMode::precomputed>
 class BlockPartition
 {
-  static_assert(ClassifyMode == BlockPartitionClassifyMode::precomputed
-                  || Strategy == BlockPartitionStrategy::Atomics,
+  static_assert(ClassifyMode == BlockPartitionClassifyMode::precomputed || Strategy == BlockPartitionStrategy::Atomics,
                 "BlockPartitionClassifyMode::inlined is only supported with the Atomics "
                 "strategy; staged / shared-mem scatter requires a precomputed classes[] array.");
 
 public:
-  static constexpr int tile_items                       = BlockThreads * ItemsPerThread;
-  static constexpr BlockPartitionStrategy strat         = Strategy;
-  static constexpr BlockPartitionClassifyMode classify  = ClassifyMode;
-  static constexpr int num_value_channels =
-    static_cast<int>(::cuda::std::tuple_size<ValueChannelsTuple>::value);
+  static constexpr int tile_items                      = BlockThreads * ItemsPerThread;
+  static constexpr BlockPartitionStrategy strat        = Strategy;
+  static constexpr BlockPartitionClassifyMode classify = ClassifyMode;
+  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelsTuple>::value);
 
   // Class-lifetime persistent state. Empty (no carried state across Partition() calls).
   struct TempStorage
   {};
 
   // Method-call typed scratch; strategy-specific. Architecture §9.4.
-  using ScratchStorage = typename bp_detail::strategy_scratch_selector<Strategy,
-                                                                      KeyT,
-                                                                      ValueChannelsTuple,
-                                                                      tile_items,
-                                                                      SelectedOffsetT,
-                                                                      CandidateOffsetT>::type;
+  using ScratchStorage = typename bp_detail::
+    strategy_scratch_selector<Strategy, KeyT, ValueChannelsTuple, tile_items, SelectedOffsetT, CandidateOffsetT>::type;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartition() = default;
 
@@ -587,9 +576,7 @@ private:
     {
       const int tb_offset = static_cast<int>(threadIdx.x) * ItemsPerThread;
       num_thread_items =
-        (tb_offset >= num_items)
-          ? 0
-          : static_cast<int>((::cuda::std::min) (ItemsPerThread, num_items - tb_offset));
+        (tb_offset >= num_items) ? 0 : static_cast<int>((::cuda::std::min) (ItemsPerThread, num_items - tb_offset));
     }
 
     // Atomics strategy: route through the unified `partition_atomics_fused` for both
@@ -645,9 +632,8 @@ private:
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int j = 0; j < ItemsPerThread; ++j)
       {
-        const bool is_valid =
-          IsFull ? true : (j < num_thread_items);
-        classes[j] = is_valid ? identify_candidates_op(keys[j]) : candidate_class::rejected;
+        const bool is_valid = IsFull ? true : (j < num_thread_items);
+        classes[j]          = is_valid ? identify_candidates_op(keys[j]) : candidate_class::rejected;
 
         if constexpr (HasCandidates)
         {
@@ -1009,9 +995,9 @@ private:
       }
       else if constexpr (!HasCandidates)
       {
-        const int pos              = atomicAdd(&buffer.cnt.counters[0], 1);
-        buffer.phase.keys[pos]     = keys[j];
-        positions[j]               = pos;
+        const int pos          = atomicAdd(&buffer.cnt.counters[0], 1);
+        buffer.phase.keys[pos] = keys[j];
+        positions[j]           = pos;
       }
       else
       {
@@ -1056,15 +1042,15 @@ private:
       SelectedReserveOp::may_grant_less ? buffer.cnt.granted_selected : static_cast<SelectedOffsetT>(selected_cnt);
     const CandidateOffsetT cand_to_write =
       HasCandidates
-        ? (CandidateReserveOp::may_grant_less ? buffer.cnt.granted_candidate
-                                              : static_cast<CandidateOffsetT>(candidate_cnt))
+        ? (CandidateReserveOp::may_grant_less
+             ? buffer.cnt.granted_candidate
+             : static_cast<CandidateOffsetT>(candidate_cnt))
         : CandidateOffsetT{};
 
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      selected_keys_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-        selected_key_transform(buffer.phase.keys[i]);
+      selected_keys_out[sel_base + static_cast<SelectedOffsetT>(i)] = selected_key_transform(buffer.phase.keys[i]);
     }
     if constexpr (HasCandidates)
     {
@@ -1258,15 +1244,15 @@ private:
       SelectedReserveOp::may_grant_less ? buffer.cnt.granted_selected : static_cast<SelectedOffsetT>(selected_cnt);
     const CandidateOffsetT cand_to_write =
       HasCandidates
-        ? (CandidateReserveOp::may_grant_less ? buffer.cnt.granted_candidate
-                                              : static_cast<CandidateOffsetT>(candidate_cnt))
+        ? (CandidateReserveOp::may_grant_less
+             ? buffer.cnt.granted_candidate
+             : static_cast<CandidateOffsetT>(candidate_cnt))
         : CandidateOffsetT{};
 
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      selected_keys_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-        selected_key_transform(buffer.phase.kv.keys[i]);
+      selected_keys_out[sel_base + static_cast<SelectedOffsetT>(i)] = selected_key_transform(buffer.phase.kv.keys[i]);
     }
     if constexpr (HasCandidates)
     {
@@ -1299,9 +1285,7 @@ private:
     }
     __syncthreads();
   }
-
 };
-
 } // namespace detail::topk
 
 CUB_NAMESPACE_END
