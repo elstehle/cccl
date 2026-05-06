@@ -84,13 +84,13 @@ struct topk_policy
   int threads_per_block;
   int items_per_thread;
   int bits_per_pass;
-  BlockLoadAlgorithm load_algorithm;
+  // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
+  // The agents use this to pick the `TileDataSource` specialization for the keys
+  // stream. Sits in the slot the legacy `load_algorithm` field used to occupy so
+  // positional initializers (e.g. tuning sweeps) can vary it as a primary axis.
+  tile_load_kind keys_tile_load_kind;
   BlockScanAlgorithm scan_algorithm;
   BlockPartitionStrategy partition_strategy = BlockPartitionStrategy::Atomics;
-  // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
-  // Defaults to the equivalent of `load_algorithm` so per-arch tunings expressed in
-  // terms of the legacy enum preserve their behavior without explicit migration.
-  tile_load_kind keys_tile_load_kind = block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE);
   // Selects how `BlockPartition` materializes the per-item classification: either
   // precompute a `classes[ItemsPerThread]` array up front (smaller code, +1 register
   // pass over the keys), or recompute it inline at each scatter use-site (frees the
@@ -116,10 +116,10 @@ struct topk_policy
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
-        && lhs.bits_per_pass == rhs.bits_per_pass && lhs.load_algorithm == rhs.load_algorithm
+        && lhs.bits_per_pass == rhs.bits_per_pass && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
         && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
-        && lhs.classify_mode == rhs.classify_mode && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
-        && lhs.value_carrier == rhs.value_carrier && lhs.lazy_value_load == rhs.lazy_value_load;
+        && lhs.classify_mode == rhs.classify_mode && lhs.value_carrier == rhs.value_carrier
+        && lhs.lazy_value_load == rhs.lazy_value_load;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -132,11 +132,12 @@ struct topk_policy
   {
     return os
         << "topk_policy { .threads_per_block = " << p.threads_per_block
-        << ", .items_per_thread = " << p.items_per_thread << ", .bits_per_pass = " << p.bits_per_pass
-        << ", .load_algorithm = " << p.load_algorithm << ", .scan_algorithm = " << p.scan_algorithm
+        << ", .items_per_thread = " << p.items_per_thread
+        << ", .bits_per_pass = " << p.bits_per_pass
+        << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
+        << ", .scan_algorithm = " << p.scan_algorithm
         << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
         << ", .classify_mode = " << static_cast<int>(p.classify_mode)
-        << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
         << ", .value_carrier = " << static_cast<int>(p.value_carrier)
         << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
   }
@@ -165,10 +166,9 @@ struct policy_selector
         512,
         items_per_thread,
         bits_per_pass,
-        BLOCK_LOAD_VECTORIZE,
+        block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE),
         BLOCK_SCAN_WARP_SCANS,
-        BlockPartitionStrategy::Atomics,
-        block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
+        BlockPartitionStrategy::Atomics};
     }
 
     // Default tuning used on older architectures.
@@ -178,10 +178,9 @@ struct policy_selector
       512,
       items_per_thread,
       bits_per_pass,
-      BLOCK_LOAD_VECTORIZE,
+      block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE),
       BLOCK_SCAN_WARP_SCANS,
-      BlockPartitionStrategy::Atomics,
-      block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE)};
+      BlockPartitionStrategy::Atomics};
   }
 };
 

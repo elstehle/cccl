@@ -41,25 +41,25 @@ namespace detail::topk
 //! @tparam BitsPerPass
 //!   Number of bits processed per pass
 //!
-//! @tparam LoadAlgorithm
-//!   The BlockLoad algorithm to use
-//!
 //! @tparam ScanAlgorithm
 //!   The BlockScan algorithm to use
+//!
+//! @tparam KeysTileLoadKind
+//!   The `tile_load_kind` used by the keys-stream `TileDataSource`. Architecture
+//!   §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA, so this
+//!   subsumes what was historically expressed as a `BlockLoadAlgorithm`.
 //!
 template <int ThreadsPerBlock,
           int ItemsPerThread,
           int BitsPerPass,
-          BlockLoadAlgorithm LoadAlgorithm,
           BlockScanAlgorithm ScanAlgorithm,
           tile_load_kind KeysTileLoadKind = tile_load_kind::block_load_vectorize>
 struct AgentTopKPolicy
 {
-  static constexpr int threads_per_block             = ThreadsPerBlock;
-  static constexpr int items_per_thread              = ItemsPerThread;
-  static constexpr int bits_per_pass                 = BitsPerPass;
-  static constexpr BlockLoadAlgorithm load_algorithm = LoadAlgorithm;
-  static constexpr BlockScanAlgorithm SCAN_ALGORITHM = ScanAlgorithm;
+  static constexpr int block_threads                  = ThreadsPerBlock;
+  static constexpr int items_per_thread               = ItemsPerThread;
+  static constexpr int bits_per_pass                  = BitsPerPass;
+  static constexpr BlockScanAlgorithm scan_algorithm  = ScanAlgorithm;
   // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
   // Used by the new agents to pick a TileDataSource specialization for the keys
   // stream. Defaults to the legacy `BLOCK_LOAD_VECTORIZE` mapping so existing call
@@ -481,7 +481,7 @@ struct AgentTopKHistogram
   using keys_source_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using finalize_pass_t =
-    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT, OutOffsetT>;
+    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   struct _TempStorage
   {
@@ -758,7 +758,7 @@ struct agent_topk_filter_partition
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
   using finalize_pass_t =
-    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::SCAN_ALGORITHM, OffsetT, OutOffsetT>;
+    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   // Compile-time mode plumbing.
   //   selected_offset_t / candidate_offset_t : pointer types of the global counters.
