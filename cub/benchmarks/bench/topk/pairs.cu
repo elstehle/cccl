@@ -12,7 +12,7 @@
 
 // %RANGE% TUNE_ITEMS_PER_THREAD ipt 1:24:1
 // %RANGE% TUNE_THREADS_PER_BLOCK tpb 128:1024:32
-// %RANGE% TUNE_BLOCK_LOAD_ALGORITHM ld 0:2:1
+// %RANGE% TUNE_KEYS_TILE_LOAD_KIND ld 0:2:1
 
 #if !TUNE_BASE
 template <class KeyInT>
@@ -21,12 +21,12 @@ struct policy_selector_t
   [[nodiscard]] _CCCL_HOST_DEVICE constexpr auto operator()(cuda::compute_capability) const
     -> cub::detail::topk::topk_policy
   {
-#  if TUNE_BLOCK_LOAD_ALGORITHM == 0
-    constexpr auto load_alg = cub::BLOCK_LOAD_DIRECT;
-#  elif TUNE_BLOCK_LOAD_ALGORITHM == 1
-    constexpr auto load_alg = cub::BLOCK_LOAD_WARP_TRANSPOSE;
-#  elif TUNE_BLOCK_LOAD_ALGORITHM == 2
-    constexpr auto load_alg = cub::BLOCK_LOAD_VECTORIZE;
+#  if TUNE_KEYS_TILE_LOAD_KIND == 0
+    constexpr auto keys_tile_load_kind = cub::detail::topk::tile_load_kind::block_load_direct;
+#  elif TUNE_KEYS_TILE_LOAD_KIND == 1
+    constexpr auto keys_tile_load_kind = cub::detail::topk::tile_load_kind::block_load_warp_transpose;
+#  elif TUNE_KEYS_TILE_LOAD_KIND == 2
+    constexpr auto keys_tile_load_kind = cub::detail::topk::tile_load_kind::block_load_vectorize;
 #  endif
 
     constexpr int nominal_4b_items_per_thread = TUNE_ITEMS_PER_THREAD;
@@ -35,7 +35,7 @@ struct policy_selector_t
       TUNE_THREADS_PER_BLOCK,
       items_per_thread,
       cub::detail::topk::calc_bits_per_pass<KeyInT>(),
-      load_alg,
+      keys_tile_load_kind,
       cub::BLOCK_SCAN_WARP_SCANS};
   }
 };

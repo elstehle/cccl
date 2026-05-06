@@ -197,9 +197,9 @@ struct back_grow_capped_reserve_op
 //---------------------------------------------------------------------
 // 4. `tile_load_kind` -- the unified policy knob (architecture §2.4).
 //
-// Spans the sync `BlockLoadAlgorithm` choices (so no information is lost vs the legacy
-// `load_algorithm` policy entry) plus the async TMA path. The factory below picks the
-// concrete TileDataSource specialization from this enum.
+// Spans the sync `BlockLoadAlgorithm` choices (covering everything the legacy
+// `BlockLoadAlgorithm`-based policy entry could express) plus the async TMA path.
+// The factory below picks the concrete TileDataSource specialization from this enum.
 //---------------------------------------------------------------------
 
 enum class tile_load_kind
