@@ -48,69 +48,48 @@ _CCCL_HOST_DEVICE_API constexpr int calc_bits_per_pass()
   return calc_bits_per_pass(int{sizeof(KeyT)});
 }
 
-// Selects how the top-k value channel propagates through the candidate buffer.
-//   indexed      -- candidate buffer stores `OffsetT` indices; values are
-//                   gathered from the user's input iterator at write time
-//                   (matches `main`'s behavior; default).
-//   materialized -- candidate buffer stores full `value_in_t` records.
-// Ignored entirely on the keys-only path. The choice is implemented purely as
-// dispatch-side iterator rewiring: in `indexed` mode the agent receives a
-// `cuda::counting_iterator<OffsetT>` for the value input and a
-// `cuda::transform_output_iterator` for the value output, so the agent itself
-// remains unaware of the mode. Lives in this header alongside `tile_load_kind`
-// so the tuning policy can store it without pulling in `agent_topk.cuh`.
-enum class value_carrier_mode
+// Selects how the value channel propagates through the candidate buffer.
+// `indexed` may be preferable for smallish `k` and/or wider value types: the
+// candidate buffer stores `OffsetT` indices into the user's input iterator,
+// and full values are only gathered (and written through to the output
+// iterator) once a candidate is classified as selected.
+// The choice is implemented purely as dispatch-side iterator rewiring: in
+// `indexed` mode the agent receives a `cuda::counting_iterator` for the value
+// input and a `cuda::transform_output_iterator` for the value output, so the
+// agent itself remains unaware of the mode.
+enum class value_materialization_mode
 {
+  // candidate buffer stores `OffsetT` indices; values are gathered from the user's input iterator at write time
   indexed,
+  // candidate buffer stores full `value_in_t` items
   materialized,
 };
-
-// Map a `BlockLoadAlgorithm` enum value to the equivalent `tile_load_kind` value, so
-// per-arch defaults expressed in terms of `BlockLoadAlgorithm` (the legacy convention)
-// preserve the same load behavior under the unified `tile_load_kind` knob.
-[[nodiscard]] _CCCL_API constexpr tile_load_kind block_load_algorithm_to_tile_load_kind(BlockLoadAlgorithm algo)
-{
-  return (algo == BLOCK_LOAD_DIRECT)    ? tile_load_kind::block_load_direct
-       : (algo == BLOCK_LOAD_STRIPED)   ? tile_load_kind::block_load_striped
-       : (algo == BLOCK_LOAD_VECTORIZE) ? tile_load_kind::block_load_vectorize
-       : (algo == BLOCK_LOAD_TRANSPOSE) ? tile_load_kind::block_load_transpose
-       : (algo == BLOCK_LOAD_WARP_TRANSPOSE)
-         ? tile_load_kind::block_load_warp_transpose
-         : tile_load_kind::block_load_warp_transpose_timesliced;
-}
 
 struct topk_policy
 {
   int threads_per_block;
   int items_per_thread;
   int bits_per_pass;
-  // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
-  // The agents use this to pick the `TileDataSource` specialization for the keys
-  // stream. Sits in the slot the legacy `load_algorithm` field used to occupy so
-  // positional initializers (e.g. tuning sweeps) can vary it as a primary axis.
+
+  // Algorithm used to load each tile of keys (covers both `BlockLoadAlgorithm`
+  // variants and async-TMA loads under a single enum).
   tile_load_kind keys_tile_load_kind;
+
+  // Scan algorithm used in the `finalize pass` epilogue, computing prefix sum over the histogram bins.
   BlockScanAlgorithm scan_algorithm;
+
+  // The strategy used for partitioning candidates into selected items (written to the user-provided output iterator)
+  // and output-candidates (written to the candidates buffer).
   BlockPartitionStrategy partition_strategy = BlockPartitionStrategy::Atomics;
-  // Selects how `BlockPartition` materializes the per-item classification: either
-  // precompute a `classes[ItemsPerThread]` array up front (smaller code, +1 register
-  // pass over the keys), or recompute it inline at each scatter use-site (frees the
-  // array's registers; pays for one extra `identify_candidates_op` evaluation per
-  // item). `inlined` is only honored when `partition_strategy` is `Atomics`. Placed
-  // last so existing positional initializers (which omit it) keep working.
+
+  // Selects how `BlockPartition` materializes the per-item classification: either precompute a
+  // `classes[ItemsPerThread]` array up front or recompute it inline at each scatter use-site
   BlockPartitionClassifyMode classify_mode = BlockPartitionClassifyMode::inlined;
-  // Selects how the value channel propagates through the candidate buffer.
-  // Defaults to `indexed` (matches `main`; restores pairs perf for wide value
-  // types). `materialized` is the alternative for tuning overrides. Ignored on
-  // the keys-only path. Placed last so existing positional initializers (which
-  // omit it) keep working.
-  value_carrier_mode value_carrier = value_carrier_mode::indexed;
-  // Experimental: when `true`, the per-tile value-channel `complete_load` is
-  // skipped and the partition's scatter loop pulls each surviving value via a
-  // single-item `gather_one(j)` from the value channel's data source. Mimics
-  // `main`'s legacy "only fetch values that survive the filter" behavior at
-  // the cost of less coalesced per-output gathers. Defaults to `false`
-  // (current branch's eager-load behavior). Forced off for keys-only and for
-  // non-Atomics partition strategies.
+
+  value_materialization_mode value_materialization = value_materialization_mode::indexed;
+
+  // When `true`, the partitioning loop skips loading the full tile of values data, gathering only values of
+  // non-rejected items.
   bool lazy_value_load = false;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
@@ -118,7 +97,7 @@ struct topk_policy
     return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
         && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
-        && lhs.classify_mode == rhs.classify_mode && lhs.value_carrier == rhs.value_carrier
+        && lhs.classify_mode == rhs.classify_mode && lhs.value_materialization == rhs.value_materialization
         && lhs.lazy_value_load == rhs.lazy_value_load;
   }
 
@@ -138,7 +117,7 @@ struct topk_policy
         << ", .scan_algorithm = " << p.scan_algorithm
         << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
         << ", .classify_mode = " << static_cast<int>(p.classify_mode)
-        << ", .value_carrier = " << static_cast<int>(p.value_carrier)
+        << ", .value_materialization = " << static_cast<int>(p.value_materialization)
         << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
   }
 #endif // _CCCL_HOSTED()
@@ -166,9 +145,8 @@ struct policy_selector
         512,
         items_per_thread,
         bits_per_pass,
-        block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE),
-        BLOCK_SCAN_WARP_SCANS,
-        BlockPartitionStrategy::Atomics};
+        tile_load_kind::block_load_vectorize,
+        BLOCK_SCAN_WARP_SCANS};
     }
 
     // Default tuning used on older architectures.
@@ -178,9 +156,8 @@ struct policy_selector
       512,
       items_per_thread,
       bits_per_pass,
-      block_load_algorithm_to_tile_load_kind(BLOCK_LOAD_VECTORIZE),
-      BLOCK_SCAN_WARP_SCANS,
-      BlockPartitionStrategy::Atomics};
+      tile_load_kind::block_load_vectorize,
+      BLOCK_SCAN_WARP_SCANS};
   }
 };
 
