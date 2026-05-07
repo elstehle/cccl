@@ -60,7 +60,7 @@ struct topk_index_gather_op
 };
 
 // Picks the value-channel iterator types passed to the kernels based on the
-// resolved `value_carrier_mode`. Specialized to avoid eagerly instantiating
+// resolved `value_materialization_mode`. Specialized to avoid eagerly instantiating
 // `cuda::transform_output_iterator<topk_index_gather_op<...>, ...>` on the
 // non-indexed (or keys-only) path -- the non-indexed branch never names the
 // indexed-mode types, so they aren't required to be instantiable when the
@@ -679,7 +679,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     using value_in_t                           = it_value_t<ValueInputIteratorT>;
     static constexpr bool keys_only            = ::cuda::std::is_same_v<value_in_t, NullType>;
 
-    // Resolve the value-channel carrier mode. The agent / kernels are iterator-
+    // Resolve the value-channel materialization mode. The agent / kernels are iterator-
     // agnostic; the only behavioral difference between `indexed` and
     // `materialized` is which iterator types the kernels are instantiated with
     // (and, transitively, the per-record size of the candidate back-buffer).
@@ -695,7 +695,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     // Forced to `materialized` when keys_only so the existing keys-only path
     // (which never instantiates the value channel) keeps all of its types
     // pointing at the original `NullType*` iterators.
-    static constexpr bool indexed = !keys_only && active_policy.value_carrier == value_carrier_mode::indexed;
+    static constexpr bool indexed =
+      !keys_only && active_policy.value_materialization == value_materialization_mode::indexed;
     using effective_value_iterators_t =
       effective_value_iterators<indexed, ValueInputIteratorT, ValueOutputIteratorT, OffsetT>;
     using effective_value_in_t        = typename effective_value_iterators_t::value_t;
