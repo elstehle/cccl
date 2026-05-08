@@ -23,6 +23,7 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
+#include <cuda/std/__functional/identity.h>
 #include <cuda/std/limits>
 #include <cuda/std/type_traits>
 
@@ -161,14 +162,19 @@ set_kth_key_bits(key_prefix_storage_t<KeyT>& prefix, const int pass, const int b
 template <typename KeyInT, typename OffsetT, typename OutOffsetT>
 struct alignas(128) Counter
 {
-  // We are processing the items in multiple passes, from most-significant to least-significant bits. In each pass, we
-  // keep the length of input (`len`) and the `k` of current pass, and update them at the end of the pass.
+  // Top-k items still to be identified after this pass commits its writes. Updated by `on_kth_bucket` to
+  // `current_k - num_selected` at each pass's epilogue.
   OutOffsetT k;
-  OffsetT len;
 
-  // `previous_len` is the length of the input in the previous pass. Note that `previous_len` rather than `len` is used
-  // for the filtering step because filtering is indeed for previous pass.
-  OffsetT previous_len;
+  // Count of candidates this pass produced for the next pass to consume (= bin count from this pass's prefix-sum).
+  // Read by the next pass as its incoming candidate count.
+  OffsetT num_candidates_out;
+
+  // Count of candidates the upcoming pass receives as its input (= the previous pass's `num_candidates_out`, seeded
+  // to the original `num_items` at pass 0 since every item is initially a candidate). Also used to decide whether to
+  // read from `in_key_buf` or re-scan the original input: `num_candidates_in > buffer_length` indicates the previous
+  // pass was unbuffered and could not stage its candidates into `in_key_buf`.
+  OffsetT num_candidates_in;
 
   // We determine the bits of the k_th key inside the mask processed by the pass. The
   // already known bits are stored in `kth_key_bits`. It's used to discriminate a
@@ -178,17 +184,17 @@ struct alignas(128) Counter
   key_prefix_storage_t<KeyInT> kth_key_bits;
 
   // [per-pass] Used to determine the write-offset into `out_buf`
-  alignas(128) OffsetT num_candidates_out;
+  alignas(128) OffsetT num_candidates_written;
 
-  // [per-pass] Used to count the number of retired thread blocks. The counter is used to determine the last block to retire and execute the `BlockFinalizeTopKPass` epilogue (prefix sum + bucket selection).
+  // [per-pass] Used to count the number of retired thread blocks. The counter is used to determine the last block to retire and execute the `BlockIdentifyKthBucket` epilogue (prefix sum + bucket selection).
   alignas(128) unsigned int finished_block_cnt;
 
   // [multi-pass] Used to determine the write-offset for selected items into the user-provided output iterators.
-  alignas(128) OutOffsetT num_selected_to_front;
+  alignas(128) OutOffsetT num_selected_written;
 
   // [last-pass] Records the number of tied items (crossing the k-th boundary during the last pass) that have been written to the back of the user-provided output iterators. 
   // This counter is used to coordinate writes that fill up the gap between definitely selected items at the front and the candidates at the back, making sure we do not overflow beyond the k items the user asked us for.
-  alignas(128) OutOffsetT num_selected_to_back;
+  alignas(128) OutOffsetT num_ties_written_to_back;
 
   // The 'alignas' is necessary to improve the performance of global memory accessing by isolating the request,
   // especially for the segment version.
@@ -242,7 +248,7 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 }
 
 //---------------------------------------------------------------------
-// BlockFinalizeTopKPass: per-block epilogue for one top-k radix pass.
+// BlockIdentifyKthBucket: per-block epilogue for one top-k radix pass.
 //
 // Owns the smem footprint of the prefix-sum + bucket-selection step and
 // exposes a single `run()` entry point that invokes a caller-provided
@@ -263,16 +269,19 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 // Layout note: `BLOCK_LOAD_TRANSPOSE` produces a blocked layout where thread
 // `tid` owns the contiguous bin chunk `[tid*bins_per_thread,
 // (tid+1)*bins_per_thread)`. Because `BlockScan::InclusiveSum` over a
-// per-thread array preserves the blocked layout, we only need one
-// `BlockThreads`-sized boundary buffer instead of round-tripping all
-// `num_buckets` prefix sums through a `BlockStore`.
+// per-thread array preserves the blocked layout, we only need a
+// `min(BlockThreads, num_buckets)`-sized boundary buffer instead of
+// round-tripping all `num_buckets` prefix sums through a `BlockStore`.
 //---------------------------------------------------------------------
 
 template <int BlockThreads, int BitsPerPass, BlockScanAlgorithm ScanAlgorithm, typename OffsetT, typename OutOffsetT>
-struct BlockFinalizeTopKPass
+struct BlockIdentifyKthBucket
 {
   static constexpr int num_buckets     = 1 << BitsPerPass;
   static constexpr int bins_per_thread = ::cuda::ceil_div(num_buckets, BlockThreads);
+  
+  // Only threads owning at least one in-range bin contribute a boundary, so the buffer is capped at `num_buckets` slots when `num_buckets < BlockThreads`.
+  static constexpr int boundaries_size = (BlockThreads < num_buckets) ? BlockThreads : num_buckets;
 
   using block_load_t = BlockLoad<OffsetT, BlockThreads, bins_per_thread, BLOCK_LOAD_TRANSPOSE>;
   using block_scan_t = BlockScan<OffsetT, BlockThreads, ScanAlgorithm>;
@@ -285,13 +294,13 @@ struct BlockFinalizeTopKPass
     {
       typename block_load_t::TempStorage load;
       typename block_scan_t::TempStorage scan;
-      OffsetT boundaries[BlockThreads];
+      OffsetT boundaries[boundaries_size];
     };
   };
 
   TempStorage& storage;
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE explicit BlockFinalizeTopKPass(TempStorage& s)
+  _CCCL_DEVICE _CCCL_FORCEINLINE explicit BlockIdentifyKthBucket(TempStorage& s)
       : storage(s)
   {}
 
@@ -318,30 +327,50 @@ struct BlockFinalizeTopKPass
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(const OffsetT* input_histogram, OutOffsetT current_k, KthBucketFn on_kth_bucket)
   {
-    // Cooperative load + register-resident inclusive prefix sum. OOB lanes
-    // (when `num_buckets` is not a multiple of `BlockThreads`) are
-    // zero-initialized so they neither perturb the scan nor falsely identify
-    // themselves as the selected bucket below.
-    OffsetT thread_data[bins_per_thread]{};
-    block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
+    // Full tiles (of bins) will skip the out-of-bounds checks 
+    static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
+
+    // Each thread loads its contiguous chunk of bins into registers
+    OffsetT thread_data[bins_per_thread];
+    if constexpr(is_full_tile){
+      block_load_t(storage.load).Load(input_histogram, thread_data);
+    }else{
+      block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
+
+    }
+    // Ensure we can reuse temporary storage for the prefix-sum
     __syncthreads();
+
+    // Compute the prefix-sum over the bins 
     block_scan_t(storage.scan).InclusiveSum(thread_data, thread_data);
+
+    // Ensure we can reuse temporary storage for the boundary exchange
     __syncthreads();
 
     // Publish each thread's right-edge prefix sum so its right neighbour can
     // read it as the `prev` for its leftmost bin.
-    storage.boundaries[threadIdx.x] = thread_data[bins_per_thread - 1];
+    if constexpr (is_full_tile)
+    {
+      storage.boundaries[threadIdx.x] = thread_data[bins_per_thread - 1];
+    }
+    else
+    {
+      if (static_cast<int>(threadIdx.x) < boundaries_size)
+      {
+        storage.boundaries[threadIdx.x] = thread_data[bins_per_thread - 1];
+      }
+    }
+    // Ensure all threads finished writing their boundary value
     __syncthreads();
-    const OffsetT prev_boundary = (threadIdx.x == 0) ? OffsetT{0} : storage.boundaries[threadIdx.x - 1];
+    
+    // Get the previous thread's right-edge prefix sum
+    const OffsetT prev_boundary =
+      (threadIdx.x > 0 && (is_full_tile || static_cast<int>(threadIdx.x) <= boundaries_size))
+        ? storage.boundaries[threadIdx.x - 1]
+        : OffsetT{0};
 
+    // The first bin this thread is assigned to
     const int base_bin = static_cast<int>(threadIdx.x) * bins_per_thread;
-
-    // Full vs partial specialization: when the BLOCKED tile has no padding
-    // lanes (`BlockThreads * bins_per_thread == num_buckets`), `is_full_tile`
-    // short-circuits the per-bin bound check away at compile time. Otherwise
-    // the residual `bin_index < num_buckets` check reproduces the trailing
-    // partial iteration of the original strided loop.
-    static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
 
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < bins_per_thread; ++i)
@@ -366,7 +395,7 @@ struct BlockFinalizeTopKPass
 // Fences pending writes, atomically detects the unique last-finishing block
 // via `retired_block_counter`, and invokes `epilogue_op` exactly once on that
 // block. Stateless; the epilogue owns whatever smem it needs and decides what
-// "finalization" means (top-k uses it to run `BlockFinalizeTopKPass::run` plus
+// "finalization" means (top-k uses it to run `BlockIdentifyKthBucket::run` plus
 // any per-mode counter bookkeeping). `expected_block_count` is the number of
 // blocks expected to retire (typically `gridDim.x`, but parameterizing it
 // keeps the primitive usable for segmented/per-row coordination where each
@@ -478,8 +507,8 @@ struct AgentTopKHistogram
 
   using keys_source_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using finalize_pass_t =
-    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
+  using identify_kth_bucket_t =
+    BlockIdentifyKthBucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   struct _TempStorage
   {
@@ -491,7 +520,7 @@ struct AgentTopKHistogram
     union
     {
       typename keys_source_t::ScratchStorage keys_source_scratch;
-      typename finalize_pass_t::TempStorage prefix_sum;
+      typename identify_kth_bucket_t::TempStorage prefix_sum;
     } scratch;
   };
 
@@ -555,10 +584,10 @@ struct AgentTopKHistogram
   // Both callbacks run only on the last finishing block:
   //   `counter_update_fn` runs on thread 0 (before the prefix-sum / bucket
   //     selection). The pass-0 caller passes a lambda that resets
-  //     `previous_len`/`num_candidates_out`; the unbuffered caller passes its
+  //     `num_candidates_in`/`num_candidates_written`; the unbuffered caller passes its
   //     mode-dependent counter update (early-stop vs non-early-stop logic).
   //   `on_kth_bucket`     runs on the single thread that owns the bucket
-  //     containing the kth element. See `BlockFinalizeTopKPass::run` for the
+  //     containing the kth element. See `BlockIdentifyKthBucket::run` for the
   //     callback signature.
   template <typename CounterUpdateFn, typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
@@ -635,7 +664,7 @@ struct AgentTopKHistogram
       {
         counter_update_fn();
       }
-      finalize_pass_t{temp_storage.scratch.prefix_sum}.run(global_histogram, k, on_kth_bucket);
+      identify_kth_bucket_t{temp_storage.scratch.prefix_sum}.run(global_histogram, k, on_kth_bucket);
       if (reset_histogram)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
@@ -682,19 +711,9 @@ enum class sink_mode
 //
 // Members hold the inputs/outputs that all three modes consume; the
 // buffered-only candidate outputs (`out_key_buf`, `out_val_buf`,
-// `p_num_candidates_out`) are passed to `run()` and flow through `do_partition`
+// `p_num_candidates_written`) are passed to `run()` and flow through `do_partition`
 // rather than being stored on the agent.
 //---------------------------------------------------------------------
-
-// Identity transform helper used as the per-stream key/value transform op.
-struct topk_identity_transform_op
-{
-  template <typename T>
-  _CCCL_DEVICE _CCCL_FORCEINLINE T operator()(const T& x) const
-  {
-    return x;
-  }
-};
 
 // No-op candidate callback used by `early_stop` (HasCandidates=false collapses the
 // candidate stream onto selected; the callback is statically guaranteed never to
@@ -759,8 +778,8 @@ struct agent_topk_filter_partition
   static constexpr int num_buckets      = 1 << bits_per_pass;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
-  using finalize_pass_t =
-    BlockFinalizeTopKPass<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
+  using identify_kth_bucket_t =
+    BlockIdentifyKthBucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   // Compile-time mode plumbing.
   //   selected_offset_t / candidate_offset_t : pointer types of the global counters.
@@ -810,8 +829,8 @@ struct agent_topk_filter_partition
     data_source_t data_source;
     val_out_t selected_values_out;
     cand_val_out_t candidate_values_out;
-    topk_identity_transform_op selected_value_transform;
-    topk_identity_transform_op candidate_value_transform;
+    ::cuda::std::identity selected_value_transform;
+    ::cuda::std::identity candidate_value_transform;
   };
 
   using value_channels_tuple_t =
@@ -840,7 +859,7 @@ struct agent_topk_filter_partition
     union
     {
       typename keys_source_t::ScratchStorage keys_source_scratch;
-      typename finalize_pass_t::TempStorage prefix_sum;
+      typename identify_kth_bucket_t::TempStorage prefix_sum;
       typename partition_t::ScratchStorage partition_buf;
     } scratch;
   };
@@ -858,7 +877,7 @@ struct agent_topk_filter_partition
   key_in_t* in_key_buf;
   value_in_t* in_val_buf;
 
-  OutOffsetT* p_num_selected_to_front;
+  OutOffsetT* p_num_selected_written;
 
   OffsetT input_length;
   bool load_from_original_input;
@@ -875,7 +894,7 @@ struct agent_topk_filter_partition
     ValueOutputIteratorT d_values_out,
     key_in_t* in_key_buf,
     value_in_t* in_val_buf,
-    OutOffsetT* p_num_selected_to_front,
+    OutOffsetT* p_num_selected_written,
     OffsetT input_length,
     bool load_from_original_input,
     ExtractBinOpT extract_bin_op,
@@ -888,7 +907,7 @@ struct agent_topk_filter_partition
       , d_values_out(d_values_out)
       , in_key_buf(in_key_buf)
       , in_val_buf(in_val_buf)
-      , p_num_selected_to_front(p_num_selected_to_front)
+      , p_num_selected_written(p_num_selected_written)
       , input_length(input_length)
       , load_from_original_input(load_from_original_input)
       , extract_bin_op(extract_bin_op)
@@ -924,31 +943,31 @@ private:
         cand_out = d_values_out;
       }
       return ::cuda::std::tuple<value_channel_t>{
-        value_channel_t{val_src, d_values_out, cand_out, topk_identity_transform_op{}, topk_identity_transform_op{}}};
+        value_channel_t{val_src, d_values_out, cand_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
     }
   }
 
   // Mode-specific partition call. Builds the per-mode reserve ops and dispatches to
   // the matching `BlockPartition::Partition()` overload. The `out_key_buf` and
-  // `p_num_candidates_out` arguments are only consumed by the buffered branch.
+  // `p_num_candidates_written` arguments are only consumed by the buffered branch.
   template <bool IsFull>
   _CCCL_DEVICE _CCCL_FORCEINLINE void do_partition(
     const key_in_t (&keys)[items_per_thread],
     OffsetT num_items_in_tile,
     value_channels_tuple_t& channels,
     [[maybe_unused]] key_in_t* out_key_buf,
-    [[maybe_unused]] OffsetT* p_num_candidates_out)
+    [[maybe_unused]] OffsetT* p_num_candidates_written)
   {
     partition_t partition{};
-    topk_identity_transform_op key_transform{};
+    ::cuda::std::identity key_transform{};
 
     if constexpr (Mode == sink_mode::early_stop)
     {
       // HasCandidates=false: selected and candidate fold into d_keys_out via
-      // p_num_selected_to_front; the candidate-side machinery is statically elided.
-      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_to_front};
+      // p_num_selected_written; the candidate-side machinery is statically elided.
+      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_written};
       atomic_reserve_range_op<candidate_offset_t> reserve_cand{
-        reinterpret_cast<candidate_offset_t*>(p_num_selected_to_front)}; // unused by partition when HasCandidates=false
+        reinterpret_cast<candidate_offset_t*>(p_num_selected_written)}; // unused by partition when HasCandidates=false
       topk_noop_candidate_callback_op cb{};
       if constexpr (IsFull)
       {
@@ -987,10 +1006,10 @@ private:
     else
     {
       static_assert(Mode == sink_mode::buffered, "do_partition is only called for output-writing modes");
-      // selected -> d_keys_out via p_num_selected_to_front; candidate -> out_key_buf via
-      // p_num_candidates_out; histogram callback fires per candidate.
-      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_to_front};
-      atomic_reserve_range_op<candidate_offset_t> reserve_cand{p_num_candidates_out};
+      // selected -> d_keys_out via p_num_selected_written; candidate -> out_key_buf via
+      // p_num_candidates_written; histogram callback fires per candidate.
+      atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_written};
+      atomic_reserve_range_op<candidate_offset_t> reserve_cand{p_num_candidates_written};
       topk_histogram_callback_op<ExtractBinOpT, OffsetT> cb{extract_bin_op, storage.histogram};
       if constexpr (IsFull)
       {
@@ -1032,13 +1051,13 @@ public:
   // --- entry point ----------------------------------------------------
   //
   // The buffered-mode-only outputs (`out_key_buf`, `out_val_buf`,
-  // `p_num_candidates_out`) flow through the run signature. They default to nullptr
+  // `p_num_candidates_written`) flow through the run signature. They default to nullptr
   // for the early_stop caller, which never consumes them (gated by
   // `if constexpr (Mode == sink_mode::buffered)` inside the agent).
   //
   // `counter_update_fn` and `on_kth_bucket` are the two last-block-only
   // callbacks for `counter` writes; see the same-named docs on
-  // `AgentTopKHistogram::invoke` and `BlockFinalizeTopKPass::run`.
+  // `AgentTopKHistogram::invoke` and `BlockIdentifyKthBucket::run`.
   template <typename CounterUpdateFn, typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(unsigned int* retired_block_counter,
@@ -1048,7 +1067,7 @@ public:
       KthBucketFn on_kth_bucket,
       key_in_t* out_key_buf   = nullptr,
       value_in_t* out_val_buf = nullptr,
-      OffsetT* p_num_candidates_out   = nullptr)
+      OffsetT* p_num_candidates_written   = nullptr)
   {
     if constexpr (accumulate_histogram)
     {
@@ -1087,7 +1106,7 @@ public:
       auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
       h.complete_load(items);
       __syncthreads();
-      do_partition</*IsFull=*/true>(items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_num_candidates_out);
+      do_partition</*IsFull=*/true>(items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_num_candidates_written);
     }
 
     // --- trailing partial tile (handled by exactly one block) ------------
@@ -1115,7 +1134,7 @@ public:
         auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         __syncthreads();
-        do_partition</*IsFull=*/false>(items, partial_items, channels, out_key_buf, p_num_candidates_out);
+        do_partition</*IsFull=*/false>(items, partial_items, channels, out_key_buf, p_num_candidates_written);
       }
     }
 
@@ -1134,7 +1153,7 @@ public:
       {
         counter_update_fn();
       }
-      finalize_pass_t{storage.scratch.prefix_sum}.run(global_histogram, current_k, on_kth_bucket);
+      identify_kth_bucket_t{storage.scratch.prefix_sum}.run(global_histogram, current_k, on_kth_bucket);
       if (reset_histogram)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
@@ -1153,11 +1172,11 @@ public:
 // finalize_pass. Its smem footprint is correspondingly smaller: just the
 // keys-source persistent state plus the partition's scratch buffer.
 //
-// The pass-specific outputs (`p_num_selected_to_back`, `k_total`, `num_of_kth_needed`)
+// The pass-specific outputs (`p_num_ties_written_to_back`, `k_total`, `num_of_kth_needed`)
 // flow through `run()` rather than the constructor; they only become known
 // after the previous pass has updated the device-side Counter.
 //
-// Selected candidates land at the front of `d_keys_out` via `p_num_selected_to_front`;
+// Selected candidates land at the front of `d_keys_out` via `p_num_selected_written`;
 // surplus "kth"-class candidates land at the back of `d_keys_out` via a
 // `back_grow_capped_reserve_op` (cap = num_of_kth_needed, anchor = k_total).
 //---------------------------------------------------------------------
@@ -1216,8 +1235,8 @@ struct agent_topk_last_filter
     data_source_t data_source;
     val_out_t selected_values_out;
     cand_val_out_t candidate_values_out;
-    topk_identity_transform_op selected_value_transform;
-    topk_identity_transform_op candidate_value_transform;
+    ::cuda::std::identity selected_value_transform;
+    ::cuda::std::identity candidate_value_transform;
   };
 
   using value_channels_tuple_t =
@@ -1259,7 +1278,7 @@ struct agent_topk_last_filter
   key_in_t* in_key_buf;
   value_in_t* in_val_buf;
 
-  OutOffsetT* p_num_selected_to_front;
+  OutOffsetT* p_num_selected_written;
   OffsetT input_length;
   bool load_from_original_input;
   IdentifyCandidatesOpT identify_candidates_op;
@@ -1272,7 +1291,7 @@ struct agent_topk_last_filter
     ValueOutputIteratorT d_values_out,
     key_in_t* in_key_buf,
     value_in_t* in_val_buf,
-    OutOffsetT* p_num_selected_to_front,
+    OutOffsetT* p_num_selected_written,
     OffsetT input_length,
     bool load_from_original_input,
     IdentifyCandidatesOpT identify_candidates_op)
@@ -1283,7 +1302,7 @@ struct agent_topk_last_filter
       , d_values_out(d_values_out)
       , in_key_buf(in_key_buf)
       , in_val_buf(in_val_buf)
-      , p_num_selected_to_front(p_num_selected_to_front)
+      , p_num_selected_written(p_num_selected_written)
       , input_length(input_length)
       , load_from_original_input(load_from_original_input)
       , identify_candidates_op(identify_candidates_op)
@@ -1306,7 +1325,7 @@ private:
 
       // For last_filter both selected and candidate values feed `d_values_out`.
       return ::cuda::std::tuple<value_channel_t>{value_channel_t{
-        val_src, d_values_out, d_values_out, topk_identity_transform_op{}, topk_identity_transform_op{}}};
+        val_src, d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
     }
   }
 
@@ -1315,16 +1334,16 @@ private:
     const key_in_t (&keys)[items_per_thread],
     OffsetT num_items_in_tile,
     value_channels_tuple_t& channels,
-    OutOffsetT* p_num_selected_to_back,
+    OutOffsetT* p_num_ties_written_to_back,
     OutOffsetT k_total,
     OutOffsetT num_of_kth_needed)
   {
     partition_t partition{};
-    topk_identity_transform_op key_transform{};
+    ::cuda::std::identity key_transform{};
 
-    atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_to_front};
+    atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_written};
     back_grow_capped_reserve_op<candidate_offset_t> reserve_cand{
-      p_num_selected_to_back, static_cast<candidate_offset_t>(k_total), static_cast<candidate_offset_t>(num_of_kth_needed)};
+      p_num_ties_written_to_back, static_cast<candidate_offset_t>(k_total), static_cast<candidate_offset_t>(num_of_kth_needed)};
     topk_noop_candidate_callback_op cb{}; // last_filter doesn't accumulate histogram
     if constexpr (IsFull)
     {
@@ -1362,7 +1381,7 @@ private:
   }
 
 public:
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run(OutOffsetT* p_num_selected_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void run(OutOffsetT* p_num_ties_written_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
   {
     key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
     key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
@@ -1395,7 +1414,7 @@ public:
       h.complete_load(items);
       __syncthreads();
       do_partition</*IsFull=*/true>(
-        items, static_cast<OffsetT>(tile_items), channels, p_num_selected_to_back, k_total, num_of_kth_needed);
+        items, static_cast<OffsetT>(tile_items), channels, p_num_ties_written_to_back, k_total, num_of_kth_needed);
     }
 
     // --- trailing partial tile (handled by exactly one block) ------------
@@ -1418,7 +1437,7 @@ public:
         auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         __syncthreads();
-        do_partition</*IsFull=*/false>(items, partial_items, channels, p_num_selected_to_back, k_total, num_of_kth_needed);
+        do_partition</*IsFull=*/false>(items, partial_items, channels, p_num_ties_written_to_back, k_total, num_of_kth_needed);
       }
     }
   }
