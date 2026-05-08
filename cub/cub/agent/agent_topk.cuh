@@ -564,7 +564,7 @@ struct AgentTopKHistogram
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   invoke(unsigned int* retired_block_counter,
          OffsetT* global_histogram,
-         bool is_last_pass,
+         bool reset_histogram,
          CounterUpdateFn counter_update_fn,
          KthBucketFn on_kth_bucket)
   {
@@ -636,7 +636,7 @@ struct AgentTopKHistogram
         counter_update_fn();
       }
       finalize_pass_t{temp_storage.scratch.prefix_sum}.run(global_histogram, k, on_kth_bucket);
-      if (!is_last_pass)
+      if (reset_histogram)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
       }
@@ -1043,7 +1043,7 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(unsigned int* retired_block_counter,
       OutOffsetT current_k,
-      bool is_last_pass,
+      bool reset_histogram,
       CounterUpdateFn counter_update_fn,
       KthBucketFn on_kth_bucket,
       key_in_t* out_key_buf   = nullptr,
@@ -1135,7 +1135,7 @@ public:
         counter_update_fn();
       }
       finalize_pass_t{storage.scratch.prefix_sum}.run(global_histogram, current_k, on_kth_bucket);
-      if (!is_last_pass)
+      if (reset_histogram)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
       }

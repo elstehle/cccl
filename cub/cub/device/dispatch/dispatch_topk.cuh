@@ -292,7 +292,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     _CCCL_GRID_CONSTANT const OutOffsetT k,
     ExtractBinOpT extract_bin_op,
     _CCCL_GRID_CONSTANT const int pass,
-    _CCCL_GRID_CONSTANT const bool is_last_pass)
+    _CCCL_GRID_CONSTANT const bool reset_histogram)
 {
   static constexpr topk_policy policy = current_policy<PolicySelector>();
   using agent_topk_policy_t =
@@ -322,7 +322,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
   };
 
   agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)
-    .invoke(&counter->finished_block_cnt, histogram, is_last_pass, counter_update_fn, on_kth_bucket);
+    .invoke(&counter->finished_block_cnt, histogram, reset_histogram, counter_update_fn, on_kth_bucket);
 }
 
 // Filter kernel covering passes 1..num_passes-1. The kernel reads Counter state once,
@@ -364,7 +364,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     ExtractBinOpT extract_bin_op,
     IdentifyCandidatesOpT identify_candidates_op,
     _CCCL_GRID_CONSTANT const int pass,
-    _CCCL_GRID_CONSTANT const bool is_last_pass)
+    _CCCL_GRID_CONSTANT const bool reset_histogram)
 {
   static constexpr topk_policy policy = current_policy<PolicySelector>();
   using agent_topk_policy_t =
@@ -494,7 +494,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       extract_bin_op,
       identify_candidates_op,
       histogram);
-    agent.run(&counter->finished_block_cnt, current_k, is_last_pass, counter_update_fn, on_kth_bucket);
+    agent.run(&counter->finished_block_cnt, current_k, reset_histogram, counter_update_fn, on_kth_bucket);
   }
   else if (effective_out_key_buf != nullptr)
   {
@@ -515,7 +515,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     agent.run(
       &counter->finished_block_cnt,
       current_k,
-      is_last_pass,
+      reset_histogram,
       counter_update_fn,
       on_kth_bucket,
       effective_out_key_buf,
@@ -532,7 +532,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     _CCCL_ASSERT(load_from_original_input, "Unbuffered filter passes must always load from d_keys_in");
     filter_op_t filter_op{identify_candidates_op};
     agent_ub_t agent(temp_storage.ub, d_keys_in, input_length, current_k, extract_bin_op, filter_op);
-    agent.invoke(&counter->finished_block_cnt, histogram, is_last_pass, counter_update_fn, on_kth_bucket);
+    agent.invoke(&counter->finished_block_cnt, histogram, reset_histogram, counter_update_fn, on_kth_bucket);
   }
 }
 
@@ -925,7 +925,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       extract_bin_op extract_op(0, total_bits, decomposer);
       if (const auto error = CubDebug(
             launcher_factory(histogram_grid_size, threads_per_block, 0, stream)
-              .doit(histogram_kernel, d_keys_in, counter, histogram, num_items, k, extract_op, 0, num_passes == 1)))
+              .doit(histogram_kernel, d_keys_in, counter, histogram, num_items, k, extract_op, 0, num_passes != 1)))
       {
         return error;
       }
@@ -966,7 +966,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                     extract_op,
                     identify_op,
                     pass,
-                    pass == num_passes - 1)))
+                    pass != num_passes - 1)))
       {
         return error;
       }
