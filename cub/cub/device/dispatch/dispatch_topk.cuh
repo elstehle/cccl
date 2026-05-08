@@ -305,15 +305,24 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
-  // Pass-0 counter update: record the input length as the previous-pass length
-  // for the upcoming filter passes, and reset the candidate-filter counter.
+  // Two last-block-only callbacks update the device-side `Counter`:
+  //   `counter_update_fn` runs on thread 0 before the prefix-sum.
+  //   `on_kth_bucket`     runs on the single thread that owns the bucket
+  //                       containing the kth element, i.e. inside
+  //                       `BlockFinalizeTopKPass::run`.
   auto counter_update_fn = [counter, num_items] {
     counter->previous_len       = num_items;
     counter->num_candidates_out = 0;
   };
+  auto on_kth_bucket = [counter, pass](
+                         OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates) {
+    counter->k   = static_cast<OutOffsetT>(current_k - num_selected);
+    counter->len = num_candidates;
+    set_kth_key_bits<policy.bits_per_pass>(counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
+  };
 
   agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)
-    .invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
+    .invoke(&counter->finished_block_cnt, histogram, is_last_pass, counter_update_fn, on_kth_bucket);
 }
 
 // Filter kernel covering passes 1..num_passes-1. The kernel reads Counter state once,
@@ -444,7 +453,12 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   KeyInT* effective_out_key_buf   = (current_len > buffer_length) ? nullptr : out_key_buf;
   ValueInT* effective_out_val_buf = (current_len > buffer_length) ? nullptr : out_val_buf;
 
-  // Counter update functor for the three filter modes.
+  // Two last-block-only callbacks update the device-side `Counter`. Shared
+  // across all three filter modes since they perform the same updates:
+  //   `counter_update_fn` runs on thread 0 before the prefix-sum.
+  //   `on_kth_bucket`     runs on the single thread that owns the bucket
+  //                       containing the kth element, i.e. inside
+  //                       `BlockFinalizeTopKPass::run`.
   auto counter_update_fn = [counter, current_len, early_stop] {
     if (early_stop)
     {
@@ -456,6 +470,12 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       counter->previous_len       = current_len;
       counter->num_candidates_out = 0;
     }
+  };
+  auto on_kth_bucket = [counter, pass](
+                         OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates) {
+    counter->k   = static_cast<OutOffsetT>(current_k - num_selected);
+    counter->len = num_candidates;
+    set_kth_key_bits<policy.bits_per_pass>(counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
   };
 
   if (early_stop)
@@ -474,7 +494,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       extract_bin_op,
       identify_candidates_op,
       histogram);
-    agent.run(counter, current_k, pass, is_last_pass, counter_update_fn);
+    agent.run(&counter->finished_block_cnt, current_k, is_last_pass, counter_update_fn, on_kth_bucket);
   }
   else if (effective_out_key_buf != nullptr)
   {
@@ -493,11 +513,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       identify_candidates_op,
       histogram);
     agent.run(
-      counter,
+      &counter->finished_block_cnt,
       current_k,
-      pass,
       is_last_pass,
       counter_update_fn,
+      on_kth_bucket,
       effective_out_key_buf,
       effective_out_val_buf,
       &counter->num_candidates_out);
@@ -512,7 +532,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     _CCCL_ASSERT(load_from_original_input, "Unbuffered filter passes must always load from d_keys_in");
     filter_op_t filter_op{identify_candidates_op};
     agent_ub_t agent(temp_storage.ub, d_keys_in, input_length, current_k, extract_bin_op, filter_op);
-    agent.invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
+    agent.invoke(&counter->finished_block_cnt, histogram, is_last_pass, counter_update_fn, on_kth_bucket);
   }
 }
 
