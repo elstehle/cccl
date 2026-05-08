@@ -40,13 +40,12 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-// Gathers a value from the user's input iterator using an index. Used as the
-// function object for `cuda::transform_output_iterator` on the indexed value
-// path: the agent stores `OffsetT` indices in the candidate buffer and writes
-// them to the wrapped output iterator; the wrapper turns each `out[pos] = idx`
-// into `user_d_values_out[pos] = user_d_values_in[idx]`. Captures the user
-// input iterator by value so the wrapper stays trivially copyable for the
-// `_CCCL_GRID_CONSTANT` kernel-parameter slot.
+//---------------------------------------------------------------------
+// Indexed Top-K helpers
+//---------------------------------------------------------------------
+// Gathers a value from the user's input iterator using an index. Used on the indexed value path: the agent will only
+// see a counting_iterator as the value input, maintaining indexes of `OffsetT` indices in the candidate buffer. A
+// wrapped transform_iterator as the output iterator into `user_d_values_out[pos] = user_d_values_in[idx]`.
 template <typename ValueInputIteratorT>
 struct topk_index_gather_op
 {
@@ -279,6 +278,44 @@ struct identify_candidates_op_t<T, SelectDirection, BitsPerPass, DecomposerT, fa
   }
 };
 
+
+template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT, typename OutOffsetT, typename ExtractBinOpT>
+#if _CCCL_HAS_CONCEPTS()
+  requires topk_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
+__launch_bounds__(int(current_policy<PolicySelector>().block_threads))
+  _CCCL_KERNEL_ATTRIBUTES void DeviceTopKHistogramKernel(
+    _CCCL_GRID_CONSTANT const KeyInputIteratorT d_keys_in,
+    Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
+    _CCCL_GRID_CONSTANT OffsetT* const histogram,
+    _CCCL_GRID_CONSTANT const OffsetT num_items,
+    _CCCL_GRID_CONSTANT const OutOffsetT k,
+    ExtractBinOpT extract_bin_op,
+    _CCCL_GRID_CONSTANT const int pass,
+    _CCCL_GRID_CONSTANT const bool is_last_pass)
+{
+  static constexpr topk_policy policy = current_policy<PolicySelector>();
+  using agent_topk_policy_t =
+    AgentTopKPolicy<policy.block_threads,
+                    policy.items_per_thread,
+                    policy.bits_per_pass,
+                    policy.scan_algorithm,
+                    policy.keys_tile_load_kind>;
+  using agent_t = AgentTopKHistogram<agent_topk_policy_t, KeyInputIteratorT, ExtractBinOpT, OffsetT, OutOffsetT>;
+
+  __shared__ typename agent_t::TempStorage temp_storage;
+
+  // Pass-0 counter update: record the input length as the previous-pass length
+  // for the upcoming filter passes, and reset the candidate-filter counter.
+  auto counter_update_fn = [counter, num_items] {
+    counter->previous_len       = num_items;
+    counter->num_candidates_out = 0;
+  };
+
+  agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)
+    .invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
+}
+
 // Filter kernel covering passes 1..num_passes-1. The kernel reads Counter state once,
 // computes the sink_mode (early_stop / buffered / unbuffered), and dispatches to the
 // matching agent instantiation. The unbuffered "scout" mode is handled by the
@@ -416,8 +453,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     }
     else
     {
-      counter->previous_len = current_len;
-      counter->filter_cnt   = 0;
+      counter->previous_len       = current_len;
+      counter->num_candidates_out = 0;
     }
   };
 
@@ -431,7 +468,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       d_values_out,
       in_key_buf,
       effective_in_val_buf,
-      &counter->out_cnt,
+      &counter->num_selected_to_front,
       input_length,
       load_from_original_input,
       extract_bin_op,
@@ -449,7 +486,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       d_values_out,
       in_key_buf,
       effective_in_val_buf,
-      &counter->out_cnt,
+      &counter->num_selected_to_front,
       input_length,
       load_from_original_input,
       extract_bin_op,
@@ -463,7 +500,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       counter_update_fn,
       effective_out_key_buf,
       effective_out_val_buf,
-      &counter->filter_cnt);
+      &counter->num_candidates_out);
   }
   else
   {
@@ -561,11 +598,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     d_values_out,
     in_key_buf,
     effective_in_val_buf,
-    &counter->out_cnt,
+    &counter->num_selected_to_front,
     input_length,
     load_from_original_input,
     identify_candidates_op);
-  agent.run(&counter->out_back_cnt, k, num_of_kth_needed);
+  agent.run(&counter->num_selected_to_back, k, num_of_kth_needed);
 }
 
 template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT, typename OutOffsetT, typename ExtractBinOpT>
@@ -597,8 +634,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   // Pass-0 counter update: record the input length as the previous-pass length
   // for the upcoming filter passes, and reset the candidate-filter counter.
   auto counter_update_fn = [counter, num_items] {
-    counter->previous_len = num_items;
-    counter->filter_cnt   = 0;
+    counter->previous_len       = num_items;
+    counter->num_candidates_out = 0;
   };
 
   agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)

@@ -142,22 +142,14 @@ struct policy_selector
       // Try to load 16 bytes per thread: int64 -> 2, int32 -> 4, int16 -> 8.
       const int items_per_thread = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
       return topk_policy{
-        512,
-        items_per_thread,
-        bits_per_pass,
-        tile_load_kind::block_load_vectorize,
-        BLOCK_SCAN_WARP_SCANS};
+        512, items_per_thread, bits_per_pass, tile_load_kind::block_load_vectorize, BLOCK_SCAN_WARP_SCANS};
     }
 
     // Default tuning used on older architectures.
     const int items_per_thread =
       ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size, 1, nominal_4b_items_per_thread);
     return topk_policy{
-      512,
-      items_per_thread,
-      bits_per_pass,
-      tile_load_kind::block_load_vectorize,
-      BLOCK_SCAN_WARP_SCANS};
+      512, items_per_thread, bits_per_pass, tile_load_kind::block_load_vectorize, BLOCK_SCAN_WARP_SCANS};
   }
 };
 
