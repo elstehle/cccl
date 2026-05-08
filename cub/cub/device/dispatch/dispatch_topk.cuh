@@ -309,15 +309,15 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
   //   `counter_update_fn` runs on thread 0 before the prefix-sum.
   //   `on_kth_bucket`     runs on the single thread that owns the bucket
   //                       containing the kth element, i.e. inside
-  //                       `BlockFinalizeTopKPass::run`.
+  //                       `BlockIdentifyKthBucket::run`.
   auto counter_update_fn = [counter, num_items] {
-    counter->previous_len       = num_items;
-    counter->num_candidates_out = 0;
+    counter->num_candidates_in      = num_items;
+    counter->num_candidates_written = 0;
   };
   auto on_kth_bucket = [counter, pass](
                          OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates) {
     counter->k   = static_cast<OutOffsetT>(current_k - num_selected);
-    counter->len = num_candidates;
+    counter->num_candidates_out = num_candidates;
     set_kth_key_bits<policy.bits_per_pass>(counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
   };
 
@@ -436,8 +436,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
 
   // Read Counter state once at entry.
   const OutOffsetT current_k = counter->k;
-  const OffsetT current_len  = counter->len;
-  OffsetT previous_len       = counter->previous_len;
+  const OffsetT current_len  = counter->num_candidates_out;
+  OffsetT num_candidates_in       = counter->num_candidates_in;
 
   if (current_len == 0)
   {
@@ -445,8 +445,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   }
 
   const bool early_stop               = (current_len == static_cast<OffsetT>(current_k));
-  const bool load_from_original_input = (pass <= 1) || previous_len > buffer_length;
-  const OffsetT input_length          = load_from_original_input ? num_items : previous_len;
+  const bool load_from_original_input = (pass <= 1) || num_candidates_in > buffer_length;
+  const OffsetT input_length          = load_from_original_input ? num_items : num_candidates_in;
 
   ValueInT* effective_in_val_buf = load_from_original_input ? nullptr : in_val_buf;
 
@@ -458,23 +458,23 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   //   `counter_update_fn` runs on thread 0 before the prefix-sum.
   //   `on_kth_bucket`     runs on the single thread that owns the bucket
   //                       containing the kth element, i.e. inside
-  //                       `BlockFinalizeTopKPass::run`.
+  //                       `BlockIdentifyKthBucket::run`.
   auto counter_update_fn = [counter, current_len, early_stop] {
     if (early_stop)
     {
-      counter->previous_len = 0;
-      counter->len          = 0;
+      counter->num_candidates_in  = 0;
+      counter->num_candidates_out = 0;
     }
     else
     {
-      counter->previous_len       = current_len;
-      counter->num_candidates_out = 0;
+      counter->num_candidates_in      = current_len;
+      counter->num_candidates_written = 0;
     }
   };
   auto on_kth_bucket = [counter, pass](
                          OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates) {
     counter->k   = static_cast<OutOffsetT>(current_k - num_selected);
-    counter->len = num_candidates;
+    counter->num_candidates_out = num_candidates;
     set_kth_key_bits<policy.bits_per_pass>(counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
   };
 
@@ -488,7 +488,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       d_values_out,
       in_key_buf,
       effective_in_val_buf,
-      &counter->num_selected_to_front,
+      &counter->num_selected_written,
       input_length,
       load_from_original_input,
       extract_bin_op,
@@ -506,7 +506,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       d_values_out,
       in_key_buf,
       effective_in_val_buf,
-      &counter->num_selected_to_front,
+      &counter->num_selected_written,
       input_length,
       load_from_original_input,
       extract_bin_op,
@@ -520,7 +520,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       on_kth_bucket,
       effective_out_key_buf,
       effective_out_val_buf,
-      &counter->num_candidates_out);
+      &counter->num_candidates_written);
   }
   else
   {
@@ -596,10 +596,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
 
-  const OffsetT previous_len = counter->previous_len;
+  const OffsetT num_candidates_in = counter->num_candidates_in;
 
-  const bool load_from_original_input = (pass <= 1) || previous_len > buffer_length;
-  const OffsetT input_length          = load_from_original_input ? num_items : previous_len;
+  const bool load_from_original_input = (pass <= 1) || num_candidates_in > buffer_length;
+  const OffsetT input_length          = load_from_original_input ? num_items : num_candidates_in;
 
   if (input_length == 0)
   {
@@ -618,11 +618,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     d_values_out,
     in_key_buf,
     effective_in_val_buf,
-    &counter->num_selected_to_front,
+    &counter->num_selected_written,
     input_length,
     load_from_original_input,
     identify_candidates_op);
-  agent.run(&counter->num_selected_to_back, k, num_of_kth_needed);
+  agent.run(&counter->num_ties_written_to_back, k, num_of_kth_needed);
 }
 
 template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT, typename OutOffsetT, typename ExtractBinOpT>
