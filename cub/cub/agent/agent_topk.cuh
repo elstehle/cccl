@@ -245,8 +245,11 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 // BlockFinalizeTopKPass: per-block epilogue for one top-k radix pass.
 //
 // Owns the smem footprint of the prefix-sum + bucket-selection step and
-// exposes a single `run()` entry point that streams the next-pass inputs out
-// through caller-provided pointers. The epilogue does, in order:
+// exposes a single `run()` entry point that invokes a caller-provided
+// callback exactly once with the kth-bucket index and the histogram counts
+// straddling `current_k` (so the caller can update its own counters / k-th
+// key prefix without this primitive having to know about them). The
+// epilogue does, in order:
 //   1) cooperative `BlockLoad<TRANSPOSE>` of the per-bin counts from
 //      `input_histogram` into a per-thread blocked chunk;
 //   2) `BlockScan::InclusiveSum` over that chunk, keeping prefix sums in
@@ -254,7 +257,8 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 //   3) one boundary write/read per thread so each thread's right neighbour
 //      can use its right-edge prefix sum as the `prev` for its bin 0;
 //   4) per-thread search for the bucket whose prefix-sum range straddles
-//      `current_k`, with the result written through the output pointers.
+//      `current_k`, with `on_kth_bucket` invoked on the single thread that
+//      owns that bucket.
 //
 // Layout note: `BLOCK_LOAD_TRANSPOSE` produces a blocked layout where thread
 // `tid` owns the contiguous bin chunk `[tid*bins_per_thread,
@@ -292,25 +296,27 @@ struct BlockFinalizeTopKPass
   {}
 
   // Inclusive-prefix-sums `input_histogram`, identifies the bucket containing
-  // the `current_k`-th element, and writes the discovered next-pass inputs
-  // through the provided pointers.
+  // the `current_k`-th element, and invokes `on_kth_bucket` exactly once on
+  // the unique thread that owns that bucket.
   //
-  //   num_remaining_k_out         : the new k -- top-k items that still have to
-  //                                 be identified after the next filter pass
-  //                                 finishes writing its surviving candidates
-  //   num_output_candidates_out   : number of candidates the next filter pass
-  //                                 will write
-  //   key_prefix_storage          : bit accumulator for the k-th-key prefix;
-  //                                 `KeyT` is deduced from the storage type
-  //                                 (so the class template no longer needs it)
-  template <typename KeyPrefixStorageT>
+  // `on_kth_bucket` is called as
+  //
+  //   on_kth_bucket(OutOffsetT current_k, int bin_index,
+  //                 OffsetT num_selected, OffsetT num_candidates)
+  //
+  // where:
+  //   current_k      : echoed back from the `current_k` argument so the
+  //                    callback can compute `current_k - num_selected`
+  //                    without having to capture it.
+  //   bin_index      : the index of the bucket containing the kth element.
+  //   num_selected   : count of items in higher-priority buckets, i.e. items
+  //                    already known to be in the top-k. The new k for the
+  //                    next pass is `current_k - num_selected`.
+  //   num_candidates : count of items inside `bin_index` itself, i.e. the
+  //                    number of candidates the next filter pass will write.
+  template <typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  run(const OffsetT* input_histogram,
-      OutOffsetT current_k,
-      int pass,
-      OutOffsetT* num_remaining_k_out,
-      OffsetT* num_output_candidates_out,
-      KeyPrefixStorageT* key_prefix_storage)
+  run(const OffsetT* input_histogram, OutOffsetT current_k, KthBucketFn on_kth_bucket)
   {
     // Cooperative load + register-resident inclusive prefix sum. OOB lanes
     // (when `num_buckets` is not a multiple of `BlockThreads`) are
@@ -347,9 +353,7 @@ struct BlockFinalizeTopKPass
         const OffsetT cur  = thread_data[i];
         if (prev < current_k && cur >= current_k)
         {
-          *num_remaining_k_out       = static_cast<OutOffsetT>(current_k - prev);
-          *num_output_candidates_out = static_cast<OffsetT>(cur - prev);
-          set_kth_key_bits<BitsPerPass>(*key_prefix_storage, pass, static_cast<unsigned int>(bin_index));
+          on_kth_bucket(current_k, bin_index, prev, cur - prev);
         }
       }
     }
@@ -548,17 +552,21 @@ struct AgentTopKHistogram
     }
   }
 
-  // `counter_update_fn` runs on thread 0 of the last finishing block, inside
-  // `finalize_pass`. The pass-0 caller passes a lambda that resets
-  // `previous_len`/`num_candidates_out`; the unbuffered caller passes its
-  // mode-dependent counter update (early-stop vs non-early-stop logic).
-  template <typename CounterUpdateFn>
+  // Both callbacks run only on the last finishing block:
+  //   `counter_update_fn` runs on thread 0 (before the prefix-sum / bucket
+  //     selection). The pass-0 caller passes a lambda that resets
+  //     `previous_len`/`num_candidates_out`; the unbuffered caller passes its
+  //     mode-dependent counter update (early-stop vs non-early-stop logic).
+  //   `on_kth_bucket`     runs on the single thread that owns the bucket
+  //     containing the kth element. See `BlockFinalizeTopKPass::run` for the
+  //     callback signature.
+  template <typename CounterUpdateFn, typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  invoke(Counter<key_in_t, OffsetT, OutOffsetT>* counter,
+  invoke(unsigned int* retired_block_counter,
          OffsetT* global_histogram,
-         int pass,
          bool is_last_pass,
-         CounterUpdateFn counter_update_fn)
+         CounterUpdateFn counter_update_fn,
+         KthBucketFn on_kth_bucket)
   {
     init_histogram<block_threads, num_buckets>(temp_storage.histogram);
     __syncthreads();
@@ -619,22 +627,22 @@ struct AgentTopKHistogram
     merge_histogram<block_threads, num_buckets>(temp_storage.histogram, global_histogram);
 
     // Last-block epilogue: per-mode counter update on thread 0, then the
-    // prefix-sum + bucket selection that streams the next-pass inputs through
-    // pointers, then optional histogram reset for the next pass.
+    // prefix-sum + bucket selection whose `on_kth_bucket` callback writes the
+    // discovered next-pass inputs into `counter`, then optional histogram
+    // reset for the next pass.
     auto epilogue_op = [&] {
       if (threadIdx.x == 0)
       {
         counter_update_fn();
       }
-      finalize_pass_t{temp_storage.scratch.prefix_sum}.run(
-        global_histogram, k, pass, &counter->k, &counter->len, &counter->kth_key_bits);
+      finalize_pass_t{temp_storage.scratch.prefix_sum}.run(global_histogram, k, on_kth_bucket);
       if (!is_last_pass)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
       }
     };
 
-    finalize_pass(&counter->finished_block_cnt, gridDim.x, epilogue_op);
+    finalize_pass(retired_block_counter, gridDim.x, epilogue_op);
   }
 };
 
@@ -1027,13 +1035,17 @@ public:
   // `p_num_candidates_out`) flow through the run signature. They default to nullptr
   // for the early_stop caller, which never consumes them (gated by
   // `if constexpr (Mode == sink_mode::buffered)` inside the agent).
-  template <typename CounterUpdateFn>
+  //
+  // `counter_update_fn` and `on_kth_bucket` are the two last-block-only
+  // callbacks for `counter` writes; see the same-named docs on
+  // `AgentTopKHistogram::invoke` and `BlockFinalizeTopKPass::run`.
+  template <typename CounterUpdateFn, typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  run(Counter<key_in_t, OffsetT, OutOffsetT>* counter,
+  run(unsigned int* retired_block_counter,
       OutOffsetT current_k,
-      int pass,
       bool is_last_pass,
       CounterUpdateFn counter_update_fn,
+      KthBucketFn on_kth_bucket,
       key_in_t* out_key_buf   = nullptr,
       value_in_t* out_val_buf = nullptr,
       OffsetT* p_num_candidates_out   = nullptr)
@@ -1114,22 +1126,22 @@ public:
     }
 
     // Last-block epilogue: per-mode counter update on thread 0, then the
-    // prefix-sum + bucket selection that streams the next-pass inputs through
-    // pointers, then optional histogram reset for the next pass.
+    // prefix-sum + bucket selection whose `on_kth_bucket` callback writes the
+    // discovered next-pass inputs into `counter`, then optional histogram
+    // reset for the next pass.
     auto epilogue_op = [&] {
       if (threadIdx.x == 0)
       {
         counter_update_fn();
       }
-      finalize_pass_t{storage.scratch.prefix_sum}.run(
-        global_histogram, current_k, pass, &counter->k, &counter->len, &counter->kth_key_bits);
+      finalize_pass_t{storage.scratch.prefix_sum}.run(global_histogram, current_k, on_kth_bucket);
       if (!is_last_pass)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
       }
     };
 
-    finalize_pass(&counter->finished_block_cnt, gridDim.x, epilogue_op);
+    finalize_pass(retired_block_counter, gridDim.x, epilogue_op);
   }
 };
 
