@@ -251,6 +251,33 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
   }
 }
 
+//---------------------------------------------------------------------
+// Last-block coordination primitive.
+// Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes `epilogue_op` exactly once on that block. 
+// The epilogue owns whatever smem it needs and decides what "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
+// any per-mode counter bookkeeping). 
+// `expected_block_count` is the number of blocks expected to retire (e.g., `gridDim.x`.
+//---------------------------------------------------------------------
+template <typename BlockCountT, typename EpilogueOpT>
+_CCCL_DEVICE _CCCL_FORCEINLINE void
+finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_count, EpilogueOpT epilogue_op)
+{
+  __threadfence();
+
+  bool is_last_block = false;
+  if (threadIdx.x == 0)
+  {
+    const unsigned int wrap_at = expected_block_count - 1u;
+    const unsigned int retired = atomicInc(retired_block_counter, wrap_at);
+    is_last_block              = (retired == wrap_at);
+  }
+
+  if (__syncthreads_or(is_last_block))
+  {
+    epilogue_op();
+  }
+}
+
 // Computes the prefix-sum over bins and finds the k-th item bucket.
 // Exposes a the `find_kth_bucket()` entry point that invokes a callback exactly once with the kth-bucket index and the 
 // The primitive performs:
@@ -388,33 +415,6 @@ struct block_identify_kth_bucket
     }
   }
 };
-
-//---------------------------------------------------------------------
-// Last-block coordination primitive.
-// Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes `epilogue_op` exactly once on that block. 
-// The epilogue owns whatever smem it needs and decides what "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
-// any per-mode counter bookkeeping). 
-// `expected_block_count` is the number of blocks expected to retire (e.g., `gridDim.x`.
-//---------------------------------------------------------------------
-template <typename BlockCountT, typename EpilogueOpT>
-_CCCL_DEVICE _CCCL_FORCEINLINE void
-finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_count, EpilogueOpT epilogue_op)
-{
-  __threadfence();
-
-  bool is_last_block = false;
-  if (threadIdx.x == 0)
-  {
-    const unsigned int wrap_at = expected_block_count - 1u;
-    const unsigned int retired = atomicInc(retired_block_counter, wrap_at);
-    is_last_block              = (retired == wrap_at);
-  }
-
-  if (__syncthreads_or(is_last_block))
-  {
-    epilogue_op();
-  }
-}
 
 //---------------------------------------------------------------------
 // AgentTopKHistogram filter helpers
