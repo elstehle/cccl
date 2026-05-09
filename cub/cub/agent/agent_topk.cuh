@@ -20,6 +20,7 @@
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
+#include <cub/device/dispatch/tuning/tuning_transform.cuh>
 #include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
@@ -389,16 +390,11 @@ struct block_identify_kth_bucket
 };
 
 //---------------------------------------------------------------------
-// finalize_pass: last-block coordination primitive.
-//
-// Fences pending writes, atomically detects the unique last-finishing block
-// via `retired_block_counter`, and invokes `epilogue_op` exactly once on that
-// block. Stateless; the epilogue owns whatever smem it needs and decides what
-// "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
-// any per-mode counter bookkeeping). `expected_block_count` is the number of
-// blocks expected to retire (typically `gridDim.x`, but parameterizing it
-// keeps the primitive usable for segmented/per-row coordination where each
-// row owns a slice of the grid).
+// Last-block coordination primitive.
+// Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes `epilogue_op` exactly once on that block. 
+// The epilogue owns whatever smem it needs and decides what "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
+// any per-mode counter bookkeeping). 
+// `expected_block_count` is the number of blocks expected to retire (e.g., `gridDim.x`.
 //---------------------------------------------------------------------
 template <typename BlockCountT, typename EpilogueOpT>
 _CCCL_DEVICE _CCCL_FORCEINLINE void
@@ -426,28 +422,19 @@ finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_co
 //
 // The histogram agent accepts an arbitrary unary predicate `FilterOpT(key) ->
 // bool` that decides whether a given key contributes to the histogram. The two
-// canonical specializations live here:
+// canonical specializations are:
 //
-//   * `topk_pass_through_filter_op` -- pass-0 default. Always returns `true`,
-//     so the optimizer can fold the predicate call away and the inner tile
-//     loop reduces to "extract bucket + atomicAdd" exactly as it did before
-//     this generalization. SASS for the pass-0 hot loop must remain identical
-//     and is verified externally.
+//   * `detail::transform::always_true_predicate` -- pass-0 default. Always
+//     returns `true`, so the optimizer can fold the predicate call away and
+//     the inner tile loop reduces to "extract bucket + atomicAdd" exactly as
+//     it did before this generalization. SASS for the pass-0 hot loop must
+//     remain identical and is verified externally.
 //
 //   * `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used
 //     by the unbuffered filter pass. It wraps the kernel's
 //     `identify_candidates_op` and returns `true` only for keys classified as
 //     `candidate_class::candidate`, replicating what `do_histogram_only` did
 //     in the previous `agent_topk_filter_partition` unbuffered specialization.
-
-struct topk_pass_through_filter_op
-{
-  template <typename T>
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr bool operator()(const T&) const
-  {
-    return true;
-  }
-};
 
 template <typename IdentifyCandidatesOpT>
 struct topk_candidate_filter_op
@@ -469,8 +456,8 @@ struct topk_candidate_filter_op
 //
 // Each input key is gated by the `FilterOpT` predicate before contributing
 // to the histogram. The pass-0 caller leaves the default
-// `topk_pass_through_filter_op` in place; the unbuffered filter caller
-// supplies a `topk_candidate_filter_op` that wraps its
+// `detail::transform::always_true_predicate` in place; the unbuffered filter
+// caller supplies a `topk_candidate_filter_op` that wraps its
 // `identify_candidates_op`.
 //
 // Single-source invariant for the unbuffered usage: the unbuffered filter
@@ -493,7 +480,7 @@ template <typename AgentTopKPolicyT,
           typename ExtractBinOpT,
           typename OffsetT,
           typename OutOffsetT,
-          typename FilterOpT = topk_pass_through_filter_op>
+          typename FilterOpT = detail::transform::always_true_predicate>
 struct AgentTopKHistogram
 {
   using key_in_t = it_value_t<KeyInputIteratorT>;
@@ -683,9 +670,6 @@ struct AgentTopKHistogram
 // back buffer. The "scout" mode that only builds a histogram (formerly
 // `unbuffered`) is now handled by `AgentTopKHistogram` with a candidate filter,
 // and is intentionally no longer part of this enum.
-//
-// The dedicated last-filter pass lives in its own agent (`agent_topk_last_filter`)
-// and is intentionally not part of this enum either.
 //---------------------------------------------------------------------
 
 enum class sink_mode
