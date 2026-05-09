@@ -186,14 +186,17 @@ struct alignas(128) Counter
   // [per-pass] Used to determine the write-offset into `out_buf`
   alignas(128) OffsetT num_candidates_written;
 
-  // [per-pass] Used to count the number of retired thread blocks. The counter is used to determine the last block to retire and execute the `BlockIdentifyKthBucket` epilogue (prefix sum + bucket selection).
+  // [per-pass] Used to count the number of retired thread blocks. The counter is used to determine the last block to
+  // retire and execute the `block_identify_kth_bucket` epilogue (prefix sum + bucket selection).
   alignas(128) unsigned int finished_block_cnt;
 
   // [multi-pass] Used to determine the write-offset for selected items into the user-provided output iterators.
   alignas(128) OutOffsetT num_selected_written;
 
-  // [last-pass] Records the number of tied items (crossing the k-th boundary during the last pass) that have been written to the back of the user-provided output iterators. 
-  // This counter is used to coordinate writes that fill up the gap between definitely selected items at the front and the candidates at the back, making sure we do not overflow beyond the k items the user asked us for.
+  // [last-pass] Records the number of tied items (crossing the k-th boundary during the last pass) that have been
+  // written to the back of the user-provided output iterators. This counter is used to coordinate writes that fill up
+  // the gap between definitely selected items at the front and the candidates at the back, making sure we do not
+  // overflow beyond the k items the user asked us for.
   alignas(128) OutOffsetT num_ties_written_to_back;
 
   // The 'alignas' is necessary to improve the performance of global memory accessing by isolating the request,
@@ -247,47 +250,48 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
   }
 }
 
-//---------------------------------------------------------------------
-// BlockIdentifyKthBucket: per-block epilogue for one top-k radix pass.
+// Computes the prefix-sum over bins and finds the k-th item bucket.
+// Exposes a the `find_kth_bucket()` entry point that invokes a callback exactly once with the kth-bucket index and the 
+// The primitive performs:
+//   1) load of the per-bin counts from `input_histogram` into a blocked arrangement;
+//   2) `BlockScan::InclusiveSum` over that chunk, keeping prefix sums in registers;
+//   3) one boundary write/read per thread so each thread's right neighbour can use its right-edge prefix sum as the
+//   `prev` for its bin 0; 4) per-thread search for the bucket whose prefix-sum range straddles `current_k`, with
+//   `on_kth_bucket` invoked on the single thread that owns that bucket.
 //
-// Owns the smem footprint of the prefix-sum + bucket-selection step and
-// exposes a single `run()` entry point that invokes a caller-provided
-// callback exactly once with the kth-bucket index and the histogram counts
-// straddling `current_k` (so the caller can update its own counters / k-th
-// key prefix without this primitive having to know about them). The
-// epilogue does, in order:
-//   1) cooperative `BlockLoad<TRANSPOSE>` of the per-bin counts from
-//      `input_histogram` into a per-thread blocked chunk;
-//   2) `BlockScan::InclusiveSum` over that chunk, keeping prefix sums in
-//      registers;
-//   3) one boundary write/read per thread so each thread's right neighbour
-//      can use its right-edge prefix sum as the `prev` for its bin 0;
-//   4) per-thread search for the bucket whose prefix-sum range straddles
-//      `current_k`, with `on_kth_bucket` invoked on the single thread that
-//      owns that bucket.
-//
-// Layout note: `BLOCK_LOAD_TRANSPOSE` produces a blocked layout where thread
-// `tid` owns the contiguous bin chunk `[tid*bins_per_thread,
-// (tid+1)*bins_per_thread)`. Because `BlockScan::InclusiveSum` over a
-// per-thread array preserves the blocked layout, we only need a
-// `min(BlockThreads, num_buckets)`-sized boundary buffer instead of
-// round-tripping all `num_buckets` prefix sums through a `BlockStore`.
-//---------------------------------------------------------------------
-
-template <int BlockThreads, int BitsPerPass, BlockScanAlgorithm ScanAlgorithm, typename OffsetT, typename OutOffsetT>
-struct BlockIdentifyKthBucket
+// Note, the chosen `LoadAlgorithm` must produce a blocked arrangement.
+template <int BlockThreads,
+          int BitsPerPass,
+          BlockScanAlgorithm ScanAlgorithm,
+          typename OffsetT,
+          typename OutOffsetT,
+          BlockLoadAlgorithm LoadAlgorithm = BLOCK_LOAD_TRANSPOSE>
+struct block_identify_kth_bucket
 {
+  // Prefix-sum and boundary-buffer assumes thread `tid` owns the contiguous bin chunk in blocked arrangement
+  static_assert(
+    LoadAlgorithm == BLOCK_LOAD_DIRECT //
+      || LoadAlgorithm == BLOCK_LOAD_VECTORIZE //
+      || LoadAlgorithm == BLOCK_LOAD_TRANSPOSE //
+      || LoadAlgorithm == BLOCK_LOAD_WARP_TRANSPOSE //
+      || LoadAlgorithm == BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED,
+    "block_identify_kth_bucket requires a blocked-layout BlockLoadAlgorithm: "
+    "BLOCK_LOAD_DIRECT, BLOCK_LOAD_VECTORIZE, BLOCK_LOAD_TRANSPOSE, "
+    "BLOCK_LOAD_WARP_TRANSPOSE, or BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED. "
+    "Striped layouts (e.g. BLOCK_LOAD_STRIPED) are not supported.");
+
   static constexpr int num_buckets     = 1 << BitsPerPass;
   static constexpr int bins_per_thread = ::cuda::ceil_div(num_buckets, BlockThreads);
-  
-  // Only threads owning at least one in-range bin contribute a boundary, so the buffer is capped at `num_buckets` slots when `num_buckets < BlockThreads`.
+
+  // Only threads owning at least one in-range bin contribute a boundary, so the buffer is capped at `num_buckets` slots
+  // when `num_buckets < BlockThreads`.
   static constexpr int boundaries_size = (BlockThreads < num_buckets) ? BlockThreads : num_buckets;
 
-  using block_load_t = BlockLoad<OffsetT, BlockThreads, bins_per_thread, BLOCK_LOAD_TRANSPOSE>;
+  using block_load_t = BlockLoad<OffsetT, BlockThreads, bins_per_thread, LoadAlgorithm>;
   using block_scan_t = BlockScan<OffsetT, BlockThreads, ScanAlgorithm>;
 
-  // The boundary buffer shares storage with the load/scan scratch since the
-  // boundary exchange runs strictly after both have completed.
+  // The boundary buffer shares storage with the load/scan scratch since the boundary exchange runs strictly after both
+  // have completed.
   struct TempStorage
   {
     union
@@ -300,48 +304,43 @@ struct BlockIdentifyKthBucket
 
   TempStorage& storage;
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE explicit BlockIdentifyKthBucket(TempStorage& s)
+  _CCCL_DEVICE _CCCL_FORCEINLINE explicit block_identify_kth_bucket(TempStorage& s)
       : storage(s)
   {}
 
-  // Inclusive-prefix-sums `input_histogram`, identifies the bucket containing
-  // the `current_k`-th element, and invokes `on_kth_bucket` exactly once on
-  // the unique thread that owns that bucket.
-  //
-  // `on_kth_bucket` is called as
-  //
-  //   on_kth_bucket(OutOffsetT current_k, int bin_index,
-  //                 OffsetT num_selected, OffsetT num_candidates)
-  //
-  // where:
-  //   current_k      : echoed back from the `current_k` argument so the
-  //                    callback can compute `current_k - num_selected`
-  //                    without having to capture it.
-  //   bin_index      : the index of the bucket containing the kth element.
-  //   num_selected   : count of items in higher-priority buckets, i.e. items
-  //                    already known to be in the top-k. The new k for the
-  //                    next pass is `current_k - num_selected`.
-  //   num_candidates : count of items inside `bin_index` itself, i.e. the
-  //                    number of candidates the next filter pass will write.
+  // Inclusive-prefix-sums `input_histogram`, identifies the bucket containing the `current_k`-th element, and invokes
+  // `on_kth_bucket` exactly once on the unique thread that owns that bucket. `on_kth_bucket` callback signature and
+  // arguments: `on_kth_bucket(OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates)`
+  // - current_k: echoed back from the `current_k` argument so the callback can compute `current_k - num_selected`
+  // (number of candidates in the k-th item's bucket)
+  //    without having to capture it.
+  // - bin_index: the index of the bucket containing the kth element.
+  // - num_selected: count of items in higher-priority buckets, i.e. items already known to be in the top-k. The new k
+  //    for the next pass is `current_k - num_selected`.
+  // - num_candidates: count of items inside `bin_index` itself, i.e. the number of candidates the next filter pass will
+  //    write.
   template <typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  run(const OffsetT* input_histogram, OutOffsetT current_k, KthBucketFn on_kth_bucket)
+  find_kth_bucket(const OffsetT* input_histogram, OutOffsetT current_k, KthBucketFn on_kth_bucket)
   {
-    // Full tiles (of bins) will skip the out-of-bounds checks 
+    // Full tiles (of bins) will skip the out-of-bounds checks
     static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
 
     // Each thread loads its contiguous chunk of bins into registers
     OffsetT thread_data[bins_per_thread];
-    if constexpr(is_full_tile){
+    if constexpr (is_full_tile)
+    {
       block_load_t(storage.load).Load(input_histogram, thread_data);
-    }else{
-      block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
-
     }
+    else
+    {
+      block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
+    }
+
     // Ensure we can reuse temporary storage for the prefix-sum
     __syncthreads();
 
-    // Compute the prefix-sum over the bins 
+    // Compute the prefix-sum over the bins
     block_scan_t(storage.scan).InclusiveSum(thread_data, thread_data);
 
     // Ensure we can reuse temporary storage for the boundary exchange
@@ -362,7 +361,7 @@ struct BlockIdentifyKthBucket
     }
     // Ensure all threads finished writing their boundary value
     __syncthreads();
-    
+
     // Get the previous thread's right-edge prefix sum
     const OffsetT prev_boundary =
       (threadIdx.x > 0 && (is_full_tile || static_cast<int>(threadIdx.x) <= boundaries_size))
@@ -395,7 +394,7 @@ struct BlockIdentifyKthBucket
 // Fences pending writes, atomically detects the unique last-finishing block
 // via `retired_block_counter`, and invokes `epilogue_op` exactly once on that
 // block. Stateless; the epilogue owns whatever smem it needs and decides what
-// "finalization" means (top-k uses it to run `BlockIdentifyKthBucket::run` plus
+// "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
 // any per-mode counter bookkeeping). `expected_block_count` is the number of
 // blocks expected to retire (typically `gridDim.x`, but parameterizing it
 // keeps the primitive usable for segmented/per-row coordination where each
@@ -508,7 +507,7 @@ struct AgentTopKHistogram
   using keys_source_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using identify_kth_bucket_t =
-    BlockIdentifyKthBucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
+    block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   struct _TempStorage
   {
@@ -587,7 +586,7 @@ struct AgentTopKHistogram
   //     `num_candidates_in`/`num_candidates_written`; the unbuffered caller passes its
   //     mode-dependent counter update (early-stop vs non-early-stop logic).
   //   `on_kth_bucket`     runs on the single thread that owns the bucket
-  //     containing the kth element. See `BlockIdentifyKthBucket::run` for the
+  //     containing the kth element. See `block_identify_kth_bucket::find_kth_bucket` for the
   //     callback signature.
   template <typename CounterUpdateFn, typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
@@ -664,7 +663,7 @@ struct AgentTopKHistogram
       {
         counter_update_fn();
       }
-      identify_kth_bucket_t{temp_storage.scratch.prefix_sum}.run(global_histogram, k, on_kth_bucket);
+      identify_kth_bucket_t{temp_storage.scratch.prefix_sum}.find_kth_bucket(global_histogram, k, on_kth_bucket);
       if (reset_histogram)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
@@ -779,7 +778,7 @@ struct agent_topk_filter_partition
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
   using identify_kth_bucket_t =
-    BlockIdentifyKthBucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
+    block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   // Compile-time mode plumbing.
   //   selected_offset_t / candidate_offset_t : pointer types of the global counters.
@@ -1057,7 +1056,7 @@ public:
   //
   // `counter_update_fn` and `on_kth_bucket` are the two last-block-only
   // callbacks for `counter` writes; see the same-named docs on
-  // `AgentTopKHistogram::invoke` and `BlockIdentifyKthBucket::run`.
+  // `AgentTopKHistogram::invoke` and `block_identify_kth_bucket::find_kth_bucket`.
   template <typename CounterUpdateFn, typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(unsigned int* retired_block_counter,
@@ -1065,9 +1064,9 @@ public:
       bool reset_histogram,
       CounterUpdateFn counter_update_fn,
       KthBucketFn on_kth_bucket,
-      key_in_t* out_key_buf   = nullptr,
-      value_in_t* out_val_buf = nullptr,
-      OffsetT* p_num_candidates_written   = nullptr)
+      key_in_t* out_key_buf             = nullptr,
+      value_in_t* out_val_buf           = nullptr,
+      OffsetT* p_num_candidates_written = nullptr)
   {
     if constexpr (accumulate_histogram)
     {
@@ -1106,7 +1105,8 @@ public:
       auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
       h.complete_load(items);
       __syncthreads();
-      do_partition</*IsFull=*/true>(items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_num_candidates_written);
+      do_partition</*IsFull=*/true>(
+        items, static_cast<OffsetT>(tile_items), channels, out_key_buf, p_num_candidates_written);
     }
 
     // --- trailing partial tile (handled by exactly one block) ------------
@@ -1153,7 +1153,7 @@ public:
       {
         counter_update_fn();
       }
-      identify_kth_bucket_t{storage.scratch.prefix_sum}.run(global_histogram, current_k, on_kth_bucket);
+      identify_kth_bucket_t{storage.scratch.prefix_sum}.find_kth_bucket(global_histogram, current_k, on_kth_bucket);
       if (reset_histogram)
       {
         init_histogram<block_threads, num_buckets>(global_histogram);
@@ -1324,8 +1324,8 @@ private:
       value_source_t val_src{val_a, val_b, /*pick_b=*/!load_from_original_input};
 
       // For last_filter both selected and candidate values feed `d_values_out`.
-      return ::cuda::std::tuple<value_channel_t>{value_channel_t{
-        val_src, d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+      return ::cuda::std::tuple<value_channel_t>{
+        value_channel_t{val_src, d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
     }
   }
 
@@ -1343,7 +1343,9 @@ private:
 
     atomic_reserve_range_op<selected_offset_t> reserve_sel{p_num_selected_written};
     back_grow_capped_reserve_op<candidate_offset_t> reserve_cand{
-      p_num_ties_written_to_back, static_cast<candidate_offset_t>(k_total), static_cast<candidate_offset_t>(num_of_kth_needed)};
+      p_num_ties_written_to_back,
+      static_cast<candidate_offset_t>(k_total),
+      static_cast<candidate_offset_t>(num_of_kth_needed)};
     topk_noop_candidate_callback_op cb{}; // last_filter doesn't accumulate histogram
     if constexpr (IsFull)
     {
@@ -1381,7 +1383,8 @@ private:
   }
 
 public:
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run(OutOffsetT* p_num_ties_written_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  run(OutOffsetT* p_num_ties_written_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
   {
     key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
     key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
@@ -1437,7 +1440,8 @@ public:
         auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
         h.complete_load(items);
         __syncthreads();
-        do_partition</*IsFull=*/false>(items, partial_items, channels, p_num_ties_written_to_back, k_total, num_of_kth_needed);
+        do_partition</*IsFull=*/false>(
+          items, partial_items, channels, p_num_ties_written_to_back, k_total, num_of_kth_needed);
       }
     }
   }
