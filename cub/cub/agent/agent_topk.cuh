@@ -20,7 +20,6 @@
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
-#include <cub/device/dispatch/tuning/tuning_transform.cuh>
 #include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
@@ -422,19 +421,28 @@ struct block_identify_kth_bucket
 //
 // The histogram agent accepts an arbitrary unary predicate `FilterOpT(key) ->
 // bool` that decides whether a given key contributes to the histogram. The two
-// canonical specializations are:
+// canonical specializations live here:
 //
-//   * `detail::transform::always_true_predicate` -- pass-0 default. Always
-//     returns `true`, so the optimizer can fold the predicate call away and
-//     the inner tile loop reduces to "extract bucket + atomicAdd" exactly as
-//     it did before this generalization. SASS for the pass-0 hot loop must
-//     remain identical and is verified externally.
+//   * `topk_pass_through_filter_op` -- pass-0 default. Always returns `true`,
+//     so the optimizer can fold the predicate call away and the inner tile
+//     loop reduces to "extract bucket + atomicAdd" exactly as it did before
+//     this generalization. SASS for the pass-0 hot loop must remain identical
+//     and is verified externally.
 //
 //   * `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used
 //     by the unbuffered filter pass. It wraps the kernel's
 //     `identify_candidates_op` and returns `true` only for keys classified as
 //     `candidate_class::candidate`, replicating what `do_histogram_only` did
 //     in the previous `agent_topk_filter_partition` unbuffered specialization.
+
+struct topk_pass_through_filter_op
+{
+  template <typename T>
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr bool operator()(const T&) const
+  {
+    return true;
+  }
+};
 
 template <typename IdentifyCandidatesOpT>
 struct topk_candidate_filter_op
@@ -456,8 +464,8 @@ struct topk_candidate_filter_op
 //
 // Each input key is gated by the `FilterOpT` predicate before contributing
 // to the histogram. The pass-0 caller leaves the default
-// `detail::transform::always_true_predicate` in place; the unbuffered filter
-// caller supplies a `topk_candidate_filter_op` that wraps its
+// `topk_pass_through_filter_op` in place; the unbuffered filter caller
+// supplies a `topk_candidate_filter_op` that wraps its
 // `identify_candidates_op`.
 //
 // Single-source invariant for the unbuffered usage: the unbuffered filter
@@ -480,7 +488,7 @@ template <typename AgentTopKPolicyT,
           typename ExtractBinOpT,
           typename OffsetT,
           typename OutOffsetT,
-          typename FilterOpT = detail::transform::always_true_predicate>
+          typename FilterOpT = topk_pass_through_filter_op>
 struct AgentTopKHistogram
 {
   using key_in_t = it_value_t<KeyInputIteratorT>;
