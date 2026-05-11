@@ -285,7 +285,7 @@ template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT,
 __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
   _CCCL_KERNEL_ATTRIBUTES void DeviceTopKHistogramKernel(
     _CCCL_GRID_CONSTANT const KeyInputIteratorT d_keys_in,
-    Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
+    counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT OffsetT* const histogram,
     _CCCL_GRID_CONSTANT const OffsetT num_items,
     _CCCL_GRID_CONSTANT const OutOffsetT k,
@@ -304,11 +304,13 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
-  // Two last-block-only callbacks update the device-side `Counter`:
+  // Two last-block-only callbacks update the device-side `counter`:
   //   `counter_update_fn` runs on thread 0 before the prefix-sum.
   //   `on_kth_bucket`     runs on the single thread that owns the bucket
   //                       containing the kth element, i.e. inside
   //                       `block_identify_kth_bucket::find_kth_bucket`.
+  // `load_from_candidates_buffer` stays at its zero-initialized `false`; the dispatch-side
+  // `cudaMemsetAsync` over the counter blob is the source of truth for that bit at pass 0.
   auto counter_update_fn = [counter, num_items] {
     counter->num_candidates_in      = num_items;
     counter->num_candidates_written = 0;
@@ -324,7 +326,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     .invoke(&counter->finished_block_cnt, histogram, reset_histogram, counter_update_fn, on_kth_bucket);
 }
 
-// Filter kernel covering passes 1..num_passes-1. The kernel reads Counter state once,
+// Filter kernel covering passes 1..num_passes-1. The kernel reads counter state once,
 // computes the sink_mode (early_stop / buffered / unbuffered), and dispatches to the
 // matching agent instantiation. The unbuffered "scout" mode is handled by the
 // shared `AgentTopKHistogram` (driven by a candidate-filter predicate), while the
@@ -355,9 +357,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     _CCCL_GRID_CONSTANT ValueInT* const in_val_buf,
     _CCCL_GRID_CONSTANT KeyInT* const out_key_buf,
     _CCCL_GRID_CONSTANT ValueInT* const out_val_buf,
-    Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
+    counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT OffsetT* const histogram,
-    _CCCL_GRID_CONSTANT const OffsetT num_items,
     _CCCL_GRID_CONSTANT const OutOffsetT k,
     _CCCL_GRID_CONSTANT const OffsetT buffer_length,
     ExtractBinOpT extract_bin_op,
@@ -433,41 +434,51 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   };
   __shared__ all_modes_ts_t temp_storage;
 
-  // Read Counter state once at entry.
-  const OutOffsetT current_k = counter->k;
-  const OffsetT current_len  = counter->num_candidates_out;
-  OffsetT num_candidates_in  = counter->num_candidates_in;
+  // Read counter state once at entry. The cross-pass scalar fields share a single cache line.
+  const OutOffsetT current_k             = counter->k;
+  const OffsetT current_len              = counter->num_candidates_out;
+  const OffsetT input_length             = counter->num_candidates_in;
+  const bool load_from_candidates_buffer = counter->load_from_candidates_buffer;
 
-  if (current_len == 0)
+  // Universal early exit: the `early_stop` epilogue (or any prior pass that took it) writes
+  // `num_candidates_in = 0` to signal that all subsequent passes should be no-ops.
+  if (input_length == 0)
   {
     return;
   }
 
-  const bool early_stop               = (current_len == static_cast<OffsetT>(current_k));
-  const bool load_from_original_input = (pass <= 1) || num_candidates_in > buffer_length;
-  const OffsetT input_length          = load_from_original_input ? num_items : num_candidates_in;
+  const bool early_stop  = (current_len == static_cast<OffsetT>(current_k));
+  const bool will_buffer = !early_stop && (current_len <= buffer_length);
 
-  ValueInT* effective_in_val_buf = load_from_original_input ? nullptr : in_val_buf;
+  ValueInT* effective_in_val_buf  = load_from_candidates_buffer ? in_val_buf : nullptr;
+  KeyInT* effective_out_key_buf   = will_buffer ? out_key_buf : nullptr;
+  ValueInT* effective_out_val_buf = will_buffer ? out_val_buf : nullptr;
 
-  KeyInT* effective_out_key_buf   = (current_len > buffer_length) ? nullptr : out_key_buf;
-  ValueInT* effective_out_val_buf = (current_len > buffer_length) ? nullptr : out_val_buf;
-
-  // Two last-block-only callbacks update the device-side `Counter`. Shared
-  // across all three filter modes since they perform the same updates:
+  // Two last-block-only callbacks update the device-side `counter`. Shared across all three
+  // filter modes:
   //   `counter_update_fn` runs on thread 0 before the prefix-sum.
-  //   `on_kth_bucket`     runs on the single thread that owns the bucket
-  //                       containing the kth element, i.e. inside
-  //                       `block_identify_kth_bucket::find_kth_bucket`.
-  auto counter_update_fn = [counter, current_len, early_stop] {
+  //   `on_kth_bucket`     runs on the single thread that owns the bucket containing the kth
+  //                       element, i.e. inside `block_identify_kth_bucket::find_kth_bucket`.
+  // The three branches map to the three filter modes:
+  //   - early_stop : write `num_candidates_in = 0` as the universal early-exit signal for
+  //                  subsequent passes; the rest of the cross-pass state is intentionally left
+  //                  stale (it is never read again before the next early-exit short-circuit).
+  //   - buffered   : the buffer now holds `current_len` candidates; flip
+  //                  `load_from_candidates_buffer` so the next pass loads from it. Once flipped,
+  //                  the flag sticks (the candidate set is monotonically non-increasing).
+  //   - unbuffered : nothing to update. `num_candidates_in` already equals `num_items` (set by
+  //                  the histogram pass and preserved across the unbuffered chain), and
+  //                  `load_from_candidates_buffer` stays false.
+  auto counter_update_fn = [counter, current_len, early_stop, will_buffer] {
     if (early_stop)
     {
-      counter->num_candidates_in  = 0;
-      counter->num_candidates_out = 0;
+      counter->num_candidates_in = 0;
     }
-    else
+    else if (will_buffer)
     {
-      counter->num_candidates_in      = current_len;
-      counter->num_candidates_written = 0;
+      counter->num_candidates_in           = current_len;
+      counter->load_from_candidates_buffer = true;
+      counter->num_candidates_written      = 0;
     }
   };
   auto on_kth_bucket =
@@ -489,13 +500,13 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       effective_in_val_buf,
       &counter->num_selected_written,
       input_length,
-      load_from_original_input,
+      load_from_candidates_buffer,
       extract_bin_op,
       identify_candidates_op,
       histogram);
     agent.run(&counter->finished_block_cnt, current_k, reset_histogram, counter_update_fn, on_kth_bucket);
   }
-  else if (effective_out_key_buf != nullptr)
+  else if (will_buffer)
   {
     agent_bf_t agent(
       temp_storage.bf,
@@ -507,7 +518,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       effective_in_val_buf,
       &counter->num_selected_written,
       input_length,
-      load_from_original_input,
+      load_from_candidates_buffer,
       extract_bin_op,
       identify_candidates_op,
       histogram);
@@ -523,12 +534,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   }
   else
   {
-    // Unbuffered scout pass: histogram-only, gated by a candidate filter. The
-    // single-source invariant on `AgentTopKHistogram` (see its block comment)
-    // guarantees `load_from_original_input` is true on this path; we assert it
-    // in debug builds rather than threading `in_key_buf` / `load_from_original_input`
-    // through to a single-source agent that can't act on them.
-    _CCCL_ASSERT(load_from_original_input, "Unbuffered filter passes must always load from d_keys_in");
+    // Unbuffered scout pass: histogram-only, gated by a candidate filter. The single-source
+    // invariant on `AgentTopKHistogram` (see its block comment) is now structurally enforced:
+    // we only reach this branch when the previous pass did not write to the candidate buffer,
+    // so `load_from_candidates_buffer == false` and there is no buffer to load from.
     filter_op_t filter_op{identify_candidates_op};
     agent_ub_t agent(temp_storage.ub, d_keys_in, input_length, current_k, extract_bin_op, filter_op);
     agent.invoke(&counter->finished_block_cnt, histogram, reset_histogram, counter_update_fn, on_kth_bucket);
@@ -561,12 +570,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     _CCCL_GRID_CONSTANT const ValueOutputIteratorT d_values_out,
     _CCCL_GRID_CONSTANT KeyInT* const in_key_buf,
     _CCCL_GRID_CONSTANT ValueInT* const in_val_buf,
-    Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
-    _CCCL_GRID_CONSTANT const OffsetT num_items,
+    counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT const OutOffsetT k,
-    _CCCL_GRID_CONSTANT const OffsetT buffer_length,
-    IdentifyCandidatesOpT identify_candidates_op,
-    _CCCL_GRID_CONSTANT const int pass)
+    IdentifyCandidatesOpT identify_candidates_op)
 {
   static constexpr topk_policy policy = current_policy<PolicySelector>();
   using agent_topk_policy_t =
@@ -595,17 +601,15 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
 
-  const OffsetT num_candidates_in = counter->num_candidates_in;
-
-  const bool load_from_original_input = (pass <= 1) || num_candidates_in > buffer_length;
-  const OffsetT input_length          = load_from_original_input ? num_items : num_candidates_in;
+  const OffsetT input_length             = counter->num_candidates_in;
+  const bool load_from_candidates_buffer = counter->load_from_candidates_buffer;
 
   if (input_length == 0)
   {
     return;
   }
 
-  ValueInT* effective_in_val_buf = load_from_original_input ? nullptr : in_val_buf;
+  ValueInT* effective_in_val_buf = load_from_candidates_buffer ? in_val_buf : nullptr;
 
   const OutOffsetT num_of_kth_needed = static_cast<OutOffsetT>(counter->k);
 
@@ -619,7 +623,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     effective_in_val_buf,
     &counter->num_selected_written,
     input_length,
-    load_from_original_input,
+    load_from_candidates_buffer,
     identify_candidates_op);
   agent.run(&counter->num_ties_written_to_back, k, num_of_kth_needed);
 }
@@ -822,7 +826,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     }();
 
     // Specify temporary storage allocation requirements
-    using counter_t             = Counter<key_in_t, OffsetT, OutOffsetT>;
+    using counter_t             = counter<key_in_t, OffsetT, OutOffsetT>;
     const size_t size_counter   = sizeof(counter_t);
     const size_t size_histogram = num_buckets * sizeof(OffsetT);
     const OffsetT candidate_buffer_length =
@@ -857,7 +861,9 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       return cudaSuccess;
     }
 
-    // Init the buffer for descriptor and histogram
+    // Init the buffer for descriptor and histogram. Zeroing the counter blob is also the source
+    // of truth for `counter::load_from_candidates_buffer` at pass 0: it must observe `false`
+    // before the first filter pass runs, which is guaranteed by this memset.
     if (const auto error = CubDebug(launcher_factory.MemsetAsync(
           allocations[0], 0, static_cast<char*>(allocations[2]) - static_cast<char*>(allocations[0]), stream)))
     {
@@ -959,7 +965,6 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                     val_bufs.Alternate(),
                     counter,
                     histogram,
-                    num_items,
                     k,
                     candidate_buffer_length,
                     extract_op,
@@ -1009,11 +1014,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                   key_bufs.Current(),
                   val_bufs.Current(),
                   counter,
-                  num_items,
                   k,
-                  candidate_buffer_length,
-                  identify_op,
-                  pass)))
+                  identify_op)))
     {
       return error;
     }
