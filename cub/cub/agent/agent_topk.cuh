@@ -159,48 +159,77 @@ set_kth_key_bits(key_prefix_storage_t<KeyT>& prefix, const int pass, const int b
   }
 }
 
+// Device-side coordination state for the top-k passes. Fields are organized into three groups
+// by access pattern:
+//
+//   (1) Cross-pass scalar state -- single-thread-written at the last-block epilogue, broadcast-read
+//       at the next pass's entry. These fields share a single cache line (no internal alignof) so
+//       the entry-side reads hit one coherent line and the epilogue stores coalesce.
+//
+//   (2) Per-pass scratch atomics -- atomicAdd / atomicInc from many blocks within a pass; reset at
+//       the epilogue or wrap each pass. Isolated on their own cache lines so per-block atomic
+//       traffic does not invalidate the cross-pass scalar state line that other blocks may be
+//       reading at the start of the next pass.
+//
+//   (3) Cross-pass cumulative atomics -- monotonic atomicAdd from many blocks across all passes.
+//       Isolated on their own cache lines for the same reason as (2).
 template <typename KeyInT, typename OffsetT, typename OutOffsetT>
-struct alignas(128) Counter
+struct alignas(128) counter
 {
-  // Top-k items still to be identified after this pass commits its writes. Updated by `on_kth_bucket` to
-  // `current_k - num_selected` at each pass's epilogue.
+  // ----- (1) Cross-pass scalar state -----
+
+  // Top-k items still to be identified after this pass commits its writes. Updated by
+  // `on_kth_bucket` to `current_k - num_selected` at each pass's epilogue.
   OutOffsetT k;
 
-  // Count of candidates this pass produced for the next pass to consume (= bin count from this pass's prefix-sum).
-  // Read by the next pass as its incoming candidate count.
+  // Count of candidates this pass produced for the next pass to consume (= bin count from this
+  // pass's prefix-sum). Read by the next pass to drive the early_stop / buffered / unbuffered
+  // mode dispatch.
   OffsetT num_candidates_out;
 
-  // Count of candidates the upcoming pass receives as its input (= the previous pass's `num_candidates_out`, seeded
-  // to the original `num_items` at pass 0 since every item is initially a candidate). Also used to decide whether to
-  // read from `in_key_buf` or re-scan the original input: `num_candidates_in > buffer_length` indicates the previous
-  // pass was unbuffered and could not stage its candidates into `in_key_buf`.
+  // Actual length of the input stream the next pass will load (NOT a candidate count). Equals
+  // `num_items` whenever `load_from_candidates_buffer == false` (the unbuffered chain) and the
+  // producing pass's `num_candidates_out` once we transition to the buffered chain. The
+  // `early_stop` epilogue writes 0 here to act as the universal early-exit signal for all
+  // subsequent passes.
   OffsetT num_candidates_in;
 
-  // We determine the bits of the k_th key inside the mask processed by the pass. The
-  // already known bits are stored in `kth_key_bits`. It's used to discriminate a
-  // element is a result (written to `out`), a candidate for next pass (written to
-  // `out_buf`), or not useful (discarded). The bits that are not yet processed do not
-  // matter for this purpose.
+  // Whether the next pass should load its input keys/values from `in_key_buf`/`in_val_buf` (the
+  // previous pass's candidate buffer) instead of from the original `d_keys_in`/`d_values_in`.
+  // Initialized to `false` by the dispatch-side `cudaMemsetAsync` over the counter blob and
+  // flipped to `true` exactly once when the first filter pass writes to the candidate buffer; it
+  // then sticks because the candidate set is monotonically non-increasing across passes (once we
+  // fit in the back buffer we keep fitting).
+  bool load_from_candidates_buffer;
+
+  // We determine the bits of the k_th key inside the mask processed by the pass. The already
+  // known bits are stored in `kth_key_bits`. It's used to discriminate whether an element is a
+  // result (written to `out`), a candidate for next pass (written to `out_buf`), or not useful
+  // (discarded). The bits that are not yet processed do not matter for this purpose.
   key_prefix_storage_t<KeyInT> kth_key_bits;
 
-  // [per-pass] Used to determine the write-offset into `out_buf`
+  // ----- (2) Per-pass scratch atomics -----
+
+  // Used to determine the write-offset into `out_buf`. Reset by the buffered-pass epilogue.
   alignas(128) OffsetT num_candidates_written;
 
-  // [per-pass] Used to count the number of retired thread blocks. The counter is used to determine the last block to
-  // retire and execute the `block_identify_kth_bucket` epilogue (prefix sum + bucket selection).
+  // Used to count the number of retired thread blocks. The counter is used to determine the last
+  // block to retire and execute the `block_identify_kth_bucket` epilogue (prefix sum + bucket
+  // selection). Wraps each pass via `atomicInc`.
   alignas(128) unsigned int finished_block_cnt;
 
-  // [multi-pass] Used to determine the write-offset for selected items into the user-provided output iterators.
+  // ----- (3) Cross-pass cumulative atomics -----
+
+  // Used to determine the write-offset for selected items into the user-provided output
+  // iterators across all passes.
   alignas(128) OutOffsetT num_selected_written;
 
-  // [last-pass] Records the number of tied items (crossing the k-th boundary during the last pass) that have been
-  // written to the back of the user-provided output iterators. This counter is used to coordinate writes that fill up
-  // the gap between definitely selected items at the front and the candidates at the back, making sure we do not
-  // overflow beyond the k items the user asked us for.
+  // Records the number of tied items (crossing the k-th boundary during the last pass) that have
+  // been written to the back of the user-provided output iterators. This counter is used to
+  // coordinate writes that fill up the gap between definitely selected items at the front and
+  // the candidates at the back, making sure we do not overflow beyond the k items the user asked
+  // us for.
   alignas(128) OutOffsetT num_ties_written_to_back;
-
-  // The 'alignas' is necessary to improve the performance of global memory accessing by isolating the request,
-  // especially for the segment version.
 };
 
 //---------------------------------------------------------------------
@@ -223,9 +252,11 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void init_histogram(CounterT* histogram)
   }
 }
 
+//---------------------------------------------------------------------
 // Atomically merge a block-local histogram into a global histogram. The local and global counters
 // may have different types (e.g. a 32-bit local histogram merged into a 32- or 64-bit global one);
 // each non-zero local value is widened to the global counter type before the atomic add.
+//---------------------------------------------------------------------
 template <int BlockThreads, int NumBuckets, typename LocalCounterT, typename GlobalCounterT>
 _CCCL_DEVICE _CCCL_FORCEINLINE void
 merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_histogram)
@@ -277,6 +308,7 @@ finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_co
   }
 }
 
+//---------------------------------------------------------------------
 // Computes the prefix-sum over bins and finds the k-th item bucket.
 // Exposes a the `find_kth_bucket()` entry point that invokes a callback exactly once with the kth-bucket index and the 
 // The primitive performs:
@@ -287,6 +319,7 @@ finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_co
 //   `on_kth_bucket` invoked on the single thread that owns that bucket.
 //
 // Note, the chosen `LoadAlgorithm` must produce a blocked arrangement.
+//---------------------------------------------------------------------
 template <int BlockThreads,
           int BitsPerPass,
           BlockScanAlgorithm ScanAlgorithm,
@@ -693,9 +726,9 @@ enum class sink_mode
 //
 // Compile-time specialized on `sink_mode` (early_stop / buffered /
 // unbuffered); the kernel switches to the matching instantiation based on
-// the device-side Counter state. Owns the tile loop with full/partial
+// the device-side `counter` state. Owns the tile loop with full/partial
 // dispatch; keys come in via a `multi_source_data_source` over
-// `(d_keys_in, in_key_buf)` selected at runtime by `load_from_original_input`.
+// `(d_keys_in, in_key_buf)` selected at runtime by `load_from_candidates_buffer`.
 // The per-tile partition is delegated to `BlockPartition` with strategy
 // `PartStrat`, per-mode reserve ops, and a candidate callback that performs
 // the histogram update inline.
@@ -871,7 +904,7 @@ struct agent_topk_filter_partition
   OutOffsetT* p_num_selected_written;
 
   OffsetT input_length;
-  bool load_from_original_input;
+  bool load_from_candidates_buffer;
 
   ExtractBinOpT extract_bin_op;
   IdentifyCandidatesOpT identify_candidates_op;
@@ -887,7 +920,7 @@ struct agent_topk_filter_partition
     value_in_t* in_val_buf,
     OutOffsetT* p_num_selected_written,
     OffsetT input_length,
-    bool load_from_original_input,
+    bool load_from_candidates_buffer,
     ExtractBinOpT extract_bin_op,
     IdentifyCandidatesOpT identify_candidates_op,
     OffsetT* global_histogram)
@@ -900,7 +933,7 @@ struct agent_topk_filter_partition
       , in_val_buf(in_val_buf)
       , p_num_selected_written(p_num_selected_written)
       , input_length(input_length)
-      , load_from_original_input(load_from_original_input)
+      , load_from_candidates_buffer(load_from_candidates_buffer)
       , extract_bin_op(extract_bin_op)
       , identify_candidates_op(identify_candidates_op)
       , global_histogram(global_histogram)
@@ -922,7 +955,7 @@ private:
       typename val_source_b_t::TempStorage val_state_b{};
       val_source_a_t val_a{d_values_in, val_state_a};
       val_source_b_t val_b{in_val_buf, val_state_b};
-      value_source_t val_src{val_a, val_b, /*pick_b=*/!load_from_original_input};
+      value_source_t val_src{val_a, val_b, /*pick_b=*/load_from_candidates_buffer};
 
       [[maybe_unused]] cand_val_out_t cand_out{};
       if constexpr (Mode == sink_mode::buffered)
@@ -1069,7 +1102,7 @@ public:
     // Construct keys data source (multi_source over d_keys_in / in_key_buf).
     key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
     key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/!load_from_original_input};
+    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/load_from_candidates_buffer};
 
     // Split the tile space into full tiles and a possible single trailing
     // partial tile. The hot-path loop below processes only full tiles (no
@@ -1166,7 +1199,7 @@ public:
 //
 // The pass-specific outputs (`p_num_ties_written_to_back`, `k_total`, `num_of_kth_needed`)
 // flow through `run()` rather than the constructor; they only become known
-// after the previous pass has updated the device-side Counter.
+// after the previous pass has updated the device-side counter.
 //
 // Selected candidates land at the front of `d_keys_out` via `p_num_selected_written`;
 // surplus "kth"-class candidates land at the back of `d_keys_out` via a
@@ -1272,7 +1305,7 @@ struct agent_topk_last_filter
 
   OutOffsetT* p_num_selected_written;
   OffsetT input_length;
-  bool load_from_original_input;
+  bool load_from_candidates_buffer;
   IdentifyCandidatesOpT identify_candidates_op;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_topk_last_filter(
@@ -1285,7 +1318,7 @@ struct agent_topk_last_filter
     value_in_t* in_val_buf,
     OutOffsetT* p_num_selected_written,
     OffsetT input_length,
-    bool load_from_original_input,
+    bool load_from_candidates_buffer,
     IdentifyCandidatesOpT identify_candidates_op)
       : storage(temp_storage.Alias())
       , d_keys_in(d_keys_in)
@@ -1296,7 +1329,7 @@ struct agent_topk_last_filter
       , in_val_buf(in_val_buf)
       , p_num_selected_written(p_num_selected_written)
       , input_length(input_length)
-      , load_from_original_input(load_from_original_input)
+      , load_from_candidates_buffer(load_from_candidates_buffer)
       , identify_candidates_op(identify_candidates_op)
   {}
 
@@ -1313,7 +1346,7 @@ private:
       typename val_source_b_t::TempStorage val_state_b{};
       val_source_a_t val_a{d_values_in, val_state_a};
       val_source_b_t val_b{in_val_buf, val_state_b};
-      value_source_t val_src{val_a, val_b, /*pick_b=*/!load_from_original_input};
+      value_source_t val_src{val_a, val_b, /*pick_b=*/load_from_candidates_buffer};
 
       // For last_filter both selected and candidate values feed `d_values_out`.
       return ::cuda::std::tuple<value_channel_t>{
@@ -1380,7 +1413,7 @@ public:
   {
     key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
     key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/!load_from_original_input};
+    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/load_from_candidates_buffer};
 
     // Split the tile space into full tiles and a possible single trailing
     // partial tile. The hot-path loop below processes only full tiles. The
