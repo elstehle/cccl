@@ -1169,19 +1169,24 @@ public:
       merge_histogram<block_threads, num_buckets>(storage.histogram, global_histogram);
     }
 
-    // Last-block epilogue: per-mode counter update on thread 0, then the
-    // prefix-sum + bucket selection whose `on_kth_bucket` callback writes the
-    // discovered next-pass inputs into `counter`, then optional histogram
-    // reset for the next pass.
+    // Last-block epilogue: per-mode counter update on thread 0. The kth-bucket
+    // selection and the optional histogram reset only run when this pass actually
+    // accumulated a histogram; the `early_stop` instantiation has nothing to
+    // finalize beyond the counter write -- no histogram was accumulated this pass,
+    // no later pass consumes the would-be-reset histogram, and the next filter /
+    // last filter short-circuit on `input_length == 0`.
     auto epilogue_op = [&] {
       if (threadIdx.x == 0)
       {
         counter_update_fn();
       }
-      identify_kth_bucket_t{storage.scratch.prefix_sum}.find_kth_bucket(global_histogram, current_k, on_kth_bucket);
-      if (reset_histogram)
+      if constexpr (accumulate_histogram)
       {
-        init_histogram<block_threads, num_buckets>(global_histogram);
+        identify_kth_bucket_t{storage.scratch.prefix_sum}.find_kth_bucket(global_histogram, current_k, on_kth_bucket);
+        if (reset_histogram)
+        {
+          init_histogram<block_threads, num_buckets>(global_histogram);
+        }
       }
     };
 
