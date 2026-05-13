@@ -455,19 +455,9 @@ struct block_identify_kth_bucket
 // The histogram agent accepts an arbitrary unary predicate `FilterOpT(key) ->
 // bool` that decides whether a given key contributes to the histogram. The two
 // canonical specializations live here:
-//
-//   * `topk_pass_through_filter_op` -- pass-0 default. Always returns `true`,
-//     so the optimizer can fold the predicate call away and the inner tile
-//     loop reduces to "extract bucket + atomicAdd" exactly as it did before
-//     this generalization. SASS for the pass-0 hot loop must remain identical
-//     and is verified externally.
-//
-//   * `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used
-//     by the unbuffered filter pass. It wraps the kernel's
-//     `identify_candidates_op` and returns `true` only for keys classified as
-//     `candidate_class::candidate`, replicating what `do_histogram_only` did
-//     in the previous `agent_topk_filter_partition` unbuffered specialization.
-
+// 
+//  - `topk_pass_through_filter_op` -- pass-0 default. Always returns `true`.
+//  - `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used by the unbuffered filter pass. It wraps the kernel's `identify_candidates_op` and returns `true` only for keys classified as `candidate`
 struct topk_pass_through_filter_op
 {
   template <typename T>
@@ -694,6 +684,7 @@ struct AgentTopKHistogram
       identify_kth_bucket_t{temp_storage.scratch.prefix_sum}.find_kth_bucket(global_histogram, k, on_kth_bucket);
       if (reset_histogram)
       {
+        // TODO (elstehle): We could skip this reset when we detect an early-stop condition. However, it would require a block-wide broadcast. This short-circuit needs to be evaluated experimentally. 
         init_histogram<block_threads, num_buckets>(global_histogram);
       }
     };
