@@ -2,25 +2,26 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Unit tests for the top-k-private accumulating partition primitives in
-//! `cub/detail/topk/block_partition_accumulating.cuh`. Drives multiple tiles
+//! Unit tests for the top-k-private `BlockPartitionAccumulatingCandidates` primitive
+//! in `cub/detail/topk/block_partition_accumulating.cuh`. Drives multiple tiles
 //! through a single block, exercising:
 //!   - cross-tile smem accumulation when the per-tile reservation count stays
 //!     below the buffer capacity (no in-tile flush; the terminal `epilogue()`
 //!     drains whatever's in the buffer).
 //!   - in-tile multi-round overflow when the cumulative reservation count
 //!     exceeds capacity (the cooperative flush + position-renumbering path).
-//!   - both accumulating sister classes (`BlockPartitionAccumulatingCandidates`
-//!     and `BlockPartitionAccumulatingSelected`).
 //!   - both `LazyValueLoad` modes (forced off for keys-only).
 //!   - keys-only and paired keys+values.
 //!   - one config with a trailing partial tile.
 //!
+//! The early-stop/selected-buffering counterpart lives in
+//! `catch2_test_device_topk_block_filter_accumulating.cu` -- it tests
+//! `BlockFilterAccumulating`, the dedicated single-stream filter primitive.
+//!
 //! Test scope is bounded to the `atomic_reserve_range_op` reserve op (matching
-//! the agent's `buffered`-mode pass and the `early_stop` mode pass). The
-//! `back_grow_capped_reserve_op` cap-clamp interaction with the accumulating
-//! variants is intentionally not exercised in this prototype test (defer to a
-//! follow-up; the agent's last-filter pass continues to use plain `BlockPartition`).
+//! the agent's `buffered`-mode pass). The `back_grow_capped_reserve_op`
+//! cap-clamp interaction is intentionally not exercised in this prototype test
+//! (the agent's last-filter pass continues to use plain `BlockPartition`).
 
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/block_partition_accumulating.cuh>
@@ -72,111 +73,12 @@ struct counting_callback_op
   }
 };
 
-// Compile-time tag selecting which accumulating class the test kernel instantiates.
-enum class acc_class_tag
-{
-  candidates,
-  selected,
-};
-
-template <acc_class_tag Tag,
-          int BlockThreads,
-          int ItemsPerThread,
-          int BufferCapacity,
-          typename KeyT,
-          typename SelOff,
-          typename CandOff,
-          typename SelReserveOp,
-          typename CandReserveOp,
-          typename SelXform,
-          typename CandXform,
-          typename SelIt,
-          typename CandIt,
-          typename SinksTuple,
-          typename ValueTypesTuple,
-          bool LazyValueLoad>
-struct acc_class_picker
-{
-  using type = topk::BlockPartitionAccumulatingCandidates<
-    BlockThreads,
-    ItemsPerThread,
-    BufferCapacity,
-    KeyT,
-    SelOff,
-    CandOff,
-    SelReserveOp,
-    CandReserveOp,
-    SelXform,
-    CandXform,
-    SelIt,
-    CandIt,
-    SinksTuple,
-    ValueTypesTuple,
-    LazyValueLoad>;
-};
-
-template <int BlockThreads,
-          int ItemsPerThread,
-          int BufferCapacity,
-          typename KeyT,
-          typename SelOff,
-          typename CandOff,
-          typename SelReserveOp,
-          typename CandReserveOp,
-          typename SelXform,
-          typename CandXform,
-          typename SelIt,
-          typename CandIt,
-          typename SinksTuple,
-          typename ValueTypesTuple,
-          bool LazyValueLoad>
-struct acc_class_picker<
-  acc_class_tag::selected,
-  BlockThreads,
-  ItemsPerThread,
-  BufferCapacity,
-  KeyT,
-  SelOff,
-  CandOff,
-  SelReserveOp,
-  CandReserveOp,
-  SelXform,
-  CandXform,
-  SelIt,
-  CandIt,
-  SinksTuple,
-  ValueTypesTuple,
-  LazyValueLoad>
-{
-  using type = topk::BlockPartitionAccumulatingSelected<
-    BlockThreads,
-    ItemsPerThread,
-    BufferCapacity,
-    KeyT,
-    SelOff,
-    CandOff,
-    SelReserveOp,
-    CandReserveOp,
-    SelXform,
-    CandXform,
-    SelIt,
-    CandIt,
-    SinksTuple,
-    ValueTypesTuple,
-    LazyValueLoad>;
-};
-
 //---------------------------------------------------------------------
-// Kernel: drives `num_tiles` tiles through one block (one of the accumulating
-// classes), then calls `epilogue()`.
+// Kernel: drives `num_tiles` tiles through one block of
+// `BlockPartitionAccumulatingCandidates`, then calls `epilogue()`.
 //---------------------------------------------------------------------
 
-template <int BlockThreads,
-          int ItemsPerThread,
-          int BufferCapacity,
-          acc_class_tag Tag,
-          bool KeysOnly,
-          bool LazyValueLoad>
+template <int BlockThreads, int ItemsPerThread, int BufferCapacity, bool KeysOnly, bool LazyValueLoad>
 __global__ void acc_partition_kernel(
   const int* d_keys_in,
   const int* d_values_in,
@@ -191,13 +93,10 @@ __global__ void acc_partition_kernel(
   unsigned int* d_cand_counter,
   unsigned int* d_callback_count)
 {
-  static constexpr int tile_items     = BlockThreads * ItemsPerThread;
-  static constexpr bool HasCandidates = (Tag == acc_class_tag::candidates);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
 
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  // Sink-side bundle (no value_t / scratch_t typedefs anymore -- those go via
-  // separate ValueTypesTuple template arg).
   using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
   using value_channel_sinks_tuple_t =
     ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
@@ -210,8 +109,7 @@ __global__ void acc_partition_kernel(
   using cand_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t           = ::cuda::std::identity;
 
-  using partition_t = typename acc_class_picker<
-    Tag,
+  using partition_t = topk::BlockPartitionAccumulatingCandidates<
     BlockThreads,
     ItemsPerThread,
     BufferCapacity,
@@ -224,12 +122,14 @@ __global__ void acc_partition_kernel(
     xform_t,
     int*,
     int*,
+    driver_identify_op,
+    counting_callback_op,
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
-    LazyValueLoad>::type;
+    LazyValueLoad>;
 
-  // `partition_t::TempStorage` is now an `Uninitialized<>` wrapper internally,
-  // so a bare `__shared__` declaration is legal -- no manual wrapping needed.
+  // `partition_t::TempStorage` is an `Uninitialized<>` wrapper internally, so a
+  // bare `__shared__` declaration is legal -- no manual wrapping needed.
   __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
 
@@ -251,11 +151,20 @@ __global__ void acc_partition_kernel(
   cand_reserve_op_t reserve_cand{d_cand_counter};
   xform_t key_transform{};
 
-  partition_t partition{
-    partition_ts, reserve_sel, reserve_cand, key_transform, key_transform, d_sel_keys, d_cand_keys, sinks};
-
   driver_identify_op identify_op{d_classes_in};
   counting_callback_op callback_op{d_callback_count};
+
+  partition_t partition{
+    partition_ts,
+    reserve_sel,
+    reserve_cand,
+    key_transform,
+    key_transform,
+    d_sel_keys,
+    d_cand_keys,
+    sinks,
+    identify_op,
+    callback_op};
 
   // --- per-tile loop --------------------------------------------------
   for (int tile_id = 0; tile_id < num_tiles; ++tile_id)
@@ -294,24 +203,11 @@ __global__ void acc_partition_kernel(
 
     if (items_in_tile == tile_items)
     {
-      partition.template Partition<HasCandidates>(
-        scratch,
-        keys,
-        ::cuda::std::integral_constant<bool, HasCandidates>{},
-        identify_op,
-        callback_op,
-        sources);
+      partition.Partition(scratch, keys, sources);
     }
     else
     {
-      partition.template Partition<HasCandidates>(
-        scratch,
-        keys,
-        items_in_tile,
-        ::cuda::std::integral_constant<bool, HasCandidates>{},
-        identify_op,
-        callback_op,
-        sources);
+      partition.Partition(scratch, keys, items_in_tile, sources);
     }
   }
 
@@ -348,18 +244,11 @@ static std::vector<::cuda::std::int8_t> make_classes(int num_items, int selected
   return out;
 }
 
-// Run one configuration of the accumulating test. `Tag` picks the variant, the
-// rest of the template params are layout knobs.
-template <int BlockThreads,
-          int ItemsPerThread,
-          int BufferCapacity,
-          acc_class_tag Tag,
-          bool KeysOnly,
-          bool LazyValueLoad>
+// Run one configuration of the accumulating test.
+template <int BlockThreads, int ItemsPerThread, int BufferCapacity, bool KeysOnly, bool LazyValueLoad>
 void run_accumulating_test(int num_tiles, int last_tile_items, int selected_every, int candidate_every)
 {
-  static constexpr int tile_items     = BlockThreads * ItemsPerThread;
-  static constexpr bool HasCandidates = (Tag == acc_class_tag::candidates);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
 
   REQUIRE(last_tile_items > 0);
   REQUIRE(last_tile_items <= tile_items);
@@ -387,7 +276,7 @@ void run_accumulating_test(int num_tiles, int last_tile_items, int selected_ever
   for (int i = 0; i < total_items; ++i)
   {
     const auto c = static_cast<topk::candidate_class>(classes[i]);
-    if (c == topk::candidate_class::selected || (!HasCandidates && c == topk::candidate_class::candidate))
+    if (c == topk::candidate_class::selected)
     {
       expected_selected_keys.push_back(keys[i]);
       expected_selected_vals.push_back(values[i]);
@@ -413,37 +302,26 @@ void run_accumulating_test(int num_tiles, int last_tile_items, int selected_ever
   thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
   thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
 
-  acc_partition_kernel<BlockThreads, ItemsPerThread, BufferCapacity, Tag, KeysOnly, LazyValueLoad>
-    <<<1, BlockThreads>>>(
-      thrust::raw_pointer_cast(d_keys_in.data()),
-      thrust::raw_pointer_cast(d_values_in.data()),
-      thrust::raw_pointer_cast(d_classes_in.data()),
-      num_tiles,
-      last_tile_items,
-      thrust::raw_pointer_cast(d_sel_keys.data()),
-      thrust::raw_pointer_cast(d_cand_keys.data()),
-      thrust::raw_pointer_cast(d_sel_vals.data()),
-      thrust::raw_pointer_cast(d_cand_vals.data()),
-      thrust::raw_pointer_cast(d_sel_cnt.data()),
-      thrust::raw_pointer_cast(d_cand_cnt.data()),
-      thrust::raw_pointer_cast(d_callback_cnt.data()));
+  acc_partition_kernel<BlockThreads, ItemsPerThread, BufferCapacity, KeysOnly, LazyValueLoad><<<1, BlockThreads>>>(
+    thrust::raw_pointer_cast(d_keys_in.data()),
+    thrust::raw_pointer_cast(d_values_in.data()),
+    thrust::raw_pointer_cast(d_classes_in.data()),
+    num_tiles,
+    last_tile_items,
+    thrust::raw_pointer_cast(d_sel_keys.data()),
+    thrust::raw_pointer_cast(d_cand_keys.data()),
+    thrust::raw_pointer_cast(d_sel_vals.data()),
+    thrust::raw_pointer_cast(d_cand_vals.data()),
+    thrust::raw_pointer_cast(d_sel_cnt.data()),
+    thrust::raw_pointer_cast(d_cand_cnt.data()),
+    thrust::raw_pointer_cast(d_callback_cnt.data()));
   REQUIRE(cudaSuccess == cudaPeekAtLastError());
   REQUIRE(cudaSuccess == cudaDeviceSynchronize());
 
   // Counter assertions.
   REQUIRE(d_sel_cnt[0] == expected_selected_keys.size());
-  if constexpr (HasCandidates)
-  {
-    REQUIRE(d_cand_cnt[0] == expected_candidate_keys.size());
-    REQUIRE(d_callback_cnt[0] == expected_callback_count);
-  }
-  else
-  {
-    // Selected variant should never fire the candidate callback, and the candidate
-    // counter should never have been bumped.
-    REQUIRE(d_callback_cnt[0] == 0u);
-    REQUIRE(d_cand_cnt[0] == 0u);
-  }
+  REQUIRE(d_cand_cnt[0] == expected_candidate_keys.size());
+  REQUIRE(d_callback_cnt[0] == expected_callback_count);
 
   // Output-set assertions (writes are order-independent across atomic reservations).
   std::vector<int> got_sel_keys(d_sel_keys.begin(), d_sel_keys.begin() + d_sel_cnt[0]);
@@ -451,13 +329,10 @@ void run_accumulating_test(int num_tiles, int last_tile_items, int selected_ever
   std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
   REQUIRE(got_sel_keys == expected_selected_keys);
 
-  if constexpr (HasCandidates)
-  {
-    std::vector<int> got_cand_keys(d_cand_keys.begin(), d_cand_keys.begin() + d_cand_cnt[0]);
-    std::sort(got_cand_keys.begin(), got_cand_keys.end());
-    std::sort(expected_candidate_keys.begin(), expected_candidate_keys.end());
-    REQUIRE(got_cand_keys == expected_candidate_keys);
-  }
+  std::vector<int> got_cand_keys(d_cand_keys.begin(), d_cand_keys.begin() + d_cand_cnt[0]);
+  std::sort(got_cand_keys.begin(), got_cand_keys.end());
+  std::sort(expected_candidate_keys.begin(), expected_candidate_keys.end());
+  REQUIRE(got_cand_keys == expected_candidate_keys);
 
   if constexpr (!KeysOnly)
   {
@@ -466,13 +341,10 @@ void run_accumulating_test(int num_tiles, int last_tile_items, int selected_ever
     std::sort(expected_selected_vals.begin(), expected_selected_vals.end());
     REQUIRE(got_sel_vals == expected_selected_vals);
 
-    if constexpr (HasCandidates)
-    {
-      std::vector<int> got_cand_vals(d_cand_vals.begin(), d_cand_vals.begin() + d_cand_cnt[0]);
-      std::sort(got_cand_vals.begin(), got_cand_vals.end());
-      std::sort(expected_candidate_vals.begin(), expected_candidate_vals.end());
-      REQUIRE(got_cand_vals == expected_candidate_vals);
-    }
+    std::vector<int> got_cand_vals(d_cand_vals.begin(), d_cand_vals.begin() + d_cand_cnt[0]);
+    std::sort(got_cand_vals.begin(), got_cand_vals.end());
+    std::sort(expected_candidate_vals.begin(), expected_candidate_vals.end());
+    REQUIRE(got_cand_vals == expected_candidate_vals);
   }
 }
 
@@ -486,20 +358,15 @@ C2H_TEST("BlockPartitionAccumulatingCandidates accumulates across tiles below ca
   // candidate count is roughly tile_items / candidate_every ~= 256/13 ~= 19; with 4
   // tiles we get ~80 candidates total -- well below the 256-slot capacity. The
   // terminal `epilogue()` is what flushes them.
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 256;
-  constexpr int NumTiles         = 4;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread; // full last tile
-  constexpr int SelectedEvery    = 7;
-  constexpr int CandidateEvery   = 13;
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int BufferCapacity = 256;
+  constexpr int NumTiles       = 4;
+  constexpr int LastTileItems  = BlockThreads * ItemsPerThread; // full last tile
+  constexpr int SelectedEvery  = 7;
+  constexpr int CandidateEvery = 13;
 
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::candidates,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/false>(
+  run_accumulating_test<BlockThreads, ItemsPerThread, BufferCapacity, /*KeysOnly=*/false, /*LazyValueLoad=*/false>(
     NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
@@ -508,54 +375,39 @@ C2H_TEST("BlockPartitionAccumulatingCandidates triggers in-tile overflow loop", 
   // Buffer capacity = 8 (much smaller than per-tile candidate count). Per-tile
   // candidate count ~= 256/3 ~= 85 with candidate_every = 3 (and selected_every very
   // sparse). Each tile triggers many flush rounds.
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 8;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
-  constexpr int SelectedEvery    = 17;
-  constexpr int CandidateEvery   = 3;
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int BufferCapacity = 8;
+  constexpr int NumTiles       = 3;
+  constexpr int LastTileItems  = BlockThreads * ItemsPerThread;
+  constexpr int SelectedEvery  = 17;
+  constexpr int CandidateEvery = 3;
 
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::candidates,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/false>(
+  run_accumulating_test<BlockThreads, ItemsPerThread, BufferCapacity, /*KeysOnly=*/false, /*LazyValueLoad=*/false>(
     NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
 C2H_TEST("BlockPartitionAccumulatingCandidates keys-only", "[block][topk][accumulating]")
 {
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 64;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int BufferCapacity = 64;
+  constexpr int NumTiles       = 3;
+  constexpr int LastTileItems  = BlockThreads * ItemsPerThread;
 
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::candidates,
-                        /*KeysOnly=*/true,
-                        /*LazyValueLoad=*/false>(
+  run_accumulating_test<BlockThreads, ItemsPerThread, BufferCapacity, /*KeysOnly=*/true, /*LazyValueLoad=*/false>(
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }
 
 C2H_TEST("BlockPartitionAccumulatingCandidates lazy value load", "[block][topk][accumulating]")
 {
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 32;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int BufferCapacity = 32;
+  constexpr int NumTiles       = 3;
+  constexpr int LastTileItems  = BlockThreads * ItemsPerThread;
 
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::candidates,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/true>(
+  run_accumulating_test<BlockThreads, ItemsPerThread, BufferCapacity, /*KeysOnly=*/false, /*LazyValueLoad=*/true>(
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }
 
@@ -563,109 +415,12 @@ C2H_TEST("BlockPartitionAccumulatingCandidates partial trailing tile", "[block][
 {
   // Last tile has 173 valid items out of tile_items (256). The classify loop must
   // force OOB items to `rejected` and the per-item bound check must hold.
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 64;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = 173;
+  constexpr int BlockThreads   = 64;
+  constexpr int ItemsPerThread = 4;
+  constexpr int BufferCapacity = 64;
+  constexpr int NumTiles       = 3;
+  constexpr int LastTileItems  = 173;
 
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::candidates,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/false>(
-    NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
-}
-
-C2H_TEST("BlockPartitionAccumulatingSelected accumulates across tiles below capacity", "[block][topk][accumulating]")
-{
-  // Selected variant: HasCandidates=false, all non-rejected items are buffered as
-  // selected. Use a moderately sparse class pattern so per-tile output stays under
-  // the buffer capacity.
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 256;
-  constexpr int NumTiles         = 4;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
-  constexpr int SelectedEvery    = 7;
-  constexpr int CandidateEvery   = 13;
-
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::selected,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/false>(
-    NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
-}
-
-C2H_TEST("BlockPartitionAccumulatingSelected triggers in-tile overflow loop", "[block][topk][accumulating]")
-{
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 8;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
-  constexpr int SelectedEvery    = 17;
-  constexpr int CandidateEvery   = 3;
-
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::selected,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/false>(
-    NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
-}
-
-C2H_TEST("BlockPartitionAccumulatingSelected keys-only", "[block][topk][accumulating]")
-{
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 64;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
-
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::selected,
-                        /*KeysOnly=*/true,
-                        /*LazyValueLoad=*/false>(
-    NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
-}
-
-C2H_TEST("BlockPartitionAccumulatingSelected lazy value load", "[block][topk][accumulating]")
-{
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 32;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = BlockThreads * ItemsPerThread;
-
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::selected,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/true>(
-    NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
-}
-
-C2H_TEST("BlockPartitionAccumulatingSelected partial trailing tile", "[block][topk][accumulating]")
-{
-  constexpr int BlockThreads     = 64;
-  constexpr int ItemsPerThread   = 4;
-  constexpr int BufferCapacity   = 64;
-  constexpr int NumTiles         = 3;
-  constexpr int LastTileItems    = 173;
-
-  run_accumulating_test<BlockThreads,
-                        ItemsPerThread,
-                        BufferCapacity,
-                        acc_class_tag::selected,
-                        /*KeysOnly=*/false,
-                        /*LazyValueLoad=*/false>(
+  run_accumulating_test<BlockThreads, ItemsPerThread, BufferCapacity, /*KeysOnly=*/false, /*LazyValueLoad=*/false>(
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }

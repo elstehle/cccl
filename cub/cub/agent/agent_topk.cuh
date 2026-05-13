@@ -18,6 +18,8 @@
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/block/radix_rank_sort_operations.cuh>
+#include <cub/detail/topk/block_filter.cuh>
+#include <cub/detail/topk/block_filter_accumulating.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/block_partition_accumulating.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
@@ -52,9 +54,9 @@ namespace detail::topk
 //!   subsumes what was historically expressed as a `BlockLoadAlgorithm`.
 //!
 //! @tparam AccumulatingBufferCapacity
-//!   Number of smem slots in each per-stream buffer for the
-//!   `AccumulatingCandidates` / `AccumulatingSelected` partition strategies
-//!   (irrelevant for the non-accumulating strategies).
+//!   Number of smem slots in the per-stream buffer for the
+//!   `AccumulatingCandidates` partition strategy / `AccumulatingFilter` filter
+//!   strategy (irrelevant for the non-accumulating strategies).
 //!
 template <int ThreadsPerBlock,
           int ItemsPerThread,
@@ -723,29 +725,49 @@ enum class sink_mode
 // "filter passes" between the histogram pass and the dedicated last-filter
 // pass).
 //
-// Compile-time specialized on `sink_mode` (early_stop / buffered /
-// unbuffered); the kernel switches to the matching instantiation based on
-// the device-side `counter` state. Owns the tile loop with full/partial
-// dispatch; keys come in via a `multi_source_data_source` over
-// `(d_keys_in, in_key_buf)` selected at runtime by `load_from_candidates_buffer`.
-// The per-tile partition is delegated to `BlockPartition` with strategy
-// `PartStrat`, per-mode reserve ops, and a candidate callback that performs
-// the histogram update inline.
+// Handles BOTH `sink_mode::early_stop` and `sink_mode::buffered` in one
+// agent type. The agent's `run()` takes a runtime `sink_mode mode` arg and
+// dispatches over it with a two-way `if`:
+//   - early_stop  -> constructs `BlockFilter[Accumulating]` (single-stream
+//                    "filter" primitive) with sinks + identify-selected op
+//                    captured at ctor.
+//   - buffered    -> constructs `BlockPartition[Accumulating]` (two-stream
+//                    "partition" primitive) with sinks + identify op +
+//                    histogram callback captured at ctor.
+// The mode-agnostic `drive_tile_loop<Primitive, StorageLayout>` helper then
+// iterates the tile space and finishes with `primitive.epilogue()`. The
+// "scout" mode that only builds a histogram is handled separately by
+// `AgentTopKHistogram` driven by a candidate-filter predicate.
 //
-// Members hold the inputs/outputs that all three modes consume; the
-// buffered-only candidate outputs (`out_key_buf`, `out_val_buf`,
-// `p_num_candidates_written`) are passed to `run()` and flow through `do_partition`
-// rather than being stored on the agent.
+// Members hold the inputs/outputs that both modes consume; the buffered-only
+// candidate outputs (`out_key_buf`, `out_val_buf`, `p_num_candidates_written`)
+// are passed to `run()` rather than being stored on the agent.
 //---------------------------------------------------------------------
 
-// No-op candidate callback used by `early_stop` (HasCandidates=false collapses the
-// candidate stream onto selected; the callback is statically guaranteed never to
-// fire, but the partition primitive still requires a callable).
+// No-op candidate callback. Used by `agent_topk_last_filter` (no histogram is
+// accumulated on the last filter pass; the partition primitive still requires
+// a callable).
 struct topk_noop_candidate_callback_op
 {
   template <typename T>
   _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const T&) const
   {}
+};
+
+// Wraps an `IdentifyCandidatesOp` (3-state classifier returning `candidate_class`)
+// into a unary `bool` predicate suitable for the single-stream `BlockFilter`
+// primitive. Folds the architecture's "early_stop collapses candidate -> selected"
+// rule into the wrapper: any non-rejected item is kept.
+template <typename IdentifyCandidatesOpT>
+struct topk_identify_selected_op
+{
+  IdentifyCandidatesOpT identify_candidates_op;
+
+  template <typename KeyT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE bool operator()(const KeyT& key) const
+  {
+    return identify_candidates_op(key) != candidate_class::rejected;
+  }
 };
 
 // Histogram callback: increments the agent's smem histogram for every
@@ -779,8 +801,8 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename OffsetT,
           typename OutOffsetT,
-          sink_mode Mode,
-          BlockPartitionStrategy PartStrat = BlockPartitionStrategy::AtomicsPreClassify,
+          BlockPartitionStrategy BufferedPartStrat = BlockPartitionStrategy::AtomicsPreClassify,
+          BlockFilterStrategy EarlyStopFilterStrat = BlockFilterStrategy::AtomicsPreClassify,
           // Experimental: when `true`, the per-tile `values[ItemsPerThread]`
           // register array is NOT pre-loaded; the partition's scatter loop
           // instead pulls each surviving value via the value channel's
@@ -800,32 +822,14 @@ struct agent_topk_filter_partition
   static constexpr int num_buckets      = 1 << bits_per_pass;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
+  // The epilogue primitive used to find the k-th bucket to conclude the histogram stage
   using identify_kth_bucket_t =
     block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
-  // Compile-time mode plumbing.
-  //   selected_offset_t / candidate_offset_t : pointer types of the global counters.
-  //   accumulate_histogram : `buffered` accumulates a histogram over candidates;
-  //                          `early_stop` does not.
-  static constexpr bool accumulate_histogram = (Mode == sink_mode::buffered);
-
-  // Reject (Mode, PartStrat) pairs that the dispatch layer should never hand us:
-  // each Accumulating* variant is bound to one of the two modes (HasCandidates ==
-  // true for AccumulatingCandidates, == false for AccumulatingSelected), and the
-  // partition class itself static_asserts the matching HasCandidates value at the
-  // call site. Catching the mismatch up front gives a clearer compiler error.
-  static_assert(!(Mode == sink_mode::buffered && PartStrat == BlockPartitionStrategy::AccumulatingSelected),
-                "BlockPartitionStrategy::AccumulatingSelected requires HasCandidates == false; pick it as the "
-                "early_stop_partition_strategy, not the buffered_partition_strategy.");
-  static_assert(!(Mode == sink_mode::early_stop && PartStrat == BlockPartitionStrategy::AccumulatingCandidates),
-                "BlockPartitionStrategy::AccumulatingCandidates requires HasCandidates == true; pick it as the "
-                "buffered_partition_strategy, not the early_stop_partition_strategy.");
-
-  using selected_offset_t  = OutOffsetT;
-  using candidate_offset_t = ::cuda::std::conditional_t<Mode == sink_mode::buffered, OffsetT, OutOffsetT>;
+  using selected_offset_t           = OutOffsetT;
+  using buffered_candidate_offset_t = OffsetT;
 
   // Lazy value-load only matters when there's a value channel to load lazily.
-  // Forced off for keys-only so the agent template still instantiates cleanly.
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
   // Keys data source: multi_source over (d_keys_in source, in_key_buf source).
@@ -836,33 +840,37 @@ struct agent_topk_filter_partition
   using keys_source_t = multi_source_data_source<key_source_a_t, key_source_b_t, OffsetT>;
 
   // Value channel: multi_source over (d_values_in, in_val_buf), each wrapped in
-  // `direct_data_source` per the plan. For keys-only the value source / sinks tuples
-  // stay empty.
+  // `direct_data_source`. Both modes consume the same value source type; for
+  // keys-only the value source / sinks tuples stay empty.
   using val_source_a_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
   using val_source_b_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = multi_source_data_source<val_source_a_t, val_source_b_t, OffsetT>;
 
   using val_out_t = ValueOutputIteratorT;
-  // For `buffered` the candidate iterator is `value_in_t*` (the back-buffer); for
-  // `early_stop` it's `ValueOutputIteratorT`.
-  using cand_val_out_t = ::cuda::std::conditional_t<Mode == sink_mode::buffered, value_in_t*, ValueOutputIteratorT>;
-  // For `buffered` the candidate KEY iterator is `key_in_t*` (the back-buffer); for
-  // `early_stop` it's `KeyOutputIteratorT` (same as the selected iter; the partition
-  // statically elides the candidate side via HasCandidates == false).
-  using cand_key_out_t = ::cuda::std::conditional_t<Mode == sink_mode::buffered, key_in_t*, KeyOutputIteratorT>;
+  // Buffered mode: the candidate iterators are `key_in_t*` / `value_in_t*` (the
+  // back buffers). Early-stop mode has only the selected stream.
+  using buffered_cand_val_out_t = value_in_t*;
+  using buffered_cand_key_out_t = key_in_t*;
 
-  // Sink-side bundle of one value channel (no `data_source`; that lives on the per-
-  // call sources tuple; no `value_t` -- iterators may have void value_type, so
-  // the per-channel `value_t` is supplied separately via `value_types_tuple_t`
-  // below). Empty tuple for keys-only.
-  using value_channel_sinks_for_agent_t =
-    value_channel_sinks_t<val_out_t, cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
-  using value_channel_sinks_tuple_t =
-    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_sinks_for_agent_t>>;
+  // Buffered-mode sinks bundle: 2-stream `value_channel_sinks_t` (selected +
+  // candidate). Empty tuple for keys-only.
+  using buffered_value_channel_sinks_for_agent_t =
+    value_channel_sinks_t<val_out_t, buffered_cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
+  using buffered_value_channel_sinks_tuple_t = ::cuda::std::conditional_t<
+    keys_only,
+    ::cuda::std::tuple<>,
+    ::cuda::std::tuple<buffered_value_channel_sinks_for_agent_t>>;
+
+  // Early-stop sinks bundle: 1-stream `value_channel_sinks_filter_t` (selected only).
+  using early_stop_value_channel_sinks_for_agent_t =
+    value_channel_sinks_filter_t<val_out_t, ::cuda::std::identity>;
+  using early_stop_value_channel_sinks_tuple_t = ::cuda::std::conditional_t<
+    keys_only,
+    ::cuda::std::tuple<>,
+    ::cuda::std::tuple<early_stop_value_channel_sinks_for_agent_t>>;
 
   // Per-channel `value_t` (sized to one element per channel), supplied to the
-  // partition class so it can size its smem `value_t values[N]` arrays. Sourced
-  // from the agent's `value_in_t` rather than from any iterator's value_type.
+  // partition class so it can size its smem `value_t values[N]` arrays.
   using value_types_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_in_t>>;
   // Per-channel data-source `ScratchStorage`, supplied to the partition class so
@@ -874,50 +882,95 @@ struct agent_topk_filter_partition
   using value_sources_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
 
-  // Reserve op types: per-mode mapping decided here so the partition class
-  // template signature stays mode-agnostic.
-  using sel_reserve_op_t  = atomic_reserve_range_op<selected_offset_t>;
-  using cand_reserve_op_t = atomic_reserve_range_op<candidate_offset_t>;
+  // Reserve op types.
+  using sel_reserve_op_t           = atomic_reserve_range_op<selected_offset_t>;
+  using buffered_cand_reserve_op_t = atomic_reserve_range_op<buffered_candidate_offset_t>;
 
   // Key-output transforms are always identity for top-k.
   using key_xform_t = ::cuda::std::identity;
 
-  // The strategy-to-class metafunction picks `BlockPartition`,
-  // `BlockPartitionAccumulatingCandidates`, or `BlockPartitionAccumulatingSelected`
-  // based on `PartStrat`. The agent body is otherwise strategy-agnostic.
-  using partition_t = strategy_to_partition_class_t<
-    PartStrat,
+  // Callback / classify-hook types for the two modes.
+  using histogram_callback_op_t = topk_histogram_callback_op<ExtractBinOpT, OffsetT>;
+  using identify_selected_op_t  = topk_identify_selected_op<IdentifyCandidatesOpT>;
+
+  // The buffered-mode primitive (`BlockPartition` or
+  // `BlockPartitionAccumulatingCandidates`).
+  using buffered_partition_t = strategy_to_partition_class_t<
+    BufferedPartStrat,
     block_threads,
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
     key_in_t,
     selected_offset_t,
-    candidate_offset_t,
+    buffered_candidate_offset_t,
     sel_reserve_op_t,
-    cand_reserve_op_t,
+    buffered_cand_reserve_op_t,
     key_xform_t,
     key_xform_t,
     KeyOutputIteratorT,
-    cand_key_out_t,
-    value_channel_sinks_tuple_t,
+    buffered_cand_key_out_t,
+    IdentifyCandidatesOpT,
+    histogram_callback_op_t,
+    buffered_value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
     effective_lazy_value_load>;
 
-  // Storage layout helper: picks the right union shape based on whether the partition
-  // class's `TempStorage` is empty (BlockPartition's is `struct{}`; the accumulating
-  // variants' `TempStorage` is a non-empty `Uninitialized<>` wrapper). Both shapes
-  // expose the same `get_*()` accessors so the agent body is layout-agnostic.
-  using storage_layout_t = bp_detail::partition_storage_layout_for_t<
-    partition_t,
+  // The early-stop-mode primitive (`BlockFilter` or `BlockFilterAccumulating`).
+  using early_stop_filter_t = strategy_to_filter_class_t<
+    EarlyStopFilterStrat,
+    block_threads,
+    items_per_thread,
+    AgentTopKPolicyT::accumulating_buffer_capacity,
+    key_in_t,
+    selected_offset_t,
+    sel_reserve_op_t,
+    key_xform_t,
+    KeyOutputIteratorT,
+    identify_selected_op_t,
+    early_stop_value_channel_sinks_tuple_t,
+    value_types_tuple_t,
+    value_data_source_scratch_types_tuple_t,
+    effective_lazy_value_load>;
+
+  // Per-mode storage layouts. Both expose the same `get_*()` accessors so the
+  // mode-agnostic `drive_tile_loop` helper is layout-agnostic. The buffered
+  // layout's `prefix_sum` slot holds the kth-bucket scan state; the early-stop
+  // layout doesn't run a prefix sum so its `prefix_sum` slot is an empty
+  // placeholder.
+  struct empty_prefix_sum_t
+  {};
+
+  using buffered_storage_layout_t = bp_detail::partition_storage_layout_for_t<
+    buffered_partition_t,
     typename keys_source_t::ScratchStorage,
     typename identify_kth_bucket_t::TempStorage>;
 
+  using early_stop_storage_layout_t = bp_detail::partition_storage_layout_for_t<
+    early_stop_filter_t,
+    typename keys_source_t::ScratchStorage,
+    empty_prefix_sum_t>;
+
   struct _TempStorage
   {
+    // Histogram is only written by the buffered branch. Early-stop leaves it
+    // untouched; the storage cost is unavoidable because the kernel TempStorage
+    // is sized at compile time.
     OffsetT histogram[num_buckets];
     typename keys_source_t::TempStorage keys_source_state;
-    storage_layout_t partition_arena;
+
+    // The two mode-specific arenas alias each other -- `run()` activates exactly
+    // one of them based on the runtime `mode` arg. Both inner layouts have
+    // non-trivial special members (their inner phase unions carry user-defined
+    // ctor/dtor), so the wrapping union itself needs explicit ctor/dtor.
+    union arena_t
+    {
+      buffered_storage_layout_t buffered;
+      early_stop_storage_layout_t early_stop;
+
+      _CCCL_HOST_DEVICE arena_t() {}
+      _CCCL_HOST_DEVICE ~arena_t() {}
+    } partition_arena;
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -972,10 +1025,10 @@ struct agent_topk_filter_partition
   {}
 
 private:
-  // Sinks half of the per-channel value bundle: stable across the entire `run()`
-  // (iterators + transforms; no per-tile data). Constructed once and stored on the
-  // stack alongside the partition object.
-  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sinks([[maybe_unused]] cand_val_out_t cand_val_out)
+  // Per-mode sinks-tuple factories. Each returns a tuple of length 0 (keys-only)
+  // or 1 (with values).
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto
+  make_buffered_value_channel_sinks([[maybe_unused]] buffered_cand_val_out_t cand_val_out)
   {
     if constexpr (keys_only)
     {
@@ -983,14 +1036,26 @@ private:
     }
     else
     {
-      return ::cuda::std::tuple<value_channel_sinks_for_agent_t>{
-        value_channel_sinks_for_agent_t{d_values_out, cand_val_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+      return ::cuda::std::tuple<buffered_value_channel_sinks_for_agent_t>{
+        buffered_value_channel_sinks_for_agent_t{
+          d_values_out, cand_val_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
     }
   }
 
-  // Sources half: per-tile. Each tile constructs the value source(s) and calls
-  // `set_tile_base()` on them. `direct_data_source`'s `TempStorage` is empty so the
-  // stack-local TempStorage variables here are unused by the source after ctor.
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_early_stop_value_channel_sinks()
+  {
+    if constexpr (keys_only)
+    {
+      return ::cuda::std::tuple<>{};
+    }
+    else
+    {
+      return ::cuda::std::tuple<early_stop_value_channel_sinks_for_agent_t>{
+        early_stop_value_channel_sinks_for_agent_t{d_values_out, ::cuda::std::identity{}}};
+    }
+  }
+
+  // Per-tile value sources tuple. Both modes consume the same value source type.
   _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sources(OffsetT tile_base)
   {
     (void) tile_base;
@@ -1010,82 +1075,15 @@ private:
     }
   }
 
-public:
-  // --- entry point ----------------------------------------------------
-  //
-  // The buffered-mode-only outputs (`out_key_buf`, `out_val_buf`,
-  // `p_num_candidates_written`) flow through the run signature. They default to nullptr
-  // for the early_stop caller, which never consumes them (gated by
-  // `if constexpr (Mode == sink_mode::buffered)` inside the agent).
-  //
-  // `counter_update_fn` and `on_kth_bucket` are the two last-block-only
-  // callbacks for `counter` writes; see the same-named docs on
-  // `AgentTopKHistogram::invoke` and `block_identify_kth_bucket::find_kth_bucket`.
-  template <typename CounterUpdateFn, typename KthBucketFn>
+  // Single mode-agnostic helper that iterates the tile space: full-tile loop +
+  // possible trailing partial tile, both calling `primitive.Partition(...)` with
+  // just `(scratch, keys, [num_items,] value_sources)`. Finishes with
+  // `primitive.epilogue()`. The `arena` parameter is one of the two mode-specific
+  // storage layouts; both expose the same `get_*()` accessors.
+  template <typename Primitive, typename StorageLayout>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  run(unsigned int* retired_block_counter,
-      OutOffsetT current_k,
-      bool reset_histogram,
-      CounterUpdateFn counter_update_fn,
-      KthBucketFn on_kth_bucket,
-      key_in_t* out_key_buf             = nullptr,
-      value_in_t* out_val_buf           = nullptr,
-      OffsetT* p_num_candidates_written = nullptr)
+  drive_tile_loop(Primitive& primitive, StorageLayout& arena, keys_source_t& keys_source)
   {
-    if constexpr (accumulate_histogram)
-    {
-      init_histogram<block_threads, num_buckets>(storage.histogram);
-      __syncthreads();
-    }
-
-    // Construct keys data source (multi_source over d_keys_in / in_key_buf).
-    key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
-    key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/load_from_candidates_buffer};
-
-    // Build the per-mode reserve ops and the candidate key-output iterator. These are
-    // stable across the whole `run()` and become ctor args for the partition object.
-    sel_reserve_op_t reserve_sel{p_num_selected_written};
-    [[maybe_unused]] cand_key_out_t cand_key_out{};
-    [[maybe_unused]] cand_val_out_t cand_val_out{};
-    [[maybe_unused]] cand_reserve_op_t reserve_cand{};
-    if constexpr (Mode == sink_mode::buffered)
-    {
-      cand_key_out = out_key_buf;
-      cand_val_out = out_val_buf;
-      reserve_cand = cand_reserve_op_t{p_num_candidates_written};
-    }
-    else
-    {
-      cand_key_out = d_keys_out;
-      cand_val_out = d_values_out;
-      // HasCandidates == false; the candidate reserve op is statically elided inside
-      // the partition. Passing the selected counter pointer (reinterpret-cast) keeps
-      // the ctor arg well-typed without allocating an unused counter.
-      reserve_cand = cand_reserve_op_t{reinterpret_cast<candidate_offset_t*>(p_num_selected_written)};
-    }
-    key_xform_t sel_key_xform{};
-    key_xform_t cand_key_xform{};
-    auto value_channel_sinks = make_value_channel_sinks(cand_val_out);
-
-    // Construct the partition object once, before the tile loop. The accumulating
-    // variants zero their persistent counter inside the ctor + sync; `BlockPartition`'s
-    // ctor is a no-op beyond storing references.
-    partition_t partition{
-      storage.partition_arena.get_partition_state(),
-      reserve_sel,
-      reserve_cand,
-      sel_key_xform,
-      cand_key_xform,
-      d_keys_out,
-      cand_key_out,
-      value_channel_sinks};
-
-    // Split the tile space into full tiles and a possible single trailing
-    // partial tile. The hot-path loop below processes only full tiles (no
-    // per-iteration full/partial branch). The partial tile, if any, is
-    // handled exactly once after the loop by the unique block that would
-    // have owned it under the original grid-strided schedule.
     const OffsetT num_full_tiles = input_length / static_cast<OffsetT>(tile_items);
     const OffsetT partial_items  = input_length - num_full_tiles * static_cast<OffsetT>(tile_items);
 
@@ -1100,19 +1098,14 @@ public:
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
+      auto h = keys_source.submit_load(arena.get_keys_source_scratch());
       h.complete_load(items);
       __syncthreads();
 
-      do_partition</*IsFull=*/true>(partition, items, /*num_items_in_tile=*/tile_items, value_sources);
+      primitive.Partition(arena.get_partition_scratch(), items, value_sources);
     }
 
     // --- trailing partial tile (handled by exactly one block) ------------
-    //
-    // Under the original grid-strided schedule the partial tile (tile_id =
-    // num_full_tiles) was claimed by the block whose blockIdx.x equals
-    // num_full_tiles % gridDim.x. We preserve that ownership so the work
-    // distribution across blocks is unchanged.
     if (partial_items > 0)
     {
       const unsigned partial_owner = static_cast<unsigned>(num_full_tiles % static_cast<OffsetT>(gridDim.x));
@@ -1125,38 +1118,115 @@ public:
 
         __syncthreads();
         key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), partial_items);
+        auto h = keys_source.submit_load(arena.get_keys_source_scratch(), partial_items);
         h.complete_load(items);
         __syncthreads();
 
-        do_partition</*IsFull=*/false>(partition, items, partial_items, value_sources);
+        primitive.Partition(arena.get_partition_scratch(), items, partial_items, value_sources);
       }
     }
 
-    // Terminal partition flush. No-op on the non-accumulating strategies (DCE'd);
-    // the accumulating variants drain their leftover smem buffer here.
-    partition.epilogue();
+    // Terminal flush. No-op on non-accumulating; the accumulating variants drain
+    // their leftover smem buffer here.
+    primitive.epilogue();
+  }
 
-    if constexpr (accumulate_histogram)
+public:
+  // --- entry point ----------------------------------------------------
+  //
+  // The buffered-mode-only outputs (`out_key_buf`, `out_val_buf`,
+  // `p_num_candidates_written`) flow through the run signature; the early_stop
+  // branch ignores them.
+  //
+  // `counter_update_fn` and `on_kth_bucket` are the two last-block-only
+  // callbacks for `counter` writes; see the same-named docs on
+  // `AgentTopKHistogram::invoke` and `block_identify_kth_bucket::find_kth_bucket`.
+  template <typename CounterUpdateFn, typename KthBucketFn>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  run(unsigned int* retired_block_counter,
+      OutOffsetT current_k,
+      bool reset_histogram,
+      CounterUpdateFn counter_update_fn,
+      KthBucketFn on_kth_bucket,
+      sink_mode mode,
+      key_in_t* out_key_buf             = nullptr,
+      value_in_t* out_val_buf           = nullptr,
+      OffsetT* p_num_candidates_written = nullptr)
+  {
+    // Construct keys data source (multi_source over d_keys_in / in_key_buf).
+    // Stable across the entire run() regardless of mode.
+    key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
+    key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
+    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/load_from_candidates_buffer};
+
+    // Mode-shared stack-locals.
+    sel_reserve_op_t reserve_sel{p_num_selected_written};
+    key_xform_t sel_key_xform{};
+    key_xform_t cand_key_xform{};
+
+    // Two-way mode dispatch: build the right primitive (with all sinks +
+    // classify hooks captured at ctor), hand it to `drive_tile_loop`. The
+    // helper iterates the tile space and finishes with `primitive.epilogue()`.
+    if (mode == sink_mode::early_stop)
     {
+      // Early-stop branch: no histogram is accumulated, no kth-bucket scan runs.
+      // The filter primitive's `Partition()` writes selected items direct to
+      // `d_keys_out` via `reserve_sel`.
+      identify_selected_op_t identify_selected{identify_candidates_op};
+      auto value_channel_sinks = make_early_stop_value_channel_sinks();
+
+      early_stop_filter_t filter{
+        storage.partition_arena.early_stop.get_partition_state(),
+        reserve_sel,
+        sel_key_xform,
+        d_keys_out,
+        value_channel_sinks,
+        identify_selected};
+
+      drive_tile_loop(filter, storage.partition_arena.early_stop, keys_source);
+    }
+    else
+    {
+      // Buffered branch: accumulate a histogram over candidates, scatter
+      // selected to `d_keys_out` and candidates to `out_key_buf`.
+      init_histogram<block_threads, num_buckets>(storage.histogram);
+      __syncthreads();
+
+      buffered_cand_key_out_t cand_key_out = out_key_buf;
+      buffered_cand_val_out_t cand_val_out = out_val_buf;
+      buffered_cand_reserve_op_t reserve_cand{p_num_candidates_written};
+      histogram_callback_op_t histogram_cb{extract_bin_op, storage.histogram};
+      auto value_channel_sinks = make_buffered_value_channel_sinks(cand_val_out);
+
+      buffered_partition_t partition{
+        storage.partition_arena.buffered.get_partition_state(),
+        reserve_sel,
+        reserve_cand,
+        sel_key_xform,
+        cand_key_xform,
+        d_keys_out,
+        cand_key_out,
+        value_channel_sinks,
+        identify_candidates_op,
+        histogram_cb};
+
+      drive_tile_loop(partition, storage.partition_arena.buffered, keys_source);
+
       __syncthreads();
       merge_histogram<block_threads, num_buckets>(storage.histogram, global_histogram);
     }
 
-    // Last-block epilogue: per-mode counter update on thread 0. The kth-bucket
-    // selection and the optional histogram reset only run when this pass actually
-    // accumulated a histogram; the `early_stop` instantiation has nothing to
-    // finalize beyond the counter write -- no histogram was accumulated this pass,
-    // no later pass consumes the would-be-reset histogram, and the next filter /
-    // last filter short-circuit on `input_length == 0`.
+    // Last-block epilogue: per-mode counter update on thread 0, then the kth-bucket
+    // scan + optional histogram reset (buffered branch only -- the early_stop
+    // pass has nothing to finalize beyond the counter write).
     auto epilogue_op = [&] {
       if (threadIdx.x == 0)
       {
         counter_update_fn();
       }
-      if constexpr (accumulate_histogram)
+      if (mode == sink_mode::buffered)
       {
-        identify_kth_bucket_t{storage.partition_arena.get_prefix_sum()}.find_kth_bucket(
+        identify_kth_bucket_t{storage.partition_arena.buffered.get_prefix_sum()}.find_kth_bucket(
           global_histogram, current_k, on_kth_bucket);
         if (reset_histogram)
         {
@@ -1166,75 +1236,6 @@ public:
     };
 
     finalize_pass(retired_block_counter, gridDim.x, epilogue_op);
-  }
-
-private:
-  // Per-tile partition call. The partition is mode-agnostic at this point -- the
-  // mode-specific reserve ops + iterators were captured by the ctor before the tile
-  // loop. The callback is built per call (it depends on `Mode` but not on the tile
-  // contents).
-  template <bool IsFull>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void do_partition(
-    partition_t& partition,
-    const key_in_t (&keys)[items_per_thread],
-    OffsetT num_items_in_tile,
-    value_sources_tuple_t& value_sources)
-  {
-    [[maybe_unused]] auto noop_cb      = topk_noop_candidate_callback_op{};
-    [[maybe_unused]] auto histogram_cb = topk_histogram_callback_op<ExtractBinOpT, OffsetT>{
-      extract_bin_op, storage.histogram};
-
-    if constexpr (Mode == sink_mode::early_stop)
-    {
-      auto& cb = noop_cb;
-      if constexpr (IsFull)
-      {
-        partition.template Partition<false>(
-          storage.partition_arena.get_partition_scratch(),
-          keys,
-          ::cuda::std::integral_constant<bool, false>{},
-          identify_candidates_op,
-          cb,
-          value_sources);
-      }
-      else
-      {
-        partition.template Partition<false>(
-          storage.partition_arena.get_partition_scratch(),
-          keys,
-          num_items_in_tile,
-          ::cuda::std::integral_constant<bool, false>{},
-          identify_candidates_op,
-          cb,
-          value_sources);
-      }
-    }
-    else
-    {
-      static_assert(Mode == sink_mode::buffered, "do_partition only handles early_stop / buffered modes");
-      auto& cb = histogram_cb;
-      if constexpr (IsFull)
-      {
-        partition.template Partition<true>(
-          storage.partition_arena.get_partition_scratch(),
-          keys,
-          ::cuda::std::integral_constant<bool, true>{},
-          identify_candidates_op,
-          cb,
-          value_sources);
-      }
-      else
-      {
-        partition.template Partition<true>(
-          storage.partition_arena.get_partition_scratch(),
-          keys,
-          num_items_in_tile,
-          ::cuda::std::integral_constant<bool, true>{},
-          identify_candidates_op,
-          cb,
-          value_sources);
-      }
-    }
   }
 };
 
@@ -1275,16 +1276,14 @@ struct agent_topk_last_filter
   static constexpr int tile_items       = block_threads * items_per_thread;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
-  // last_filter operates with HasCandidates == true (it both writes selected items
+  // last_filter operates as a true 2-way partition (it both writes selected items
   // to the front of d_keys_out AND back-grow-cap writes "kth"-class candidates to
-  // the back). The accumulating Selected variant therefore makes no sense here;
-  // reject it. AccumulatingCandidates is allowed -- the cooperative flush honors
-  // the `back_grow_capped_reserve_op`'s `may_grant_less` semantics by dropping
-  // items beyond the granted count, equivalent (modulo flush-chunk granularity)
-  // to the per-item drop the Atomics strategy performs.
-  static_assert(PartStrat != BlockPartitionStrategy::AccumulatingSelected,
-                "AccumulatingSelected requires HasCandidates == false; last_filter operates with "
-                "HasCandidates == true.");
+  // the back). `BlockPartition` (any non-accumulating strategy) and
+  // `BlockPartitionAccumulatingCandidates` are both supported -- the cooperative
+  // flush in the accumulating variant honors the `back_grow_capped_reserve_op`'s
+  // `may_grant_less` semantics by dropping items beyond the granted count,
+  // equivalent (modulo flush-chunk granularity) to the per-item drop the Atomics
+  // strategy performs.
 
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
@@ -1338,6 +1337,8 @@ struct agent_topk_last_filter
     key_xform_t,
     KeyOutputIteratorT,
     KeyOutputIteratorT,
+    IdentifyCandidatesOpT,
+    topk_noop_candidate_callback_op,
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
@@ -1446,27 +1447,13 @@ private:
     OffsetT num_items_in_tile,
     value_sources_tuple_t& value_sources)
   {
-    topk_noop_candidate_callback_op cb{}; // last_filter doesn't accumulate histogram
     if constexpr (IsFull)
     {
-      partition.template Partition<true>(
-        storage.partition_arena.get_partition_scratch(),
-        keys,
-        ::cuda::std::integral_constant<bool, true>{},
-        identify_candidates_op,
-        cb,
-        value_sources);
+      partition.Partition(storage.partition_arena.get_partition_scratch(), keys, value_sources);
     }
     else
     {
-      partition.template Partition<true>(
-        storage.partition_arena.get_partition_scratch(),
-        keys,
-        num_items_in_tile,
-        ::cuda::std::integral_constant<bool, true>{},
-        identify_candidates_op,
-        cb,
-        value_sources);
+      partition.Partition(storage.partition_arena.get_partition_scratch(), keys, num_items_in_tile, value_sources);
     }
   }
 
@@ -1488,6 +1475,7 @@ public:
     key_xform_t sel_key_xform{};
     key_xform_t cand_key_xform{};
     auto value_channel_sinks = make_value_channel_sinks();
+    topk_noop_candidate_callback_op callback_op{};
 
     partition_t partition{
       storage.partition_arena.get_partition_state(),
@@ -1497,7 +1485,9 @@ public:
       cand_key_xform,
       d_keys_out,
       d_keys_out,
-      value_channel_sinks};
+      value_channel_sinks,
+      identify_candidates_op,
+      callback_op};
 
     // Split the tile space into full tiles and a possible single trailing
     // partial tile. The hot-path loop below processes only full tiles. The

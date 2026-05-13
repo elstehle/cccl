@@ -374,18 +374,16 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.scan_algorithm,
                     policy.keys_tile_load_kind>;
 
-  static constexpr BlockPartitionStrategy buffered_part_strat   = policy.buffered_partition_strategy;
-  static constexpr BlockPartitionStrategy early_stop_part_strat = policy.early_stop_partition_strategy;
-  static constexpr bool lazy_value_load                         = policy.lazy_value_load;
+  static constexpr BlockPartitionStrategy buffered_part_strat = policy.buffered_partition_strategy;
+  static constexpr BlockFilterStrategy early_stop_filter_strat = policy.early_stop_filter_strategy;
+  static constexpr bool lazy_value_load = policy.lazy_value_load;
 
-  // The two output-writing filter modes share the same partition-agent
-  // _TempStorage layout (it depends only on block_threads / items_per_thread /
-  // bits_per_pass and the chosen partition strategy). The unbuffered scout mode
-  // is handled by `AgentTopKHistogram` driven by a candidate filter; its
-  // _TempStorage is a strict subset of the partition agent's (no partition
-  // scratch, no candidate channel state). All three layouts share the same
-  // __shared__ buffer via a union.
-  using agent_bf_t = agent_topk_filter_partition<
+  // Single agent type handling both `early_stop` and `buffered` modes; the
+  // agent does a runtime two-way `if` over the `mode` arg of `run()`.
+  // The unbuffered scout mode is a separate `AgentTopKHistogram` instantiation
+  // driven by a candidate-filter predicate. Both agents' `_TempStorage` types
+  // share the same __shared__ buffer via a union.
+  using agent_fp_t = agent_topk_filter_partition<
     agent_topk_policy_t,
     KeyInputIteratorT,
     KeyOutputIteratorT,
@@ -395,21 +393,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     IdentifyCandidatesOpT,
     OffsetT,
     OutOffsetT,
-    sink_mode::buffered,
     buffered_part_strat,
-    lazy_value_load>;
-  using agent_es_t = agent_topk_filter_partition<
-    agent_topk_policy_t,
-    KeyInputIteratorT,
-    KeyOutputIteratorT,
-    ValueInputIteratorT,
-    ValueOutputIteratorT,
-    ExtractBinOpT,
-    IdentifyCandidatesOpT,
-    OffsetT,
-    OutOffsetT,
-    sink_mode::early_stop,
-    early_stop_part_strat,
+    early_stop_filter_strat,
     lazy_value_load>;
 
   // Unbuffered scout mode: drive the histogram agent with a candidate-filter
@@ -424,8 +409,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
 
   union all_modes_ts_t
   {
-    typename agent_es_t::TempStorage es;
-    typename agent_bf_t::TempStorage bf;
+    typename agent_fp_t::TempStorage fp;
     typename agent_ub_t::TempStorage ub;
 
     _CCCL_DEVICE all_modes_ts_t() {}
@@ -486,28 +470,14 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       set_kth_key_bits<policy.bits_per_pass>(counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
     };
 
-  if (early_stop)
+  if (early_stop || will_buffer)
   {
-    agent_es_t agent(
-      temp_storage.es,
-      d_keys_in,
-      d_keys_out,
-      d_values_in,
-      d_values_out,
-      in_key_buf,
-      effective_in_val_buf,
-      &counter->num_selected_written,
-      input_length,
-      load_from_candidates_buffer,
-      extract_bin_op,
-      identify_candidates_op,
-      histogram);
-    agent.run(&counter->finished_block_cnt, current_k, reset_histogram, counter_update_fn, on_kth_bucket);
-  }
-  else if (will_buffer)
-  {
-    agent_bf_t agent(
-      temp_storage.bf,
+    // Both output-writing modes go through one agent type. The runtime `mode`
+    // arg selects between the `BlockFilter[Accumulating]` (early_stop) and
+    // `BlockPartition[Accumulating]` (buffered) primitive paths inside the agent.
+    const sink_mode mode = early_stop ? sink_mode::early_stop : sink_mode::buffered;
+    agent_fp_t agent(
+      temp_storage.fp,
       d_keys_in,
       d_keys_out,
       d_values_in,
@@ -526,6 +496,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
       reset_histogram,
       counter_update_fn,
       on_kth_bucket,
+      mode,
       effective_out_key_buf,
       effective_out_val_buf,
       &counter->num_candidates_written);

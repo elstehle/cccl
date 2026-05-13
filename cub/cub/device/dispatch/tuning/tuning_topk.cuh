@@ -15,6 +15,7 @@
 
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
+#include <cub/detail/topk/block_filter.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/device/dispatch/tuning/common.cuh>
@@ -78,25 +79,24 @@ struct topk_policy
   // Scan algorithm used in the `finalize pass` epilogue, computing prefix sum over the histogram bins.
   BlockScanAlgorithm scan_algorithm;
 
-  // Three independent strategy knobs, one per pass. Each value of the unified
-  // `BlockPartitionStrategy` enum (which folds in the former `ClassifyMode`) selects
-  // either `BlockPartition<...>` or one of the two `BlockPartitionAccumulating*`
-  // sister classes via the dispatch helper. The agents `static_assert` away
-  // (Mode, PartStrat) pairs that don't make sense:
-  //   - `AccumulatingCandidates` is only valid for `buffered_partition_strategy`
-  //     (HasCandidates == true).
-  //   - `AccumulatingSelected`   is only valid for `early_stop_partition_strategy`
-  //     (HasCandidates == false).
-  //   - `last_filter_partition_strategy` rejects both `Accumulating*` values: the
-  //     last-filter pass uses a `back_grow_capped_reserve_op` for the candidate
-  //     stream which the accumulating prototype hasn't been validated against.
+  // Three independent strategy knobs, one per pass.
+  //   - `buffered_partition_strategy` is a `BlockPartitionStrategy` value -- the
+  //     four non-accumulating values select `BlockPartition<...>`, and
+  //     `AccumulatingCandidates` selects `BlockPartitionAccumulatingCandidates`.
+  //   - `early_stop_filter_strategy` is a `BlockFilterStrategy` value -- the four
+  //     non-accumulating values select `BlockFilter<...>`, and `AccumulatingFilter`
+  //     selects `BlockFilterAccumulating`. The early-stop pass operates as a
+  //     1-stream filter (the candidate-side machinery is statically elided), so it
+  //     has its own enum independent of the buffered-pass partition enum.
+  //   - `last_filter_partition_strategy` accepts any `BlockPartitionStrategy` value
+  //     (including `AccumulatingCandidates`).
   BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::AtomicsPreClassify;
-  BlockPartitionStrategy early_stop_partition_strategy  = BlockPartitionStrategy::AtomicsPreClassify;
+  BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::AtomicsPreClassify;
   BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::AtomicsPreClassify;
 
-  // Smem-slot count for the accumulating partition variants' per-stream buffer. Only
-  // consulted when `buffered_partition_strategy == AccumulatingCandidates` and/or
-  // `early_stop_partition_strategy == AccumulatingSelected`. Ignored otherwise.
+  // Smem-slot count for the accumulating partition / filter variants' per-stream
+  // buffer. Only consulted when `buffered_partition_strategy == AccumulatingCandidates`
+  // and/or `early_stop_filter_strategy == AccumulatingFilter`. Ignored otherwise.
   int accumulating_buffer_capacity = 256;
 
   value_materialization_mode value_materialization = value_materialization_mode::indexed;
@@ -111,7 +111,7 @@ struct topk_policy
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
         && lhs.scan_algorithm == rhs.scan_algorithm
         && lhs.buffered_partition_strategy == rhs.buffered_partition_strategy
-        && lhs.early_stop_partition_strategy == rhs.early_stop_partition_strategy
+        && lhs.early_stop_filter_strategy == rhs.early_stop_filter_strategy
         && lhs.last_filter_partition_strategy == rhs.last_filter_partition_strategy
         && lhs.accumulating_buffer_capacity == rhs.accumulating_buffer_capacity
         && lhs.value_materialization == rhs.value_materialization && lhs.lazy_value_load == rhs.lazy_value_load;
@@ -132,7 +132,7 @@ struct topk_policy
         << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
         << ", .scan_algorithm = " << p.scan_algorithm
         << ", .buffered_partition_strategy = " << static_cast<int>(p.buffered_partition_strategy)
-        << ", .early_stop_partition_strategy = " << static_cast<int>(p.early_stop_partition_strategy)
+        << ", .early_stop_filter_strategy = " << static_cast<int>(p.early_stop_filter_strategy)
         << ", .last_filter_partition_strategy = " << static_cast<int>(p.last_filter_partition_strategy)
         << ", .accumulating_buffer_capacity = " << p.accumulating_buffer_capacity
         << ", .value_materialization = " << static_cast<int>(p.value_materialization)
