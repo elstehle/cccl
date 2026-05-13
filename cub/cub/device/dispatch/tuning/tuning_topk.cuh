@@ -90,9 +90,9 @@ struct topk_policy
   //     has its own enum independent of the buffered-pass partition enum.
   //   - `last_filter_partition_strategy` accepts any `BlockPartitionStrategy` value
   //     (including `AccumulatingCandidates`).
-  BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::AtomicsPreClassify;
-  BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::AtomicsPreClassify;
-  BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::AtomicsPreClassify;
+  BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::AtomicsInlinedClassify;
+  BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::AtomicsInlinedClassify;
+  BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::AtomicsInlinedClassify;
 
   // Smem-slot count for the accumulating partition / filter variants' per-stream
   // buffer. Only consulted when `buffered_partition_strategy == AccumulatingCandidates`
@@ -103,7 +103,7 @@ struct topk_policy
 
   // When `true`, the partitioning loop skips loading the full tile of values data, gathering only values of
   // non-rejected items.
-  bool lazy_value_load = false;
+  bool lazy_value_load = true;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
