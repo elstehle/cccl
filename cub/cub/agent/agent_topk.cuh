@@ -826,26 +826,23 @@ struct agent_topk_filter_partition
   using identify_kth_bucket_t =
     block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
-  using selected_offset_t           = OutOffsetT;
-  using buffered_candidate_offset_t = OffsetT;
 
   // Lazy value-load only matters when there's a value channel to load lazily.
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
   // Keys data source: multi_source over (d_keys_in source, in_key_buf source).
-  using key_source_a_t =
+  using key_source_input_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using key_source_b_t =
+  using key_source_buffer_t =
     tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using keys_source_t = multi_source_data_source<key_source_a_t, key_source_b_t, OffsetT>;
+  using keys_source_t = multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
-  // Value channel: multi_source over (d_values_in, in_val_buf), each wrapped in
-  // `direct_data_source`. Both modes consume the same value source type; for
-  // keys-only the value source / sinks tuples stay empty.
-  using val_source_a_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
-  using val_source_b_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
-  using value_source_t = multi_source_data_source<val_source_a_t, val_source_b_t, OffsetT>;
+  // Value channel: multi_source over (d_values_in, in_val_buf)
+  using value_source_input_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
+  using value_source_buffer_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+  using value_source_t = multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
+  
   using val_out_t = ValueOutputIteratorT;
   // Buffered mode: the candidate iterators are `key_in_t*` / `value_in_t*` (the
   // back buffers). Early-stop mode has only the selected stream.
@@ -881,6 +878,10 @@ struct agent_topk_filter_partition
                                ::cuda::std::tuple<typename value_source_t::ScratchStorage>>;
   using value_sources_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
+
+    // Offset types used to index into the selected and candidate iterators (and counter updates)
+  using selected_offset_t           = OutOffsetT;
+  using buffered_candidate_offset_t = OffsetT;
 
   // Reserve op types.
   using sel_reserve_op_t           = atomic_reserve_range_op<selected_offset_t>;
@@ -1065,11 +1066,11 @@ private:
     }
     else
     {
-      typename val_source_a_t::TempStorage val_state_a{};
-      typename val_source_b_t::TempStorage val_state_b{};
-      val_source_a_t val_a{d_values_in, val_state_a};
-      val_source_b_t val_b{in_val_buf, val_state_b};
-      value_source_t val_src{val_a, val_b, /*pick_b=*/load_from_candidates_buffer};
+      typename value_source_input_t::TempStorage val_state_input{};
+      typename value_source_buffer_t::TempStorage val_state_buffer{};
+      value_source_input_t val_input{d_values_in, val_state_input};
+      value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
+      value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
       val_src.set_tile_base(tile_base);
       return ::cuda::std::tuple<value_source_t>{val_src};
     }
@@ -1155,9 +1156,9 @@ public:
   {
     // Construct keys data source (multi_source over d_keys_in / in_key_buf).
     // Stable across the entire run() regardless of mode.
-    key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
-    key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/load_from_candidates_buffer};
+    key_source_input_t key_src_input{d_keys_in, storage.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{in_key_buf, storage.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
 
     // Mode-shared stack-locals.
     sel_reserve_op_t reserve_sel{p_num_selected_written};
@@ -1290,15 +1291,15 @@ struct agent_topk_last_filter
   using selected_offset_t  = OutOffsetT;
   using candidate_offset_t = OutOffsetT;
 
-  using key_source_a_t =
+  using key_source_input_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using key_source_b_t =
+  using key_source_buffer_t =
     tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using keys_source_t = multi_source_data_source<key_source_a_t, key_source_b_t, OffsetT>;
+  using keys_source_t = multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
-  using val_source_a_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
-  using val_source_b_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
-  using value_source_t = multi_source_data_source<val_source_a_t, val_source_b_t, OffsetT>;
+  using value_source_input_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
+  using value_source_buffer_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+  using value_source_t = multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
   using val_out_t      = ValueOutputIteratorT;
   using cand_val_out_t = ValueOutputIteratorT; // selected and candidate share d_values_out
@@ -1430,11 +1431,11 @@ private:
     }
     else
     {
-      typename val_source_a_t::TempStorage val_state_a{};
-      typename val_source_b_t::TempStorage val_state_b{};
-      val_source_a_t val_a{d_values_in, val_state_a};
-      val_source_b_t val_b{in_val_buf, val_state_b};
-      value_source_t val_src{val_a, val_b, /*pick_b=*/load_from_candidates_buffer};
+      typename value_source_input_t::TempStorage val_state_input{};
+      typename value_source_buffer_t::TempStorage val_state_buffer{};
+      value_source_input_t val_input{d_values_in, val_state_input};
+      value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
+      value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
       val_src.set_tile_base(tile_base);
       return ::cuda::std::tuple<value_source_t>{val_src};
     }
@@ -1461,9 +1462,9 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(OutOffsetT* p_num_ties_written_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
   {
-    key_source_a_t key_src_a{d_keys_in, storage.keys_source_state.a};
-    key_source_b_t key_src_b{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_a, key_src_b, /*pick_b=*/load_from_candidates_buffer};
+    key_source_input_t key_src_input{d_keys_in, storage.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{in_key_buf, storage.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
 
     // Build the reserve ops + sinks once, before the tile loop. The partition object
     // captures these references and consults them at every flush.
