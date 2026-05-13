@@ -4,28 +4,29 @@
 //! @file
 //! Top-k-private `BlockPartition` (architecture §9). Per-tile 2-way partition of
 //! classified items into "selected" and "candidate" streams, with reserve-driven
-//! global writes. Replaces the legacy `cub::detail::topk::BlockPartition` template
-//! that previously lived at `cub/agent/topk/block_partition.cuh`.
+//! global writes.
 //!
-//! Differences vs the legacy primitive (architecture §2 gap analysis):
-//!   - Two `Partition()` overloads: full and partial. Full elides the OOB classify
-//!     check; partial bound-checks against `num_items`.
-//!   - Reserve callbacks (`atomic_reserve_range_op`, `back_grow_capped_reserve_op`)
-//!     live outside the primitive. Cap and back-write logic move into
-//!     `back_grow_capped_reserve_op`'s `(base, granted)` math; the primitive itself is
-//!     cap- and back-write-agnostic.
-//!   - Per-call `IdentifyCandidatesOp` + compile-time `HasCandidates` integral_constant
-//!     replaces a pre-classified `classes[]` array. The primitive does the
-//!     classification itself and statically elides candidate-side machinery when
-//!     `HasCandidates == false`.
-//!   - Per-call `CandidateCallbackOp` fires for every item classified `candidate`
-//!     (architecture §10) -- the histogram update lives in the agent today.
-//!   - `ValueChannelsTuple` carries arbitrarily many value channels, each bundling a
-//!     `TileDataSource` with selected / candidate output iterators and key-output
-//!     transform ops (per-stream identity for now).
-//!   - Sub-brokers value-channel `TileDataSource::ScratchStorage` out of the
-//!     `ScratchStorage` arena via the `phase_union` / `phase_aggregate` typed
-//!     accessors (`cub::detail::at<I>`).
+//! Interface ("safe-both") contract shared with the accumulating sister classes
+//! `BlockPartitionAccumulatingCandidates` / `BlockPartitionAccumulatingSelected`
+//! (`block_partition_accumulating.cuh`):
+//!   - All sinks (reserve ops, output iterators, transforms, value-channel sink
+//!     tuple) are captured by ctor and stored as members. Per-call args reduce to
+//!     per-tile data plus a bare `cuda::std::tuple<TileDataSource...>` for value
+//!     sources.
+//!   - `epilogue()` is argless on every variant. `BlockPartition::epilogue()` is a
+//!     no-op (the strategy is non-accumulating). The accumulating variants'
+//!     `epilogue()` performs a terminal flush of any remaining buffered items.
+//!   - `Strategy` carries the classify-mode encoding directly: `AtomicsPreClassify`
+//!     materializes a `classes[ItemsPerThread]` register array up front;
+//!     `AtomicsInlinedClassify` recomputes the classification at each scatter
+//!     site. `Staged` and `SharedMem` always behave as "pre-classify" (their
+//!     cooperative scatter reads the array more than once).
+//!   - The per-channel value bundle splits along the lifetime boundary:
+//!     `value_channel_sinks_t` (captured at ctor) carries the iters + transforms
+//!     + per-channel `value_t` and `data_source_scratch_t` typedefs;
+//!     a per-call `value_sources_tuple_t` carries the live `TileDataSource`
+//!     instances that the agent has called `set_tile_base()` on for the current
+//!     tile.
 
 #pragma once
 
@@ -72,42 +73,69 @@ enum class candidate_class
   rejected,
 };
 
-// Strategy selector for `BlockPartition`. Spelled in the legacy CamelCase form so it
-// can be a drop-in replacement for the legacy enum that the tuning policy already
-// exposes (`topk_policy::partition_strategy`).
+// Strategy selector for the partition primitives. Folds in what used to be a
+// separate `BlockPartitionClassifyMode` knob -- the four `Atomics*` / `Staged` /
+// `SharedMem` values map to `BlockPartition`, the two `Accumulating*` values map
+// to the two accumulating sister classes.
 //
-//   Atomics   -- no smem; per-non-rejected-item global atomic + scatter.
-//   Staged    -- smem scatter + cooperative coalesced store; phase_union arena.
-//   SharedMem -- typed `keys[]` + per-channel `values[]` arrays + per-channel
-//                delegate-load union (architecture §9.4).
+//   AtomicsPreClassify     -- no smem; per-non-rejected-item global atomic + scatter,
+//                             per-item class precomputed into a `classes[]` register
+//                             array up front.
+//   AtomicsInlinedClassify -- same as above, but the classification is recomputed
+//                             inline at each scatter use-site (frees the registers
+//                             that would hold `classes[]`).
+//   Staged                 -- smem scatter + cooperative coalesced store; phase_union
+//                             arena. Always uses pre-classified `classes[]`.
+//   SharedMem              -- typed `keys[]` + per-channel `values[]` arrays + per-
+//                             channel delegate-load union. Always uses pre-classified
+//                             `classes[]`.
+//   AccumulatingCandidates -- BlockPartitionAccumulatingCandidates: candidate stream
+//                             buffered in smem and accumulated across multiple tiles;
+//                             selected stream goes direct-to-global. Used when
+//                             HasCandidates == true.
+//   AccumulatingSelected   -- BlockPartitionAccumulatingSelected: selected stream
+//                             buffered (HasCandidates == false; classifier collapses
+//                             candidate -> selected so the selected stream is the
+//                             only one).
 enum class BlockPartitionStrategy
 {
-  Atomics,
+  AtomicsPreClassify,
+  AtomicsInlinedClassify,
   Staged,
   SharedMem,
+  AccumulatingCandidates,
+  AccumulatingSelected,
 };
 
-// Compile-time selector for how `Partition()` materializes the per-item classification
-// of input keys.
+//---------------------------------------------------------------------
+// Per-channel value-sink bundle (captured at ctor; lifetime = class instance).
 //
-//   precomputed -- run `identify_candidates_op` once per item up front, store the
-//                  results in a register-resident `candidate_class classes[ItemsPerThread]`
-//                  array, then have the scatter loop read from it. Required by the
-//                  `Staged` and `SharedMem` strategies (their cooperative smem scatter
-//                  reads the array more than once).
+// The single `value_channel_t` struct used previously bundled the per-tile
+// `data_source` with the persistent sink-side state (iterators + transforms).
+// The "safe-both" interface splits that bundle along the lifetime boundary:
+// this struct holds the four sink-side members and the typedefs the partition
+// classes need to size their smem (per-channel `value_t` and the data source's
+// `ScratchStorage`). The live `TileDataSource` instances flow through a separate
+// per-call sources tuple.
 //
-//   inlined     -- skip the `classes[]` array entirely; recompute the classification
-//                  inline at each scatter-loop use-site via `identify_candidates_op`.
-//                  Frees the registers that would otherwise hold `classes[]` and lets
-//                  ptxas kill `keys[j]` earlier when `identify_candidates_op` is
-//                  cheap. Pays a small re-evaluation cost when the operator is
-//                  expensive (e.g., types whose radix path involves a non-trivial
-//                  decomposer or bit-twiddle). Only the `Atomics` strategy supports
-//                  this mode (the smem-coordinating strategies need the array).
-enum class BlockPartitionClassifyMode
+// `data_source_scratch_t` defaults to `cuda::std::tuple<>` for the keys-only path
+// (where it's never instantiated).
+//---------------------------------------------------------------------
+template <typename ValueT,
+          typename DataSourceScratchT,
+          typename SelectedValuesOutIt,
+          typename CandidateValuesOutIt,
+          typename SelectedValueTransform,
+          typename CandidateValueTransform>
+struct value_channel_sinks_t
 {
-  precomputed,
-  inlined,
+  using value_t               = ValueT;
+  using data_source_scratch_t = DataSourceScratchT;
+
+  SelectedValuesOutIt selected_values_out;
+  CandidateValuesOutIt candidate_values_out;
+  SelectedValueTransform selected_value_transform;
+  CandidateValueTransform candidate_value_transform;
 };
 
 //---------------------------------------------------------------------
@@ -144,31 +172,31 @@ struct partition_counters
 // Per-channel "loading or scattering" slot for the staged strategy. Inside one
 // channel's processing window the data-source scratch and the per-channel value
 // array are mutually exclusive in time -> internal phase_union.
-template <typename Channel, int N>
+template <typename Sink, int N>
 struct staged_channel_phase
 {
   union
   {
-    typename Channel::data_source_t::ScratchStorage load;
-    typename Channel::value_t values[N];
+    typename Sink::data_source_scratch_t load;
+    typename Sink::value_t values[N];
   };
 };
 
 // Per-channel "loading" slot for the shared_mem strategy.
-template <typename Channel>
+template <typename Sink>
 struct delegate_load_slot
 {
-  typename Channel::data_source_t::ScratchStorage load;
+  typename Sink::data_source_scratch_t load;
 };
 
 // Per-channel "values" slot for the shared_mem strategy.
-template <typename Channel, int N>
+template <typename Sink, int N>
 struct values_slot
 {
-  typename Channel::value_t values[N];
+  typename Sink::value_t values[N];
 };
 
-// Map a tuple type-parameter through a (Channel, int) -> Out template. Equivalent to
+// Map a tuple type-parameter through a (Sink, int) -> Out template. Equivalent to
 // the architecture's `map_tuple_t<F, Tuple, N>`.
 template <template <typename, int> class F, typename Tuple, int N>
 struct map_tuple;
@@ -213,13 +241,14 @@ struct first_channel_value<::cuda::std::tuple<Head, Rest...>>
 struct atomics_scratch
 {};
 
-template <typename KeyT, typename ValueChannelsTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct staged_scratch
 {
   union phase_t
   {
     KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_union<map_tuple_t<staged_channel_phase, ValueChannelsTuple, TileItems>> per_channel;
+    CUB_NS_QUALIFIER::detail::phase_union<map_tuple_t<staged_channel_phase, ValueChannelSinksTuple, TileItems>>
+      per_channel;
 
     _CCCL_HOST_DEVICE phase_t() {}
     _CCCL_HOST_DEVICE ~phase_t() {}
@@ -228,19 +257,19 @@ struct staged_scratch
   partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
 };
 
-template <typename KeyT, typename ValueChannelsTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct shared_mem_scratch
 {
   struct keys_and_values_t
   {
     KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<values_slot, ValueChannelsTuple, TileItems>>
+    CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<values_slot, ValueChannelSinksTuple, TileItems>>
       per_channel_values;
   };
 
   union phase_t
   {
-    CUB_NS_QUALIFIER::detail::phase_union<map_tuple1_t<delegate_load_slot, ValueChannelsTuple>> delegate_loads;
+    CUB_NS_QUALIFIER::detail::phase_union<map_tuple1_t<delegate_load_slot, ValueChannelSinksTuple>> delegate_loads;
     keys_and_values_t kv;
 
     _CCCL_HOST_DEVICE phase_t() {}
@@ -252,16 +281,16 @@ struct shared_mem_scratch
 
 template <BlockPartitionStrategy Strategy,
           typename KeyT,
-          typename ValueChannelsTuple,
+          typename ValueChannelSinksTuple,
           int TileItems,
           typename SelectedOffsetT,
           typename CandidateOffsetT>
 struct strategy_scratch_selector;
 
-template <typename KeyT, typename ValueChannelsTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
-struct strategy_scratch_selector<BlockPartitionStrategy::Atomics,
+template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+struct strategy_scratch_selector<BlockPartitionStrategy::AtomicsPreClassify,
                                  KeyT,
-                                 ValueChannelsTuple,
+                                 ValueChannelSinksTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
@@ -269,31 +298,41 @@ struct strategy_scratch_selector<BlockPartitionStrategy::Atomics,
   using type = atomics_scratch;
 };
 
-template <typename KeyT, typename ValueChannelsTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
-struct strategy_scratch_selector<BlockPartitionStrategy::Staged,
+template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+struct strategy_scratch_selector<BlockPartitionStrategy::AtomicsInlinedClassify,
                                  KeyT,
-                                 ValueChannelsTuple,
+                                 ValueChannelSinksTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
 {
-  using type = staged_scratch<KeyT, ValueChannelsTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
+  using type = atomics_scratch;
 };
 
-template <typename KeyT, typename ValueChannelsTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
-struct strategy_scratch_selector<BlockPartitionStrategy::SharedMem,
+template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+struct strategy_scratch_selector<BlockPartitionStrategy::Staged,
                                  KeyT,
-                                 ValueChannelsTuple,
+                                 ValueChannelSinksTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
 {
-  using type = shared_mem_scratch<KeyT, ValueChannelsTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
+  using type = staged_scratch<KeyT, ValueChannelSinksTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
+};
+
+template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+struct strategy_scratch_selector<BlockPartitionStrategy::SharedMem,
+                                 KeyT,
+                                 ValueChannelSinksTuple,
+                                 TileItems,
+                                 SelectedOffsetT,
+                                 CandidateOffsetT>
+{
+  using type = shared_mem_scratch<KeyT, ValueChannelSinksTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
 };
 
 // Compile-time tuple iteration helper. Calls `f(at<I>(tuple), integral_constant<int,I>)`
-// for every element of the tuple. Used by BlockPartition for sub-brokering value-channel
-// scratch and propagating per-channel calls.
+// for every element of the tuple.
 template <typename Tuple, typename Fn, ::cuda::std::size_t... Is>
 _CCCL_DEVICE _CCCL_FORCEINLINE void tuple_for_each_impl(Tuple&& t, Fn&& f, ::cuda::std::index_sequence<Is...>)
 {
@@ -404,10 +443,133 @@ struct noop_callback_op
   _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(KeyT /*key*/) const
   {}
 };
+
+// Compile-time predicate: which `BlockPartitionStrategy` values map to the
+// non-accumulating `BlockPartition` class.
+template <BlockPartitionStrategy S>
+inline constexpr bool is_block_partition_strategy_v =
+  (S == BlockPartitionStrategy::AtomicsPreClassify) //
+  || (S == BlockPartitionStrategy::AtomicsInlinedClassify) //
+  || (S == BlockPartitionStrategy::Staged) //
+  || (S == BlockPartitionStrategy::SharedMem);
+
+template <BlockPartitionStrategy S>
+inline constexpr bool is_atomics_strategy_v =
+  (S == BlockPartitionStrategy::AtomicsPreClassify) || (S == BlockPartitionStrategy::AtomicsInlinedClassify);
+
+template <BlockPartitionStrategy S>
+inline constexpr bool is_inlined_classify_v = (S == BlockPartitionStrategy::AtomicsInlinedClassify);
+
+//---------------------------------------------------------------------
+// `partition_storage_layout` -- agent-side smem layout helper.
+//
+// Picks the right storage shape for the union (`partition_t::TempStorage`, prefix-sum
+// state, load scratch, partition scratch) based on whether the partition class
+// carries persistent state across calls. Both shapes are temporally safe -- prefix
+// sum runs strictly after the partition's terminal `epilogue()` and only on the
+// last block, and load+partition are sequential within a tile.
+//
+//   needs_persistent == false (BlockPartition):
+//     `partition_state` is empty; the union spans
+//     {keys_source_scratch | prefix_sum | partition_scratch}, matching today's
+//     three-way union and giving byte-equivalent smem footprint.
+//
+//   needs_persistent == true  (Accumulating variants):
+//     `partition_state` carries the per-stream slot buffers + counters across all
+//     tiles; it aliases with `prefix_sum` (only safe because prefix_sum runs after
+//     epilogue on the last block). The per-tile scratch union spans
+//     {keys_source_scratch | partition_scratch}; for the accumulating variants
+//     `partition_scratch` is empty so the union collapses to just keys_source_scratch.
+//
+// All four pieces of storage are accessed via the four `get_*()` member functions so
+// the agent's call sites are layout-agnostic.
+//---------------------------------------------------------------------
+template <bool NeedsPersistent, typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
+struct partition_storage_layout;
+
+template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
+struct partition_storage_layout</*NeedsPersistent=*/false, PartitionT, KeysSourceScratchT, PrefixSumT>
+{
+  union scratch_t
+  {
+    KeysSourceScratchT keys_source_scratch;
+    PrefixSumT prefix_sum;
+    typename PartitionT::ScratchStorage partition_scratch;
+
+    _CCCL_HOST_DEVICE scratch_t() {}
+    _CCCL_HOST_DEVICE ~scratch_t() {}
+  } scratch;
+
+  // Empty TempStorage -- accessed only for parity with the Accumulating layout. Sized
+  // to zero by the compiler (PartitionT::TempStorage is `struct{}`).
+  typename PartitionT::TempStorage partition_state;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::TempStorage& get_partition_state()
+  {
+    return partition_state;
+  }
+  _CCCL_DEVICE _CCCL_FORCEINLINE PrefixSumT& get_prefix_sum()
+  {
+    return scratch.prefix_sum;
+  }
+  _CCCL_DEVICE _CCCL_FORCEINLINE KeysSourceScratchT& get_keys_source_scratch()
+  {
+    return scratch.keys_source_scratch;
+  }
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::ScratchStorage& get_partition_scratch()
+  {
+    return scratch.partition_scratch;
+  }
+};
+
+template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
+struct partition_storage_layout</*NeedsPersistent=*/true, PartitionT, KeysSourceScratchT, PrefixSumT>
+{
+  union persistent_t
+  {
+    typename PartitionT::TempStorage partition_state;
+    PrefixSumT prefix_sum;
+
+    _CCCL_HOST_DEVICE persistent_t() {}
+    _CCCL_HOST_DEVICE ~persistent_t() {}
+  } persistent;
+
+  union scratch_t
+  {
+    KeysSourceScratchT keys_source_scratch;
+    typename PartitionT::ScratchStorage partition_scratch;
+
+    _CCCL_HOST_DEVICE scratch_t() {}
+    _CCCL_HOST_DEVICE ~scratch_t() {}
+  } scratch;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::TempStorage& get_partition_state()
+  {
+    return persistent.partition_state;
+  }
+  _CCCL_DEVICE _CCCL_FORCEINLINE PrefixSumT& get_prefix_sum()
+  {
+    return persistent.prefix_sum;
+  }
+  _CCCL_DEVICE _CCCL_FORCEINLINE KeysSourceScratchT& get_keys_source_scratch()
+  {
+    return scratch.keys_source_scratch;
+  }
+  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::ScratchStorage& get_partition_scratch()
+  {
+    return scratch.partition_scratch;
+  }
+};
+
 } // namespace bp_detail
 
 //---------------------------------------------------------------------
-// `BlockPartition` -- the new BlockPartition (architecture §9.2).
+// `BlockPartition` -- the non-accumulating partition primitive (architecture §9.2).
+//
+// Sinks are bound at ctor; per-call `Partition()` only takes per-tile data and a
+// bare `cuda::std::tuple<TileDataSource...>` of value sources. `epilogue()` is a
+// `_CCCL_FORCEINLINE` no-op for parity with the accumulating sister classes -- the
+// compiler DCEs the call.
 //---------------------------------------------------------------------
 
 template <int BlockThreads,
@@ -416,93 +578,88 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename CandidateOffsetT,
-          typename ValueChannelsTuple             = ::cuda::std::tuple<>,
-          BlockPartitionClassifyMode ClassifyMode = BlockPartitionClassifyMode::precomputed>
+          typename SelectedReserveOp,
+          typename CandidateReserveOp,
+          typename SelectedKeyOutTransformOp,
+          typename CandidateKeyOutTransformOp,
+          typename SelectedKeyOutIt,
+          typename CandidateKeyOutIt,
+          typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
+          bool LazyValueLoad              = false>
 class BlockPartition
 {
-  static_assert(ClassifyMode == BlockPartitionClassifyMode::precomputed || Strategy == BlockPartitionStrategy::Atomics,
-                "BlockPartitionClassifyMode::inlined is only supported with the Atomics "
-                "strategy; staged / shared-mem scatter requires a precomputed classes[] array.");
+  static_assert(bp_detail::is_block_partition_strategy_v<Strategy>,
+                "BlockPartition only handles the non-accumulating strategies; the AccumulatingCandidates / "
+                "AccumulatingSelected strategies map to BlockPartitionAccumulatingCandidates / "
+                "BlockPartitionAccumulatingSelected (see block_partition_accumulating.cuh).");
 
 public:
-  static constexpr int tile_items                      = BlockThreads * ItemsPerThread;
-  static constexpr BlockPartitionStrategy strat        = Strategy;
-  static constexpr BlockPartitionClassifyMode classify = ClassifyMode;
-  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelsTuple>::value);
+  static constexpr int tile_items                 = BlockThreads * ItemsPerThread;
+  static constexpr BlockPartitionStrategy strat   = Strategy;
+  static constexpr int num_value_channels         = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr bool needs_persistent_state    = false;
 
   // Class-lifetime persistent state. Empty (no carried state across Partition() calls).
   struct TempStorage
   {};
 
   // Method-call typed scratch; strategy-specific. Architecture §9.4.
-  using ScratchStorage = typename bp_detail::
-    strategy_scratch_selector<Strategy, KeyT, ValueChannelsTuple, tile_items, SelectedOffsetT, CandidateOffsetT>::type;
+  using ScratchStorage =
+    typename bp_detail::strategy_scratch_selector<Strategy,
+                                                  KeyT,
+                                                  ValueChannelSinksTuple,
+                                                  tile_items,
+                                                  SelectedOffsetT,
+                                                  CandidateOffsetT>::type;
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartition() = default;
-
-  // Full-tile overload: no per-item bound check inside the classify loop; each
-  // value-channel data source is invoked with the no-arg submit_load.
-  //
-  // `LazyValueLoad` (default `false`) controls whether the per-thread
-  // `values[ItemsPerThread]` register array is populated up front via the value
-  // channel's `data_source.complete_load(...)` (eager) or skipped, with the
-  // scatter loop calling `data_source.gather_one(j)` only for non-rejected
-  // items (lazy). Lazy mimics `main`'s legacy "only fetch values that survive"
-  // behavior; eager is the current branch's default. Only honored on the
-  // Atomics strategy with at most one value channel.
-  template <bool HasCandidates,
-            bool LazyValueLoad = false,
-            typename IdentifyCandidatesOp,
-            typename CandidateCallbackOp,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
-    ScratchStorage& buffer,
-    const KeyT (&keys)[ItemsPerThread],
-    ::cuda::std::integral_constant<bool, HasCandidates>,
-    IdentifyCandidatesOp& identify_candidates_op,
-    CandidateCallbackOp& candidate_callback_op,
+  // Ctor (safe-both shape): captures sinks. The TempStorage parameter is unused
+  // (BlockPartition has no persistent state) but is taken for parity with the
+  // accumulating sister classes so the agent can construct any of the three
+  // partition variants with the same call.
+  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartition(
+    TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
     SelectedKeyOutTransformOp& selected_key_transform,
     CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels)
+    ValueChannelSinksTuple& value_channel_sinks)
+      : reserve_sel_(reserve_selected)
+      , reserve_cand_(reserve_candidate)
+      , sel_xform_(selected_key_transform)
+      , cand_xform_(candidate_key_transform)
+      , sel_iter_(selected_keys_out)
+      , cand_iter_(candidate_keys_out)
+      , sinks_(value_channel_sinks)
+  {}
+
+  // Full-tile overload: no per-item bound check inside the classify loop.
+  //
+  // The class-level `LazyValueLoad` template arg (default `false`) controls whether
+  // the per-thread `values[ItemsPerThread]` register array is populated up front via
+  // the value channel's `data_source.complete_load(...)` (eager) or skipped, with the
+  // scatter loop calling `data_source.gather_one(j)` only for non-rejected items
+  // (lazy). Only honored on the Atomics* strategies with at most one value channel.
+  template <bool HasCandidates, typename IdentifyCandidatesOp, typename CandidateCallbackOp, typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+    ScratchStorage& buffer,
+    const KeyT (&keys)[ItemsPerThread],
+    ::cuda::std::integral_constant<bool, HasCandidates>,
+    IdentifyCandidatesOp& identify_candidates_op,
+    CandidateCallbackOp& candidate_callback_op,
+    ValueSourcesTuple& value_sources)
   {
-    partition_impl<true, HasCandidates, LazyValueLoad>(
-      buffer,
-      keys,
-      /*num_items=*/tile_items,
-      identify_candidates_op,
-      candidate_callback_op,
-      reserve_selected,
-      reserve_candidate,
-      selected_key_transform,
-      candidate_key_transform,
-      selected_keys_out,
-      candidate_keys_out,
-      value_channels);
+    partition_impl<true, HasCandidates>(
+      buffer, keys, /*num_items=*/tile_items, identify_candidates_op, candidate_callback_op, value_sources);
   }
 
-  // Partial-tile overload: classify loop bound-checks against num_items; each
-  // value-channel data source is invoked with the (scratch, num_items) submit_load.
-  // See the full-tile overload for `LazyValueLoad` semantics.
+  // Partial-tile overload: classify loop bound-checks against num_items.
   template <bool HasCandidates,
-            bool LazyValueLoad = false,
             typename NumItemsT,
             typename IdentifyCandidatesOp,
             typename CandidateCallbackOp,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt>
+            typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
     ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
@@ -510,60 +667,44 @@ public:
     ::cuda::std::integral_constant<bool, HasCandidates>,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
-    SelectedKeyOutIt selected_keys_out,
-    CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels)
+    ValueSourcesTuple& value_sources)
   {
-    partition_impl<false, HasCandidates, LazyValueLoad>(
+    partition_impl<false, HasCandidates>(
       buffer,
       keys,
       static_cast<int>(num_items),
       identify_candidates_op,
       candidate_callback_op,
-      reserve_selected,
-      reserve_candidate,
-      selected_key_transform,
-      candidate_key_transform,
-      selected_keys_out,
-      candidate_keys_out,
-      value_channels);
+      value_sources);
   }
+
+  // No-op terminal flush. Present for parity with the accumulating sister classes; the
+  // call site collapses to nothing.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
   // Shared body for both overloads. `IsFull` is the compile-time switch that elides
   // the per-item classify-loop bound check on the hot full-tile path. `num_items` is
   // the runtime per-tile valid count (only used when `IsFull == false`).
-  // `LazyValueLoad` propagates from the public `Partition` overloads into
-  // `partition_atomics_fused`; ignored by the Staged / SharedMem strategies.
+  // The class-level `LazyValueLoad` propagates into `partition_atomics_fused`;
+  // ignored by the Staged / SharedMem strategies.
   template <bool IsFull,
             bool HasCandidates,
-            bool LazyValueLoad,
             typename IdentifyCandidatesOp,
             typename CandidateCallbackOp,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt>
+            typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_impl(
     ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
     int num_items,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
-    SelectedKeyOutIt selected_keys_out,
-    CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels)
+    ValueSourcesTuple& value_sources)
   {
+    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
+                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
+                  "tuple; the partition pairs them positionally.");
+
     // Per-thread number of valid items. Full path: every slot is valid; partial path:
     // derive from the global per-tile num_items.
     int num_thread_items;
@@ -579,49 +720,27 @@ private:
         (tb_offset >= num_items) ? 0 : static_cast<int>((::cuda::std::min) (ItemsPerThread, num_items - tb_offset));
     }
 
-    // Atomics strategy: route through the unified `partition_atomics_fused` for both
-    // classify modes. The classifier abstraction picks whether the per-item class is
-    // recomputed at each use site (`inlined`) or read from a pre-filled register array
-    // (`precomputed`). For the precomputed case the classifier's ctor also fires the
-    // candidate callback up front, so the scatter receives `noop_callback_op` to
-    // statically elide the second firing.
-    if constexpr (Strategy == BlockPartitionStrategy::Atomics)
+    // Atomics* strategies: route through the unified `partition_atomics_fused` for
+    // both classify modes. The classifier abstraction picks whether the per-item
+    // class is recomputed at each use site (`AtomicsInlinedClassify`) or read from
+    // a pre-filled register array (`AtomicsPreClassify`). For the precomputed case
+    // the classifier's ctor also fires the candidate callback up front, so the
+    // scatter receives `noop_callback_op` to statically elide the second firing.
+    if constexpr (bp_detail::is_atomics_strategy_v<Strategy>)
     {
-      if constexpr (ClassifyMode == BlockPartitionClassifyMode::inlined)
+      if constexpr (bp_detail::is_inlined_classify_v<Strategy>)
       {
         auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_candidates_op, num_thread_items);
-        partition_atomics_fused<IsFull, HasCandidates, LazyValueLoad>(
-          buffer,
-          keys,
-          num_thread_items,
-          classifier,
-          candidate_callback_op,
-          reserve_selected,
-          reserve_candidate,
-          selected_key_transform,
-          candidate_key_transform,
-          selected_keys_out,
-          candidate_keys_out,
-          value_channels);
+        partition_atomics_fused<IsFull, HasCandidates>(
+          buffer, keys, num_thread_items, classifier, candidate_callback_op, value_sources);
       }
       else
       {
         bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull, HasCandidates> classifier{
           keys, num_thread_items, identify_candidates_op, candidate_callback_op};
         bp_detail::noop_callback_op noop_cb{};
-        partition_atomics_fused<IsFull, HasCandidates, LazyValueLoad>(
-          buffer,
-          keys,
-          num_thread_items,
-          classifier,
-          noop_cb,
-          reserve_selected,
-          reserve_candidate,
-          selected_key_transform,
-          candidate_key_transform,
-          selected_keys_out,
-          candidate_keys_out,
-          value_channels);
+        partition_atomics_fused<IsFull, HasCandidates>(
+          buffer, keys, num_thread_items, classifier, noop_cb, value_sources);
       }
     }
     else
@@ -657,192 +776,97 @@ private:
 
       if constexpr (Strategy == BlockPartitionStrategy::Staged)
       {
-        partition_staged<IsFull, HasCandidates>(
-          buffer,
-          keys,
-          classes,
-          reserve_selected,
-          reserve_candidate,
-          selected_key_transform,
-          candidate_key_transform,
-          selected_keys_out,
-          candidate_keys_out,
-          value_channels,
-          num_items);
+        partition_staged<IsFull, HasCandidates>(buffer, keys, classes, value_sources, num_items);
       }
       else
       {
-        partition_shared_mem<IsFull, HasCandidates>(
-          buffer,
-          keys,
-          classes,
-          reserve_selected,
-          reserve_candidate,
-          selected_key_transform,
-          candidate_key_transform,
-          selected_keys_out,
-          candidate_keys_out,
-          value_channels,
-          num_items);
+        partition_shared_mem<IsFull, HasCandidates>(buffer, keys, classes, value_sources, num_items);
       }
     }
   }
 
   // -----------------------------------------------------------------
-  // Atomics strategy (fused): scatter via a unified per-item loop driven by a
+  // Atomics strategies (fused): scatter via a unified per-item loop driven by a
   // user-supplied `Classifier` with signature `(KeyT, int j) -> candidate_class`.
-  // The classifier abstracts the precomputed-vs-inlined decision: callers pass either
-  // a `bp_detail::inlined_classifier` (recompute via `identify_candidates_op` at each
-  // use site) or a `bp_detail::precomputed_classifier` (look up a pre-filled
-  // `classes[]` array). The `candidate_callback_op` fires inside the scatter loop;
-  // callers who already fired it (e.g., as part of `precomputed_classifier`'s ctor)
-  // pass `bp_detail::noop_callback_op` to statically elide the second firing.
+  // The classifier abstracts the precomputed-vs-inlined decision.
   // -----------------------------------------------------------------
   template <bool IsFull,
             bool HasCandidates,
-            bool LazyValueLoad,
             typename Classifier,
             typename CandidateCallbackOp,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt>
+            typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused(
     ScratchStorage& /*buffer*/,
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
     CandidateCallbackOp& candidate_callback_op,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
-    SelectedKeyOutIt selected_keys_out,
-    CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels)
+    ValueSourcesTuple& value_sources)
   {
-    // Atomics strategy doesn't load value channels into smem -- it scatters each value
-    // as soon as it claims a global slot. With `LazyValueLoad == false` (default) we
-    // materialize the channel's values here via its data source (eager `complete_load`
-    // into a per-thread `values[ItemsPerThread]` array). With `LazyValueLoad == true`
-    // we skip the upfront load entirely and the scatter loop calls
-    // `data_source.gather_one(j)` for each non-rejected item -- restores `main`'s
-    // legacy "only fetch values that survive the filter" behavior.
+    // Atomics* strategies don't load value channels into smem -- they scatter each
+    // value as soon as the item claims a global slot. Eager (LazyValueLoad==false)
+    // pre-loads per-channel values into a register array; lazy fetches via
+    // `gather_one(j)` at the scatter site for non-rejected items only.
     static_assert(num_value_channels <= 1,
                   "atomics partition supports keys-only or single-value-channel "
                   "today; multi-channel needs a per-channel value array.");
 
     if constexpr (num_value_channels == 1)
     {
+      auto& src       = ::cuda::std::get<0>(value_sources);
+      using source_t  = ::cuda::std::remove_reference_t<decltype(src)>;
+      using sink_t    = ::cuda::std::tuple_element_t<0, ValueChannelSinksTuple>;
+      using value_t   = typename source_t::value_t;
+      static_assert(::cuda::std::is_same_v<value_t, typename sink_t::value_t>,
+                    "Per-call value source's value_t must match the class-level sink's value_t.");
+
       if constexpr (LazyValueLoad)
       {
-        // Lazy: skip the upfront load. The scatter pulls each surviving value via
-        // `ch.data_source.gather_one(j)` directly. We pass an unused sentinel array
-        // to satisfy the scatter's signature; it's not read on the lazy path.
         int unused_values[1]{};
-        partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false, /*Lazy=*/true>(
-          keys,
-          num_thread_items,
-          classifier,
-          candidate_callback_op,
-          reserve_selected,
-          reserve_candidate,
-          selected_key_transform,
-          candidate_key_transform,
-          selected_keys_out,
-          candidate_keys_out,
-          value_channels,
-          unused_values);
+        partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false>(
+          keys, num_thread_items, classifier, candidate_callback_op, value_sources, unused_values);
       }
       else
       {
-        auto& ch        = ::cuda::std::get<0>(value_channels);
-        using channel_t = ::cuda::std::remove_reference_t<decltype(ch)>;
-        using value_t   = typename channel_t::value_t;
-        typename channel_t::data_source_t::ScratchStorage chan_scratch{};
-        auto h = ch.data_source.submit_load(chan_scratch);
+        typename source_t::ScratchStorage chan_scratch{};
+        auto h = src.submit_load(chan_scratch);
         value_t values[ItemsPerThread]{};
         h.complete_load(values);
 
-        partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false, /*Lazy=*/false>(
-          keys,
-          num_thread_items,
-          classifier,
-          candidate_callback_op,
-          reserve_selected,
-          reserve_candidate,
-          selected_key_transform,
-          candidate_key_transform,
-          selected_keys_out,
-          candidate_keys_out,
-          value_channels,
-          values);
+        partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/false>(
+          keys, num_thread_items, classifier, candidate_callback_op, value_sources, values);
       }
     }
     else
     {
       int unused_dummy[1]{};
       (void) unused_dummy;
-      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/true, /*Lazy=*/false>(
-        keys,
-        num_thread_items,
-        classifier,
-        candidate_callback_op,
-        reserve_selected,
-        reserve_candidate,
-        selected_key_transform,
-        candidate_key_transform,
-        selected_keys_out,
-        candidate_keys_out,
-        value_channels,
-        unused_dummy);
+      partition_atomics_fused_scatter<IsFull, HasCandidates, /*KeysOnly=*/true>(
+        keys, num_thread_items, classifier, candidate_callback_op, value_sources, unused_dummy);
     }
   }
 
-  // Unified scatter loop for the Atomics strategy. Two independent 2-way (do/skip)
+  // Unified scatter loop for the Atomics* strategies. Two independent 2-way (do/skip)
   // branches per unrolled item -- avoids the per-item indirect-branch table in
   // `c[0x2]` that ptxas would emit for a 3-way `rejected` / `selected` / `candidate`
-  // cascade. The per-item `candidate_class` is provided by an indexed classifier with
-  // signature `(key, j) -> candidate_class`, which encapsulates both the inlined-vs-
-  // precomputed policy and the partial-tile `is_valid` handling:
-  //   - `inlined_classifier` recomputes via `identify_candidates_op(key)` and checks
-  //     `j < num_thread_items` internally for partial tiles.
-  //   - `precomputed_classifier` runs the classify loop in its constructor (also
-  //     firing the `candidate_callback_op` for `candidate`-classified items), stores
-  //     the result in a register-resident `classes[]`, and indexes by `j`.
-  // The per-item runtime work is the same as the legacy precomputed scatter (each
-  // non-rejected item still does exactly one atomic reserve + one scatter); when
-  // `precomputed_classifier` is supplied, this generates byte-identical SASS to the
-  // earlier dedicated `partition_atomics_scatter` implementation.
+  // cascade.
   template <bool IsFull,
             bool HasCandidates,
             bool KeysOnly,
-            bool LazyValueLoad,
             typename Classifier,
             typename CandidateCallbackOp,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt,
+            typename ValueSourcesTuple,
             typename ValuesArr>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused_scatter(
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
     CandidateCallbackOp& candidate_callback_op,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
-    SelectedKeyOutIt selected_keys_out,
-    CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels,
+    ValueSourcesTuple& value_sources,
     ValuesArr& values)
   {
+    (void) num_thread_items;
+
     // Helper: fetch the per-item value either from the pre-loaded register array
     // (`LazyValueLoad == false`) or via on-demand single-item gather through the
     // value channel's data source (`LazyValueLoad == true`). For keys-only paths
@@ -850,8 +874,8 @@ private:
     auto get_value = [&](int j) {
       if constexpr (LazyValueLoad)
       {
-        auto& ch = ::cuda::std::get<0>(value_channels);
-        return ch.data_source.gather_one(j);
+        auto& src = ::cuda::std::get<0>(value_sources);
+        return src.gather_one(j);
       }
       else
       {
@@ -865,8 +889,7 @@ private:
       for (int j = 0; j < ItemsPerThread; ++j)
       {
         // The classifier encapsulates the `is_valid` check internally, returning
-        // `rejected` for items past `num_thread_items` on partial tiles. This lets
-        // the outer scatter loop be a single unconditional call site.
+        // `rejected` for items past `num_thread_items` on partial tiles.
         const candidate_class c = classifier(keys[j], j);
 
         // Architecture §10.2: callback fires for every `candidate`-classified item,
@@ -878,7 +901,7 @@ private:
 
         if (c == candidate_class::selected)
         {
-          const auto r = reserve_selected(SelectedOffsetT{1});
+          const auto r = reserve_sel_(SelectedOffsetT{1});
           bool granted = true;
           if constexpr (SelectedReserveOp::may_grant_less)
           {
@@ -886,17 +909,17 @@ private:
           }
           if (granted)
           {
-            selected_keys_out[r.first] = selected_key_transform(keys[j]);
+            sel_iter_[r.first] = sel_xform_(keys[j]);
             if constexpr (!KeysOnly)
             {
-              auto& ch                        = ::cuda::std::get<0>(value_channels);
-              ch.selected_values_out[r.first] = ch.selected_value_transform(get_value(j));
+              auto& sink                       = ::cuda::std::get<0>(sinks_);
+              sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
             }
           }
         }
         if (c == candidate_class::candidate)
         {
-          const auto r = reserve_candidate(CandidateOffsetT{1});
+          const auto r = reserve_cand_(CandidateOffsetT{1});
           bool granted = true;
           if constexpr (CandidateReserveOp::may_grant_less)
           {
@@ -904,11 +927,11 @@ private:
           }
           if (granted)
           {
-            candidate_keys_out[r.first] = candidate_key_transform(keys[j]);
+            cand_iter_[r.first] = cand_xform_(keys[j]);
             if constexpr (!KeysOnly)
             {
-              auto& ch                         = ::cuda::std::get<0>(value_channels);
-              ch.candidate_values_out[r.first] = ch.candidate_value_transform(get_value(j));
+              auto& sink                        = ::cuda::std::get<0>(sinks_);
+              sink.candidate_values_out[r.first] = sink.candidate_value_transform(get_value(j));
             }
           }
         }
@@ -926,7 +949,7 @@ private:
 
         if (c != candidate_class::rejected)
         {
-          const auto r = reserve_selected(SelectedOffsetT{1});
+          const auto r = reserve_sel_(SelectedOffsetT{1});
           bool granted = true;
           if constexpr (SelectedReserveOp::may_grant_less)
           {
@@ -934,11 +957,11 @@ private:
           }
           if (granted)
           {
-            selected_keys_out[r.first] = selected_key_transform(keys[j]);
+            sel_iter_[r.first] = sel_xform_(keys[j]);
             if constexpr (!KeysOnly)
             {
-              auto& ch                        = ::cuda::std::get<0>(value_channels);
-              ch.selected_values_out[r.first] = ch.selected_value_transform(get_value(j));
+              auto& sink                       = ::cuda::std::get<0>(sinks_);
+              sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
             }
           }
         }
@@ -952,25 +975,12 @@ private:
   // the keys phase: each channel loads (sub-brokered scratch), scatters into the
   // channel's `values[]` slot, then cooperatively stores.
   // -----------------------------------------------------------------
-  template <bool IsFull,
-            bool HasCandidates,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt>
+  template <bool IsFull, bool HasCandidates, typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_staged(
     ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
     const candidate_class (&classes)[ItemsPerThread],
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
-    SelectedKeyOutIt selected_keys_out,
-    CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels,
+    ValueSourcesTuple& value_sources,
     int num_items)
   {
     int positions[ItemsPerThread];
@@ -1024,12 +1034,12 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel                   = reserve_selected(static_cast<SelectedOffsetT>(selected_cnt));
+      const auto sel                   = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
       buffer.cnt.global_bases.selected = sel.first;
       buffer.cnt.granted_selected      = static_cast<SelectedOffsetT>(sel.second);
       if constexpr (HasCandidates)
       {
-        const auto cand                   = reserve_candidate(static_cast<CandidateOffsetT>(candidate_cnt));
+        const auto cand                   = reserve_cand_(static_cast<CandidateOffsetT>(candidate_cnt));
         buffer.cnt.global_bases.candidate = cand.first;
         buffer.cnt.granted_candidate      = static_cast<CandidateOffsetT>(cand.second);
       }
@@ -1050,14 +1060,14 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      selected_keys_out[sel_base + static_cast<SelectedOffsetT>(i)] = selected_key_transform(buffer.phase.keys[i]);
+      sel_iter_[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform_(buffer.phase.keys[i]);
     }
     if constexpr (HasCandidates)
     {
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
       {
-        candidate_keys_out[cand_base + static_cast<CandidateOffsetT>(i)] =
-          candidate_key_transform(buffer.phase.keys[tile_items - candidate_cnt + i]);
+        cand_iter_[cand_base + static_cast<CandidateOffsetT>(i)] =
+          cand_xform_(buffer.phase.keys[tile_items - candidate_cnt + i]);
       }
     }
 
@@ -1067,21 +1077,22 @@ private:
     if constexpr (num_value_channels > 0)
     {
       __syncthreads();
-      bp_detail::tuple_for_each(value_channels, [&](auto& ch, auto I_ic) {
+      bp_detail::tuple_for_each(value_sources, [&](auto& src, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
-        using channel_t = ::cuda::std::remove_reference_t<decltype(ch)>;
-        using value_t   = typename channel_t::value_t;
+        using source_t  = ::cuda::std::remove_reference_t<decltype(src)>;
+        using value_t   = typename source_t::value_t;
 
+        auto& sink       = ::cuda::std::get<I>(sinks_);
         auto& chan_phase = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.per_channel);
         value_t reg_values[ItemsPerThread]{};
         if constexpr (IsFull)
         {
-          auto h = ch.data_source.submit_load(chan_phase.load);
+          auto h = src.submit_load(chan_phase.load);
           h.complete_load(reg_values);
         }
         else
         {
-          auto h = ch.data_source.submit_load(chan_phase.load, num_items);
+          auto h = src.submit_load(chan_phase.load, num_items);
           h.complete_load(reg_values);
         }
         __syncthreads();
@@ -1098,15 +1109,15 @@ private:
 
         for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
         {
-          ch.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-            ch.selected_value_transform(chan_phase.values[i]);
+          sink.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
+            sink.selected_value_transform(chan_phase.values[i]);
         }
         if constexpr (HasCandidates)
         {
           for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
           {
-            ch.candidate_values_out[cand_base + static_cast<CandidateOffsetT>(i)] =
-              ch.candidate_value_transform(chan_phase.values[tile_items - candidate_cnt + i]);
+            sink.candidate_values_out[cand_base + static_cast<CandidateOffsetT>(i)] =
+              sink.candidate_value_transform(chan_phase.values[tile_items - candidate_cnt + i]);
           }
         }
         __syncthreads();
@@ -1120,30 +1131,14 @@ private:
   // then a single coalesced flush per stream. Pre-Phase-1 delegate loads alias with
   // the kv arena via the top-level union.
   // -----------------------------------------------------------------
-  template <bool IsFull,
-            bool HasCandidates,
-            typename SelectedReserveOp,
-            typename CandidateReserveOp,
-            typename SelectedKeyOutTransformOp,
-            typename CandidateKeyOutTransformOp,
-            typename SelectedKeyOutIt,
-            typename CandidateKeyOutIt>
+  template <bool IsFull, bool HasCandidates, typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_shared_mem(
     ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
     const candidate_class (&classes)[ItemsPerThread],
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
-    SelectedKeyOutIt selected_keys_out,
-    CandidateKeyOutIt candidate_keys_out,
-    ValueChannelsTuple& value_channels,
+    ValueSourcesTuple& value_sources,
     int num_items)
   {
-    // shared_mem keeps the design simple by supporting at most one value channel for
-    // now; multi-channel needs a heterogeneous tuple of register arrays for the
-    // pre-Phase-1 channel loads, which we punt on until the agent actually needs it.
     static_assert(num_value_channels <= 1,
                   "shared_mem partition supports keys-only or single-value-channel "
                   "today; multi-channel needs a heterogeneous register-array tuple.");
@@ -1154,16 +1149,16 @@ private:
     [[maybe_unused]] auto load_channel_values = [&](auto& reg_values_out) {
       if constexpr (num_value_channels == 1)
       {
-        auto& ch        = ::cuda::std::get<0>(value_channels);
+        auto& src       = ::cuda::std::get<0>(value_sources);
         auto& load_slot = CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.delegate_loads);
         if constexpr (IsFull)
         {
-          auto h = ch.data_source.submit_load(load_slot.load);
+          auto h = src.submit_load(load_slot.load);
           h.complete_load(reg_values_out);
         }
         else
         {
-          auto h = ch.data_source.submit_load(load_slot.load, num_items);
+          auto h = src.submit_load(load_slot.load, num_items);
           h.complete_load(reg_values_out);
         }
       }
@@ -1173,7 +1168,7 @@ private:
       }
     };
 
-    using channel_value_t = typename bp_detail::first_channel_value<ValueChannelsTuple>::type;
+    using channel_value_t = typename bp_detail::first_channel_value<ValueChannelSinksTuple>::type;
     channel_value_t reg_values[ItemsPerThread]{};
     load_channel_values(reg_values);
 
@@ -1226,12 +1221,12 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel                   = reserve_selected(static_cast<SelectedOffsetT>(selected_cnt));
+      const auto sel                   = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
       buffer.cnt.global_bases.selected = sel.first;
       buffer.cnt.granted_selected      = static_cast<SelectedOffsetT>(sel.second);
       if constexpr (HasCandidates)
       {
-        const auto cand                   = reserve_candidate(static_cast<CandidateOffsetT>(candidate_cnt));
+        const auto cand                   = reserve_cand_(static_cast<CandidateOffsetT>(candidate_cnt));
         buffer.cnt.global_bases.candidate = cand.first;
         buffer.cnt.granted_candidate      = static_cast<CandidateOffsetT>(cand.second);
       }
@@ -1252,39 +1247,54 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      selected_keys_out[sel_base + static_cast<SelectedOffsetT>(i)] = selected_key_transform(buffer.phase.kv.keys[i]);
+      sel_iter_[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform_(buffer.phase.kv.keys[i]);
     }
     if constexpr (HasCandidates)
     {
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
       {
-        candidate_keys_out[cand_base + static_cast<CandidateOffsetT>(i)] =
-          candidate_key_transform(buffer.phase.kv.keys[tile_items - candidate_cnt + i]);
+        cand_iter_[cand_base + static_cast<CandidateOffsetT>(i)] =
+          cand_xform_(buffer.phase.kv.keys[tile_items - candidate_cnt + i]);
       }
     }
 
     if constexpr (num_value_channels > 0)
     {
-      bp_detail::tuple_for_each(value_channels, [&](auto& ch, auto I_ic) {
+      bp_detail::tuple_for_each(sinks_, [&](auto& sink, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
         auto& vs        = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.kv.per_channel_values);
         for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
         {
-          ch.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-            ch.selected_value_transform(vs.values[i]);
+          sink.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
+            sink.selected_value_transform(vs.values[i]);
         }
         if constexpr (HasCandidates)
         {
           for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
           {
-            ch.candidate_values_out[cand_base + static_cast<CandidateOffsetT>(i)] =
-              ch.candidate_value_transform(vs.values[tile_items - candidate_cnt + i]);
+            sink.candidate_values_out[cand_base + static_cast<CandidateOffsetT>(i)] =
+              sink.candidate_value_transform(vs.values[tile_items - candidate_cnt + i]);
           }
         }
       });
     }
     __syncthreads();
   }
+
+  // ---------------------------------------------------------------
+  // Member state: sinks captured by the ctor, used by every Partition() call and by
+  // the (no-op) epilogue(). Reserve ops + transforms + sinks tuple are stored by
+  // reference (matching the previous per-call by-reference convention -- the agent's
+  // factory-created instances outlive the partition object); iterators are stored by
+  // value (CUB convention).
+  // ---------------------------------------------------------------
+  SelectedReserveOp& reserve_sel_;
+  CandidateReserveOp& reserve_cand_;
+  SelectedKeyOutTransformOp& sel_xform_;
+  CandidateKeyOutTransformOp& cand_xform_;
+  SelectedKeyOutIt sel_iter_;
+  CandidateKeyOutIt cand_iter_;
+  ValueChannelSinksTuple& sinks_;
 };
 } // namespace detail::topk
 

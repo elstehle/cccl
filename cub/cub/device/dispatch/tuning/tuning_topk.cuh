@@ -78,13 +78,26 @@ struct topk_policy
   // Scan algorithm used in the `finalize pass` epilogue, computing prefix sum over the histogram bins.
   BlockScanAlgorithm scan_algorithm;
 
-  // The strategy used for partitioning candidates into selected items (written to the user-provided output iterator)
-  // and output-candidates (written to the candidates buffer).
-  BlockPartitionStrategy partition_strategy = BlockPartitionStrategy::Atomics;
+  // Three independent strategy knobs, one per pass. Each value of the unified
+  // `BlockPartitionStrategy` enum (which folds in the former `ClassifyMode`) selects
+  // either `BlockPartition<...>` or one of the two `BlockPartitionAccumulating*`
+  // sister classes via the dispatch helper. The agents `static_assert` away
+  // (Mode, PartStrat) pairs that don't make sense:
+  //   - `AccumulatingCandidates` is only valid for `buffered_partition_strategy`
+  //     (HasCandidates == true).
+  //   - `AccumulatingSelected`   is only valid for `early_stop_partition_strategy`
+  //     (HasCandidates == false).
+  //   - `last_filter_partition_strategy` rejects both `Accumulating*` values: the
+  //     last-filter pass uses a `back_grow_capped_reserve_op` for the candidate
+  //     stream which the accumulating prototype hasn't been validated against.
+  BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::AtomicsPreClassify;
+  BlockPartitionStrategy early_stop_partition_strategy  = BlockPartitionStrategy::AtomicsPreClassify;
+  BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::AtomicsPreClassify;
 
-  // Selects how `BlockPartition` materializes the per-item classification: either precompute a
-  // `classes[ItemsPerThread]` array up front or recompute it inline at each scatter use-site
-  BlockPartitionClassifyMode classify_mode = BlockPartitionClassifyMode::inlined;
+  // Smem-slot count for the accumulating partition variants' per-stream buffer. Only
+  // consulted when `buffered_partition_strategy == AccumulatingCandidates` and/or
+  // `early_stop_partition_strategy == AccumulatingSelected`. Ignored otherwise.
+  int accumulating_buffer_capacity = 256;
 
   value_materialization_mode value_materialization = value_materialization_mode::indexed;
 
@@ -96,9 +109,12 @@ struct topk_policy
   {
     return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
         && lhs.bits_per_pass == rhs.bits_per_pass && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
-        && lhs.scan_algorithm == rhs.scan_algorithm && lhs.partition_strategy == rhs.partition_strategy
-        && lhs.classify_mode == rhs.classify_mode && lhs.value_materialization == rhs.value_materialization
-        && lhs.lazy_value_load == rhs.lazy_value_load;
+        && lhs.scan_algorithm == rhs.scan_algorithm
+        && lhs.buffered_partition_strategy == rhs.buffered_partition_strategy
+        && lhs.early_stop_partition_strategy == rhs.early_stop_partition_strategy
+        && lhs.last_filter_partition_strategy == rhs.last_filter_partition_strategy
+        && lhs.accumulating_buffer_capacity == rhs.accumulating_buffer_capacity
+        && lhs.value_materialization == rhs.value_materialization && lhs.lazy_value_load == rhs.lazy_value_load;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -115,8 +131,10 @@ struct topk_policy
         << ", .bits_per_pass = " << p.bits_per_pass
         << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
         << ", .scan_algorithm = " << p.scan_algorithm
-        << ", .partition_strategy = " << static_cast<int>(p.partition_strategy)
-        << ", .classify_mode = " << static_cast<int>(p.classify_mode)
+        << ", .buffered_partition_strategy = " << static_cast<int>(p.buffered_partition_strategy)
+        << ", .early_stop_partition_strategy = " << static_cast<int>(p.early_stop_partition_strategy)
+        << ", .last_filter_partition_strategy = " << static_cast<int>(p.last_filter_partition_strategy)
+        << ", .accumulating_buffer_capacity = " << p.accumulating_buffer_capacity
         << ", .value_materialization = " << static_cast<int>(p.value_materialization)
         << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
   }

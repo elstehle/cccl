@@ -4,8 +4,18 @@
 //! @file
 //! Unit tests for the top-k-private `BlockPartition` primitive in
 //! `cub/detail/topk/block_partition.cuh`. Sweeps strategy x HasCandidates x KeysOnly x
-//! reserve op x full/partial. See `[topk-foundation-impl_f95bebaa.plan.md] §12` for
-//! the test matrix.
+//! reserve op x full/partial.
+//!
+//! The test exercises the "safe-both" interface: the partition is constructed with
+//! its sinks (reserve ops, transforms, output iterators, value channel sinks) at the
+//! top of the kernel, and `Partition()` is called per tile with just the per-tile
+//! data + a bare `cuda::std::tuple<TileDataSource...>` of value sources. After the
+//! tile loop the kernel calls `partition.epilogue()`, which is a `_CCCL_FORCEINLINE`
+//! no-op for `BlockPartition` (the accumulating sister classes have a separate test).
+//!
+//! The strategy sweep covers all four non-accumulating values of the unified
+//! `BlockPartitionStrategy` enum (which folds in the former `BlockPartitionClassifyMode`):
+//!   AtomicsPreClassify, AtomicsInlinedClassify, Staged, SharedMem.
 
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
@@ -15,6 +25,7 @@
 #include <thrust/host_vector.h>
 
 #include <cuda/std/cstdint>
+#include <cuda/std/functional>
 #include <cuda/std/tuple>
 #include <cuda/std/utility>
 
@@ -60,15 +71,6 @@ struct counting_callback_op
   }
 };
 
-struct identity_transform_op
-{
-  template <typename T>
-  _CCCL_DEVICE _CCCL_FORCEINLINE T operator()(const T& x) const
-  {
-    return x;
-  }
-};
-
 struct noop_callback_op
 {
   template <typename T>
@@ -76,23 +78,8 @@ struct noop_callback_op
   {}
 };
 
-// Value-channel test struct. Mirrors the agent's per-channel bundle: a TileDataSource,
-// selected/candidate output iterators, and per-stream value transforms.
-template <typename DataSourceT, typename SelOutT, typename CandOutT>
-struct test_value_channel
-{
-  using data_source_t = DataSourceT;
-  using value_t       = typename DataSourceT::value_t;
-
-  data_source_t data_source;
-  SelOutT selected_values_out;
-  CandOutT candidate_values_out;
-  identity_transform_op selected_value_transform;
-  identity_transform_op candidate_value_transform;
-};
-
 //---------------------------------------------------------------------
-// Kernel: drives one tile through BlockPartition.
+// Kernel: drives one tile through BlockPartition (safe-both interface).
 //---------------------------------------------------------------------
 
 template <int BlockThreads,
@@ -119,13 +106,46 @@ __global__ void partition_kernel(
 {
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  using value_channel_t = test_value_channel<value_ds_t, int*, int*>;
-  using value_channels_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_t>>;
+  // Sink-side bundle for the value channel (no data_source; that's per-call). Empty
+  // tuple when keys-only.
+  using value_sinks_t = topk::value_channel_sinks_t<int,
+                                                    typename value_ds_t::ScratchStorage,
+                                                    int*,
+                                                    int*,
+                                                    ::cuda::std::identity,
+                                                    ::cuda::std::identity>;
+  using value_channel_sinks_tuple_t =
+    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
 
-  using partition_t =
-    topk::BlockPartition<BlockThreads, ItemsPerThread, Strategy, int, unsigned int, unsigned int, value_channels_tuple_t>;
+  // Per-call sources tuple: bare tuple of TileDataSource. Empty when keys-only.
+  using value_sources_tuple_t =
+    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_ds_t>>;
 
+  // Reserve op types (compile-time picked).
+  using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
+  using cand_reserve_op_t =
+    ::cuda::std::conditional_t<BackGrowCapped,
+                               topk::back_grow_capped_reserve_op<unsigned int>,
+                               topk::atomic_reserve_range_op<unsigned int>>;
+
+  using xform_t = ::cuda::std::identity;
+
+  using partition_t = topk::BlockPartition<
+    BlockThreads,
+    ItemsPerThread,
+    Strategy,
+    int,
+    unsigned int,
+    unsigned int,
+    sel_reserve_op_t,
+    cand_reserve_op_t,
+    xform_t,
+    xform_t,
+    int*,
+    int*,
+    value_channel_sinks_tuple_t>;
+
+  __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
 
   // BLOCKED arrangement: thread t gets items [t*IPT, (t+1)*IPT).
@@ -137,109 +157,76 @@ __global__ void partition_kernel(
     keys[j]       = (idx < num_items) ? d_keys_in[idx] : 0;
   }
 
-  // Build the value channel tuple. `direct_data_source` has no default ctor, so we
-  // construct the tuple via its fully-initialized element. For keys-only the tuple
-  // is empty and trivially default-constructible.
-  // direct_data_source's TempStorage is empty so we can hand it a stack-local sink.
+  // Build the per-call sources tuple. `direct_data_source` has no default ctor and
+  // its TempStorage is empty so we hand it a stack-local sink.
   typename value_ds_t::TempStorage val_state{};
   value_ds_t val_ds{d_values_in, val_state};
   val_ds.set_tile_base(0);
-
-  auto make_channels = [&] {
+  auto make_sources = [&] {
     if constexpr (KeysOnly)
     {
       return ::cuda::std::tuple<>{};
     }
     else
     {
-      return ::cuda::std::tuple<value_channel_t>{
-        value_channel_t{val_ds, d_sel_vals, d_cand_vals, identity_transform_op{}, identity_transform_op{}}};
+      return ::cuda::std::tuple<value_ds_t>{val_ds};
     }
   };
-  value_channels_tuple_t channels = make_channels();
+  value_sources_tuple_t sources = make_sources();
+
+  // Build the sinks tuple (captured by ctor).
+  auto make_sinks = [&] {
+    if constexpr (KeysOnly)
+    {
+      return ::cuda::std::tuple<>{};
+    }
+    else
+    {
+      return ::cuda::std::tuple<value_sinks_t>{
+        value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+    }
+  };
+  value_channel_sinks_tuple_t sinks = make_sinks();
 
   driver_identify_op identify_op{d_classes_in, key_offset};
   counting_callback_op callback_op{d_callback_count};
-  identity_transform_op key_transform{};
+  xform_t key_transform{};
 
-  partition_t partition{};
-
-  if constexpr (BackGrowCapped)
-  {
-    topk::atomic_reserve_range_op<unsigned int> reserve_sel{d_sel_counter};
-    topk::back_grow_capped_reserve_op<unsigned int> reserve_cand{d_cand_counter, back_anchor, cap};
-    if (num_items == BlockThreads * ItemsPerThread)
+  // Build mode-dependent reserve ops.
+  sel_reserve_op_t reserve_sel{d_sel_counter};
+  cand_reserve_op_t reserve_cand = [&]() -> cand_reserve_op_t {
+    if constexpr (BackGrowCapped)
     {
-      partition.template Partition<HasCandidates>(
-        scratch,
-        keys,
-        ::cuda::std::integral_constant<bool, HasCandidates>{},
-        identify_op,
-        callback_op,
-        reserve_sel,
-        reserve_cand,
-        key_transform,
-        key_transform,
-        d_sel_keys,
-        d_cand_keys,
-        channels);
+      return cand_reserve_op_t{d_cand_counter, back_anchor, cap};
     }
     else
     {
-      partition.template Partition<HasCandidates>(
-        scratch,
-        keys,
-        num_items,
-        ::cuda::std::integral_constant<bool, HasCandidates>{},
-        identify_op,
-        callback_op,
-        reserve_sel,
-        reserve_cand,
-        key_transform,
-        key_transform,
-        d_sel_keys,
-        d_cand_keys,
-        channels);
+      return cand_reserve_op_t{d_cand_counter};
     }
+  }();
+
+  partition_t partition{
+    partition_ts, reserve_sel, reserve_cand, key_transform, key_transform, d_sel_keys, d_cand_keys, sinks};
+
+  if (num_items == BlockThreads * ItemsPerThread)
+  {
+    partition.template Partition<HasCandidates>(
+      scratch, keys, ::cuda::std::integral_constant<bool, HasCandidates>{}, identify_op, callback_op, sources);
   }
   else
   {
-    topk::atomic_reserve_range_op<unsigned int> reserve_sel{d_sel_counter};
-    topk::atomic_reserve_range_op<unsigned int> reserve_cand{d_cand_counter};
-    if (num_items == BlockThreads * ItemsPerThread)
-    {
-      partition.template Partition<HasCandidates>(
-        scratch,
-        keys,
-        ::cuda::std::integral_constant<bool, HasCandidates>{},
-        identify_op,
-        callback_op,
-        reserve_sel,
-        reserve_cand,
-        key_transform,
-        key_transform,
-        d_sel_keys,
-        d_cand_keys,
-        channels);
-    }
-    else
-    {
-      partition.template Partition<HasCandidates>(
-        scratch,
-        keys,
-        num_items,
-        ::cuda::std::integral_constant<bool, HasCandidates>{},
-        identify_op,
-        callback_op,
-        reserve_sel,
-        reserve_cand,
-        key_transform,
-        key_transform,
-        d_sel_keys,
-        d_cand_keys,
-        channels);
-    }
+    partition.template Partition<HasCandidates>(
+      scratch,
+      keys,
+      num_items,
+      ::cuda::std::integral_constant<bool, HasCandidates>{},
+      identify_op,
+      callback_op,
+      sources);
   }
+
+  // No-op for BlockPartition; present for parity with the accumulating sister classes.
+  partition.epilogue();
 }
 
 //---------------------------------------------------------------------
@@ -271,11 +258,13 @@ static std::vector<::cuda::std::int8_t> make_classes(int num_items, int selected
   return out;
 }
 
-// %PARAM% TEST_STRAT strat 0:1:2
-// 0 = atomics, 1 = staged, 2 = shared_mem
+// %PARAM% TEST_STRAT strat 0:1:2:3
+// 0 = atomics (precomputed), 1 = atomics (inlined), 2 = staged, 3 = shared_mem
 #if TEST_STRAT == 0
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Atomics;
+constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::AtomicsPreClassify;
 #elif TEST_STRAT == 1
+constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::AtomicsInlinedClassify;
+#elif TEST_STRAT == 2
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Staged;
 #else
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
