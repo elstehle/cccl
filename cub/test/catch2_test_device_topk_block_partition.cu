@@ -3,18 +3,23 @@
 
 //! @file
 //! Unit tests for the top-k-private `BlockPartition` primitive in
-//! `cub/detail/topk/block_partition.cuh`. Sweeps strategy x HasCandidates x KeysOnly x
-//! reserve op x full/partial.
+//! `cub/detail/topk/block_partition.cuh`. Sweeps strategy x KeysOnly x reserve op x
+//! full/partial.
 //!
 //! The test exercises the "safe-both" interface: the partition is constructed with
-//! its sinks (reserve ops, transforms, output iterators, value channel sinks) at the
-//! top of the kernel, and `Partition()` is called per tile with just the per-tile
-//! data + a bare `cuda::std::tuple<TileDataSource...>` of value sources. After the
-//! tile loop the kernel calls `partition.epilogue()`, which is a `_CCCL_FORCEINLINE`
-//! no-op for `BlockPartition` (the accumulating sister classes have a separate test).
+//! its sinks (reserve ops, transforms, output iterators, value channel sinks) and
+//! its classify hooks (identify op, candidate callback) at the top of the kernel,
+//! and `Partition()` is called per tile with just the per-tile data + a bare
+//! `cuda::std::tuple<TileDataSource...>` of value sources. After the tile loop the
+//! kernel calls `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op for
+//! `BlockPartition` (the accumulating sister class has a separate test).
 //!
-//! The strategy sweep covers all four non-accumulating values of the unified
-//! `BlockPartitionStrategy` enum (which folds in the former `BlockPartitionClassifyMode`):
+//! `BlockPartition` always operates as a true 2-way partition (HasCandidates is
+//! baked in). The single-stream "filter" path lives in `BlockFilter` and has its
+//! own dedicated test file (`catch2_test_device_topk_block_filter.cu`).
+//!
+//! The strategy sweep covers all four non-accumulating values of
+//! `BlockPartitionStrategy`:
 //!   AtomicsPreClassify, AtomicsInlinedClassify, Staged, SharedMem.
 
 #include <cub/detail/topk/block_partition.cuh>
@@ -85,7 +90,6 @@ struct noop_callback_op
 template <int BlockThreads,
           int ItemsPerThread,
           topk::BlockPartitionStrategy Strategy,
-          bool HasCandidates,
           bool KeysOnly,
           bool BackGrowCapped>
 __global__ void partition_kernel(
@@ -106,9 +110,6 @@ __global__ void partition_kernel(
 {
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  // Sink-side bundle for the value channel (no data_source -- that's per-call;
-  // no value_t / scratch_t -- those go via separate ValueTypesTuple /
-  // DataSourceScratchTypesTuple class template params). Empty tuple when keys-only.
   using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
   using value_channel_sinks_tuple_t =
     ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
@@ -119,11 +120,9 @@ __global__ void partition_kernel(
                                ::cuda::std::tuple<>,
                                ::cuda::std::tuple<typename value_ds_t::ScratchStorage>>;
 
-  // Per-call sources tuple: bare tuple of TileDataSource. Empty when keys-only.
   using value_sources_tuple_t =
     ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_ds_t>>;
 
-  // Reserve op types (compile-time picked).
   using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using cand_reserve_op_t =
     ::cuda::std::conditional_t<BackGrowCapped,
@@ -145,6 +144,8 @@ __global__ void partition_kernel(
     xform_t,
     int*,
     int*,
+    driver_identify_op,
+    counting_callback_op,
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t>;
@@ -213,26 +214,27 @@ __global__ void partition_kernel(
   }();
 
   partition_t partition{
-    partition_ts, reserve_sel, reserve_cand, key_transform, key_transform, d_sel_keys, d_cand_keys, sinks};
+    partition_ts,
+    reserve_sel,
+    reserve_cand,
+    key_transform,
+    key_transform,
+    d_sel_keys,
+    d_cand_keys,
+    sinks,
+    identify_op,
+    callback_op};
 
   if (num_items == BlockThreads * ItemsPerThread)
   {
-    partition.template Partition<HasCandidates>(
-      scratch, keys, ::cuda::std::integral_constant<bool, HasCandidates>{}, identify_op, callback_op, sources);
+    partition.Partition(scratch, keys, sources);
   }
   else
   {
-    partition.template Partition<HasCandidates>(
-      scratch,
-      keys,
-      num_items,
-      ::cuda::std::integral_constant<bool, HasCandidates>{},
-      identify_op,
-      callback_op,
-      sources);
+    partition.Partition(scratch, keys, num_items, sources);
   }
 
-  // No-op for BlockPartition; present for parity with the accumulating sister classes.
+  // No-op for BlockPartition; present for parity with the accumulating sister class.
   partition.epilogue();
 }
 
@@ -277,9 +279,9 @@ constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy:
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
 #endif
 
-// Drive a single (Strategy, HasCandidates, KeysOnly, full|partial, atomic) configuration:
+// Drive a single (Strategy, KeysOnly, full|partial) atomic configuration:
 // full when num_items == tile_items.
-template <int BlockThreads, int ItemsPerThread, bool HasCandidates, bool KeysOnly>
+template <int BlockThreads, int ItemsPerThread, bool KeysOnly>
 void run_atomic_partition_test(
   int num_items,
   const std::vector<int>& keys,
@@ -298,7 +300,7 @@ void run_atomic_partition_test(
   for (int i = 0; i < num_items; ++i)
   {
     const auto c = static_cast<topk::candidate_class>(classes[i]);
-    if (c == topk::candidate_class::selected || (!HasCandidates && c == topk::candidate_class::candidate))
+    if (c == topk::candidate_class::selected)
     {
       expected_selected_keys.push_back(keys[i]);
       expected_selected_vals.push_back(values[i]);
@@ -324,7 +326,7 @@ void run_atomic_partition_test(
   thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
   thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
 
-  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, HasCandidates, KeysOnly, /*BackGrowCapped=*/false>
+  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, KeysOnly, /*BackGrowCapped=*/false>
     <<<1, BlockThreads>>>(
       thrust::raw_pointer_cast(d_keys_in.data()),
       thrust::raw_pointer_cast(d_values_in.data()),
@@ -345,11 +347,8 @@ void run_atomic_partition_test(
 
   // Counter assertions.
   REQUIRE(d_sel_cnt[0] == expected_selected_keys.size());
-  if constexpr (HasCandidates)
-  {
-    REQUIRE(d_cand_cnt[0] == expected_candidate_keys.size());
-    REQUIRE(d_callback_cnt[0] == expected_callback_count);
-  }
+  REQUIRE(d_cand_cnt[0] == expected_candidate_keys.size());
+  REQUIRE(d_callback_cnt[0] == expected_callback_count);
 
   // Output-set assertions (atomic strategies are order-independent).
   std::vector<int> got_sel_keys(d_sel_keys.begin(), d_sel_keys.begin() + d_sel_cnt[0]);
@@ -357,13 +356,10 @@ void run_atomic_partition_test(
   std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
   REQUIRE(got_sel_keys == expected_selected_keys);
 
-  if constexpr (HasCandidates)
-  {
-    std::vector<int> got_cand_keys(d_cand_keys.begin(), d_cand_keys.begin() + d_cand_cnt[0]);
-    std::sort(got_cand_keys.begin(), got_cand_keys.end());
-    std::sort(expected_candidate_keys.begin(), expected_candidate_keys.end());
-    REQUIRE(got_cand_keys == expected_candidate_keys);
-  }
+  std::vector<int> got_cand_keys(d_cand_keys.begin(), d_cand_keys.begin() + d_cand_cnt[0]);
+  std::sort(got_cand_keys.begin(), got_cand_keys.end());
+  std::sort(expected_candidate_keys.begin(), expected_candidate_keys.end());
+  REQUIRE(got_cand_keys == expected_candidate_keys);
 
   if constexpr (!KeysOnly)
   {
@@ -372,13 +368,10 @@ void run_atomic_partition_test(
     std::sort(expected_selected_vals.begin(), expected_selected_vals.end());
     REQUIRE(got_sel_vals == expected_selected_vals);
 
-    if constexpr (HasCandidates)
-    {
-      std::vector<int> got_cand_vals(d_cand_vals.begin(), d_cand_vals.begin() + d_cand_cnt[0]);
-      std::sort(got_cand_vals.begin(), got_cand_vals.end());
-      std::sort(expected_candidate_vals.begin(), expected_candidate_vals.end());
-      REQUIRE(got_cand_vals == expected_candidate_vals);
-    }
+    std::vector<int> got_cand_vals(d_cand_vals.begin(), d_cand_vals.begin() + d_cand_cnt[0]);
+    std::sort(got_cand_vals.begin(), got_cand_vals.end());
+    std::sort(expected_candidate_vals.begin(), expected_candidate_vals.end());
+    REQUIRE(got_cand_vals == expected_candidate_vals);
   }
 }
 
@@ -424,7 +417,7 @@ void run_back_grow_capped_partition_test(
   thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
   thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
 
-  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, /*HasCandidates=*/true, KeysOnly, /*BackGrowCapped=*/true>
+  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, KeysOnly, /*BackGrowCapped=*/true>
     <<<1, BlockThreads>>>(
       thrust::raw_pointer_cast(d_keys_in.data()),
       thrust::raw_pointer_cast(d_values_in.data()),
@@ -477,7 +470,7 @@ void run_back_grow_capped_partition_test(
 // Test cases: full sweep
 //---------------------------------------------------------------------
 
-C2H_TEST("BlockPartition keys-only with HasCandidates=true partitions a full tile", "[block][topk]")
+C2H_TEST("BlockPartition keys-only partitions a full tile", "[block][topk]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -491,11 +484,10 @@ C2H_TEST("BlockPartition keys-only with HasCandidates=true partitions a full til
   }
   auto classes = make_classes(tile_items, /*selected_every=*/3, /*candidate_every=*/5);
 
-  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/true>(
-    tile_items, keys, values, classes);
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*KeysOnly=*/true>(tile_items, keys, values, classes);
 }
 
-C2H_TEST("BlockPartition paired with HasCandidates=true partitions a full tile", "[block][topk]")
+C2H_TEST("BlockPartition paired partitions a full tile", "[block][topk]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -510,29 +502,7 @@ C2H_TEST("BlockPartition paired with HasCandidates=true partitions a full tile",
   }
   auto classes = make_classes(tile_items, 3, 5);
 
-  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/false>(
-    tile_items, keys, values, classes);
-}
-
-C2H_TEST("BlockPartition paired with HasCandidates=false folds candidate -> selected", "[block][topk]")
-{
-  constexpr int BlockThreads   = 32;
-  constexpr int ItemsPerThread = 4;
-  constexpr int tile_items     = BlockThreads * ItemsPerThread;
-
-  std::vector<int> keys(tile_items);
-  std::vector<int> values(tile_items);
-  for (int i = 0; i < tile_items; ++i)
-  {
-    keys[i]   = i;
-    values[i] = i + 1000;
-  }
-  // Use the same class pattern as the HasCandidates=true case; the implementation
-  // collapses candidate -> selected when HasCandidates == false (architecture §9.2).
-  auto classes = make_classes(tile_items, 3, 5);
-
-  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/false, /*KeysOnly=*/false>(
-    tile_items, keys, values, classes);
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*KeysOnly=*/false>(tile_items, keys, values, classes);
 }
 
 C2H_TEST("BlockPartition partial tile leaves OOB items unscattered", "[block][topk]")
@@ -565,8 +535,7 @@ C2H_TEST("BlockPartition partial tile leaves OOB items unscattered", "[block][to
                                  : static_cast<::cuda::std::int8_t>(topk::candidate_class::rejected));
   }
 
-  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*HasCandidates=*/true, /*KeysOnly=*/false>(
-    num_items, keys, values, classes);
+  run_atomic_partition_test<BlockThreads, ItemsPerThread, /*KeysOnly=*/false>(num_items, keys, values, classes);
 }
 
 C2H_TEST("BlockPartition back_grow_capped reserve op clamps candidate writes "
