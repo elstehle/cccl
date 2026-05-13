@@ -93,6 +93,7 @@ template <acc_class_tag Tag,
           typename SelIt,
           typename CandIt,
           typename SinksTuple,
+          typename ValueTypesTuple,
           bool LazyValueLoad>
 struct acc_class_picker
 {
@@ -110,6 +111,7 @@ struct acc_class_picker
     SelIt,
     CandIt,
     SinksTuple,
+    ValueTypesTuple,
     LazyValueLoad>;
 };
 
@@ -126,6 +128,7 @@ template <int BlockThreads,
           typename SelIt,
           typename CandIt,
           typename SinksTuple,
+          typename ValueTypesTuple,
           bool LazyValueLoad>
 struct acc_class_picker<
   acc_class_tag::selected,
@@ -142,6 +145,7 @@ struct acc_class_picker<
   SelIt,
   CandIt,
   SinksTuple,
+  ValueTypesTuple,
   LazyValueLoad>
 {
   using type = topk::BlockPartitionAccumulatingSelected<
@@ -158,6 +162,7 @@ struct acc_class_picker<
     SelIt,
     CandIt,
     SinksTuple,
+    ValueTypesTuple,
     LazyValueLoad>;
 };
 
@@ -191,15 +196,13 @@ __global__ void acc_partition_kernel(
 
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  using value_sinks_t =
-    topk::value_channel_sinks_t<int,
-                                typename value_ds_t::ScratchStorage,
-                                int*,
-                                int*,
-                                ::cuda::std::identity,
-                                ::cuda::std::identity>;
+  // Sink-side bundle (no value_t / scratch_t typedefs anymore -- those go via
+  // separate ValueTypesTuple template arg).
+  using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
   using value_channel_sinks_tuple_t =
     ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
+  using value_types_tuple_t =
+    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<int>>;
   using value_sources_tuple_t =
     ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_ds_t>>;
 
@@ -222,15 +225,12 @@ __global__ void acc_partition_kernel(
     int*,
     int*,
     value_channel_sinks_tuple_t,
+    value_types_tuple_t,
     LazyValueLoad>::type;
 
-  // The accumulating TempStorage isn't trivially default-constructible (its inner
-  // `phase_aggregate` wraps a `cuda::std::tuple`), so wrap it in
-  // `cub::Uninitialized` to make a `__shared__` declaration legal and unwrap via
-  // `.Alias()` when passing to the partition's ctor. This mirrors what
-  // `agent_topk_filter_partition::TempStorage` already does for the agent's
-  // outer `_TempStorage`.
-  __shared__ cub::Uninitialized<typename partition_t::TempStorage> partition_ts_wrapper;
+  // `partition_t::TempStorage` is now an `Uninitialized<>` wrapper internally,
+  // so a bare `__shared__` declaration is legal -- no manual wrapping needed.
+  __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
 
   // Build the sinks tuple (captured by ctor).
@@ -251,14 +251,8 @@ __global__ void acc_partition_kernel(
   cand_reserve_op_t reserve_cand{d_cand_counter};
   xform_t key_transform{};
 
-  partition_t partition{partition_ts_wrapper.Alias(),
-                        reserve_sel,
-                        reserve_cand,
-                        key_transform,
-                        key_transform,
-                        d_sel_keys,
-                        d_cand_keys,
-                        sinks};
+  partition_t partition{
+    partition_ts, reserve_sel, reserve_cand, key_transform, key_transform, d_sel_keys, d_cand_keys, sinks};
 
   driver_identify_op identify_op{d_classes_in};
   counting_callback_op callback_op{d_callback_count};

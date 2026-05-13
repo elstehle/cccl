@@ -106,29 +106,30 @@ struct stream_counters_t
   OffsetT granted;
 };
 
-// Per-channel value array slot in TempStorage. Mirrors `bp_detail::values_slot`.
-template <typename Sink, int Capacity>
+// Per-channel value array slot in TempStorage. Indexed by element type (the
+// per-channel `value_t` from the agent-supplied `ValueTypesTuple`), not by a
+// "sink struct"; the sinks struct only carries iter/transform members and
+// doesn't expose any typedefs.
+template <typename ValueT, int Capacity>
 struct value_buf_slot_t
 {
-  typename Sink::value_t values[Capacity];
+  ValueT values[Capacity];
 };
 
 // Persistent TempStorage layout for an accumulating class. One smem buffer (key +
-// per-channel values) plus the stream's counter + broadcast slots. The explicit
-// empty ctor/dtor make the type "no-dynamic-init" so it can be declared as a
-// `__shared__` variable directly (CUDA rejects dynamic initialization of static
-// `__shared__` variables otherwise -- `phase_aggregate` wraps a `cuda::std::tuple`
-// whose default ctor would otherwise count as dynamic).
-template <typename KeyT, typename OffsetT, typename SinksTuple, int Capacity>
+// per-channel values) plus the stream's counter + broadcast slots. The accumulating
+// classes wrap this in `cub::Uninitialized<...>` and expose the wrapper as the
+// public `TempStorage` so users can declare `__shared__ partition_t::TempStorage`
+// without tripping CUDA's "dynamic initialization not supported for `__shared__`"
+// rule (the inner `phase_aggregate` wraps a `cuda::std::tuple` whose default ctor
+// counts as dynamic).
+template <typename KeyT, typename OffsetT, typename ValueTypesTuple, int Capacity>
 struct accumulating_temp_storage_t
 {
   stream_counters_t<OffsetT> cnt;
   KeyT keys[Capacity];
-  CUB_NS_QUALIFIER::detail::phase_aggregate<bp_detail::map_tuple_t<value_buf_slot_t, SinksTuple, Capacity>>
+  CUB_NS_QUALIFIER::detail::phase_aggregate<bp_detail::map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
     per_channel_values;
-
-  _CCCL_HOST_DEVICE accumulating_temp_storage_t() {}
-  _CCCL_HOST_DEVICE ~accumulating_temp_storage_t() {}
 };
 
 //---------------------------------------------------------------------
@@ -151,18 +152,21 @@ template <int BlockThreads,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
+          typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false>
 class accumulating_partition_base
 {
 public:
-  static constexpr int tile_items              = BlockThreads * ItemsPerThread;
-  static constexpr int num_value_channels      = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
-  static constexpr bool needs_persistent_state = true;
+  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
+  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
   static_assert(BufferCapacity >= 1, "Accumulating partition requires BufferCapacity >= 1.");
   static_assert(num_value_channels <= 1,
                 "Accumulating partition supports keys-only or single-value-channel today; multi-channel needs a "
                 "heterogeneous register-array tuple analogous to the BlockPartition shared_mem path.");
+  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
+                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
+                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
 
   // Pick the offset type used for the buffered stream's reservation/flush counter.
   using buffered_offset_t =
@@ -170,16 +174,27 @@ public:
   using buffered_reserve_op_t =
     ::cuda::std::conditional_t<BufferedStream == buffered_stream::candidate, CandidateReserveOp, SelectedReserveOp>;
 
-  using TempStorage = accumulating_temp_storage_t<KeyT, buffered_offset_t, ValueChannelSinksTuple, BufferCapacity>;
+  // Internal `_TempStorage` is the actual buffer + counters. The publicly-exposed
+  // `TempStorage` wraps it in `cub::Uninitialized<>` so the user can declare
+  // `__shared__ partition_t::TempStorage` directly. The agent's
+  // `partition_storage_layout_for_t` selector consults
+  // `is_empty_v<TempStorage>` to pick the right smem aliasing layout (the wrapper
+  // has a non-trivial `DeviceWord storage[N]` member, so `is_empty_v` is false and
+  // the persistent + scratch layout is selected).
+  using _TempStorage =
+    accumulating_temp_storage_t<KeyT, buffered_offset_t, ValueTypesTuple, BufferCapacity>;
+  struct TempStorage : CUB_NS_QUALIFIER::Uninitialized<_TempStorage>
+  {};
 
   // Empty per-call scratch -- everything the class needs lives in `TempStorage`.
   struct ScratchStorage
   {};
 
   // The ctor is a COLLECTIVE operation -- all threads in the block must construct
-  // the object together. Internally it zero-initializes the persistent smem counter
-  // (thread 0) and then `__syncthreads()` so all threads observe the initialization
-  // before they reach any subsequent `atomicAdd(&counter, ...)` inside `Partition()`.
+  // the object together. Internally it unwraps the `Uninitialized<>` wrapper via
+  // `.Alias()`, zero-initializes the persistent smem counter (thread 0), and then
+  // `__syncthreads()` so all threads observe the initialization before they reach
+  // any subsequent `atomicAdd(&counter, ...)` inside `Partition()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE accumulating_partition_base(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
@@ -189,7 +204,7 @@ public:
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelSinksTuple& value_channel_sinks)
-      : ts_(storage)
+      : ts_(storage.Alias())
       , reserve_sel_(reserve_selected)
       , reserve_cand_(reserve_candidate)
       , sel_xform_(selected_key_transform)
@@ -285,8 +300,10 @@ private:
   }
 
   // First/only channel's value_t (or `int` if keys-only). Used to size the optional
-  // per-thread eager-load register array.
-  using channel_value_t = typename bp_detail::first_channel_value<ValueChannelSinksTuple>::type;
+  // per-thread eager-load register array. Sourced from the agent-supplied
+  // `ValueTypesTuple` (not from any sink iterator's value_type, which can be void
+  // for output iterators).
+  using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
 
   // Eagerly load the (single) channel's per-thread values from the per-call source.
   // No-op when keys-only or when LazyValueLoad is true.
@@ -301,9 +318,8 @@ private:
     {
       auto& src      = ::cuda::std::get<0>(value_sources);
       using source_t = ::cuda::std::remove_reference_t<decltype(src)>;
-      using sink_t   = ::cuda::std::tuple_element_t<0, ValueChannelSinksTuple>;
-      static_assert(::cuda::std::is_same_v<typename source_t::value_t, typename sink_t::value_t>,
-                    "Per-call value source's value_t must match the class-level sink's value_t.");
+      static_assert(::cuda::std::is_same_v<typename source_t::value_t, channel_value_t>,
+                    "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
       typename source_t::ScratchStorage scratch{};
       if constexpr (IsFull)
       {
@@ -597,9 +613,10 @@ private:
   }
 
   // ---------------------------------------------------------------
-  // Member state: TempStorage reference + sinks captured by the ctor.
+  // Member state: TempStorage reference (unwrapped from the Uninitialized wrapper
+  // by the ctor) + sinks captured by the ctor.
   // ---------------------------------------------------------------
-  TempStorage& ts_;
+  _TempStorage& ts_;
   SelectedReserveOp& reserve_sel_;
   CandidateReserveOp& reserve_cand_;
   SelectedKeyOutTransformOp& sel_xform_;
@@ -630,6 +647,7 @@ template <int BlockThreads,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
+          typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false>
 class BlockPartitionAccumulatingCandidates
     : public bp_acc_detail::accumulating_partition_base<
@@ -647,6 +665,7 @@ class BlockPartitionAccumulatingCandidates
         SelectedKeyOutIt,
         CandidateKeyOutIt,
         ValueChannelSinksTuple,
+        ValueTypesTuple,
         LazyValueLoad>
 {
   using base_t = bp_acc_detail::accumulating_partition_base<
@@ -664,6 +683,7 @@ class BlockPartitionAccumulatingCandidates
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     ValueChannelSinksTuple,
+    ValueTypesTuple,
     LazyValueLoad>;
 
 public:
@@ -690,6 +710,7 @@ template <int BlockThreads,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
+          typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false>
 class BlockPartitionAccumulatingSelected
     : public bp_acc_detail::accumulating_partition_base<
@@ -707,6 +728,7 @@ class BlockPartitionAccumulatingSelected
         SelectedKeyOutIt,
         CandidateKeyOutIt,
         ValueChannelSinksTuple,
+        ValueTypesTuple,
         LazyValueLoad>
 {
   using base_t = bp_acc_detail::accumulating_partition_base<
@@ -724,6 +746,7 @@ class BlockPartitionAccumulatingSelected
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     ValueChannelSinksTuple,
+    ValueTypesTuple,
     LazyValueLoad>;
 
 public:
@@ -756,6 +779,8 @@ template <BlockPartitionStrategy Strategy,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple,
+          typename ValueTypesTuple,
+          typename DataSourceScratchTypesTuple,
           bool LazyValueLoad>
 struct strategy_to_partition_class
 {
@@ -776,6 +801,8 @@ struct strategy_to_partition_class
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     ValueChannelSinksTuple,
+    ValueTypesTuple,
+    DataSourceScratchTypesTuple,
     LazyValueLoad>;
 };
 
@@ -792,6 +819,8 @@ template <int BlockThreads,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple,
+          typename ValueTypesTuple,
+          typename DataSourceScratchTypesTuple,
           bool LazyValueLoad>
 struct strategy_to_partition_class<
   BlockPartitionStrategy::AccumulatingCandidates,
@@ -808,8 +837,14 @@ struct strategy_to_partition_class<
   SelectedKeyOutIt,
   CandidateKeyOutIt,
   ValueChannelSinksTuple,
+  ValueTypesTuple,
+  DataSourceScratchTypesTuple,
   LazyValueLoad>
 {
+  // The accumulating prototype loads value channels via stack-local
+  // `source_t::ScratchStorage` and so doesn't consume the
+  // `DataSourceScratchTypesTuple` parameter; it's accepted for parity with the
+  // non-accumulating branch (the agent always supplies it).
   using type = BlockPartitionAccumulatingCandidates<
     BlockThreads,
     ItemsPerThread,
@@ -824,6 +859,7 @@ struct strategy_to_partition_class<
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     ValueChannelSinksTuple,
+    ValueTypesTuple,
     LazyValueLoad>;
 };
 
@@ -840,6 +876,8 @@ template <int BlockThreads,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple,
+          typename ValueTypesTuple,
+          typename DataSourceScratchTypesTuple,
           bool LazyValueLoad>
 struct strategy_to_partition_class<
   BlockPartitionStrategy::AccumulatingSelected,
@@ -856,6 +894,8 @@ struct strategy_to_partition_class<
   SelectedKeyOutIt,
   CandidateKeyOutIt,
   ValueChannelSinksTuple,
+  ValueTypesTuple,
+  DataSourceScratchTypesTuple,
   LazyValueLoad>
 {
   using type = BlockPartitionAccumulatingSelected<
@@ -872,6 +912,7 @@ struct strategy_to_partition_class<
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     ValueChannelSinksTuple,
+    ValueTypesTuple,
     LazyValueLoad>;
 };
 
@@ -889,6 +930,8 @@ template <BlockPartitionStrategy Strategy,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename ValueChannelSinksTuple,
+          typename ValueTypesTuple,
+          typename DataSourceScratchTypesTuple,
           bool LazyValueLoad>
 using strategy_to_partition_class_t = typename strategy_to_partition_class<
   Strategy,
@@ -905,6 +948,8 @@ using strategy_to_partition_class_t = typename strategy_to_partition_class<
   SelectedKeyOutIt,
   CandidateKeyOutIt,
   ValueChannelSinksTuple,
+  ValueTypesTuple,
+  DataSourceScratchTypesTuple,
   LazyValueLoad>::type;
 } // namespace detail::topk
 

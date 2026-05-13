@@ -852,16 +852,25 @@ struct agent_topk_filter_partition
   using cand_key_out_t = ::cuda::std::conditional_t<Mode == sink_mode::buffered, key_in_t*, KeyOutputIteratorT>;
 
   // Sink-side bundle of one value channel (no `data_source`; that lives on the per-
-  // call sources tuple). Empty tuple for keys-only.
+  // call sources tuple; no `value_t` -- iterators may have void value_type, so
+  // the per-channel `value_t` is supplied separately via `value_types_tuple_t`
+  // below). Empty tuple for keys-only.
   using value_channel_sinks_for_agent_t =
-    value_channel_sinks_t<value_in_t,
-                          typename value_source_t::ScratchStorage,
-                          val_out_t,
-                          cand_val_out_t,
-                          ::cuda::std::identity,
-                          ::cuda::std::identity>;
+    value_channel_sinks_t<val_out_t, cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
   using value_channel_sinks_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_sinks_for_agent_t>>;
+
+  // Per-channel `value_t` (sized to one element per channel), supplied to the
+  // partition class so it can size its smem `value_t values[N]` arrays. Sourced
+  // from the agent's `value_in_t` rather than from any iterator's value_type.
+  using value_types_tuple_t =
+    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_in_t>>;
+  // Per-channel data-source `ScratchStorage`, supplied to the partition class so
+  // it can size its per-channel `load` slots in the Staged / SharedMem scratch.
+  using value_data_source_scratch_types_tuple_t =
+    ::cuda::std::conditional_t<keys_only,
+                               ::cuda::std::tuple<>,
+                               ::cuda::std::tuple<typename value_source_t::ScratchStorage>>;
   using value_sources_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
 
@@ -891,14 +900,15 @@ struct agent_topk_filter_partition
     KeyOutputIteratorT,
     cand_key_out_t,
     value_channel_sinks_tuple_t,
+    value_types_tuple_t,
+    value_data_source_scratch_types_tuple_t,
     effective_lazy_value_load>;
 
   // Storage layout helper: picks the right union shape based on whether the partition
-  // class carries persistent state (the accumulating variants do; `BlockPartition`
-  // doesn't). Both shapes expose the same `get_*()` accessors so the agent body is
-  // layout-agnostic.
-  using storage_layout_t = bp_detail::partition_storage_layout<
-    partition_t::needs_persistent_state,
+  // class's `TempStorage` is empty (BlockPartition's is `struct{}`; the accumulating
+  // variants' `TempStorage` is a non-empty `Uninitialized<>` wrapper). Both shapes
+  // expose the same `get_*()` accessors so the agent body is layout-agnostic.
+  using storage_layout_t = bp_detail::partition_storage_layout_for_t<
     partition_t,
     typename keys_source_t::ScratchStorage,
     typename identify_kth_bucket_t::TempStorage>;
@@ -1267,16 +1277,14 @@ struct agent_topk_last_filter
 
   // last_filter operates with HasCandidates == true (it both writes selected items
   // to the front of d_keys_out AND back-grow-cap writes "kth"-class candidates to
-  // the back). The accumulating Selected variant therefore makes no sense here.
-  // The Candidates variant is also rejected for the prototype because last_filter
-  // uses a `back_grow_capped_reserve_op` for the candidate stream, which the
-  // accumulating prototype hasn't yet been validated against (defer to a follow-up).
+  // the back). The accumulating Selected variant therefore makes no sense here;
+  // reject it. AccumulatingCandidates is allowed -- the cooperative flush honors
+  // the `back_grow_capped_reserve_op`'s `may_grant_less` semantics by dropping
+  // items beyond the granted count, equivalent (modulo flush-chunk granularity)
+  // to the per-item drop the Atomics strategy performs.
   static_assert(PartStrat != BlockPartitionStrategy::AccumulatingSelected,
                 "AccumulatingSelected requires HasCandidates == false; last_filter operates with "
                 "HasCandidates == true.");
-  static_assert(PartStrat != BlockPartitionStrategy::AccumulatingCandidates,
-                "Accumulating partitioning with the back_grow_capped reserve op (used by last_filter) is not yet "
-                "supported by the accumulating partition prototype.");
 
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
@@ -1297,14 +1305,15 @@ struct agent_topk_last_filter
   using cand_val_out_t = ValueOutputIteratorT; // selected and candidate share d_values_out
 
   using value_channel_sinks_for_agent_t =
-    value_channel_sinks_t<value_in_t,
-                          typename value_source_t::ScratchStorage,
-                          val_out_t,
-                          cand_val_out_t,
-                          ::cuda::std::identity,
-                          ::cuda::std::identity>;
+    value_channel_sinks_t<val_out_t, cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
   using value_channel_sinks_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_sinks_for_agent_t>>;
+  using value_types_tuple_t =
+    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_in_t>>;
+  using value_data_source_scratch_types_tuple_t =
+    ::cuda::std::conditional_t<keys_only,
+                               ::cuda::std::tuple<>,
+                               ::cuda::std::tuple<typename value_source_t::ScratchStorage>>;
   using value_sources_tuple_t =
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
 
@@ -1330,25 +1339,28 @@ struct agent_topk_last_filter
     KeyOutputIteratorT,
     KeyOutputIteratorT,
     value_channel_sinks_tuple_t,
+    value_types_tuple_t,
+    value_data_source_scratch_types_tuple_t,
     effective_lazy_value_load>;
 
-  // last_filter's smem: keys-source persistent state, the partition's persistent
-  // TempStorage (empty for BlockPartition; would-be slot buffers for the
-  // accumulating variants -- gated off by the static_asserts above), and a 2-arm
-  // union for the per-tile load + per-call partition scratch.
+  // last_filter's smem: keys-source persistent state plus the same partition layout
+  // helper the filter agent uses. For `BlockPartition` the partition state is empty
+  // (so the layout collapses to a 2-arm union of `keys_source_scratch` and
+  // `partition_scratch`); for `BlockPartitionAccumulatingCandidates` the persistent
+  // slot buffers live in `partition_state`. There's no `prefix_sum` here, so we
+  // hand the layout helper an empty `prefix_sum` placeholder type.
+  struct empty_prefix_sum_t
+  {};
+
+  using storage_layout_t = bp_detail::partition_storage_layout_for_t<
+    partition_t,
+    typename keys_source_t::ScratchStorage,
+    empty_prefix_sum_t>;
+
   struct _TempStorage
   {
     typename keys_source_t::TempStorage keys_source_state;
-    typename partition_t::TempStorage partition_state;
-
-    union scratch_t
-    {
-      typename keys_source_t::ScratchStorage keys_source_scratch;
-      typename partition_t::ScratchStorage partition_scratch;
-
-      _CCCL_HOST_DEVICE scratch_t() {}
-      _CCCL_HOST_DEVICE ~scratch_t() {}
-    } scratch;
+    storage_layout_t partition_arena;
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -1438,7 +1450,7 @@ private:
     if constexpr (IsFull)
     {
       partition.template Partition<true>(
-        storage.scratch.partition_scratch,
+        storage.partition_arena.get_partition_scratch(),
         keys,
         ::cuda::std::integral_constant<bool, true>{},
         identify_candidates_op,
@@ -1448,7 +1460,7 @@ private:
     else
     {
       partition.template Partition<true>(
-        storage.scratch.partition_scratch,
+        storage.partition_arena.get_partition_scratch(),
         keys,
         num_items_in_tile,
         ::cuda::std::integral_constant<bool, true>{},
@@ -1478,7 +1490,7 @@ public:
     auto value_channel_sinks = make_value_channel_sinks();
 
     partition_t partition{
-      storage.partition_state,
+      storage.partition_arena.get_partition_state(),
       reserve_sel,
       reserve_cand,
       sel_key_xform,
@@ -1506,7 +1518,7 @@ public:
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.scratch.keys_source_scratch);
+      auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
       __syncthreads();
       do_partition</*IsFull=*/true>(partition, items, /*num_items_in_tile=*/tile_items, value_sources);
@@ -1525,7 +1537,7 @@ public:
 
         __syncthreads();
         key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.scratch.keys_source_scratch, partial_items);
+        auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), partial_items);
         h.complete_load(items);
         __syncthreads();
         do_partition</*IsFull=*/false>(partition, items, partial_items, value_sources);

@@ -106,16 +106,18 @@ __global__ void partition_kernel(
 {
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  // Sink-side bundle for the value channel (no data_source; that's per-call). Empty
-  // tuple when keys-only.
-  using value_sinks_t = topk::value_channel_sinks_t<int,
-                                                    typename value_ds_t::ScratchStorage,
-                                                    int*,
-                                                    int*,
-                                                    ::cuda::std::identity,
-                                                    ::cuda::std::identity>;
+  // Sink-side bundle for the value channel (no data_source -- that's per-call;
+  // no value_t / scratch_t -- those go via separate ValueTypesTuple /
+  // DataSourceScratchTypesTuple class template params). Empty tuple when keys-only.
+  using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
   using value_channel_sinks_tuple_t =
     ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
+  using value_types_tuple_t =
+    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<int>>;
+  using value_data_source_scratch_types_tuple_t =
+    ::cuda::std::conditional_t<KeysOnly,
+                               ::cuda::std::tuple<>,
+                               ::cuda::std::tuple<typename value_ds_t::ScratchStorage>>;
 
   // Per-call sources tuple: bare tuple of TileDataSource. Empty when keys-only.
   using value_sources_tuple_t =
@@ -143,7 +145,9 @@ __global__ void partition_kernel(
     xform_t,
     int*,
     int*,
-    value_channel_sinks_tuple_t>;
+    value_channel_sinks_tuple_t,
+    value_types_tuple_t,
+    value_data_source_scratch_types_tuple_t>;
 
   __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
@@ -184,6 +188,9 @@ __global__ void partition_kernel(
     {
       return ::cuda::std::tuple<value_sinks_t>{
         value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+      // (value_sinks_t no longer carries `value_t`/`scratch_t` typedefs; those go
+      // via the partition_t template's `value_types_tuple_t` /
+      // `value_data_source_scratch_types_tuple_t` parameters.)
     }
   };
   value_channel_sinks_tuple_t sinks = make_sinks();

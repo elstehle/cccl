@@ -45,6 +45,7 @@
 
 #include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__type_traits/integral_constant.h>
+#include <cuda/std/__type_traits/is_empty.h>
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/__type_traits/remove_reference.h>
 #include <cuda/std/__utility/forward.h>
@@ -113,25 +114,19 @@ enum class BlockPartitionStrategy
 // The single `value_channel_t` struct used previously bundled the per-tile
 // `data_source` with the persistent sink-side state (iterators + transforms).
 // The "safe-both" interface splits that bundle along the lifetime boundary:
-// this struct holds the four sink-side members and the typedefs the partition
-// classes need to size their smem (per-channel `value_t` and the data source's
-// `ScratchStorage`). The live `TileDataSource` instances flow through a separate
-// per-call sources tuple.
-//
-// `data_source_scratch_t` defaults to `cuda::std::tuple<>` for the keys-only path
-// (where it's never instantiated).
+// this struct holds only the four sink-side members. Per-channel `value_t` and
+// `data_source_scratch_t` (needed for sizing smem in the Staged / SharedMem
+// strategies) come from the agent-supplied `ValueTypesTuple` and
+// `DataSourceScratchTypesTuple` template parameters of the partition class --
+// not from any iterator's `value_type`, which can be `void` for output
+// iterators.
 //---------------------------------------------------------------------
-template <typename ValueT,
-          typename DataSourceScratchT,
-          typename SelectedValuesOutIt,
+template <typename SelectedValuesOutIt,
           typename CandidateValuesOutIt,
           typename SelectedValueTransform,
           typename CandidateValueTransform>
 struct value_channel_sinks_t
 {
-  using value_t               = ValueT;
-  using data_source_scratch_t = DataSourceScratchT;
-
   SelectedValuesOutIt selected_values_out;
   CandidateValuesOutIt candidate_values_out;
   SelectedValueTransform selected_value_transform;
@@ -169,31 +164,62 @@ struct partition_counters
   CandidateOffsetT granted_candidate;
 };
 
+// Per-channel "meta" record carrying the per-channel `value_t` and the data
+// source's `ScratchStorage` type. Built by zipping the agent-supplied
+// `ValueTypesTuple` and `DataSourceScratchTypesTuple` template arguments. The
+// per-strategy scratch helpers below consume this meta record (one per channel)
+// rather than reading typedefs off the sinks struct -- the sinks struct has
+// only the runtime sink members and no typedefs.
+template <typename ValueT, typename DataSourceScratchT>
+struct value_channel_meta_t
+{
+  using value_t               = ValueT;
+  using data_source_scratch_t = DataSourceScratchT;
+};
+
+// Zip a `ValueTypesTuple` and a `DataSourceScratchTypesTuple` (parallel tuples
+// of element type) into a single `tuple<value_channel_meta_t<...>, ...>` that
+// the per-strategy scratch helpers consume.
+template <typename ValueTypesTuple, typename DataSourceScratchTypesTuple>
+struct zip_value_channel_metas;
+
+template <typename... Vs, typename... Ss>
+struct zip_value_channel_metas<::cuda::std::tuple<Vs...>, ::cuda::std::tuple<Ss...>>
+{
+  static_assert(sizeof...(Vs) == sizeof...(Ss),
+                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
+  using type = ::cuda::std::tuple<value_channel_meta_t<Vs, Ss>...>;
+};
+
+template <typename ValueTypesTuple, typename DataSourceScratchTypesTuple>
+using zip_value_channel_metas_t =
+  typename zip_value_channel_metas<ValueTypesTuple, DataSourceScratchTypesTuple>::type;
+
 // Per-channel "loading or scattering" slot for the staged strategy. Inside one
 // channel's processing window the data-source scratch and the per-channel value
 // array are mutually exclusive in time -> internal phase_union.
-template <typename Sink, int N>
+template <typename Meta, int N>
 struct staged_channel_phase
 {
   union
   {
-    typename Sink::data_source_scratch_t load;
-    typename Sink::value_t values[N];
+    typename Meta::data_source_scratch_t load;
+    typename Meta::value_t values[N];
   };
 };
 
 // Per-channel "loading" slot for the shared_mem strategy.
-template <typename Sink>
+template <typename Meta>
 struct delegate_load_slot
 {
-  typename Sink::data_source_scratch_t load;
+  typename Meta::data_source_scratch_t load;
 };
 
 // Per-channel "values" slot for the shared_mem strategy.
-template <typename Sink, int N>
+template <typename Meta, int N>
 struct values_slot
 {
-  typename Sink::value_t values[N];
+  typename Meta::value_t values[N];
 };
 
 // Map a tuple type-parameter through a (Sink, int) -> Out template. Equivalent to
@@ -222,16 +248,33 @@ struct map_tuple1<F, ::cuda::std::tuple<Cs...>>
 template <template <typename> class F, typename Tuple>
 using map_tuple1_t = typename map_tuple1<F, Tuple>::type;
 
-// First channel's value_t (or a stand-in `int` when the tuple is empty). Used by the
-// shared_mem strategy to size a per-channel register array conditionally.
+// First element of a tuple (or a stand-in `int` when the tuple is empty). Used by
+// `BlockPartition::partition_shared_mem` and the accumulating classes to size a
+// per-channel register array conditionally on the first channel's `value_t`.
+// The `Tuple` is expected to be either a `ValueTypesTuple` (whose elements are
+// already value types) or a `ValueChannelMetaTuple` (whose elements expose a
+// `value_t` typedef); the `value_t_or_default` and `meta_value_t_or_default`
+// variants below select the right idiom.
 template <typename Tuple>
-struct first_channel_value
+struct value_t_or_default
 {
   using type = int;
 };
 
 template <typename Head, typename... Rest>
-struct first_channel_value<::cuda::std::tuple<Head, Rest...>>
+struct value_t_or_default<::cuda::std::tuple<Head, Rest...>>
+{
+  using type = Head;
+};
+
+template <typename Tuple>
+struct meta_value_t_or_default
+{
+  using type = int;
+};
+
+template <typename Head, typename... Rest>
+struct meta_value_t_or_default<::cuda::std::tuple<Head, Rest...>>
 {
   using type = typename Head::value_t;
 };
@@ -241,13 +284,13 @@ struct first_channel_value<::cuda::std::tuple<Head, Rest...>>
 struct atomics_scratch
 {};
 
-template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct staged_scratch
 {
   union phase_t
   {
     KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_union<map_tuple_t<staged_channel_phase, ValueChannelSinksTuple, TileItems>>
+    CUB_NS_QUALIFIER::detail::phase_union<map_tuple_t<staged_channel_phase, ValueChannelMetaTuple, TileItems>>
       per_channel;
 
     _CCCL_HOST_DEVICE phase_t() {}
@@ -257,19 +300,19 @@ struct staged_scratch
   partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
 };
 
-template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct shared_mem_scratch
 {
   struct keys_and_values_t
   {
     KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<values_slot, ValueChannelSinksTuple, TileItems>>
+    CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<values_slot, ValueChannelMetaTuple, TileItems>>
       per_channel_values;
   };
 
   union phase_t
   {
-    CUB_NS_QUALIFIER::detail::phase_union<map_tuple1_t<delegate_load_slot, ValueChannelSinksTuple>> delegate_loads;
+    CUB_NS_QUALIFIER::detail::phase_union<map_tuple1_t<delegate_load_slot, ValueChannelMetaTuple>> delegate_loads;
     keys_and_values_t kv;
 
     _CCCL_HOST_DEVICE phase_t() {}
@@ -281,16 +324,16 @@ struct shared_mem_scratch
 
 template <BlockPartitionStrategy Strategy,
           typename KeyT,
-          typename ValueChannelSinksTuple,
+          typename ValueChannelMetaTuple,
           int TileItems,
           typename SelectedOffsetT,
           typename CandidateOffsetT>
 struct strategy_scratch_selector;
 
-template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct strategy_scratch_selector<BlockPartitionStrategy::AtomicsPreClassify,
                                  KeyT,
-                                 ValueChannelSinksTuple,
+                                 ValueChannelMetaTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
@@ -298,10 +341,10 @@ struct strategy_scratch_selector<BlockPartitionStrategy::AtomicsPreClassify,
   using type = atomics_scratch;
 };
 
-template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct strategy_scratch_selector<BlockPartitionStrategy::AtomicsInlinedClassify,
                                  KeyT,
-                                 ValueChannelSinksTuple,
+                                 ValueChannelMetaTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
@@ -309,26 +352,26 @@ struct strategy_scratch_selector<BlockPartitionStrategy::AtomicsInlinedClassify,
   using type = atomics_scratch;
 };
 
-template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct strategy_scratch_selector<BlockPartitionStrategy::Staged,
                                  KeyT,
-                                 ValueChannelSinksTuple,
+                                 ValueChannelMetaTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
 {
-  using type = staged_scratch<KeyT, ValueChannelSinksTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
+  using type = staged_scratch<KeyT, ValueChannelMetaTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
 };
 
-template <typename KeyT, typename ValueChannelSinksTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
+template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT, typename CandidateOffsetT>
 struct strategy_scratch_selector<BlockPartitionStrategy::SharedMem,
                                  KeyT,
-                                 ValueChannelSinksTuple,
+                                 ValueChannelMetaTuple,
                                  TileItems,
                                  SelectedOffsetT,
                                  CandidateOffsetT>
 {
-  using type = shared_mem_scratch<KeyT, ValueChannelSinksTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
+  using type = shared_mem_scratch<KeyT, ValueChannelMetaTuple, TileItems, SelectedOffsetT, CandidateOffsetT>;
 };
 
 // Compile-time tuple iteration helper. Calls `f(at<I>(tuple), integral_constant<int,I>)`
@@ -469,12 +512,12 @@ inline constexpr bool is_inlined_classify_v = (S == BlockPartitionStrategy::Atom
 // sum runs strictly after the partition's terminal `epilogue()` and only on the
 // last block, and load+partition are sequential within a tile.
 //
-//   needs_persistent == false (BlockPartition):
+//   NeedsPersistent == false (BlockPartition; `TempStorage` is empty):
 //     `partition_state` is empty; the union spans
 //     {keys_source_scratch | prefix_sum | partition_scratch}, matching today's
 //     three-way union and giving byte-equivalent smem footprint.
 //
-//   needs_persistent == true  (Accumulating variants):
+//   NeedsPersistent == true  (Accumulating variants; `TempStorage` is non-empty):
 //     `partition_state` carries the per-stream slot buffers + counters across all
 //     tiles; it aliases with `prefix_sum` (only safe because prefix_sum runs after
 //     epilogue on the last block). The per-tile scratch union spans
@@ -483,6 +526,10 @@ inline constexpr bool is_inlined_classify_v = (S == BlockPartitionStrategy::Atom
 //
 // All four pieces of storage are accessed via the four `get_*()` member functions so
 // the agent's call sites are layout-agnostic.
+//
+// Agents should generally consume `partition_storage_layout_for_t<...>` (below) which
+// derives `NeedsPersistent` from `cuda::std::is_empty_v<typename PartitionT::TempStorage>`
+// automatically.
 //---------------------------------------------------------------------
 template <bool NeedsPersistent, typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
 struct partition_storage_layout;
@@ -561,6 +608,21 @@ struct partition_storage_layout</*NeedsPersistent=*/true, PartitionT, KeysSource
   }
 };
 
+// Agent-friendly alias that auto-derives `NeedsPersistent` from
+// `cuda::std::is_empty_v<typename PartitionT::TempStorage>`. The partition class
+// itself doesn't have to expose any explicit "needs-persistent-state" trait --
+// `BlockPartition`'s `TempStorage = struct{}` is empty (so we get the 3-way
+// union), and the accumulating variants' `TempStorage` is non-empty (so we get
+// the persistent + scratch layout). Empty-struct vs. wrapped-data is a clean
+// signal because `cub::Uninitialized<T>` carries a `DeviceWord storage[N]`
+// member, which makes `is_empty_v` correctly return `false` on the wrapper.
+template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
+using partition_storage_layout_for_t =
+  partition_storage_layout<!::cuda::std::is_empty_v<typename PartitionT::TempStorage>,
+                           PartitionT,
+                           KeysSourceScratchT,
+                           PrefixSumT>;
+
 } // namespace bp_detail
 
 //---------------------------------------------------------------------
@@ -584,30 +646,45 @@ template <int BlockThreads,
           typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
-          typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
-          bool LazyValueLoad              = false>
+          typename ValueChannelSinksTuple        = ::cuda::std::tuple<>,
+          typename ValueTypesTuple               = ::cuda::std::tuple<>,
+          typename DataSourceScratchTypesTuple   = ::cuda::std::tuple<>,
+          bool LazyValueLoad                     = false>
 class BlockPartition
 {
   static_assert(bp_detail::is_block_partition_strategy_v<Strategy>,
                 "BlockPartition only handles the non-accumulating strategies; the AccumulatingCandidates / "
                 "AccumulatingSelected strategies map to BlockPartitionAccumulatingCandidates / "
                 "BlockPartitionAccumulatingSelected (see block_partition_accumulating.cuh).");
+  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
+                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
+                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
+  static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
+                  == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
+                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
 
 public:
-  static constexpr int tile_items                 = BlockThreads * ItemsPerThread;
-  static constexpr BlockPartitionStrategy strat   = Strategy;
-  static constexpr int num_value_channels         = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
-  static constexpr bool needs_persistent_state    = false;
+  static constexpr int tile_items               = BlockThreads * ItemsPerThread;
+  static constexpr BlockPartitionStrategy strat = Strategy;
+  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
   // Class-lifetime persistent state. Empty (no carried state across Partition() calls).
+  // The agent dispatches on `is_empty_v<TempStorage>` to pick the optimal smem
+  // aliasing layout (3-way union for empty, otherwise persistent + scratch).
   struct TempStorage
   {};
+
+  // Per-channel meta tuple: zips `ValueTypesTuple` and `DataSourceScratchTypesTuple`
+  // into one tuple of `bp_detail::value_channel_meta_t<value_t, scratch_t>` records
+  // that the per-strategy scratch helpers consume.
+  using value_channel_meta_tuple_t =
+    bp_detail::zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
 
   // Method-call typed scratch; strategy-specific. Architecture §9.4.
   using ScratchStorage =
     typename bp_detail::strategy_scratch_selector<Strategy,
                                                   KeyT,
-                                                  ValueChannelSinksTuple,
+                                                  value_channel_meta_tuple_t,
                                                   tile_items,
                                                   SelectedOffsetT,
                                                   CandidateOffsetT>::type;
@@ -813,12 +890,11 @@ private:
 
     if constexpr (num_value_channels == 1)
     {
-      auto& src       = ::cuda::std::get<0>(value_sources);
-      using source_t  = ::cuda::std::remove_reference_t<decltype(src)>;
-      using sink_t    = ::cuda::std::tuple_element_t<0, ValueChannelSinksTuple>;
-      using value_t   = typename source_t::value_t;
-      static_assert(::cuda::std::is_same_v<value_t, typename sink_t::value_t>,
-                    "Per-call value source's value_t must match the class-level sink's value_t.");
+      auto& src      = ::cuda::std::get<0>(value_sources);
+      using source_t = ::cuda::std::remove_reference_t<decltype(src)>;
+      using value_t  = ::cuda::std::tuple_element_t<0, ValueTypesTuple>;
+      static_assert(::cuda::std::is_same_v<typename source_t::value_t, value_t>,
+                    "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
 
       if constexpr (LazyValueLoad)
       {
@@ -1080,7 +1156,9 @@ private:
       bp_detail::tuple_for_each(value_sources, [&](auto& src, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
         using source_t  = ::cuda::std::remove_reference_t<decltype(src)>;
-        using value_t   = typename source_t::value_t;
+        using value_t   = ::cuda::std::tuple_element_t<I, ValueTypesTuple>;
+        static_assert(::cuda::std::is_same_v<typename source_t::value_t, value_t>,
+                      "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
 
         auto& sink       = ::cuda::std::get<I>(sinks_);
         auto& chan_phase = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.per_channel);
@@ -1168,7 +1246,7 @@ private:
       }
     };
 
-    using channel_value_t = typename bp_detail::first_channel_value<ValueChannelSinksTuple>::type;
+    using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
     channel_value_t reg_values[ItemsPerThread]{};
     load_channel_values(reg_values);
 
