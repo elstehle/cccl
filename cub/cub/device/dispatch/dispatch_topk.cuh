@@ -374,9 +374,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.scan_algorithm,
                     policy.keys_tile_load_kind>;
 
-  static constexpr BlockPartitionStrategy part_strat             = policy.partition_strategy;
-  static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
-  static constexpr bool lazy_value_load                          = policy.lazy_value_load;
+  static constexpr BlockPartitionStrategy buffered_part_strat   = policy.buffered_partition_strategy;
+  static constexpr BlockPartitionStrategy early_stop_part_strat = policy.early_stop_partition_strategy;
+  static constexpr bool lazy_value_load                         = policy.lazy_value_load;
 
   // The two output-writing filter modes share the same partition-agent
   // _TempStorage layout (it depends only on block_threads / items_per_thread /
@@ -396,8 +396,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     OffsetT,
     OutOffsetT,
     sink_mode::buffered,
-    part_strat,
-    part_classify_mode,
+    buffered_part_strat,
     lazy_value_load>;
   using agent_es_t = agent_topk_filter_partition<
     agent_topk_policy_t,
@@ -410,8 +409,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     OffsetT,
     OutOffsetT,
     sink_mode::early_stop,
-    part_strat,
-    part_classify_mode,
+    early_stop_part_strat,
     lazy_value_load>;
 
   // Unbuffered scout mode: drive the histogram agent with a candidate-filter
@@ -582,9 +580,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
                     policy.scan_algorithm,
                     policy.keys_tile_load_kind>;
 
-  static constexpr BlockPartitionStrategy part_strat             = policy.partition_strategy;
-  static constexpr BlockPartitionClassifyMode part_classify_mode = policy.classify_mode;
-  static constexpr bool lazy_value_load                          = policy.lazy_value_load;
+  static constexpr BlockPartitionStrategy part_strat = policy.last_filter_partition_strategy;
+  static constexpr bool lazy_value_load              = policy.lazy_value_load;
 
   using agent_lf_t = agent_topk_last_filter<
     agent_topk_policy_t,
@@ -596,7 +593,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     OffsetT,
     OutOffsetT,
     part_strat,
-    part_classify_mode,
     lazy_value_load>;
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
