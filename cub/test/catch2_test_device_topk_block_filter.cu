@@ -18,6 +18,7 @@
 //!   AtomicsPreClassify, AtomicsInlinedClassify, Staged, SharedMem.
 
 #include <cub/detail/topk/block_filter.cuh>
+#include <cub/detail/topk/block_filter_accumulating.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
@@ -90,10 +91,11 @@ __global__ void filter_kernel(
   using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t          = ::cuda::std::identity;
 
-  using filter_t = topk::BlockFilter<
+  using filter_t = topk::strategy_to_filter_class_t<
+    Strategy,
     BlockThreads,
     ItemsPerThread,
-    Strategy,
+    /*AccumulatingBufferCapacity=*/0,
     int,
     unsigned int,
     sel_reserve_op_t,
@@ -102,7 +104,8 @@ __global__ void filter_kernel(
     driver_identify_selected_op,
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t>;
+    value_data_source_scratch_types_tuple_t,
+    /*LazyValueLoad=*/false>;
 
   __shared__ typename filter_t::TempStorage filter_ts;
   __shared__ typename filter_t::ScratchStorage scratch;

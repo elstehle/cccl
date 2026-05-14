@@ -2,9 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Top-k-private `BlockFilter` (single-stream sibling of `BlockPartition` from
-//! `block_partition.cuh`). Per-tile 1-way filter over a unary
-//! `IdentifySelected(key) -> bool` predicate, with reserve-driven global writes.
+//! Top-k-private non-accumulating filter primitives (single-stream siblings of the
+//! `BlockPartition*` primitives in `block_partition.cuh`). Three self-contained
+//! class templates -- one per filter strategy:
+//!
+//!   - `BlockFilterAtomics<..., InlinedClassify>` -- no smem; per-kept-item global
+//!     atomic + scatter. `InlinedClassify == false` precomputes a `kept[ItemsPerThread]`
+//!     register array up front; `InlinedClassify == true` recomputes the predicate
+//!     at each scatter use-site.
+//!   - `BlockFilterStaged` -- smem scatter into a keys arena + cooperative coalesced
+//!     store; per-channel values run sequentially after the keys phase.
+//!   - `BlockFilterSharedMem` -- typed `keys[]` + per-channel `values[]` packed
+//!     into the same arena; a single coalesced store.
 //!
 //! Interface ("safe-both") contract shared with the accumulating sister class
 //! `BlockFilterAccumulating` (`block_filter_accumulating.cuh`):
@@ -12,13 +21,13 @@
 //!     tuple) AND the `identify_selected_op` predicate are captured by ctor and
 //!     stored as members. Per-call args reduce to per-tile data plus a bare
 //!     `cuda::std::tuple<TileDataSource...>` for value sources.
-//!   - `epilogue()` is argless on every variant. `BlockFilter::epilogue()` is a
-//!     no-op (the strategy is non-accumulating). The accumulating variant's
-//!     `epilogue()` performs a terminal flush of any remaining buffered items.
-//!   - `Strategy` carries the classify-mode encoding directly: `AtomicsPreClassify`
-//!     materializes a `kept[ItemsPerThread]` register array up front;
-//!     `AtomicsInlinedClassify` recomputes the predicate at each scatter site.
-//!     `Staged` and `SharedMem` always behave as "pre-classify".
+//!   - `epilogue()` is argless on every variant. The three non-accumulating
+//!     primitives' `epilogue()` is a no-op. The accumulating variant's `epilogue()`
+//!     performs a terminal flush of any remaining buffered items.
+//!
+//! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` in
+//! `block_filter_accumulating.cuh`, which maps a `BlockFilterStrategy` enum value
+//! to one of the three classes here (or to the accumulating sister class).
 
 #pragma once
 
@@ -37,6 +46,7 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/std/__algorithm/min.h>
+#include <cuda/std/__type_traits/conditional.h>
 #include <cuda/std/__type_traits/integral_constant.h>
 #include <cuda/std/__type_traits/is_empty.h>
 #include <cuda/std/__type_traits/is_same.h>
@@ -54,8 +64,11 @@ namespace detail::topk
 {
 //---------------------------------------------------------------------
 // Strategy selector for the filter primitives. Mirrors `BlockPartitionStrategy`:
-// the four `Atomics*` / `Staged` / `SharedMem` values map to `BlockFilter`, and
-// `AccumulatingFilter` maps to `BlockFilterAccumulating`.
+// the four non-accumulating values map to the three classes in this header
+// (Atomics{Pre,Inlined}Classify both map to `BlockFilterAtomics` with the
+// matching `InlinedClassify` bool); `AccumulatingFilter` maps to
+// `BlockFilterAccumulating`. The mapping is performed by
+// `strategy_to_filter_class_t<...>` in `block_filter_accumulating.cuh`.
 //---------------------------------------------------------------------
 enum class BlockFilterStrategy
 {
@@ -78,6 +91,16 @@ struct value_channel_sinks_filter_t
   SelectedValueTransform selected_value_transform;
 };
 
+//---------------------------------------------------------------------
+// Shared scratch-storage building blocks. Per-strategy assembled `ScratchStorage`
+// structs live as nested types of the three filter classes below; this
+// `bf_detail` namespace just holds the pieces (single-stream counters,
+// classifiers) that they compose from. The shared multi-channel slots
+// (`bp_detail::staged_channel_phase`, `bp_detail::delegate_load_slot`,
+// `bp_detail::values_slot`, `bp_detail::map_tuple_t`, ...) live in
+// `block_partition.cuh` and are reused here.
+//---------------------------------------------------------------------
+
 namespace bf_detail
 {
 // Single-stream counter + broadcast slots for `Staged` / `SharedMem` filter
@@ -95,98 +118,9 @@ struct filter_counters
   SelectedOffsetT granted_selected;
 };
 
-// Per-strategy scratch declarations. The Atomics* strategies hold no scratch;
-// Staged / SharedMem hold a strategy-specific phase arena plus the counter.
-
-struct atomics_filter_scratch
-{};
-
-template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT>
-struct staged_filter_scratch
-{
-  union phase_t
-  {
-    KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_union<
-      bp_detail::map_tuple_t<bp_detail::staged_channel_phase, ValueChannelMetaTuple, TileItems>>
-      per_channel;
-
-    _CCCL_HOST_DEVICE phase_t() {}
-    _CCCL_HOST_DEVICE ~phase_t() {}
-  } phase;
-
-  filter_counters<SelectedOffsetT> cnt;
-};
-
-template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT>
-struct shared_mem_filter_scratch
-{
-  struct keys_and_values_t
-  {
-    KeyT keys[TileItems];
-    CUB_NS_QUALIFIER::detail::phase_aggregate<bp_detail::map_tuple_t<bp_detail::values_slot, ValueChannelMetaTuple, TileItems>>
-      per_channel_values;
-  };
-
-  union phase_t
-  {
-    CUB_NS_QUALIFIER::detail::phase_union<bp_detail::map_tuple1_t<bp_detail::delegate_load_slot, ValueChannelMetaTuple>>
-      delegate_loads;
-    keys_and_values_t kv;
-
-    _CCCL_HOST_DEVICE phase_t() {}
-    _CCCL_HOST_DEVICE ~phase_t() {}
-  } phase;
-
-  filter_counters<SelectedOffsetT> cnt;
-};
-
-template <BlockFilterStrategy Strategy,
-          typename KeyT,
-          typename ValueChannelMetaTuple,
-          int TileItems,
-          typename SelectedOffsetT>
-struct strategy_filter_scratch_selector;
-
-template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT>
-struct strategy_filter_scratch_selector<BlockFilterStrategy::AtomicsPreClassify,
-                                        KeyT,
-                                        ValueChannelMetaTuple,
-                                        TileItems,
-                                        SelectedOffsetT>
-{
-  using type = atomics_filter_scratch;
-};
-
-template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT>
-struct strategy_filter_scratch_selector<BlockFilterStrategy::AtomicsInlinedClassify,
-                                        KeyT,
-                                        ValueChannelMetaTuple,
-                                        TileItems,
-                                        SelectedOffsetT>
-{
-  using type = atomics_filter_scratch;
-};
-
-template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT>
-struct strategy_filter_scratch_selector<BlockFilterStrategy::Staged, KeyT, ValueChannelMetaTuple, TileItems, SelectedOffsetT>
-{
-  using type = staged_filter_scratch<KeyT, ValueChannelMetaTuple, TileItems, SelectedOffsetT>;
-};
-
-template <typename KeyT, typename ValueChannelMetaTuple, int TileItems, typename SelectedOffsetT>
-struct strategy_filter_scratch_selector<BlockFilterStrategy::SharedMem,
-                                        KeyT,
-                                        ValueChannelMetaTuple,
-                                        TileItems,
-                                        SelectedOffsetT>
-{
-  using type = shared_mem_filter_scratch<KeyT, ValueChannelMetaTuple, TileItems, SelectedOffsetT>;
-};
-
-// Adapter so `filter_atomics_fused_scatter` can be a single function template
-// over an "indexed classifier" with signature `(KeyT, int j) -> bool`. The
-// inlined wrapper encapsulates the `is_valid` partial-tile check.
+// Adapter so the atomics fused scatter can be a single function template over an
+// "indexed classifier" with signature `(KeyT, int j) -> bool`. The inlined wrapper
+// encapsulates the `is_valid` partial-tile check.
 template <bool IsFull, typename Op>
 struct inlined_filter_classifier
 {
@@ -217,7 +151,9 @@ make_inlined_filter_classifier(Op& op, int num_thread_items)
 
 // Precomputed-classes adapter: at construction runs the predicate over the
 // per-thread keys array; `operator()(KeyT, int j)` returns the cached bool.
-// Items past `num_thread_items` (partial path) are forced to `false`.
+// Items past `num_thread_items` (partial path) are forced to `false`. Reusable
+// across `BlockFilterAtomics<InlinedClassify=false>`, `BlockFilterStaged`,
+// and `BlockFilterSharedMem` -- the latter two consume `.kept` directly.
 template <typename KeyT, int ItemsPerThread, bool IsFull>
 struct precomputed_filter_classifier
 {
@@ -242,36 +178,20 @@ struct precomputed_filter_classifier
   }
 };
 
-// Compile-time predicate: which `BlockFilterStrategy` values map to the
-// non-accumulating `BlockFilter` class.
-template <BlockFilterStrategy S>
-inline constexpr bool is_block_filter_strategy_v =
-  (S == BlockFilterStrategy::AtomicsPreClassify) //
-  || (S == BlockFilterStrategy::AtomicsInlinedClassify) //
-  || (S == BlockFilterStrategy::Staged) //
-  || (S == BlockFilterStrategy::SharedMem);
-
-template <BlockFilterStrategy S>
-inline constexpr bool is_atomics_filter_strategy_v =
-  (S == BlockFilterStrategy::AtomicsPreClassify) || (S == BlockFilterStrategy::AtomicsInlinedClassify);
-
-template <BlockFilterStrategy S>
-inline constexpr bool is_inlined_filter_classify_v = (S == BlockFilterStrategy::AtomicsInlinedClassify);
-
 } // namespace bf_detail
 
 //---------------------------------------------------------------------
-// `BlockFilter` -- the non-accumulating filter primitive.
-//
-// Sinks AND `identify_selected_op` are bound at ctor; per-call `Partition()`
-// only takes per-tile data and a bare `cuda::std::tuple<TileDataSource...>`
-// of value sources. `epilogue()` is a `_CCCL_FORCEINLINE` no-op for parity
-// with the accumulating sister class.
+// `BlockFilterAtomics` -- per-kept-item global atomic + scatter, no smem.
+// `InlinedClassify` selects between the precomputed-classes form (materializes a
+// `kept[]` register array up front) and the inlined-classify form (recomputes the
+// predicate at each scatter use-site, frees the registers that would hold
+// `kept[]`). Mapped from `BlockFilterStrategy::AtomicsPreClassify`
+// (InlinedClassify=false) and `BlockFilterStrategy::AtomicsInlinedClassify`
+// (InlinedClassify=true).
 //---------------------------------------------------------------------
-
 template <int BlockThreads,
           int ItemsPerThread,
-          BlockFilterStrategy Strategy,
+          bool InlinedClassify,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
@@ -282,41 +202,32 @@ template <int BlockThreads,
           typename ValueTypesTuple             = ::cuda::std::tuple<>,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false>
-class BlockFilter
+class BlockFilterAtomics
 {
-  static_assert(bf_detail::is_block_filter_strategy_v<Strategy>,
-                "BlockFilter only handles the non-accumulating strategies; the AccumulatingFilter strategy maps to "
-                "BlockFilterAccumulating (see block_filter_accumulating.cuh).");
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
                 "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
   static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
                   == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
                 "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
+  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
+                "BlockFilterAtomics supports keys-only or single-value-channel today; "
+                "multi-channel needs a per-channel value array.");
 
 public:
-  static constexpr int tile_items            = BlockThreads * ItemsPerThread;
-  static constexpr BlockFilterStrategy strat = Strategy;
-  static constexpr int num_value_channels    = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
+  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
   // Class-lifetime persistent state. Empty (no carried state across Partition() calls).
   struct TempStorage
   {};
 
-  using value_channel_meta_tuple_t =
-    bp_detail::zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
+  // Per-tile scratch. Empty: the atomics strategies hold no smem state -- per-item
+  // scatter goes direct to the user's iterator via the captured reserve op.
+  struct ScratchStorage
+  {};
 
-  using ScratchStorage =
-    typename bf_detail::strategy_filter_scratch_selector<Strategy,
-                                                         KeyT,
-                                                         value_channel_meta_tuple_t,
-                                                         tile_items,
-                                                         SelectedOffsetT>::type;
-
-  // Ctor (safe-both shape): captures sinks + identify op. The TempStorage
-  // parameter is unused (BlockFilter has no persistent state) but is taken
-  // for parity with the accumulating sister class.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilter(
+  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterAtomics(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
@@ -335,7 +246,7 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
-    filter_impl<true>(buffer, keys, /*num_items=*/tile_items, value_sources);
+    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload: classify loop bound-checks against num_items.
@@ -343,7 +254,7 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
-    filter_impl<false>(buffer, keys, static_cast<int>(num_items), value_sources);
+    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
   }
 
   // No-op terminal flush. Present for parity with `BlockFilterAccumulating`.
@@ -358,59 +269,25 @@ private:
                   "Per-call value sources tuple must have the same length as the class-level value channel sinks "
                   "tuple; the filter pairs them positionally.");
 
-    int num_thread_items;
-    if constexpr (IsFull)
+    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+
+    if constexpr (InlinedClassify)
     {
-      num_thread_items = ItemsPerThread;
-      (void) num_items;
+      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
+      filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
     }
     else
     {
-      const int tb_offset = static_cast<int>(threadIdx.x) * ItemsPerThread;
-      num_thread_items =
-        (tb_offset >= num_items) ? 0 : static_cast<int>((::cuda::std::min) (ItemsPerThread, num_items - tb_offset));
-    }
-
-    if constexpr (bf_detail::is_atomics_filter_strategy_v<Strategy>)
-    {
-      if constexpr (bf_detail::is_inlined_filter_classify_v<Strategy>)
-      {
-        auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
-        filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
-      }
-      else
-      {
-        bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-          keys, num_thread_items, identify_op_};
-        filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
-      }
-    }
-    else
-    {
-      // Staged / SharedMem strategies still need a precomputed `kept[]`
-      // because their cooperative smem-scatter reads it more than once.
-      bool kept[ItemsPerThread];
-      _CCCL_PRAGMA_UNROLL_FULL()
-      for (int j = 0; j < ItemsPerThread; ++j)
-      {
-        const bool is_valid = IsFull ? true : (j < num_thread_items);
-        kept[j]             = is_valid ? static_cast<bool>(identify_op_(keys[j])) : false;
-      }
-
-      if constexpr (Strategy == BlockFilterStrategy::Staged)
-      {
-        filter_staged<IsFull>(buffer, keys, kept, value_sources, num_items);
-      }
-      else
-      {
-        filter_shared_mem<IsFull>(buffer, keys, kept, value_sources, num_items);
-      }
+      bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+        keys, num_thread_items, identify_op_};
+      filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
     }
   }
 
   // -----------------------------------------------------------------
-  // Atomics strategies (fused): scatter via a unified per-item loop driven by a
-  // user-supplied `Classifier` with signature `(KeyT, int j) -> bool`.
+  // Fused scatter: drives a unified per-item loop via a user-supplied
+  // `Classifier` with signature `(KeyT, int j) -> bool`. The classifier
+  // abstracts the precomputed-vs-inlined decision.
   // -----------------------------------------------------------------
   template <bool IsFull, typename Classifier, typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_atomics_fused(
@@ -420,10 +297,6 @@ private:
     Classifier& classifier,
     ValueSourcesTuple& value_sources)
   {
-    static_assert(num_value_channels <= 1,
-                  "atomics filter supports keys-only or single-value-channel "
-                  "today; multi-channel needs a per-channel value array.");
-
     if constexpr (num_value_channels == 1)
     {
       auto& src      = ::cuda::std::get<0>(value_sources);
@@ -506,19 +379,118 @@ private:
     }
   }
 
-  // -----------------------------------------------------------------
-  // Staged strategy: smem scatter into `buffer.phase.keys` then cooperative
-  // coalesced store via reserve op. Per-channel value path runs sequentially
-  // after the keys phase.
-  // -----------------------------------------------------------------
-  template <bool IsFull, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void filter_staged(
-    ScratchStorage& buffer,
-    const KeyT (&keys)[ItemsPerThread],
-    const bool (&kept)[ItemsPerThread],
-    ValueSourcesTuple& value_sources,
-    int num_items)
+  // Captured at ctor; used by every Partition() call.
+  SelectedReserveOp& reserve_sel_;
+  SelectedKeyOutTransformOp& sel_xform_;
+  SelectedKeyOutIt sel_iter_;
+  ValueChannelSinksTuple& sinks_;
+  IdentifySelectedOp& identify_op_;
+};
+
+//---------------------------------------------------------------------
+// `BlockFilterStaged` -- smem scatter into a keys arena + cooperative coalesced
+// store. Per-channel value path runs sequentially after the keys phase: each
+// channel loads (sub-brokered scratch), scatters into the channel's `values[]`
+// slot, then cooperatively stores. Mapped from `BlockFilterStrategy::Staged`.
+//
+// `LazyValueLoad` is accepted for parity with the dispatcher's uniform signature
+// but is not honored: the Staged primitive always eagerly loads.
+//---------------------------------------------------------------------
+template <int BlockThreads,
+          int ItemsPerThread,
+          typename KeyT,
+          typename SelectedOffsetT,
+          typename SelectedReserveOp,
+          typename SelectedKeyOutTransformOp,
+          typename SelectedKeyOutIt,
+          typename IdentifySelectedOp,
+          typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
+          typename ValueTypesTuple             = ::cuda::std::tuple<>,
+          typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
+          bool /*LazyValueLoad*/               = false>
+class BlockFilterStaged
+{
+  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
+                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
+                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
+  static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
+                  == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
+                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
+
+public:
+  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
+  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+
+  struct TempStorage
+  {};
+
+  using value_channel_meta_tuple_t =
+    bp_detail::zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
+
+  // Per-tile scratch. `phase` is a phase_union: phase 1 (key scatter) uses the
+  // `keys[]` arena; phase 2 (per-channel value scatter) reuses the same smem
+  // through the `per_channel` view. `cnt` lives outside the union because it
+  // carries the per-tile count and the broadcast `granted_*` slot across the
+  // whole `Partition()` call.
+  struct ScratchStorage
   {
+    union phase_t
+    {
+      KeyT keys[tile_items];
+      CUB_NS_QUALIFIER::detail::phase_union<
+        bp_detail::map_tuple_t<bp_detail::staged_channel_phase, value_channel_meta_tuple_t, tile_items>>
+        per_channel;
+
+      _CCCL_HOST_DEVICE phase_t() {}
+      _CCCL_HOST_DEVICE ~phase_t() {}
+    } phase;
+
+    bf_detail::filter_counters<SelectedOffsetT> cnt;
+  };
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterStaged(
+    TempStorage& /*storage*/,
+    SelectedReserveOp& reserve_selected,
+    SelectedKeyOutTransformOp& selected_key_transform,
+    SelectedKeyOutIt selected_keys_out,
+    ValueChannelSinksTuple& value_channel_sinks,
+    IdentifySelectedOp& identify_selected_op)
+      : reserve_sel_(reserve_selected)
+      , sel_xform_(selected_key_transform)
+      , sel_iter_(selected_keys_out)
+      , sinks_(value_channel_sinks)
+      , identify_op_(identify_selected_op)
+  {}
+
+  template <typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  {
+    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
+  }
+
+  template <typename NumItemsT, typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
+  {
+    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
+
+private:
+  template <bool IsFull, typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void filter_impl(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+  {
+    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
+                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
+                  "tuple; the filter pairs them positionally.");
+
+    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      keys, num_thread_items, identify_op_};
+
     int positions[ItemsPerThread];
 
     if (threadIdx.x == 0)
@@ -530,7 +502,7 @@ private:
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < ItemsPerThread; ++j)
     {
-      if (kept[j])
+      if (classifier.kept[j])
       {
         const int pos          = atomicAdd(&buffer.cnt.counter, 1);
         buffer.phase.keys[pos] = keys[j];
@@ -547,9 +519,9 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel                = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
-      buffer.cnt.global_base        = sel.first;
-      buffer.cnt.granted_selected   = static_cast<SelectedOffsetT>(sel.second);
+      const auto sel              = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
+      buffer.cnt.global_base      = sel.first;
+      buffer.cnt.granted_selected = static_cast<SelectedOffsetT>(sel.second);
     }
     __syncthreads();
 
@@ -609,22 +581,130 @@ private:
     __syncthreads();
   }
 
-  // -----------------------------------------------------------------
-  // SharedMem strategy: keys + per-channel values coexist in smem (within
-  // `phase.kv`), then a single coalesced flush.
-  // -----------------------------------------------------------------
-  template <bool IsFull, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void filter_shared_mem(
-    ScratchStorage& buffer,
-    const KeyT (&keys)[ItemsPerThread],
-    const bool (&kept)[ItemsPerThread],
-    ValueSourcesTuple& value_sources,
-    int num_items)
-  {
-    static_assert(num_value_channels <= 1,
-                  "shared_mem filter supports keys-only or single-value-channel "
-                  "today; multi-channel needs a heterogeneous register-array tuple.");
+  SelectedReserveOp& reserve_sel_;
+  SelectedKeyOutTransformOp& sel_xform_;
+  SelectedKeyOutIt sel_iter_;
+  ValueChannelSinksTuple& sinks_;
+  IdentifySelectedOp& identify_op_;
+};
 
+//---------------------------------------------------------------------
+// `BlockFilterSharedMem` -- keys + per-channel values coexist in smem (within
+// `phase.kv`), then a single coalesced flush. Pre-Phase-1 delegate loads alias
+// with the kv arena via the top-level phase union. Mapped from
+// `BlockFilterStrategy::SharedMem`.
+//
+// Single-value-channel only today; multi-channel needs a heterogeneous
+// register-array tuple. `LazyValueLoad` is accepted for parity with the
+// dispatcher's uniform signature but is not honored.
+//---------------------------------------------------------------------
+template <int BlockThreads,
+          int ItemsPerThread,
+          typename KeyT,
+          typename SelectedOffsetT,
+          typename SelectedReserveOp,
+          typename SelectedKeyOutTransformOp,
+          typename SelectedKeyOutIt,
+          typename IdentifySelectedOp,
+          typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
+          typename ValueTypesTuple             = ::cuda::std::tuple<>,
+          typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
+          bool /*LazyValueLoad*/               = false>
+class BlockFilterSharedMem
+{
+  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
+                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
+                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
+  static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
+                  == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
+                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
+  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
+                "BlockFilterSharedMem supports keys-only or single-value-channel today; "
+                "multi-channel needs a heterogeneous register-array tuple.");
+
+public:
+  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
+  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+
+  struct TempStorage
+  {};
+
+  using value_channel_meta_tuple_t =
+    bp_detail::zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
+
+  // Per-tile scratch. The `phase` union has two views: `delegate_loads` (pre-Phase-1
+  // delegate-load staging area for value channels) and `kv` (the keys + per-channel
+  // values arena used for scatter and cooperative flush). `cnt` lives outside the
+  // union, same role as in BlockFilterStaged.
+  struct ScratchStorage
+  {
+    struct keys_and_values_t
+    {
+      KeyT keys[tile_items];
+      CUB_NS_QUALIFIER::detail::phase_aggregate<
+        bp_detail::map_tuple_t<bp_detail::values_slot, value_channel_meta_tuple_t, tile_items>>
+        per_channel_values;
+    };
+
+    union phase_t
+    {
+      CUB_NS_QUALIFIER::detail::phase_union<bp_detail::map_tuple1_t<bp_detail::delegate_load_slot, value_channel_meta_tuple_t>>
+        delegate_loads;
+      keys_and_values_t kv;
+
+      _CCCL_HOST_DEVICE phase_t() {}
+      _CCCL_HOST_DEVICE ~phase_t() {}
+    } phase;
+
+    bf_detail::filter_counters<SelectedOffsetT> cnt;
+  };
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterSharedMem(
+    TempStorage& /*storage*/,
+    SelectedReserveOp& reserve_selected,
+    SelectedKeyOutTransformOp& selected_key_transform,
+    SelectedKeyOutIt selected_keys_out,
+    ValueChannelSinksTuple& value_channel_sinks,
+    IdentifySelectedOp& identify_selected_op)
+      : reserve_sel_(reserve_selected)
+      , sel_xform_(selected_key_transform)
+      , sel_iter_(selected_keys_out)
+      , sinks_(value_channel_sinks)
+      , identify_op_(identify_selected_op)
+  {}
+
+  template <typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  {
+    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
+  }
+
+  template <typename NumItemsT, typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
+  {
+    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
+
+private:
+  template <bool IsFull, typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void filter_impl(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+  {
+    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
+                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
+                  "tuple; the filter pairs them positionally.");
+
+    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      keys, num_thread_items, identify_op_};
+
+    // Pre-Phase-1: load the (single) channel's values into registers via the
+    // delegate-load slot. After this, the delegate_loads view of the phase union is
+    // dead and we transition to the kv view at the next __syncthreads.
     [[maybe_unused]] auto load_channel_values = [&](auto& reg_values_out) {
       if constexpr (num_value_channels == 1)
       {
@@ -661,7 +741,7 @@ private:
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < ItemsPerThread; ++j)
     {
-      if (!kept[j])
+      if (!classifier.kept[j])
       {
         continue;
       }
@@ -708,10 +788,6 @@ private:
     __syncthreads();
   }
 
-  // ---------------------------------------------------------------
-  // Member state: sinks + identify op captured by the ctor. Stored by reference
-  // for stateful op types (matches the convention used by `BlockPartition`).
-  // ---------------------------------------------------------------
   SelectedReserveOp& reserve_sel_;
   SelectedKeyOutTransformOp& sel_xform_;
   SelectedKeyOutIt sel_iter_;

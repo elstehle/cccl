@@ -507,10 +507,15 @@ private:
 // `strategy_to_partition_class<Strategy, ...>` -- compile-time selector that maps a
 // `BlockPartitionStrategy` enum value to the corresponding partition class type.
 //
-// The four `Atomics*` / `Staged` / `SharedMem` strategy values map to
-// `BlockPartition<Strategy, ...>`. The `AccumulatingCandidates` value maps to
-// `BlockPartitionAccumulatingCandidates` (with `CandidateBufferCapacity` filled in
-// from the metafunction's own template arg).
+// The four non-accumulating strategy values map to one of the three classes in
+// `block_partition.cuh`:
+//   - `AtomicsPreClassify`     -> `BlockPartitionAtomics<..., InlinedClassify=false>`
+//   - `AtomicsInlinedClassify` -> `BlockPartitionAtomics<..., InlinedClassify=true>`
+//   - `Staged`                 -> `BlockPartitionStaged`
+//   - `SharedMem`              -> `BlockPartitionSharedMem`
+//   - `AccumulatingCandidates` -> `BlockPartitionAccumulatingCandidates`
+//                                 (with `CandidateBufferCapacity` filled in from the
+//                                 metafunction's own `AccumulatingBufferCapacity` arg).
 //
 // The agent uses this to define `using buffered_partition_t = typename
 // strategy_to_partition_class<...>::type` -- a single point that hides the dispatch.
@@ -536,13 +541,11 @@ template <BlockPartitionStrategy Strategy,
           bool LazyValueLoad>
 struct strategy_to_partition_class
 {
-  // Default: non-accumulating strategies map to BlockPartition. The static_assert
-  // inside BlockPartition catches any value not in {AtomicsPreClassify,
-  // AtomicsInlinedClassify, Staged, SharedMem}.
-  using type = BlockPartition<
+private:
+  using atomics_t = BlockPartitionAtomics<
     BlockThreads,
     ItemsPerThread,
-    Strategy,
+    /*InlinedClassify=*/(Strategy == BlockPartitionStrategy::AtomicsInlinedClassify),
     KeyT,
     SelectedOffsetT,
     CandidateOffsetT,
@@ -558,6 +561,49 @@ struct strategy_to_partition_class
     ValueTypesTuple,
     DataSourceScratchTypesTuple,
     LazyValueLoad>;
+
+  using staged_t = BlockPartitionStaged<
+    BlockThreads,
+    ItemsPerThread,
+    KeyT,
+    SelectedOffsetT,
+    CandidateOffsetT,
+    SelectedReserveOp,
+    CandidateReserveOp,
+    SelectedKeyOutTransformOp,
+    CandidateKeyOutTransformOp,
+    SelectedKeyOutIt,
+    CandidateKeyOutIt,
+    IdentifyCandidatesOp,
+    CandidateCallbackOp,
+    ValueChannelSinksTuple,
+    ValueTypesTuple,
+    DataSourceScratchTypesTuple,
+    LazyValueLoad>;
+
+  using shared_mem_t = BlockPartitionSharedMem<
+    BlockThreads,
+    ItemsPerThread,
+    KeyT,
+    SelectedOffsetT,
+    CandidateOffsetT,
+    SelectedReserveOp,
+    CandidateReserveOp,
+    SelectedKeyOutTransformOp,
+    CandidateKeyOutTransformOp,
+    SelectedKeyOutIt,
+    CandidateKeyOutIt,
+    IdentifyCandidatesOp,
+    CandidateCallbackOp,
+    ValueChannelSinksTuple,
+    ValueTypesTuple,
+    DataSourceScratchTypesTuple,
+    LazyValueLoad>;
+
+public:
+  using type = ::cuda::std::conditional_t<
+    Strategy == BlockPartitionStrategy::Staged, staged_t,
+    ::cuda::std::conditional_t<Strategy == BlockPartitionStrategy::SharedMem, shared_mem_t, atomics_t>>;
 };
 
 template <int BlockThreads,

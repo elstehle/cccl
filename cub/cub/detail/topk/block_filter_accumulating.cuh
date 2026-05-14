@@ -47,6 +47,7 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/std/__algorithm/min.h>
+#include <cuda/std/__type_traits/conditional.h>
 #include <cuda/std/__type_traits/integral_constant.h>
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/__type_traits/remove_reference.h>
@@ -409,9 +410,17 @@ private:
 // `strategy_to_filter_class<Strategy, ...>` -- compile-time selector mapping a
 // `BlockFilterStrategy` value to the corresponding filter class type.
 //
-// The four `Atomics*` / `Staged` / `SharedMem` values map to `BlockFilter`; the
-// `AccumulatingFilter` value maps to `BlockFilterAccumulating`. The agent uses
-// this metafunction to derive `filter_t` from a policy enum.
+// The four non-accumulating strategy values map to one of the three classes in
+// `block_filter.cuh`:
+//   - `AtomicsPreClassify`     -> `BlockFilterAtomics<..., InlinedClassify=false>`
+//   - `AtomicsInlinedClassify` -> `BlockFilterAtomics<..., InlinedClassify=true>`
+//   - `Staged`                 -> `BlockFilterStaged`
+//   - `SharedMem`              -> `BlockFilterSharedMem`
+//   - `AccumulatingFilter`     -> `BlockFilterAccumulating`
+//                                 (with `CandidateBufferCapacity` filled in from the
+//                                 metafunction's own `AccumulatingBufferCapacity` arg).
+//
+// The agent uses this metafunction to derive `filter_t` from a policy enum.
 //---------------------------------------------------------------------
 template <BlockFilterStrategy Strategy,
           int BlockThreads,
@@ -429,10 +438,11 @@ template <BlockFilterStrategy Strategy,
           bool LazyValueLoad>
 struct strategy_to_filter_class
 {
-  using type = BlockFilter<
+private:
+  using atomics_t = BlockFilterAtomics<
     BlockThreads,
     ItemsPerThread,
-    Strategy,
+    /*InlinedClassify=*/(Strategy == BlockFilterStrategy::AtomicsInlinedClassify),
     KeyT,
     SelectedOffsetT,
     SelectedReserveOp,
@@ -443,6 +453,39 @@ struct strategy_to_filter_class
     ValueTypesTuple,
     DataSourceScratchTypesTuple,
     LazyValueLoad>;
+
+  using staged_t = BlockFilterStaged<
+    BlockThreads,
+    ItemsPerThread,
+    KeyT,
+    SelectedOffsetT,
+    SelectedReserveOp,
+    SelectedKeyOutTransformOp,
+    SelectedKeyOutIt,
+    IdentifySelectedOp,
+    ValueChannelSinksTuple,
+    ValueTypesTuple,
+    DataSourceScratchTypesTuple,
+    LazyValueLoad>;
+
+  using shared_mem_t = BlockFilterSharedMem<
+    BlockThreads,
+    ItemsPerThread,
+    KeyT,
+    SelectedOffsetT,
+    SelectedReserveOp,
+    SelectedKeyOutTransformOp,
+    SelectedKeyOutIt,
+    IdentifySelectedOp,
+    ValueChannelSinksTuple,
+    ValueTypesTuple,
+    DataSourceScratchTypesTuple,
+    LazyValueLoad>;
+
+public:
+  using type = ::cuda::std::conditional_t<
+    Strategy == BlockFilterStrategy::Staged, staged_t,
+    ::cuda::std::conditional_t<Strategy == BlockFilterStrategy::SharedMem, shared_mem_t, atomics_t>>;
 };
 
 template <int BlockThreads,
