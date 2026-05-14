@@ -101,8 +101,7 @@ struct topk_policy
 
   value_materialization_mode value_materialization = value_materialization_mode::indexed;
 
-  // When `true`, the partitioning loop skips loading the full tile of values data, gathering only values of
-  // non-rejected items.
+  // When `true`, the partitioning loop skips loading the full tile of values data upfront. Instead it only gathers values of non-rejected items.
   bool lazy_value_load = true;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
