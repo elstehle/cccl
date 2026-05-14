@@ -23,6 +23,7 @@
 //!   AtomicsPreClassify, AtomicsInlinedClassify, Staged, SharedMem.
 
 #include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/block_partition_accumulating.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
@@ -131,10 +132,11 @@ __global__ void partition_kernel(
 
   using xform_t = ::cuda::std::identity;
 
-  using partition_t = topk::BlockPartition<
+  using partition_t = topk::strategy_to_partition_class_t<
+    Strategy,
     BlockThreads,
     ItemsPerThread,
-    Strategy,
+    /*AccumulatingBufferCapacity=*/0,
     int,
     unsigned int,
     unsigned int,
@@ -148,7 +150,8 @@ __global__ void partition_kernel(
     counting_callback_op,
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t>;
+    value_data_source_scratch_types_tuple_t,
+    /*LazyValueLoad=*/false>;
 
   __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
