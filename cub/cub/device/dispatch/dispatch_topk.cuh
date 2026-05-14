@@ -282,7 +282,7 @@ template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT,
 #if _CCCL_HAS_CONCEPTS()
   requires topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
-__launch_bounds__(int(current_policy<PolicySelector>().block_threads))
+__launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void DeviceTopKHistogramKernel(
     _CCCL_GRID_CONSTANT const KeyInputIteratorT d_keys_in,
     counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
@@ -295,7 +295,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 {
   static constexpr topk_policy policy = current_policy<PolicySelector>();
   using agent_topk_policy_t =
-    AgentTopKPolicy<policy.block_threads,
+    AgentTopKPolicy<policy.threads_per_block,
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.scan_algorithm,
@@ -531,7 +531,7 @@ template <typename PolicySelector,
 #if _CCCL_HAS_CONCEPTS()
   requires topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
-__launch_bounds__(int(current_policy<PolicySelector>().block_threads))
+__launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void DeviceTopKLastFilterKernel(
     _CCCL_GRID_CONSTANT const KeyInputIteratorT d_keys_in,
     _CCCL_GRID_CONSTANT const KeyOutputIteratorT d_keys_out,
@@ -545,7 +545,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
 {
   static constexpr topk_policy policy = current_policy<PolicySelector>();
   using agent_topk_policy_t =
-    AgentTopKPolicy<policy.block_threads,
+    AgentTopKPolicy<policy.threads_per_block,
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.scan_algorithm,
@@ -593,43 +593,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().block_threads))
     load_from_candidates_buffer,
     identify_candidates_op);
   agent.run(&counter->num_ties_written_to_back, k, num_of_kth_needed);
-}
-
-template <typename PolicySelector, typename KeyInputIteratorT, typename OffsetT, typename OutOffsetT, typename ExtractBinOpT>
-#if _CCCL_HAS_CONCEPTS()
-  requires topk_policy_selector<PolicySelector>
-#endif // _CCCL_HAS_CONCEPTS()
-__launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
-  _CCCL_KERNEL_ATTRIBUTES void DeviceTopKHistogramKernel(
-    _CCCL_GRID_CONSTANT const KeyInputIteratorT d_keys_in,
-    Counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
-    _CCCL_GRID_CONSTANT OffsetT* const histogram,
-    _CCCL_GRID_CONSTANT const OffsetT num_items,
-    _CCCL_GRID_CONSTANT const OutOffsetT k,
-    ExtractBinOpT extract_bin_op,
-    _CCCL_GRID_CONSTANT const int pass,
-    _CCCL_GRID_CONSTANT const bool is_last_pass)
-{
-  static constexpr topk_policy policy = current_policy<PolicySelector>();
-  using agent_topk_policy_t =
-    AgentTopKPolicy<policy.threads_per_block,
-                    policy.items_per_thread,
-                    policy.bits_per_pass,
-                    policy.scan_algorithm,
-                    policy.keys_tile_load_kind>;
-  using agent_t = AgentTopKHistogram<agent_topk_policy_t, KeyInputIteratorT, ExtractBinOpT, OffsetT, OutOffsetT>;
-
-  __shared__ typename agent_t::TempStorage temp_storage;
-
-  // Pass-0 counter update: record the input length as the previous-pass length
-  // for the upcoming filter passes, and reset the candidate-filter counter.
-  auto counter_update_fn = [counter, num_items] {
-    counter->previous_len       = num_items;
-    counter->num_candidates_out = 0;
-  };
-
-  agent_t(temp_storage, d_keys_in, num_items, k, extract_bin_op)
-    .invoke(counter, histogram, pass, is_last_pass, counter_update_fn);
 }
 
 //! @tparam SelectDirection
