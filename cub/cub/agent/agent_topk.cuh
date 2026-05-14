@@ -803,12 +803,6 @@ template <typename AgentTopKPolicyT,
           typename OutOffsetT,
           BlockPartitionStrategy BufferedPartStrat = BlockPartitionStrategy::AtomicsPreClassify,
           BlockFilterStrategy EarlyStopFilterStrat = BlockFilterStrategy::AtomicsPreClassify,
-          // Experimental: when `true`, the per-tile `values[ItemsPerThread]`
-          // register array is NOT pre-loaded; the partition's scatter loop
-          // instead pulls each surviving value via the value channel's
-          // `data_source.gather_one(j)`. Mimics `main`'s legacy "only fetch
-          // values that survive the filter" behavior. Defaults to `false`
-          // (current branch's eager-load behavior). Forced off for keys-only.
           bool LazyValueLoad = false>
 struct agent_topk_filter_partition
 {
@@ -826,7 +820,6 @@ struct agent_topk_filter_partition
   using identify_kth_bucket_t =
     block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
-
   // Lazy value-load only matters when there's a value channel to load lazily.
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
@@ -837,12 +830,11 @@ struct agent_topk_filter_partition
     tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using keys_source_t = multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
-  // Value channel: multi_source over (d_values_in, in_val_buf)
+  // Value channels: multi_source over (d_values_in, in_val_buf)
   using value_source_input_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
   using value_source_buffer_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
-  
   using val_out_t = ValueOutputIteratorT;
   // Buffered mode: the candidate iterators are `key_in_t*` / `value_in_t*` (the
   // back buffers). Early-stop mode has only the selected stream.
@@ -880,18 +872,20 @@ struct agent_topk_filter_partition
     ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
 
     // Offset types used to index into the selected and candidate iterators (and counter updates)
-  using selected_offset_t           = OutOffsetT;
-  using buffered_candidate_offset_t = OffsetT;
+  using selected_offset_t  = OutOffsetT;
+  using candidate_offset_t = OffsetT;
 
   // Reserve op types.
-  using sel_reserve_op_t           = atomic_reserve_range_op<selected_offset_t>;
-  using buffered_cand_reserve_op_t = atomic_reserve_range_op<buffered_candidate_offset_t>;
+  using selected_reserve_op_t  = atomic_reserve_range_op<selected_offset_t>;
+  using candidate_reserve_op_t = atomic_reserve_range_op<candidate_offset_t>;
 
   // Key-output transforms are always identity for top-k.
   using key_xform_t = ::cuda::std::identity;
 
   // Callback / classify-hook types for the two modes.
   using histogram_callback_op_t = topk_histogram_callback_op<ExtractBinOpT, OffsetT>;
+
+  // Specialized for early_stop: Any non-rejected item goes to the user-provided output iterator
   using identify_selected_op_t  = topk_identify_selected_op<IdentifyCandidatesOpT>;
 
   // The buffered-mode primitive (`BlockPartition` or
@@ -903,9 +897,9 @@ struct agent_topk_filter_partition
     AgentTopKPolicyT::accumulating_buffer_capacity,
     key_in_t,
     selected_offset_t,
-    buffered_candidate_offset_t,
-    sel_reserve_op_t,
-    buffered_cand_reserve_op_t,
+    candidate_offset_t,
+    selected_reserve_op_t,
+    candidate_reserve_op_t,
     key_xform_t,
     key_xform_t,
     KeyOutputIteratorT,
@@ -925,7 +919,7 @@ struct agent_topk_filter_partition
     AgentTopKPolicyT::accumulating_buffer_capacity,
     key_in_t,
     selected_offset_t,
-    sel_reserve_op_t,
+    selected_reserve_op_t,
     key_xform_t,
     KeyOutputIteratorT,
     identify_selected_op_t,
@@ -1088,7 +1082,7 @@ private:
     const OffsetT num_full_tiles = input_length / static_cast<OffsetT>(tile_items);
     const OffsetT partial_items  = input_length - num_full_tiles * static_cast<OffsetT>(tile_items);
 
-    // --- full-tile loop --------------------------------------------------
+    // Full-tile loop iterations
     for (OffsetT tile_id = static_cast<OffsetT>(blockIdx.x); tile_id < num_full_tiles;
          tile_id += static_cast<OffsetT>(gridDim.x))
     {
@@ -1106,7 +1100,7 @@ private:
       primitive.Partition(arena.get_partition_scratch(), items, value_sources);
     }
 
-    // --- trailing partial tile (handled by exactly one block) ------------
+    // Trailing partial tile (handled by exactly one block)
     if (partial_items > 0)
     {
       const unsigned partial_owner = static_cast<unsigned>(num_full_tiles % static_cast<OffsetT>(gridDim.x));
@@ -1127,8 +1121,7 @@ private:
       }
     }
 
-    // Terminal flush. No-op on non-accumulating; the accumulating variants drain
-    // their leftover smem buffer here.
+    // Terminal flush of any remaining data that was kept on-chip until this point.
     primitive.epilogue();
   }
 
@@ -1161,18 +1154,14 @@ public:
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
 
     // Mode-shared stack-locals.
-    sel_reserve_op_t reserve_sel{p_num_selected_written};
+    selected_reserve_op_t reserve_sel{p_num_selected_written};
     key_xform_t sel_key_xform{};
     key_xform_t cand_key_xform{};
 
-    // Two-way mode dispatch: build the right primitive (with all sinks +
-    // classify hooks captured at ctor), hand it to `drive_tile_loop`. The
-    // helper iterates the tile space and finishes with `primitive.epilogue()`.
     if (mode == sink_mode::early_stop)
     {
       // Early-stop branch: no histogram is accumulated, no kth-bucket scan runs.
-      // The filter primitive's `Partition()` writes selected items direct to
-      // `d_keys_out` via `reserve_sel`.
+      // The filter primitive's `Partition()` writes selected items directly to `d_keys_out` via `reserve_sel`.
       identify_selected_op_t identify_selected{identify_candidates_op};
       auto value_channel_sinks = make_early_stop_value_channel_sinks();
 
@@ -1195,7 +1184,7 @@ public:
 
       buffered_cand_key_out_t cand_key_out = out_key_buf;
       buffered_cand_val_out_t cand_val_out = out_val_buf;
-      buffered_cand_reserve_op_t reserve_cand{p_num_candidates_written};
+      candidate_reserve_op_t reserve_cand{p_num_candidates_written};
       histogram_callback_op_t histogram_cb{extract_bin_op, storage.histogram};
       auto value_channel_sinks = make_buffered_value_channel_sinks(cand_val_out);
 
@@ -1319,8 +1308,8 @@ struct agent_topk_last_filter
 
   // Reserve-op types: selected stream uses an atomic reserve, candidate stream uses
   // back-grow-capped (writes ties at the back of the output).
-  using sel_reserve_op_t  = atomic_reserve_range_op<selected_offset_t>;
-  using cand_reserve_op_t = back_grow_capped_reserve_op<candidate_offset_t>;
+  using selected_reserve_op_t  = atomic_reserve_range_op<selected_offset_t>;
+  using candidate_reserve_op_t = back_grow_capped_reserve_op<candidate_offset_t>;
 
   using key_xform_t = ::cuda::std::identity;
 
@@ -1332,8 +1321,8 @@ struct agent_topk_last_filter
     key_in_t,
     selected_offset_t,
     candidate_offset_t,
-    sel_reserve_op_t,
-    cand_reserve_op_t,
+    selected_reserve_op_t,
+    candidate_reserve_op_t,
     key_xform_t,
     key_xform_t,
     KeyOutputIteratorT,
@@ -1468,8 +1457,8 @@ public:
 
     // Build the reserve ops + sinks once, before the tile loop. The partition object
     // captures these references and consults them at every flush.
-    sel_reserve_op_t reserve_sel{p_num_selected_written};
-    cand_reserve_op_t reserve_cand{
+    selected_reserve_op_t reserve_sel{p_num_selected_written};
+    candidate_reserve_op_t reserve_cand{
       p_num_ties_written_to_back,
       static_cast<candidate_offset_t>(k_total),
       static_cast<candidate_offset_t>(num_of_kth_needed)};
