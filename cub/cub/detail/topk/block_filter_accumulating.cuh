@@ -118,6 +118,12 @@ public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
+  // Compile-time upper bound on `overflow_loop` iterations per `Partition()` call.
+  // See the sibling class `BlockPartitionAccumulatingCandidates::max_flush_iters`
+  // for the full derivation. When `BufferCapacity >= tile_items` this evaluates
+  // to 2 and NVCC can straight-line the loop.
+  static constexpr int max_flush_iters = (tile_items + BufferCapacity - 1) / BufferCapacity + 1;
+
   static_assert(BufferCapacity >= 1, "Accumulating filter requires BufferCapacity >= 1.");
   static_assert(num_value_channels <= 1,
                 "Accumulating filter supports keys-only or single-value-channel today; multi-channel needs a "
@@ -283,11 +289,14 @@ private:
     overflow_loop(positions, keys, get_value);
   }
 
+  // Multi-round overflow loop. See `BlockPartitionAccumulatingCandidates::overflow_loop`
+  // for the design notes -- the counted-`for` shape, the merged `cnt >= Capacity`
+  // branch, and the `Capacity >= tile_items` fast path apply identically here.
   template <typename GetValueFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   overflow_loop(int (&positions)[ItemsPerThread], const KeyT (&keys)[ItemsPerThread], GetValueFn get_value)
   {
-    while (true)
+    for (int iter = 0; iter < max_flush_iters; ++iter)
     {
       const int cnt = ts_.cnt.counter;
       if (cnt < BufferCapacity)
@@ -302,49 +311,26 @@ private:
           }
         }
         __syncthreads();
-        break;
+        return;
       }
-      else if (cnt == BufferCapacity)
+      // cnt >= BufferCapacity: flush the leading Capacity-worth and renumber.
+      scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/BufferCapacity);
+      __syncthreads();
+      cooperative_flush_round(BufferCapacity);
+      __syncthreads();
+      if (threadIdx.x == 0)
       {
-        scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/BufferCapacity);
-        __syncthreads();
-        cooperative_flush_round(BufferCapacity);
-        __syncthreads();
-        if (threadIdx.x == 0)
-        {
-          ts_.cnt.counter = 0;
-        }
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < ItemsPerThread; ++j)
-        {
-          if (positions[j] >= 0)
-          {
-            positions[j] = -1;
-          }
-        }
-        __syncthreads();
-        break;
+        ts_.cnt.counter = cnt - BufferCapacity;
       }
-      else
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
       {
-        scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/BufferCapacity);
-        __syncthreads();
-        cooperative_flush_round(BufferCapacity);
-        __syncthreads();
-        if (threadIdx.x == 0)
+        if (positions[j] >= 0)
         {
-          ts_.cnt.counter = cnt - BufferCapacity;
+          positions[j] -= BufferCapacity;
         }
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < ItemsPerThread; ++j)
-        {
-          if (positions[j] >= 0)
-          {
-            positions[j] -= BufferCapacity;
-          }
-        }
-        __syncthreads();
       }
+      __syncthreads();
     }
   }
 
