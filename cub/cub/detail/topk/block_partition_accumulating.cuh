@@ -144,6 +144,20 @@ public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
+  // Compile-time upper bound on the number of times `overflow_loop` iterates per
+  // `Partition()` call. By the cross-call invariant the entrant counter is in
+  // `[0, CandidateBufferCapacity - 1]`, and each call adds at most `tile_items`
+  // atomicAdd reservations, so the post-add counter is bounded by
+  // `CandidateBufferCapacity - 1 + tile_items`. Each `>=`-branch round drains
+  // `CandidateBufferCapacity`, so the number of draining rounds is
+  // `ceil(tile_items / CandidateBufferCapacity)`. The final non-draining round
+  // accounts for the +1. For configurations with
+  // `CandidateBufferCapacity >= tile_items` this collapses to 2, letting NVCC
+  // straight-line the loop -- the second iteration is provably the
+  // `cnt < Capacity` branch because the post-flush counter is in `[0, Capacity - 1]`.
+  static constexpr int max_flush_iters =
+    (tile_items + CandidateBufferCapacity - 1) / CandidateBufferCapacity + 1;
+
   static_assert(CandidateBufferCapacity >= 1, "Accumulating partition requires CandidateBufferCapacity >= 1.");
   static_assert(num_value_channels <= 1,
                 "Accumulating partition supports keys-only or single-value-channel today; multi-channel needs a "
@@ -366,17 +380,38 @@ private:
     overflow_loop(positions, keys, get_value);
   }
 
-  // Multi-round overflow loop. positions[] is mutated as items are consumed (set to
-  // -1 once they're successfully written to smem and either deferred or flushed).
+  // Multi-round overflow loop. positions[] is mutated as items are consumed: a
+  // flushed item's slot index becomes negative after the renumber step (`pos -=
+  // Capacity`), which doubles as the sentinel that excludes it from subsequent
+  // rounds via the `positions[j] >= 0` predicate in `scatter_pending_to_smem`.
+  //
+  // The loop is bounded by the compile-time `max_flush_iters`, computed from
+  // `tile_items` and `CandidateBufferCapacity`. With this bound the loop
+  // structure is a counted `for` (giving NVCC a static iteration count for
+  // register-lifetime analysis and unroll heuristics) instead of the previous
+  // `while (true) { ...; break; }` shape. The `cnt == Capacity` and
+  // `cnt > Capacity` cases have been folded into a single `cnt >= Capacity`
+  // branch: their bodies differ only in the post-flush counter being set to `0`
+  // vs `cnt - Capacity`, and `cnt - Capacity == 0` when `cnt == Capacity`, so a
+  // unified `cnt - Capacity` covers both. Eliminating the third branch shortens
+  // the basic blocks the allocator has to widen across.
+  //
+  // When `Capacity >= tile_items` the bound is exactly 2, and the second
+  // iteration is provably the `cnt < Capacity` (drain-remainder) branch -- the
+  // post-flush counter lands in `[0, Capacity - 1]` by construction. NVCC then
+  // straight-lines the body and the `positions[]` mutation only happens once.
   template <typename GetValueFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   overflow_loop(int (&positions)[ItemsPerThread], const KeyT (&keys)[ItemsPerThread], GetValueFn get_value)
   {
-    while (true)
+    for (int iter = 0; iter < max_flush_iters; ++iter)
     {
       const int cnt = ts_.cnt.counter;
       if (cnt < CandidateBufferCapacity)
       {
+        // Drain-remainder branch: scatter what's left into smem, mark the
+        // pending slots as consumed (the buffer accumulates across the next
+        // `Partition()` call), and exit.
         scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/cnt);
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < ItemsPerThread; ++j)
@@ -387,52 +422,30 @@ private:
           }
         }
         __syncthreads();
-        break;
+        return;
       }
-      else if (cnt == CandidateBufferCapacity)
+      // Flush branch (`cnt >= Capacity`): emit the leading buffer-worth of items
+      // to the global candidate stream, then renumber any still-pending items so
+      // that their slot indices fall back into `[0, Capacity)` for the next
+      // iteration. Items just flushed go negative and drop out of subsequent
+      // rounds.
+      scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/CandidateBufferCapacity);
+      __syncthreads();
+      cooperative_flush_round(CandidateBufferCapacity);
+      __syncthreads();
+      if (threadIdx.x == 0)
       {
-        scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/CandidateBufferCapacity);
-        __syncthreads();
-        cooperative_flush_round(CandidateBufferCapacity);
-        __syncthreads();
-        if (threadIdx.x == 0)
-        {
-          ts_.cnt.counter = 0;
-        }
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < ItemsPerThread; ++j)
-        {
-          if (positions[j] >= 0)
-          {
-            positions[j] = -1;
-          }
-        }
-        __syncthreads();
-        break;
+        ts_.cnt.counter = cnt - CandidateBufferCapacity;
       }
-      else
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < ItemsPerThread; ++j)
       {
-        // cnt > CandidateBufferCapacity: write only items with positions[j] in [0,
-        // CandidateBufferCapacity), flush, renumber the rest, decrement counter,
-        // loop.
-        scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/CandidateBufferCapacity);
-        __syncthreads();
-        cooperative_flush_round(CandidateBufferCapacity);
-        __syncthreads();
-        if (threadIdx.x == 0)
+        if (positions[j] >= 0)
         {
-          ts_.cnt.counter = cnt - CandidateBufferCapacity;
+          positions[j] -= CandidateBufferCapacity;
         }
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < ItemsPerThread; ++j)
-        {
-          if (positions[j] >= 0)
-          {
-            positions[j] -= CandidateBufferCapacity;
-          }
-        }
-        __syncthreads();
       }
+      __syncthreads();
     }
   }
 
