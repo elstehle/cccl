@@ -81,18 +81,20 @@ struct topk_policy
 
   // Three independent strategy knobs, one per pass.
   //   - `buffered_partition_strategy` is a `BlockPartitionStrategy` value -- the
-  //     four non-accumulating values select `BlockPartition<...>`, and
-  //     `AccumulatingCandidates` selects `BlockPartitionAccumulatingCandidates`.
-  //   - `early_stop_filter_strategy` is a `BlockFilterStrategy` value -- the four
-  //     non-accumulating values select `BlockFilter<...>`, and `AccumulatingFilter`
-  //     selects `BlockFilterAccumulating`. The early-stop pass operates as a
-  //     1-stream filter (the candidate-side machinery is statically elided), so it
-  //     has its own enum independent of the buffered-pass partition enum.
+  //     three non-accumulating values select one of `BlockPartition{Atomics,Staged,
+  //     SharedMem}`, and `AccumulatingCandidates` selects
+  //     `BlockPartitionAccumulatingCandidates`.
+  //   - `early_stop_filter_strategy` is a `BlockFilterStrategy` value -- the three
+  //     non-accumulating values select one of `BlockFilter{Atomics,Staged,
+  //     SharedMem}`, and `AccumulatingFilter` selects `BlockFilterAccumulating`.
+  //     The early-stop pass operates as a 1-stream filter (the candidate-side
+  //     machinery is statically elided), so it has its own enum independent of the
+  //     buffered-pass partition enum.
   //   - `last_filter_partition_strategy` accepts any `BlockPartitionStrategy` value
   //     (including `AccumulatingCandidates`).
-  BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::AtomicsInlinedClassify;
-  BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::AtomicsInlinedClassify;
-  BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::AtomicsInlinedClassify;
+  BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::Atomics;
+  BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::Atomics;
+  BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::Atomics;
 
   // Smem-slot count for the accumulating partition / filter variants' per-stream
   // buffer. Only consulted when `buffered_partition_strategy == AccumulatingCandidates`
@@ -101,8 +103,20 @@ struct topk_policy
 
   value_materialization_mode value_materialization = value_materialization_mode::indexed;
 
-  // When `true`, the partitioning loop skips loading the full tile of values data upfront. Instead it only gathers values of non-rejected items.
+  // When `true`, the partitioning loop skips loading the full tile of values data
+  // upfront. Instead it only gathers values of non-rejected items via the source's
+  // `gather_one()` operation. Honored by all three non-accumulating partition /
+  // filter classes; the accumulating variants implement their own value path and
+  // ignore this flag.
   bool lazy_value_load = true;
+
+  // When `true`, the per-pass classification (identify_candidates_op /
+  // identify_selected_op) is recomputed at each per-item scatter use-site rather
+  // than materialized into a `classes[]` / `kept[]` register array up front. The
+  // tradeoff is register pressure (precomputed) vs recomputation cost (inlined).
+  // Honored by all three non-accumulating partition / filter classes; the
+  // accumulating variants always classify inline by design.
+  bool inlined_classify = true;
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const topk_policy& lhs, const topk_policy& rhs)
   {
@@ -113,7 +127,8 @@ struct topk_policy
         && lhs.early_stop_filter_strategy == rhs.early_stop_filter_strategy
         && lhs.last_filter_partition_strategy == rhs.last_filter_partition_strategy
         && lhs.accumulating_buffer_capacity == rhs.accumulating_buffer_capacity
-        && lhs.value_materialization == rhs.value_materialization && lhs.lazy_value_load == rhs.lazy_value_load;
+        && lhs.value_materialization == rhs.value_materialization && lhs.lazy_value_load == rhs.lazy_value_load
+        && lhs.inlined_classify == rhs.inlined_classify;
   }
 
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const topk_policy& lhs, const topk_policy& rhs)
@@ -135,7 +150,8 @@ struct topk_policy
         << ", .last_filter_partition_strategy = " << static_cast<int>(p.last_filter_partition_strategy)
         << ", .accumulating_buffer_capacity = " << p.accumulating_buffer_capacity
         << ", .value_materialization = " << static_cast<int>(p.value_materialization)
-        << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") << " }";
+        << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false")
+        << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") << " }";
   }
 #endif // _CCCL_HOSTED()
 };

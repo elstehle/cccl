@@ -801,9 +801,10 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename OffsetT,
           typename OutOffsetT,
-          BlockPartitionStrategy BufferedPartStrat = BlockPartitionStrategy::AtomicsPreClassify,
-          BlockFilterStrategy EarlyStopFilterStrat = BlockFilterStrategy::AtomicsPreClassify,
-          bool LazyValueLoad = false>
+          BlockPartitionStrategy BufferedPartStrat = BlockPartitionStrategy::Atomics,
+          BlockFilterStrategy EarlyStopFilterStrat = BlockFilterStrategy::Atomics,
+          bool LazyValueLoad = false,
+          bool InlinedClassify = false>
 struct agent_topk_filter_partition
 {
   using key_in_t   = it_value_t<KeyInputIteratorT>;
@@ -909,7 +910,8 @@ struct agent_topk_filter_partition
     buffered_value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
-    effective_lazy_value_load>;
+    effective_lazy_value_load,
+    InlinedClassify>;
 
   // The early-stop-mode primitive (`BlockFilter` or `BlockFilterAccumulating`).
   using early_stop_filter_t = strategy_to_filter_class_t<
@@ -926,7 +928,8 @@ struct agent_topk_filter_partition
     early_stop_value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
-    effective_lazy_value_load>;
+    effective_lazy_value_load,
+    InlinedClassify>;
 
   // Per-mode storage layouts. Both expose the same `get_*()` accessors so the
   // mode-agnostic `drive_tile_loop` helper is layout-agnostic. The buffered
@@ -1254,8 +1257,9 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename OffsetT,
           typename OutOffsetT,
-          BlockPartitionStrategy PartStrat = BlockPartitionStrategy::AtomicsPreClassify,
-          bool LazyValueLoad               = false>
+          BlockPartitionStrategy PartStrat = BlockPartitionStrategy::Atomics,
+          bool LazyValueLoad               = false,
+          bool InlinedClassify             = false>
 struct agent_topk_last_filter
 {
   using key_in_t   = it_value_t<KeyInputIteratorT>;
@@ -1332,7 +1336,8 @@ struct agent_topk_last_filter
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
-    effective_lazy_value_load>;
+    effective_lazy_value_load,
+    InlinedClassify>;
 
   // last_filter's smem: keys-source persistent state plus the same partition layout
   // helper the filter agent uses. For `BlockPartition` the partition state is empty

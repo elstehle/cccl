@@ -505,17 +505,21 @@ private:
 
 //---------------------------------------------------------------------
 // `strategy_to_partition_class<Strategy, ...>` -- compile-time selector that maps a
-// `BlockPartitionStrategy` enum value to the corresponding partition class type.
+// `BlockPartitionStrategy` enum value (and an `InlinedClassify` bool) to the
+// corresponding partition class type.
 //
-// The four non-accumulating strategy values map to one of the three classes in
+// The non-accumulating strategy values map to one of the three classes in
 // `block_partition.cuh`:
-//   - `AtomicsPreClassify`     -> `BlockPartitionAtomics<..., InlinedClassify=false>`
-//   - `AtomicsInlinedClassify` -> `BlockPartitionAtomics<..., InlinedClassify=true>`
-//   - `Staged`                 -> `BlockPartitionStaged`
-//   - `SharedMem`              -> `BlockPartitionSharedMem`
+//   - `Atomics`                -> `BlockPartitionAtomics<..., LazyValueLoad, InlinedClassify>`
+//   - `Staged`                 -> `BlockPartitionStaged<..., LazyValueLoad, InlinedClassify>`
+//   - `SharedMem`              -> `BlockPartitionSharedMem<..., LazyValueLoad, InlinedClassify>`
 //   - `AccumulatingCandidates` -> `BlockPartitionAccumulatingCandidates`
 //                                 (with `CandidateBufferCapacity` filled in from the
 //                                 metafunction's own `AccumulatingBufferCapacity` arg).
+//                                 The accumulating variant always classifies inline
+//                                 (its fused classify-and-act loop has no separate
+//                                 pre-classify step), so the `InlinedClassify` bool
+//                                 has no effect there.
 //
 // The agent uses this to define `using buffered_partition_t = typename
 // strategy_to_partition_class<...>::type` -- a single point that hides the dispatch.
@@ -538,14 +542,15 @@ template <BlockPartitionStrategy Strategy,
           typename ValueChannelSinksTuple,
           typename ValueTypesTuple,
           typename DataSourceScratchTypesTuple,
-          bool LazyValueLoad>
+          bool LazyValueLoad,
+          bool InlinedClassify>
 struct strategy_to_partition_class
 {
 private:
   using atomics_t = BlockPartitionAtomics<
     BlockThreads,
     ItemsPerThread,
-    /*InlinedClassify=*/(Strategy == BlockPartitionStrategy::AtomicsInlinedClassify),
+    InlinedClassify,
     KeyT,
     SelectedOffsetT,
     CandidateOffsetT,
@@ -579,7 +584,8 @@ private:
     ValueChannelSinksTuple,
     ValueTypesTuple,
     DataSourceScratchTypesTuple,
-    LazyValueLoad>;
+    LazyValueLoad,
+    InlinedClassify>;
 
   using shared_mem_t = BlockPartitionSharedMem<
     BlockThreads,
@@ -598,7 +604,8 @@ private:
     ValueChannelSinksTuple,
     ValueTypesTuple,
     DataSourceScratchTypesTuple,
-    LazyValueLoad>;
+    LazyValueLoad,
+    InlinedClassify>;
 
 public:
   using type = ::cuda::std::conditional_t<
@@ -623,7 +630,8 @@ template <int BlockThreads,
           typename ValueChannelSinksTuple,
           typename ValueTypesTuple,
           typename DataSourceScratchTypesTuple,
-          bool LazyValueLoad>
+          bool LazyValueLoad,
+          bool InlinedClassify>
 struct strategy_to_partition_class<
   BlockPartitionStrategy::AccumulatingCandidates,
   BlockThreads,
@@ -643,12 +651,15 @@ struct strategy_to_partition_class<
   ValueChannelSinksTuple,
   ValueTypesTuple,
   DataSourceScratchTypesTuple,
-  LazyValueLoad>
+  LazyValueLoad,
+  InlinedClassify>
 {
-  // The accumulating prototype loads value channels via stack-local
+  // The accumulating prototype always classifies inline (its fused classify-and-act
+  // loop has no separate pre-classify step), so it does not consume the
+  // `InlinedClassify` parameter. It also loads value channels via stack-local
   // `source_t::ScratchStorage` and so doesn't consume the
-  // `DataSourceScratchTypesTuple` parameter; it's accepted for parity with the
-  // non-accumulating branch (the agent always supplies it).
+  // `DataSourceScratchTypesTuple` parameter; both are accepted for parity with the
+  // non-accumulating branch (the agent always supplies them).
   using type = BlockPartitionAccumulatingCandidates<
     BlockThreads,
     ItemsPerThread,
@@ -687,7 +698,8 @@ template <BlockPartitionStrategy Strategy,
           typename ValueChannelSinksTuple,
           typename ValueTypesTuple,
           typename DataSourceScratchTypesTuple,
-          bool LazyValueLoad>
+          bool LazyValueLoad,
+          bool InlinedClassify>
 using strategy_to_partition_class_t = typename strategy_to_partition_class<
   Strategy,
   BlockThreads,
@@ -707,7 +719,8 @@ using strategy_to_partition_class_t = typename strategy_to_partition_class<
   ValueChannelSinksTuple,
   ValueTypesTuple,
   DataSourceScratchTypesTuple,
-  LazyValueLoad>::type;
+  LazyValueLoad,
+  InlinedClassify>::type;
 } // namespace detail::topk
 
 CUB_NAMESPACE_END

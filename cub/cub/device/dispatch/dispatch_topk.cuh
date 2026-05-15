@@ -377,6 +377,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   static constexpr BlockPartitionStrategy buffered_part_strat = policy.buffered_partition_strategy;
   static constexpr BlockFilterStrategy early_stop_filter_strat = policy.early_stop_filter_strategy;
   static constexpr bool lazy_value_load = policy.lazy_value_load;
+  static constexpr bool inlined_classify = policy.inlined_classify;
 
   // Single agent type handling both `early_stop` and `buffered` modes; the
   // agent does a runtime two-way `if` over the `mode` arg of `run()`.
@@ -395,7 +396,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     OutOffsetT,
     buffered_part_strat,
     early_stop_filter_strat,
-    lazy_value_load>;
+    lazy_value_load,
+    inlined_classify>;
 
   // Unbuffered scout mode: drive the histogram agent with a candidate-filter
   // predicate that wraps `identify_candidates_op`. See the single-source
@@ -553,6 +555,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
 
   static constexpr BlockPartitionStrategy part_strat = policy.last_filter_partition_strategy;
   static constexpr bool lazy_value_load              = policy.lazy_value_load;
+  static constexpr bool inlined_classify             = policy.inlined_classify;
 
   using agent_lf_t = agent_topk_last_filter<
     agent_topk_policy_t,
@@ -564,7 +567,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     OffsetT,
     OutOffsetT,
     part_strat,
-    lazy_value_load>;
+    lazy_value_load,
+    inlined_classify>;
 
   __shared__ typename agent_lf_t::TempStorage temp_storage;
 

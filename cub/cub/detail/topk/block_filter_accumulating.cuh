@@ -408,17 +408,19 @@ private:
 
 //---------------------------------------------------------------------
 // `strategy_to_filter_class<Strategy, ...>` -- compile-time selector mapping a
-// `BlockFilterStrategy` value to the corresponding filter class type.
+// `BlockFilterStrategy` value (and an `InlinedClassify` bool) to the
+// corresponding filter class type.
 //
-// The four non-accumulating strategy values map to one of the three classes in
+// The non-accumulating strategy values map to one of the three classes in
 // `block_filter.cuh`:
-//   - `AtomicsPreClassify`     -> `BlockFilterAtomics<..., InlinedClassify=false>`
-//   - `AtomicsInlinedClassify` -> `BlockFilterAtomics<..., InlinedClassify=true>`
-//   - `Staged`                 -> `BlockFilterStaged`
-//   - `SharedMem`              -> `BlockFilterSharedMem`
+//   - `Atomics`                -> `BlockFilterAtomics<..., LazyValueLoad, InlinedClassify>`
+//   - `Staged`                 -> `BlockFilterStaged<..., LazyValueLoad, InlinedClassify>`
+//   - `SharedMem`              -> `BlockFilterSharedMem<..., LazyValueLoad, InlinedClassify>`
 //   - `AccumulatingFilter`     -> `BlockFilterAccumulating`
 //                                 (with `CandidateBufferCapacity` filled in from the
 //                                 metafunction's own `AccumulatingBufferCapacity` arg).
+//                                 The accumulating variant always classifies inline,
+//                                 so the `InlinedClassify` bool has no effect there.
 //
 // The agent uses this metafunction to derive `filter_t` from a policy enum.
 //---------------------------------------------------------------------
@@ -435,14 +437,15 @@ template <BlockFilterStrategy Strategy,
           typename ValueChannelSinksTuple,
           typename ValueTypesTuple,
           typename DataSourceScratchTypesTuple,
-          bool LazyValueLoad>
+          bool LazyValueLoad,
+          bool InlinedClassify>
 struct strategy_to_filter_class
 {
 private:
   using atomics_t = BlockFilterAtomics<
     BlockThreads,
     ItemsPerThread,
-    /*InlinedClassify=*/(Strategy == BlockFilterStrategy::AtomicsInlinedClassify),
+    InlinedClassify,
     KeyT,
     SelectedOffsetT,
     SelectedReserveOp,
@@ -466,7 +469,8 @@ private:
     ValueChannelSinksTuple,
     ValueTypesTuple,
     DataSourceScratchTypesTuple,
-    LazyValueLoad>;
+    LazyValueLoad,
+    InlinedClassify>;
 
   using shared_mem_t = BlockFilterSharedMem<
     BlockThreads,
@@ -480,7 +484,8 @@ private:
     ValueChannelSinksTuple,
     ValueTypesTuple,
     DataSourceScratchTypesTuple,
-    LazyValueLoad>;
+    LazyValueLoad,
+    InlinedClassify>;
 
 public:
   using type = ::cuda::std::conditional_t<
@@ -500,7 +505,8 @@ template <int BlockThreads,
           typename ValueChannelSinksTuple,
           typename ValueTypesTuple,
           typename DataSourceScratchTypesTuple,
-          bool LazyValueLoad>
+          bool LazyValueLoad,
+          bool InlinedClassify>
 struct strategy_to_filter_class<
   BlockFilterStrategy::AccumulatingFilter,
   BlockThreads,
@@ -515,12 +521,14 @@ struct strategy_to_filter_class<
   ValueChannelSinksTuple,
   ValueTypesTuple,
   DataSourceScratchTypesTuple,
-  LazyValueLoad>
+  LazyValueLoad,
+  InlinedClassify>
 {
-  // The accumulating filter loads value channels via stack-local
-  // `source_t::ScratchStorage` and so doesn't consume the
-  // `DataSourceScratchTypesTuple` parameter; it's accepted for parity with the
-  // non-accumulating branch (the agent always supplies it).
+  // The accumulating filter always classifies inline (no separate pre-classify
+  // step), so it does not consume the `InlinedClassify` parameter. It also loads
+  // value channels via stack-local `source_t::ScratchStorage` and so doesn't
+  // consume the `DataSourceScratchTypesTuple` parameter; both are accepted for
+  // parity with the non-accumulating branch (the agent always supplies them).
   using type = BlockFilterAccumulating<
     BlockThreads,
     ItemsPerThread,
@@ -549,7 +557,8 @@ template <BlockFilterStrategy Strategy,
           typename ValueChannelSinksTuple,
           typename ValueTypesTuple,
           typename DataSourceScratchTypesTuple,
-          bool LazyValueLoad>
+          bool LazyValueLoad,
+          bool InlinedClassify>
 using strategy_to_filter_class_t = typename strategy_to_filter_class<
   Strategy,
   BlockThreads,
@@ -564,7 +573,8 @@ using strategy_to_filter_class_t = typename strategy_to_filter_class<
   ValueChannelSinksTuple,
   ValueTypesTuple,
   DataSourceScratchTypesTuple,
-  LazyValueLoad>::type;
+  LazyValueLoad,
+  InlinedClassify>::type;
 } // namespace detail::topk
 
 CUB_NAMESPACE_END
