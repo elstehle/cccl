@@ -532,23 +532,54 @@ struct AgentTopKHistogram
   static constexpr int num_buckets      = 1 << bits_per_pass;
   static constexpr int tile_items       = block_threads * items_per_thread;
 
+  // The tile data source
   using keys_source_t =
-    tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
-  using identify_kth_bucket_t =
+  tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+
+  // Block-level primitive that takes the global histogram and identifies bin that the k-th item falls into
+  using block_identify_kth_bucket_t =
     block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
+
+  // Smem reuse plan. The agent's smem accesses split into three temporally
+  // disjoint phases, separated by the `__syncthreads()` / `__threadfence()` /
+  // `__syncthreads_or` chain that bridges the tile loop and `finalize_pass`:
+  //
+  //   Phase 1 -- tile loop. Concurrently uses `histogram` (atomicAdd target),
+  //              `keys_source_state` (persistent data-source state, e.g. the
+  //              TMA mbarrier), and `keys_source_scratch` (BlockLoad / TMA
+  //              staging buffer).
+  //   Phase 2 -- `merge_histogram`. Reads `histogram` only. The post-loop
+  //              `__syncthreads()` makes phase-1 atomicAdds visible; the
+  //              load-state / load-scratch are unused from here on.
+  //   Phase 3 -- `block_identify_kth_bucket` on the last block only. Uses
+  //              `prefix_sum` exclusively. The `__threadfence()` +
+  //              `__syncthreads_or` in `finalize_pass` separates phase 2
+  //              from phase 3, so the phase-1+2 storage is dead by then.
+  //
+  // We fold phases 1+2 into one named arm of an outer union and put
+  // `prefix_sum` in the other. The total smem requirement becomes
+  // `max(H + S + C, P)` (with `H` = histogram, `S` = keys_source_state,
+  // `C` = keys_source_scratch, `P` = prefix_sum) instead of
+  // `H + S + max(C, P)`. The refactor never increases the total (each arm is
+  // a subset of the original linear layout) and saves up to `H + S` bytes per
+  // block when `P` dominates `C` -- the common case for the default
+  // `block_load_vectorize` policy, where `C` is empty.
+  // Types-in-anonymous-unions are not allowed, so the phase-1+2 group is
+  // declared at struct scope here and aliased through the anonymous union below.
+  struct phase_load_t
+  {
+    OffsetT histogram[num_buckets]; // phases 1 + 2
+    typename keys_source_t::TempStorage keys_source_state; // phase 1
+    typename keys_source_t::ScratchStorage keys_source_scratch; // phase 1
+  };
 
   struct _TempStorage
   {
-    // Persistent region (architecture §2.2).
-    OffsetT histogram[num_buckets];
-    typename keys_source_t::TempStorage keys_source_state;
-
-    // Method-call scratch (mutually exclusive in time).
     union
     {
-      typename keys_source_t::ScratchStorage keys_source_scratch;
-      typename identify_kth_bucket_t::TempStorage prefix_sum;
-    } scratch;
+      phase_load_t phase_load;
+      typename block_identify_kth_bucket_t::TempStorage prefix_sum; // phase 3 (last block only)
+    };
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -589,7 +620,7 @@ struct AgentTopKHistogram
       if (filter_op(items[j]))
       {
         const int bucket = extract_bin_op(items[j]);
-        atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
+        atomicAdd(temp_storage.phase_load.histogram + bucket, OffsetT{1});
       }
     }
   }
@@ -603,7 +634,7 @@ struct AgentTopKHistogram
       if (j < num_thread_items && filter_op(items[j]))
       {
         const int bucket = extract_bin_op(items[j]);
-        atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
+        atomicAdd(temp_storage.phase_load.histogram + bucket, OffsetT{1});
       }
     }
   }
@@ -624,10 +655,10 @@ struct AgentTopKHistogram
          CounterUpdateFn counter_update_fn,
          KthBucketFn on_kth_bucket)
   {
-    init_histogram<block_threads, num_buckets>(temp_storage.histogram);
+    init_histogram<block_threads, num_buckets>(temp_storage.phase_load.histogram);
     __syncthreads();
 
-    keys_source_t keys_source{d_keys_in, temp_storage.keys_source_state};
+    keys_source_t keys_source{d_keys_in, temp_storage.phase_load.keys_source_state};
 
     // Split the tile space into full tiles and a possible single trailing
     // partial tile. The hot-path loop below processes only full tiles. The
@@ -647,7 +678,7 @@ struct AgentTopKHistogram
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch);
+      auto h = keys_source.submit_load(temp_storage.phase_load.keys_source_scratch);
       h.complete_load(items);
       process_tile_full(items);
     }
@@ -668,7 +699,7 @@ struct AgentTopKHistogram
 
         __syncthreads();
         key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(temp_storage.scratch.keys_source_scratch, partial_items);
+        auto h = keys_source.submit_load(temp_storage.phase_load.keys_source_scratch, partial_items);
         h.complete_load(items);
         const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
         const int num_thread_items =
@@ -680,18 +711,25 @@ struct AgentTopKHistogram
     }
 
     __syncthreads();
-    merge_histogram<block_threads, num_buckets>(temp_storage.histogram, global_histogram);
+    merge_histogram<block_threads, num_buckets>(temp_storage.phase_load.histogram, global_histogram);
 
     // Last-block epilogue: per-mode counter update on thread 0, then the
     // prefix-sum + bucket selection whose `on_kth_bucket` callback writes the
     // discovered next-pass inputs into `counter`, then optional histogram
     // reset for the next pass.
+    //
+    // The `__threadfence()` + `__syncthreads_or` inside `finalize_pass` is the
+    // boundary that switches the outer union's active arm from `phase_load`
+    // (only alive for `merge_histogram`'s smem reads above) to `prefix_sum`.
+    // After that boundary, no thread in this block reads
+    // `temp_storage.phase_load.*` again, and the other (non-last) blocks have
+    // already exited.
     auto epilogue_op = [&] {
       if (threadIdx.x == 0)
       {
         counter_update_fn();
       }
-      identify_kth_bucket_t{temp_storage.scratch.prefix_sum}.find_kth_bucket(global_histogram, k, on_kth_bucket);
+      block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(global_histogram, k, on_kth_bucket);
       if (reset_histogram)
       {
         // TODO (elstehle): We could skip this reset when we detect an early-stop condition. However, it would require a block-wide broadcast. This short-circuit needs to be evaluated experimentally. 
@@ -818,7 +856,7 @@ struct agent_topk_filter_partition
   static constexpr bool keys_only       = ::cuda::std::is_same_v<ValueInputIteratorT, NullType*>;
 
   // The epilogue primitive used to find the k-th bucket to conclude the histogram stage
-  using identify_kth_bucket_t =
+  using block_identify_kth_bucket_t =
     block_identify_kth_bucket<block_threads, bits_per_pass, AgentTopKPolicyT::scan_algorithm, OffsetT, OutOffsetT>;
 
   // Lazy value-load only matters when there's a value channel to load lazily.
@@ -932,43 +970,83 @@ struct agent_topk_filter_partition
     InlinedClassify>;
 
   // Per-mode storage layouts. Both expose the same `get_*()` accessors so the
-  // mode-agnostic `drive_tile_loop` helper is layout-agnostic. The buffered
-  // layout's `prefix_sum` slot holds the kth-bucket scan state; the early-stop
-  // layout doesn't run a prefix sum so its `prefix_sum` slot is an empty
-  // placeholder.
+  // mode-agnostic `drive_tile_loop` helper is layout-agnostic. Neither layout
+  // reserves space for the kth-bucket prefix-sum scratch internally: `prefix_sum`
+  // is hoisted out into the outer `_TempStorage` union below so it can alias
+  // with the (much larger) phase-1+2 footprint. Passing `empty_prefix_sum_t`
+  // as the `PrefixSumT` collapses the corresponding slot in each layout to a
+  // 1-byte placeholder; the per-mode `get_prefix_sum()` accessors still
+  // compile but are never called by this agent.
   struct empty_prefix_sum_t
   {};
 
   using buffered_storage_layout_t = bp_detail::partition_storage_layout_for_t<
     buffered_partition_t,
     typename keys_source_t::ScratchStorage,
-    typename identify_kth_bucket_t::TempStorage>;
+    empty_prefix_sum_t>;
 
   using early_stop_storage_layout_t = bp_detail::partition_storage_layout_for_t<
     early_stop_filter_t,
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
+  // Smem reuse plan. The agent's smem accesses split into temporally disjoint
+  // arms separated by `__syncthreads()` / `__threadfence()` / `__syncthreads_or`
+  // chains:
+  //
+  //   `sink_mode::buffered`:
+  //     Phase 1+2 (every block) -- `histogram` (atomicAdd target, then merge
+  //                                 source), `keys_source_state` (persistent
+  //                                 data-source state), and the buffered
+  //                                 `arena` (load + partition scratch, plus
+  //                                 the partition's persistent state on the
+  //                                 accumulating strategies).
+  //     Phase 3   (last block)  -- `prefix_sum` only. The
+  //                                 `__threadfence()` + `__syncthreads_or` in
+  //                                 `finalize_pass` separates phase 2 from
+  //                                 phase 3, so the phase-1+2 storage is
+  //                                 dead by then.
+  //
+  //   `sink_mode::early_stop`:
+  //     Whole pass              -- `keys_source_state` + early-stop `arena`.
+  //                                 `histogram` and `prefix_sum` are unused.
+  //
+  // We place these three lifetime arms in an outer union. The previous layout
+  // already aliased `partition_state` <-> `prefix_sum` (persistent-partition
+  // case) and `keys_source_scratch` <-> `prefix_sum` (non-persistent case)
+  // INSIDE the per-mode arena. Hoisting `prefix_sum` to the outer union
+  // recovers those savings via the wider phase-1+2 buffered arm and
+  // additionally frees `histogram + keys_source_state` on configurations
+  // where `prefix_sum` dominates the load+partition scratch (the common case
+  // for the default `block_load_vectorize` policy with the non-accumulating
+  // partition strategy). The refactor never increases the total smem
+  // requirement (each arm is a subset of the original linear layout).
+  //
+  // Both inner layouts have non-trivial special members (their inner phase
+  // unions carry user-defined ctor/dtor), so the wrapping union itself needs
+  // explicit ctor/dtor.
   struct _TempStorage
   {
-    // Histogram is only written by the buffered branch. Early-stop leaves it
-    // untouched; the storage cost is unavoidable because the kernel TempStorage
-    // is sized at compile time.
-    OffsetT histogram[num_buckets];
-    typename keys_source_t::TempStorage keys_source_state;
-
-    // The two mode-specific arenas alias each other -- `run()` activates exactly
-    // one of them based on the runtime `mode` arg. Both inner layouts have
-    // non-trivial special members (their inner phase unions carry user-defined
-    // ctor/dtor), so the wrapping union itself needs explicit ctor/dtor.
-    union arena_t
+    union arms_t
     {
-      buffered_storage_layout_t buffered;
-      early_stop_storage_layout_t early_stop;
+      struct buffered_t
+      {
+        OffsetT histogram[num_buckets]; // phases 1 + 2
+        typename keys_source_t::TempStorage keys_source_state; // phase 1
+        buffered_storage_layout_t arena; // phase 1
+      } buffered;
 
-      _CCCL_HOST_DEVICE arena_t() {}
-      _CCCL_HOST_DEVICE ~arena_t() {}
-    } partition_arena;
+      typename block_identify_kth_bucket_t::TempStorage prefix_sum; // phase 3 (last block only)
+
+      struct early_stop_t
+      {
+        typename keys_source_t::TempStorage keys_source_state;
+        early_stop_storage_layout_t arena;
+      } early_stop;
+
+      _CCCL_HOST_DEVICE arms_t() {}
+      _CCCL_HOST_DEVICE ~arms_t() {}
+    } arms;
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -1150,12 +1228,6 @@ public:
       value_in_t* out_val_buf           = nullptr,
       OffsetT* p_num_candidates_written = nullptr)
   {
-    // Construct keys data source (multi_source over d_keys_in / in_key_buf).
-    // Stable across the entire run() regardless of mode.
-    key_source_input_t key_src_input{d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
-
     // Mode-shared stack-locals.
     selected_reserve_op_t reserve_sel{p_num_selected_written};
     key_xform_t sel_key_xform{};
@@ -1165,34 +1237,46 @@ public:
     {
       // Early-stop branch: no histogram is accumulated, no kth-bucket scan runs.
       // The filter primitive's `Partition()` writes selected items directly to `d_keys_out` via `reserve_sel`.
+      //
+      // `keys_source_state` lives in this arm (so it can alias with the
+      // buffered arm's footprint), hence the keys-source is constructed here
+      // rather than at function scope.
+      key_source_input_t key_src_input{d_keys_in, storage.arms.early_stop.keys_source_state.a};
+      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.early_stop.keys_source_state.b};
+      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+
       identify_selected_op_t identify_selected{identify_candidates_op};
       auto value_channel_sinks = make_early_stop_value_channel_sinks();
 
       early_stop_filter_t filter{
-        storage.partition_arena.early_stop.get_partition_state(),
+        storage.arms.early_stop.arena.get_partition_state(),
         reserve_sel,
         sel_key_xform,
         d_keys_out,
         value_channel_sinks,
         identify_selected};
 
-      drive_tile_loop(filter, storage.partition_arena.early_stop, keys_source);
+      drive_tile_loop(filter, storage.arms.early_stop.arena, keys_source);
     }
     else
     {
       // Buffered branch: accumulate a histogram over candidates, scatter
       // selected to `d_keys_out` and candidates to `out_key_buf`.
-      init_histogram<block_threads, num_buckets>(storage.histogram);
+      key_source_input_t key_src_input{d_keys_in, storage.arms.buffered.keys_source_state.a};
+      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.buffered.keys_source_state.b};
+      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+
+      init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
       __syncthreads();
 
       buffered_cand_key_out_t cand_key_out = out_key_buf;
       buffered_cand_val_out_t cand_val_out = out_val_buf;
       candidate_reserve_op_t reserve_cand{p_num_candidates_written};
-      histogram_callback_op_t histogram_cb{extract_bin_op, storage.histogram};
+      histogram_callback_op_t histogram_cb{extract_bin_op, storage.arms.buffered.histogram};
       auto value_channel_sinks = make_buffered_value_channel_sinks(cand_val_out);
 
       buffered_partition_t partition{
-        storage.partition_arena.buffered.get_partition_state(),
+        storage.arms.buffered.arena.get_partition_state(),
         reserve_sel,
         reserve_cand,
         sel_key_xform,
@@ -1203,15 +1287,22 @@ public:
         identify_candidates_op,
         histogram_cb};
 
-      drive_tile_loop(partition, storage.partition_arena.buffered, keys_source);
+      drive_tile_loop(partition, storage.arms.buffered.arena, keys_source);
 
       __syncthreads();
-      merge_histogram<block_threads, num_buckets>(storage.histogram, global_histogram);
+      merge_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram, global_histogram);
     }
 
     // Last-block epilogue: per-mode counter update on thread 0, then the kth-bucket
     // scan + optional histogram reset (buffered branch only -- the early_stop
     // pass has nothing to finalize beyond the counter write).
+    //
+    // The `__threadfence()` + `__syncthreads_or` inside `finalize_pass` is the
+    // boundary that switches the buffered branch's active arm from
+    // `arms.buffered` (only alive for `merge_histogram`'s smem reads above) to
+    // `arms.prefix_sum`. After that boundary, no thread in this block reads
+    // `storage.arms.buffered.*` again, and the other (non-last) blocks have
+    // already exited.
     auto epilogue_op = [&] {
       if (threadIdx.x == 0)
       {
@@ -1219,7 +1310,7 @@ public:
       }
       if (mode == sink_mode::buffered)
       {
-        identify_kth_bucket_t{storage.partition_arena.buffered.get_prefix_sum()}.find_kth_bucket(
+        block_identify_kth_bucket_t{storage.arms.prefix_sum}.find_kth_bucket(
           global_histogram, current_k, on_kth_bucket);
         if (reset_histogram)
         {
