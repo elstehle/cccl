@@ -165,6 +165,31 @@ struct policy_selector
 {
   int key_size;
 
+  // Strategy choice rationale -- see the design notes in this file for full detail.
+  //
+  // Top-k's three streams (buffered-pass candidates, early-stop selected, last-filter
+  // selected + ties) all benefit from cross-tile batching of the reserve-op atomics.
+  // The buffered-pass stream is the most sensitive: ~`tile_items / num_buckets` items
+  // per tile (typically 1-2 items per 2048-item tile at `bits_per_pass = 11`), so a
+  // per-candidate `atomicAdd` to the global reserve counter is mostly atomic latency
+  // on a near-empty stream. `BlockPartitionAccumulatingCandidates` collapses that to
+  // one cooperative flush per ~`accumulating_buffer_capacity` items. The early-stop
+  // filter pass and the dedicated last-filter pass have dense streams instead, where
+  // the same idea reduces the per-item-atomic cost on the hot output path.
+  //
+  // The smem cost of the Accumulating variants is a persistent buffer of
+  // ~`Capacity * (sizeof(KeyT) + sizeof(IndexedValueT))` plus a few counter words
+  // (~1-3 KiB at the default capacity of 256). With the smem-reuse refactor in the
+  // partition / histogram agents, this buffer aliases with the kth-bucket scan
+  // scratch (`arms.prefix_sum`) and disappears from the kernel's smem budget on
+  // typical key sizes -- the previous `Atomics`-only kernels were sized by the
+  // larger of `prefix_sum` or the per-tile scratch anyway.
+  //
+  // The alternative `Staged` / `SharedMem` strategies trade `~tile_items * sizeof(KeyT)`
+  // of per-tile smem for fully coalesced stores; on the sparse buffered-pass stream
+  // they end up paying for an arena that's mostly empty, and on the dense streams
+  // they consume the smem that the agent refactor freed. We do not pick them by
+  // default; they remain available for user-supplied policy selectors.
   [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto operator()(::cuda::compute_capability cc) const -> topk_policy
   {
     constexpr int nominal_4b_items_per_thread = 4;
@@ -173,16 +198,47 @@ struct policy_selector
     if (cc >= ::cuda::compute_capability{9, 0})
     {
       // Try to load 16 bytes per thread: int64 -> 2, int32 -> 4, int16 -> 8.
-      const int items_per_thread = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
+      constexpr int threads_per_block = 512;
+      const int items_per_thread      = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
+      const int tile_items            = threads_per_block * items_per_thread;
+      // Hopper+ has the smem budget (~228 KiB / SM) to absorb a per-block
+      // accumulating buffer the size of a full tile. Sizing the buffer at
+      // `tile_items` collapses each accumulating primitive's overflow loop to
+      // `max_flush_iters == 2`, which NVCC straight-lines and which cuts the
+      // loop-carried liveness of the per-thread `positions[]` array roughly in
+      // half. On 4-byte keys the buffer costs ~16 KiB of smem; with the agent
+      // `arms.prefix_sum` alias landed in the smem-reuse refactor, that buffer
+      // overlaps the kth-bucket scratch and effectively replaces the previous
+      // 8-KiB scan slot. Cross-tile batching of sparse buffered-pass candidates
+      // still works -- the counter accumulates over many tiles before any
+      // single tile can fill the buffer.
       return topk_policy{
-        512, items_per_thread, bits_per_pass, tile_load_kind::block_load_vectorize, BLOCK_SCAN_WARP_SCANS};
+        /*.threads_per_block             =*/ threads_per_block,
+        /*.items_per_thread              =*/ items_per_thread,
+        /*.bits_per_pass                 =*/ bits_per_pass,
+        /*.keys_tile_load_kind           =*/ tile_load_kind::block_load_vectorize,
+        /*.scan_algorithm                =*/ BLOCK_SCAN_WARP_SCANS,
+        /*.buffered_partition_strategy   =*/ BlockPartitionStrategy::AccumulatingCandidates,
+        /*.early_stop_filter_strategy    =*/ BlockFilterStrategy::AccumulatingFilter,
+        /*.last_filter_partition_strategy=*/ BlockPartitionStrategy::AccumulatingCandidates,
+        /*.accumulating_buffer_capacity  =*/ tile_items};
     }
 
-    // Default tuning used on older architectures.
+    // Default tuning used on older architectures: keep the smaller 256-slot
+    // accumulating buffer (smem-constrained pre-Hopper). The overflow loop is
+    // still compile-time-bounded by `max_flush_iters`; it just won't collapse
+    // to a 2-iteration form here.
     const int items_per_thread =
       ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size, 1, nominal_4b_items_per_thread);
     return topk_policy{
-      512, items_per_thread, bits_per_pass, tile_load_kind::block_load_vectorize, BLOCK_SCAN_WARP_SCANS};
+      /*.threads_per_block             =*/ 512,
+      /*.items_per_thread              =*/ items_per_thread,
+      /*.bits_per_pass                 =*/ bits_per_pass,
+      /*.keys_tile_load_kind           =*/ tile_load_kind::block_load_vectorize,
+      /*.scan_algorithm                =*/ BLOCK_SCAN_WARP_SCANS,
+      /*.buffered_partition_strategy   =*/ BlockPartitionStrategy::AccumulatingCandidates,
+      /*.early_stop_filter_strategy    =*/ BlockFilterStrategy::AccumulatingFilter,
+      /*.last_filter_partition_strategy=*/ BlockPartitionStrategy::AccumulatingCandidates};
   }
 };
 
