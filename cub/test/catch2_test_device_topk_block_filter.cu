@@ -15,7 +15,7 @@
 //!
 //! The strategy sweep covers the four non-accumulating values of
 //! `BlockFilterStrategy`:
-//!   AtomicsPreClassify, AtomicsInlinedClassify, Staged, SharedMem.
+//!   Atomics, Staged, SharedMem -- crossed with `InlinedClassify` in {false, true}.
 
 #include <cub/detail/topk/block_filter.cuh>
 #include <cub/detail/topk/block_filter_accumulating.cuh>
@@ -60,7 +60,7 @@ struct driver_identify_selected_op
 // Kernel: drives one tile through BlockFilter (safe-both interface).
 //---------------------------------------------------------------------
 
-template <int BlockThreads, int ItemsPerThread, topk::BlockFilterStrategy Strategy, bool KeysOnly>
+template <int BlockThreads, int ItemsPerThread, topk::BlockFilterStrategy Strategy, bool InlinedClassify, bool KeysOnly>
 __global__ void filter_kernel(
   const int* d_keys_in,
   const int* d_values_in,
@@ -105,7 +105,8 @@ __global__ void filter_kernel(
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
-    /*LazyValueLoad=*/false>;
+    /*LazyValueLoad=*/false,
+    InlinedClassify>;
 
   __shared__ typename filter_t::TempStorage filter_ts;
   __shared__ typename filter_t::ScratchStorage scratch;
@@ -183,16 +184,33 @@ static std::vector<::cuda::std::uint8_t> make_keep(int num_items, int keep_every
   return out;
 }
 
-// %PARAM% TEST_STRAT strat 0:1:2:3
-// 0 = atomics (precomputed), 1 = atomics (inlined), 2 = staged, 3 = shared_mem
+// %PARAM% TEST_STRAT strat 0:1:2:3:4:5
+// (Strategy, InlinedClassify) cross product covering all six non-accumulating
+// combinations:
+//   0 = atomics + precomputed-classify
+//   1 = atomics + inlined-classify
+//   2 = staged + precomputed-classify
+//   3 = staged + inlined-classify
+//   4 = shared_mem + precomputed-classify
+//   5 = shared_mem + inlined-classify
 #if TEST_STRAT == 0
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::AtomicsPreClassify;
+constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Atomics;
+constexpr bool kInlinedClassify               = false;
 #elif TEST_STRAT == 1
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::AtomicsInlinedClassify;
+constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Atomics;
+constexpr bool kInlinedClassify               = true;
 #elif TEST_STRAT == 2
 constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Staged;
+constexpr bool kInlinedClassify               = false;
+#elif TEST_STRAT == 3
+constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Staged;
+constexpr bool kInlinedClassify               = true;
+#elif TEST_STRAT == 4
+constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::SharedMem;
+constexpr bool kInlinedClassify               = false;
 #else
 constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::SharedMem;
+constexpr bool kInlinedClassify               = true;
 #endif
 
 // Drive a single (Strategy, KeysOnly, full|partial) configuration.
@@ -227,7 +245,7 @@ void run_filter_test(
   thrust::device_vector<int> d_sel_vals(out_capacity, 0);
   thrust::device_vector<unsigned int> d_sel_cnt(1, 0);
 
-  filter_kernel<BlockThreads, ItemsPerThread, kStrategy, KeysOnly><<<1, BlockThreads>>>(
+  filter_kernel<BlockThreads, ItemsPerThread, kStrategy, kInlinedClassify, KeysOnly><<<1, BlockThreads>>>(
     thrust::raw_pointer_cast(d_keys_in.data()),
     thrust::raw_pointer_cast(d_values_in.data()),
     thrust::raw_pointer_cast(d_keep_in.data()),

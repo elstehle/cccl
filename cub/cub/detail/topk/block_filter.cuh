@@ -64,16 +64,14 @@ namespace detail::topk
 {
 //---------------------------------------------------------------------
 // Strategy selector for the filter primitives. Mirrors `BlockPartitionStrategy`:
-// the four non-accumulating values map to the three classes in this header
-// (Atomics{Pre,Inlined}Classify both map to `BlockFilterAtomics` with the
-// matching `InlinedClassify` bool); `AccumulatingFilter` maps to
-// `BlockFilterAccumulating`. The mapping is performed by
+// picks the *filtering* shape; the orthogonal `InlinedClassify` axis is a
+// separate template / policy bool that every non-accumulating primitive accepts.
+// The mapping from a strategy enum value to a class is performed by
 // `strategy_to_filter_class_t<...>` in `block_filter_accumulating.cuh`.
 //---------------------------------------------------------------------
 enum class BlockFilterStrategy
 {
-  AtomicsPreClassify,
-  AtomicsInlinedClassify,
+  Atomics,
   Staged,
   SharedMem,
   AccumulatingFilter,
@@ -185,9 +183,9 @@ struct precomputed_filter_classifier
 // `InlinedClassify` selects between the precomputed-classes form (materializes a
 // `kept[]` register array up front) and the inlined-classify form (recomputes the
 // predicate at each scatter use-site, frees the registers that would hold
-// `kept[]`). Mapped from `BlockFilterStrategy::AtomicsPreClassify`
-// (InlinedClassify=false) and `BlockFilterStrategy::AtomicsInlinedClassify`
-// (InlinedClassify=true).
+// `kept[]`). Mapped from `BlockFilterStrategy::Atomics`. The `InlinedClassify`
+// axis is independent and is also accepted (with the same semantics) by
+// `BlockFilterStaged` and `BlockFilterSharedMem`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -393,8 +391,15 @@ private:
 // channel loads (sub-brokered scratch), scatters into the channel's `values[]`
 // slot, then cooperatively stores. Mapped from `BlockFilterStrategy::Staged`.
 //
-// `LazyValueLoad` is accepted for parity with the dispatcher's uniform signature
-// but is not honored: the Staged primitive always eagerly loads.
+// `InlinedClassify` selects between materializing a `kept[ItemsPerThread]`
+// register array up front and recomputing the predicate at the per-item
+// smem-scatter site. The filter has no candidate callback so the choice is
+// purely about register pressure vs recomputation.
+//
+// `LazyValueLoad` selects between eagerly loading a tile of values into a
+// register array up front (default) and gathering only the surviving values
+// directly into smem via the source's `gather_one(j)` operation. Only honored
+// when the value source supports `gather_one`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -407,7 +412,8 @@ template <int BlockThreads,
           typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
           typename ValueTypesTuple             = ::cuda::std::tuple<>,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
-          bool /*LazyValueLoad*/               = false>
+          bool LazyValueLoad                   = false,
+          bool InlinedClassify                 = false>
 class BlockFilterStaged
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
@@ -488,8 +494,6 @@ private:
                   "tuple; the filter pairs them positionally.");
 
     const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
-    bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-      keys, num_thread_items, identify_op_};
 
     int positions[ItemsPerThread];
 
@@ -499,19 +503,16 @@ private:
     }
     __syncthreads();
 
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < ItemsPerThread; ++j)
+    if constexpr (InlinedClassify)
     {
-      if (classifier.kept[j])
-      {
-        const int pos          = atomicAdd(&buffer.cnt.counter, 1);
-        buffer.phase.keys[pos] = keys[j];
-        positions[j]           = pos;
-      }
-      else
-      {
-        positions[j] = -1;
-      }
+      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
+      classify_and_scatter_keys(buffer, keys, classifier, positions);
+    }
+    else
+    {
+      bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+        keys, num_thread_items, identify_op_};
+      classify_and_scatter_keys(buffer, keys, classifier, positions);
     }
     __syncthreads();
 
@@ -547,25 +548,47 @@ private:
 
         auto& sink       = ::cuda::std::get<I>(sinks_);
         auto& chan_phase = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.per_channel);
-        value_t reg_values[ItemsPerThread]{};
-        if constexpr (IsFull)
+        if constexpr (LazyValueLoad)
         {
-          auto h = src.submit_load(chan_phase.load);
-          h.complete_load(reg_values);
+          // Lazy: skip the eager tile-wide load. Each thread gathers only the
+          // values of its surviving items via `src.gather_one(j)` and writes
+          // them straight into the smem arena. The data-source's `load` slot
+          // (aliased with `chan_phase.values` via the phase union) goes
+          // unused on this path.
+          (void) num_items;
+          _CCCL_PRAGMA_UNROLL_FULL()
+          for (int j = 0; j < ItemsPerThread; ++j)
+          {
+            if (positions[j] >= 0)
+            {
+              chan_phase.values[positions[j]] = src.gather_one(j);
+            }
+          }
         }
         else
         {
-          auto h = src.submit_load(chan_phase.load, num_items);
-          h.complete_load(reg_values);
-        }
-        __syncthreads();
-
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < ItemsPerThread; ++j)
-        {
-          if (positions[j] >= 0)
+          // Eager: load the full tile into a register array, then scatter the
+          // surviving values into the smem arena.
+          value_t reg_values[ItemsPerThread]{};
+          if constexpr (IsFull)
           {
-            chan_phase.values[positions[j]] = reg_values[j];
+            auto h = src.submit_load(chan_phase.load);
+            h.complete_load(reg_values);
+          }
+          else
+          {
+            auto h = src.submit_load(chan_phase.load, num_items);
+            h.complete_load(reg_values);
+          }
+          __syncthreads();
+
+          _CCCL_PRAGMA_UNROLL_FULL()
+          for (int j = 0; j < ItemsPerThread; ++j)
+          {
+            if (positions[j] >= 0)
+            {
+              chan_phase.values[positions[j]] = reg_values[j];
+            }
           }
         }
         __syncthreads();
@@ -579,6 +602,30 @@ private:
       });
     }
     __syncthreads();
+  }
+
+  // Mode-agnostic Phase 1 body: classify every per-thread item and scatter the
+  // kept ones into the smem arena. `positions[j]` records the smem slot for use
+  // by the value channels; `-1` marks dropped items. `Classifier` exposes
+  // `operator()(KeyT, int j) -> bool` for both inlined and precomputed modes.
+  template <typename Classifier>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void classify_and_scatter_keys(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], Classifier& classifier, int (&positions)[ItemsPerThread])
+  {
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < ItemsPerThread; ++j)
+    {
+      if (classifier(keys[j], j))
+      {
+        const int pos          = atomicAdd(&buffer.cnt.counter, 1);
+        buffer.phase.keys[pos] = keys[j];
+        positions[j]           = pos;
+      }
+      else
+      {
+        positions[j] = -1;
+      }
+    }
   }
 
   SelectedReserveOp& reserve_sel_;
@@ -595,8 +642,16 @@ private:
 // `BlockFilterStrategy::SharedMem`.
 //
 // Single-value-channel only today; multi-channel needs a heterogeneous
-// register-array tuple. `LazyValueLoad` is accepted for parity with the
-// dispatcher's uniform signature but is not honored.
+// register-array tuple.
+//
+// `InlinedClassify` selects between materializing a `kept[ItemsPerThread]`
+// register array up front and recomputing the predicate at the per-item
+// kv-scatter site.
+//
+// `LazyValueLoad` selects between the eager pre-Phase-1 delegate load (default)
+// and gathering only the surviving values directly into the kv arena via the
+// source's `gather_one(j)` operation. Only honored when the value source
+// supports `gather_one`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -609,7 +664,8 @@ template <int BlockThreads,
           typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
           typename ValueTypesTuple             = ::cuda::std::tuple<>,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
-          bool /*LazyValueLoad*/               = false>
+          bool LazyValueLoad                   = false,
+          bool InlinedClassify                 = false>
 class BlockFilterSharedMem
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
@@ -699,37 +755,29 @@ private:
                   "tuple; the filter pairs them positionally.");
 
     const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
-    bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-      keys, num_thread_items, identify_op_};
 
-    // Pre-Phase-1: load the (single) channel's values into registers via the
-    // delegate-load slot. After this, the delegate_loads view of the phase union is
-    // dead and we transition to the kv view at the next __syncthreads.
-    [[maybe_unused]] auto load_channel_values = [&](auto& reg_values_out) {
-      if constexpr (num_value_channels == 1)
+    // Pre-Phase-1: when eagerly loading, fetch the channel's values into a register
+    // array via the delegate-load slot. After this, the delegate_loads view of the
+    // phase union is dead and we transition to the kv view at the next
+    // __syncthreads. Skipped under `LazyValueLoad` -- the kv-scatter loop below
+    // pulls values via `gather_one(j)` only for surviving items.
+    using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
+    channel_value_t reg_values[ItemsPerThread]{};
+    if constexpr (num_value_channels == 1 && !LazyValueLoad)
+    {
+      auto& src       = ::cuda::std::get<0>(value_sources);
+      auto& load_slot = CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.delegate_loads);
+      if constexpr (IsFull)
       {
-        auto& src       = ::cuda::std::get<0>(value_sources);
-        auto& load_slot = CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.delegate_loads);
-        if constexpr (IsFull)
-        {
-          auto h = src.submit_load(load_slot.load);
-          h.complete_load(reg_values_out);
-        }
-        else
-        {
-          auto h = src.submit_load(load_slot.load, num_items);
-          h.complete_load(reg_values_out);
-        }
+        auto h = src.submit_load(load_slot.load);
+        h.complete_load(reg_values);
       }
       else
       {
-        (void) reg_values_out;
+        auto h = src.submit_load(load_slot.load, num_items);
+        h.complete_load(reg_values);
       }
-    };
-
-    using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
-    channel_value_t reg_values[ItemsPerThread]{};
-    load_channel_values(reg_values);
+    }
 
     __syncthreads();
     if (threadIdx.x == 0)
@@ -738,19 +786,16 @@ private:
     }
     __syncthreads();
 
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < ItemsPerThread; ++j)
+    if constexpr (InlinedClassify)
     {
-      if (!classifier.kept[j])
-      {
-        continue;
-      }
-      const int idx             = atomicAdd(&buffer.cnt.counter, 1);
-      buffer.phase.kv.keys[idx] = keys[j];
-      if constexpr (num_value_channels == 1)
-      {
-        CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.kv.per_channel_values).values[idx] = reg_values[j];
-      }
+      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
+      classify_and_scatter_kv(buffer, keys, classifier, value_sources, reg_values);
+    }
+    else
+    {
+      bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+        keys, num_thread_items, identify_op_};
+      classify_and_scatter_kv(buffer, keys, classifier, value_sources, reg_values);
     }
     __syncthreads();
 
@@ -786,6 +831,44 @@ private:
       });
     }
     __syncthreads();
+  }
+
+  // Mode-agnostic Phase 1 body: classify every per-thread item and scatter the
+  // surviving (key, value) pairs into the kv arena. `Classifier` exposes
+  // `operator()(KeyT, int j) -> bool` for both modes; the value source is
+  // consulted via `gather_one` only when `LazyValueLoad == true`.
+  template <typename Classifier, typename ValueSourcesTuple, typename RegValuesArr>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void classify_and_scatter_kv(
+    ScratchStorage& buffer,
+    const KeyT (&keys)[ItemsPerThread],
+    Classifier& classifier,
+    ValueSourcesTuple& value_sources,
+    const RegValuesArr& reg_values)
+  {
+    (void) value_sources;
+    (void) reg_values;
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < ItemsPerThread; ++j)
+    {
+      if (!classifier(keys[j], j))
+      {
+        continue;
+      }
+      const int idx             = atomicAdd(&buffer.cnt.counter, 1);
+      buffer.phase.kv.keys[idx] = keys[j];
+      if constexpr (num_value_channels == 1)
+      {
+        if constexpr (LazyValueLoad)
+        {
+          auto& src = ::cuda::std::get<0>(value_sources);
+          CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.kv.per_channel_values).values[idx] = src.gather_one(j);
+        }
+        else
+        {
+          CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.kv.per_channel_values).values[idx] = reg_values[j];
+        }
+      }
+    }
   }
 
   SelectedReserveOp& reserve_sel_;

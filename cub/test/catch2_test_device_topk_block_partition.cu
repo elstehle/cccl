@@ -20,7 +20,7 @@
 //!
 //! The strategy sweep covers all four non-accumulating values of
 //! `BlockPartitionStrategy`:
-//!   AtomicsPreClassify, AtomicsInlinedClassify, Staged, SharedMem.
+//!   Atomics, Staged, SharedMem -- crossed with `InlinedClassify` in {false, true}.
 
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/block_partition_accumulating.cuh>
@@ -91,6 +91,7 @@ struct noop_callback_op
 template <int BlockThreads,
           int ItemsPerThread,
           topk::BlockPartitionStrategy Strategy,
+          bool InlinedClassify,
           bool KeysOnly,
           bool BackGrowCapped>
 __global__ void partition_kernel(
@@ -151,7 +152,8 @@ __global__ void partition_kernel(
     value_channel_sinks_tuple_t,
     value_types_tuple_t,
     value_data_source_scratch_types_tuple_t,
-    /*LazyValueLoad=*/false>;
+    /*LazyValueLoad=*/false,
+    InlinedClassify>;
 
   __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
@@ -270,16 +272,33 @@ static std::vector<::cuda::std::int8_t> make_classes(int num_items, int selected
   return out;
 }
 
-// %PARAM% TEST_STRAT strat 0:1:2:3
-// 0 = atomics (precomputed), 1 = atomics (inlined), 2 = staged, 3 = shared_mem
+// %PARAM% TEST_STRAT strat 0:1:2:3:4:5
+// (Strategy, InlinedClassify) cross product covering all six non-accumulating
+// combinations:
+//   0 = atomics + precomputed-classify
+//   1 = atomics + inlined-classify
+//   2 = staged + precomputed-classify
+//   3 = staged + inlined-classify
+//   4 = shared_mem + precomputed-classify
+//   5 = shared_mem + inlined-classify
 #if TEST_STRAT == 0
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::AtomicsPreClassify;
+constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Atomics;
+constexpr bool kInlinedClassify                  = false;
 #elif TEST_STRAT == 1
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::AtomicsInlinedClassify;
+constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Atomics;
+constexpr bool kInlinedClassify                  = true;
 #elif TEST_STRAT == 2
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Staged;
+constexpr bool kInlinedClassify                  = false;
+#elif TEST_STRAT == 3
+constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Staged;
+constexpr bool kInlinedClassify                  = true;
+#elif TEST_STRAT == 4
+constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
+constexpr bool kInlinedClassify                  = false;
 #else
 constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
+constexpr bool kInlinedClassify                  = true;
 #endif
 
 // Drive a single (Strategy, KeysOnly, full|partial) atomic configuration:
@@ -329,7 +348,7 @@ void run_atomic_partition_test(
   thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
   thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
 
-  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, KeysOnly, /*BackGrowCapped=*/false>
+  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, kInlinedClassify, KeysOnly, /*BackGrowCapped=*/false>
     <<<1, BlockThreads>>>(
       thrust::raw_pointer_cast(d_keys_in.data()),
       thrust::raw_pointer_cast(d_values_in.data()),
@@ -420,7 +439,7 @@ void run_back_grow_capped_partition_test(
   thrust::device_vector<unsigned int> d_cand_cnt(1, 0);
   thrust::device_vector<unsigned int> d_callback_cnt(1, 0);
 
-  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, KeysOnly, /*BackGrowCapped=*/true>
+  partition_kernel<BlockThreads, ItemsPerThread, kStrategy, kInlinedClassify, KeysOnly, /*BackGrowCapped=*/true>
     <<<1, BlockThreads>>>(
       thrust::raw_pointer_cast(d_keys_in.data()),
       thrust::raw_pointer_cast(d_values_in.data()),
