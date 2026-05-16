@@ -79,8 +79,8 @@ namespace bp_acc_detail
 // Per-stream counter + flush-broadcast slots in TempStorage.
 //   `counter`  -- per-tile reservation counter (0..BufferCapacity); persisted across
 //                 Partition() calls so the buffer can accumulate across tiles.
-//   `base`     -- broadcast: written by thread 0 inside `cooperative_flush_round`,
-//                 read by every thread before the strided write.
+//   `base`     -- broadcast: written by thread 0 inside the cooperative-flush
+//                 primitives, read by every thread before the strided write.
 //   `granted`  -- broadcast: same; relevant only for `may_grant_less` reserve ops.
 template <typename OffsetT>
 struct stream_counters_t
@@ -244,7 +244,7 @@ public:
     const int leftover = ts_.cnt.counter;
     if (leftover > 0)
     {
-      cooperative_flush_round(leftover);
+      cooperative_flush_partial(leftover);
       __syncthreads();
       if (threadIdx.x == 0)
       {
@@ -431,7 +431,7 @@ private:
       // rounds.
       scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/CandidateBufferCapacity);
       __syncthreads();
-      cooperative_flush_round(CandidateBufferCapacity);
+      cooperative_flush_full_buffer();
       __syncthreads();
       if (threadIdx.x == 0)
       {
@@ -469,9 +469,97 @@ private:
     }
   }
 
-  // Cooperative flush of `count` items from the candidate smem buffer to the global
-  // iterator.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void cooperative_flush_round(int count)
+  // Cooperative-flush primitives. Two overloads split along the lifetime
+  // boundary between the overflow loop (always flushes exactly
+  // `CandidateBufferCapacity` items) and the terminal `epilogue()` (flushes a
+  // runtime `leftover` in `[1, Capacity)`):
+  //
+  //   - `cooperative_flush_full_buffer()` -- the hot-path overload. The flush
+  //     count is the compile-time `CandidateBufferCapacity`, so the strided
+  //     output loop splits into `full_flush_waves = Capacity / BlockThreads`
+  //     fully-unrolled register-stride writes plus one optional trailing
+  //     partial wave bound-checked against `Capacity % BlockThreads`. With
+  //     `BlockThreads = 512` and the Hopper+ tuning of
+  //     `Capacity = tile_items in {1024, 2048, 4096, 8192}`, the full-waves
+  //     count is in `{2, 4, 8, 16}` -- all small enough for ptxas to unroll
+  //     cleanly. The reserve op runs once (thread 0) for the entire buffer.
+  //
+  //   - `cooperative_flush_partial(int count)` -- the terminal overload, used
+  //     by `epilogue()`. `count` is `< Capacity` at runtime; the same shape as
+  //     before is fine because this runs at most once per kernel invocation.
+  //
+  // Splitting these out replaces the prior single `cooperative_flush_round(int
+  // count)` which forced ptxas to assume a runtime `count` on the hot path
+  // even though both call sites passed compile-time constants.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void cooperative_flush_full_buffer()
+  {
+    static constexpr int full_flush_waves = CandidateBufferCapacity / BlockThreads;
+    static constexpr int trailing_count   = CandidateBufferCapacity % BlockThreads;
+
+    if (threadIdx.x == 0)
+    {
+      const auto r    = reserve_cand_(static_cast<CandidateOffsetT>(CandidateBufferCapacity));
+      ts_.cnt.base    = r.first;
+      ts_.cnt.granted = static_cast<CandidateOffsetT>(r.second);
+    }
+    __syncthreads();
+
+    const CandidateOffsetT base = ts_.cnt.base;
+    const CandidateOffsetT to_write =
+      CandidateReserveOp::may_grant_less ? ts_.cnt.granted : static_cast<CandidateOffsetT>(CandidateBufferCapacity);
+
+    // Keys stream: full waves first, then an optional trailing partial wave.
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int w = 0; w < full_flush_waves; ++w)
+    {
+      const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
+      if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
+      {
+        cand_iter_[base + static_cast<CandidateOffsetT>(i)] = cand_xform_(ts_.keys[i]);
+      }
+    }
+    if constexpr (trailing_count != 0)
+    {
+      const int i = full_flush_waves * BlockThreads + static_cast<int>(threadIdx.x);
+      if (static_cast<int>(threadIdx.x) < trailing_count
+          && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
+      {
+        cand_iter_[base + static_cast<CandidateOffsetT>(i)] = cand_xform_(ts_.keys[i]);
+      }
+    }
+
+    // Values channel (optional): same shape.
+    if constexpr (num_value_channels == 1)
+    {
+      auto& sink = ::cuda::std::get<0>(sinks_);
+      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values);
+
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int w = 0; w < full_flush_waves; ++w)
+      {
+        const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
+        if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
+        {
+          sink.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
+            sink.candidate_value_transform(vs.values[i]);
+        }
+      }
+      if constexpr (trailing_count != 0)
+      {
+        const int i = full_flush_waves * BlockThreads + static_cast<int>(threadIdx.x);
+        if (static_cast<int>(threadIdx.x) < trailing_count
+            && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
+        {
+          sink.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
+            sink.candidate_value_transform(vs.values[i]);
+        }
+      }
+    }
+  }
+
+  // Partial flush used by `epilogue()`. `count` is in `[1, CandidateBufferCapacity)`
+  // at runtime, so no compile-time wave decomposition is available.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void cooperative_flush_partial(int count)
   {
     if (threadIdx.x == 0)
     {
