@@ -193,7 +193,7 @@ public:
     const int leftover = ts_.cnt.counter;
     if (leftover > 0)
     {
-      cooperative_flush_round(leftover);
+      cooperative_flush_partial(leftover);
       __syncthreads();
       if (threadIdx.x == 0)
       {
@@ -316,7 +316,7 @@ private:
       // cnt >= BufferCapacity: flush the leading Capacity-worth and renumber.
       scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/BufferCapacity);
       __syncthreads();
-      cooperative_flush_round(BufferCapacity);
+      cooperative_flush_full_buffer();
       __syncthreads();
       if (threadIdx.x == 0)
       {
@@ -352,7 +352,79 @@ private:
     }
   }
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void cooperative_flush_round(int count)
+  // Cooperative-flush primitives. See the matching pair in
+  // `BlockPartitionAccumulatingCandidates` (`block_partition_accumulating.cuh`)
+  // for the full design notes: the hot-path full-buffer overload constant-folds
+  // its `count` to `BufferCapacity` and unrolls the strided output loop into
+  // `full_flush_waves = Capacity / BlockThreads` register-stride waves plus an
+  // optional trailing partial wave; the partial overload preserves the runtime
+  // shape for the once-per-kernel terminal flush.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void cooperative_flush_full_buffer()
+  {
+    static constexpr int full_flush_waves = BufferCapacity / BlockThreads;
+    static constexpr int trailing_count   = BufferCapacity % BlockThreads;
+
+    if (threadIdx.x == 0)
+    {
+      const auto r    = reserve_sel_(static_cast<SelectedOffsetT>(BufferCapacity));
+      ts_.cnt.base    = r.first;
+      ts_.cnt.granted = static_cast<SelectedOffsetT>(r.second);
+    }
+    __syncthreads();
+
+    const SelectedOffsetT base = ts_.cnt.base;
+    const SelectedOffsetT to_write =
+      SelectedReserveOp::may_grant_less ? ts_.cnt.granted : static_cast<SelectedOffsetT>(BufferCapacity);
+
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int w = 0; w < full_flush_waves; ++w)
+    {
+      const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
+      if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
+      {
+        sel_iter_[base + static_cast<SelectedOffsetT>(i)] = sel_xform_(ts_.keys[i]);
+      }
+    }
+    if constexpr (trailing_count != 0)
+    {
+      const int i = full_flush_waves * BlockThreads + static_cast<int>(threadIdx.x);
+      if (static_cast<int>(threadIdx.x) < trailing_count
+          && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
+      {
+        sel_iter_[base + static_cast<SelectedOffsetT>(i)] = sel_xform_(ts_.keys[i]);
+      }
+    }
+
+    if constexpr (num_value_channels == 1)
+    {
+      auto& sink = ::cuda::std::get<0>(sinks_);
+      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values);
+
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int w = 0; w < full_flush_waves; ++w)
+      {
+        const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
+        if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
+        {
+          sink.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
+            sink.selected_value_transform(vs.values[i]);
+        }
+      }
+      if constexpr (trailing_count != 0)
+      {
+        const int i = full_flush_waves * BlockThreads + static_cast<int>(threadIdx.x);
+        if (static_cast<int>(threadIdx.x) < trailing_count
+            && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
+        {
+          sink.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
+            sink.selected_value_transform(vs.values[i]);
+        }
+      }
+    }
+  }
+
+  // Partial flush used by `epilogue()`. `count` is in `[1, BufferCapacity)` at runtime.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void cooperative_flush_partial(int count)
   {
     if (threadIdx.x == 0)
     {
