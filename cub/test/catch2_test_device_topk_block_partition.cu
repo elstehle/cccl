@@ -19,7 +19,7 @@
 //! own dedicated test file (`catch2_test_device_topk_block_filter.cu`).
 //!
 //! The strategy sweep covers all four non-accumulating values of
-//! `BlockPartitionStrategy`:
+//! `block_partition_strategy`:
 //!   Atomics, Staged, SharedMem -- crossed with `InlinedClassify` in {false, true}.
 
 #include <cub/detail/topk/block_partition.cuh>
@@ -90,7 +90,7 @@ struct noop_callback_op
 
 template <int BlockThreads,
           int ItemsPerThread,
-          topk::BlockPartitionStrategy Strategy,
+          topk::block_partition_strategy Strategy,
           bool InlinedClassify,
           bool KeysOnly,
           bool BackGrowCapped>
@@ -283,22 +283,22 @@ static std::vector<::cuda::std::int8_t> make_classes(int num_items, int selected
 //   4 = shared_mem + precomputed-classify
 //   5 = shared_mem + inlined-classify
 #if TEST_STRAT == 0
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Atomics;
+constexpr topk::block_partition_strategy kStrategy = topk::block_partition_strategy::atomics;
 constexpr bool kInlinedClassify                  = false;
 #elif TEST_STRAT == 1
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Atomics;
+constexpr topk::block_partition_strategy kStrategy = topk::block_partition_strategy::atomics;
 constexpr bool kInlinedClassify                  = true;
 #elif TEST_STRAT == 2
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Staged;
+constexpr topk::block_partition_strategy kStrategy = topk::block_partition_strategy::staged;
 constexpr bool kInlinedClassify                  = false;
 #elif TEST_STRAT == 3
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::Staged;
+constexpr topk::block_partition_strategy kStrategy = topk::block_partition_strategy::staged;
 constexpr bool kInlinedClassify                  = true;
 #elif TEST_STRAT == 4
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
+constexpr topk::block_partition_strategy kStrategy = topk::block_partition_strategy::shared_mem;
 constexpr bool kInlinedClassify                  = false;
 #else
-constexpr topk::BlockPartitionStrategy kStrategy = topk::BlockPartitionStrategy::SharedMem;
+constexpr topk::block_partition_strategy kStrategy = topk::block_partition_strategy::shared_mem;
 constexpr bool kInlinedClassify                  = true;
 #endif
 

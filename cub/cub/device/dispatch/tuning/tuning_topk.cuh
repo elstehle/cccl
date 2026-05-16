@@ -80,23 +80,23 @@ struct topk_policy
   BlockScanAlgorithm scan_algorithm;
 
   // Three independent strategy knobs, one per pass.
-  //   - `buffered_partition_strategy` is a `BlockPartitionStrategy` value -- the
+  //   - `buffered_partition_strategy` is a `block_partition_strategy` value -- the
   //     three non-accumulating values select one of `BlockPartition{Atomics,Staged,
   //     SharedMem}`, `AccumulatingCandidates` selects
   //     `block_partition_accumulating_candidates`, and `SpeculativeBoth` selects
   //     `block_partition_speculative`.
-  //   - `early_stop_filter_strategy` is a `BlockFilterStrategy` value -- the three
+  //   - `early_stop_filter_strategy` is a `block_filter_strategy` value -- the three
   //     non-accumulating values select one of `BlockFilter{Atomics,Staged,
   //     SharedMem}`, `AccumulatingFilter` selects `block_filter_accumulating`, and
   //     `SpeculativeFilter` selects `block_filter_speculative`. The early-stop pass
   //     operates as a 1-stream filter (the candidate-side machinery is statically
   //     elided), so it has its own enum independent of the buffered-pass
   //     partition enum.
-  //   - `last_filter_partition_strategy` accepts any `BlockPartitionStrategy`
+  //   - `last_filter_partition_strategy` accepts any `block_partition_strategy`
   //     value (including `AccumulatingCandidates` and `SpeculativeBoth`).
-  BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::Atomics;
-  BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::Atomics;
-  BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::Atomics;
+  block_partition_strategy buffered_partition_strategy    = block_partition_strategy::atomics;
+  block_filter_strategy early_stop_filter_strategy        = block_filter_strategy::atomics;
+  block_partition_strategy last_filter_partition_strategy = block_partition_strategy::atomics;
 
   // Smem-slot count for the accumulating partition / filter variants' per-stream
   // buffer. Reused as the candidate-stream buffer capacity for `SpeculativeBoth`
@@ -191,9 +191,9 @@ struct policy_selector
         /*.bits_per_pass                      =*/ bits_per_pass,
         /*.keys_tile_load_kind                =*/ tile_load_kind::block_load_vectorize,
         /*.scan_algorithm                     =*/ BLOCK_SCAN_WARP_SCANS,
-        /*.buffered_partition_strategy        =*/ BlockPartitionStrategy::Atomics,
-        /*.early_stop_filter_strategy         =*/ BlockFilterStrategy::Atomics,
-        /*.last_filter_partition_strategy     =*/ BlockPartitionStrategy::Atomics,
+        /*.buffered_partition_strategy        =*/ block_partition_strategy::atomics,
+        /*.early_stop_filter_strategy         =*/ block_filter_strategy::atomics,
+        /*.last_filter_partition_strategy     =*/ block_partition_strategy::atomics,
         /*.accumulating_buffer_capacity       =*/ 256,
         /*.speculative_selected_buffer_capacity=*/ 128};
 
@@ -222,9 +222,9 @@ struct policy_selector
       //   /*.bits_per_pass                      =*/ bits_per_pass,
       //   /*.keys_tile_load_kind                =*/ tile_load_kind::block_load_vectorize,
       //   /*.scan_algorithm                     =*/ BLOCK_SCAN_WARP_SCANS,
-      //   /*.buffered_partition_strategy        =*/ BlockPartitionStrategy::SpeculativeBoth,
-      //   /*.early_stop_filter_strategy         =*/ BlockFilterStrategy::SpeculativeFilter,
-      //   /*.last_filter_partition_strategy     =*/ BlockPartitionStrategy::Atomics,
+      //   /*.buffered_partition_strategy        =*/ block_partition_strategy::speculative_both,
+      //   /*.early_stop_filter_strategy         =*/ block_filter_strategy::speculative_filter,
+      //   /*.last_filter_partition_strategy     =*/ block_partition_strategy::atomics,
       //   /*.accumulating_buffer_capacity       =*/ 512 * items_per_thread,
       //   /*.speculative_selected_buffer_capacity=*/ 128};
     }
@@ -238,9 +238,9 @@ struct policy_selector
       /*.bits_per_pass                      =*/ bits_per_pass,
       /*.keys_tile_load_kind                =*/ tile_load_kind::block_load_vectorize,
       /*.scan_algorithm                     =*/ BLOCK_SCAN_WARP_SCANS,
-      /*.buffered_partition_strategy        =*/ BlockPartitionStrategy::Atomics,
-      /*.early_stop_filter_strategy         =*/ BlockFilterStrategy::Atomics,
-      /*.last_filter_partition_strategy     =*/ BlockPartitionStrategy::Atomics,
+      /*.buffered_partition_strategy        =*/ block_partition_strategy::atomics,
+      /*.early_stop_filter_strategy         =*/ block_filter_strategy::atomics,
+      /*.last_filter_partition_strategy     =*/ block_partition_strategy::atomics,
       /*.accumulating_buffer_capacity       =*/ 256,
       /*.speculative_selected_buffer_capacity=*/ 128};
   }

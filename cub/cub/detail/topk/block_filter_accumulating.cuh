@@ -98,7 +98,7 @@ struct accumulating_filter_temp_storage_t
 //
 // Single-stream sister of `BlockFilter` (single output, single buffer,
 // single counter). Used by the agent's `early_stop`-mode pass when the
-// policy selects `BlockFilterStrategy::AccumulatingFilter`.
+// policy selects `block_filter_strategy::accumulating_filter`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -466,7 +466,7 @@ private:
 
 //---------------------------------------------------------------------
 // `strategy_to_filter_class<Strategy, ...>` -- compile-time selector mapping a
-// `BlockFilterStrategy` value (and an `InlinedClassify` bool) to the
+// `block_filter_strategy` value (and an `InlinedClassify` bool) to the
 // corresponding filter class type.
 //
 // The non-accumulating strategy values map to one of the three classes in
@@ -482,7 +482,7 @@ private:
 //
 // The agent uses this metafunction to derive `filter_t` from a policy enum.
 //---------------------------------------------------------------------
-template <BlockFilterStrategy Strategy,
+template <block_filter_strategy Strategy,
           int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,
@@ -547,8 +547,8 @@ private:
 
 public:
   using type = ::cuda::std::conditional_t<
-    Strategy == BlockFilterStrategy::Staged, staged_t,
-    ::cuda::std::conditional_t<Strategy == BlockFilterStrategy::SharedMem, shared_mem_t, atomics_t>>;
+    Strategy == block_filter_strategy::staged, staged_t,
+    ::cuda::std::conditional_t<Strategy == block_filter_strategy::shared_mem, shared_mem_t, atomics_t>>;
 };
 
 template <int BlockThreads,
@@ -566,7 +566,7 @@ template <int BlockThreads,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_filter_class<
-  BlockFilterStrategy::AccumulatingFilter,
+  block_filter_strategy::accumulating_filter,
   BlockThreads,
   ItemsPerThread,
   AccumulatingBufferCapacity,
@@ -602,7 +602,7 @@ struct strategy_to_filter_class<
     LazyValueLoad>;
 };
 
-template <BlockFilterStrategy Strategy,
+template <block_filter_strategy Strategy,
           int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,

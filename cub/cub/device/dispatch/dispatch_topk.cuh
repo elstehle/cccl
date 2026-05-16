@@ -378,8 +378,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.accumulating_buffer_capacity,
                     policy.speculative_selected_buffer_capacity>;
 
-  static constexpr BlockPartitionStrategy buffered_part_strat = policy.buffered_partition_strategy;
-  static constexpr BlockFilterStrategy early_stop_filter_strat = policy.early_stop_filter_strategy;
+  static constexpr block_partition_strategy buffered_part_strat = policy.buffered_partition_strategy;
+  static constexpr block_filter_strategy early_stop_filter_strat = policy.early_stop_filter_strategy;
   static constexpr bool lazy_value_load = policy.lazy_value_load;
   static constexpr bool inlined_classify = policy.inlined_classify;
 
@@ -559,7 +559,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.accumulating_buffer_capacity,
                     policy.speculative_selected_buffer_capacity>;
 
-  static constexpr BlockPartitionStrategy part_strat = policy.last_filter_partition_strategy;
+  static constexpr block_partition_strategy part_strat = policy.last_filter_partition_strategy;
   static constexpr bool lazy_value_load              = policy.lazy_value_load;
   static constexpr bool inlined_classify             = policy.inlined_classify;
 
