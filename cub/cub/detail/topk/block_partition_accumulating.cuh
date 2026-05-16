@@ -606,7 +606,7 @@ private:
 
 //---------------------------------------------------------------------
 // `strategy_to_partition_class<Strategy, ...>` -- compile-time selector that maps a
-// `BlockPartitionStrategy` enum value (and an `InlinedClassify` bool) to the
+// `block_partition_strategy` enum value (and an `InlinedClassify` bool) to the
 // corresponding partition class type.
 //
 // The non-accumulating strategy values map to one of the three classes in
@@ -638,7 +638,7 @@ private:
 // The agent uses this to define `using buffered_partition_t = typename
 // strategy_to_partition_class<...>::type` -- a single point that hides the dispatch.
 //---------------------------------------------------------------------
-template <BlockPartitionStrategy Strategy,
+template <block_partition_strategy Strategy,
           int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,
@@ -724,8 +724,8 @@ private:
 
 public:
   using type = ::cuda::std::conditional_t<
-    Strategy == BlockPartitionStrategy::Staged, staged_t,
-    ::cuda::std::conditional_t<Strategy == BlockPartitionStrategy::SharedMem, shared_mem_t, atomics_t>>;
+    Strategy == block_partition_strategy::staged, staged_t,
+    ::cuda::std::conditional_t<Strategy == block_partition_strategy::shared_mem, shared_mem_t, atomics_t>>;
 };
 
 template <int BlockThreads,
@@ -749,7 +749,7 @@ template <int BlockThreads,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_partition_class<
-  BlockPartitionStrategy::AccumulatingCandidates,
+  block_partition_strategy::accumulating_candidates,
   BlockThreads,
   ItemsPerThread,
   AccumulatingBufferCapacity,
@@ -799,7 +799,7 @@ struct strategy_to_partition_class<
     LazyValueLoad>;
 };
 
-template <BlockPartitionStrategy Strategy,
+template <block_partition_strategy Strategy,
           int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,

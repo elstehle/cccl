@@ -525,7 +525,7 @@ private:
 
 //---------------------------------------------------------------------
 // `strategy_to_filter_class` specialization for
-// `BlockFilterStrategy::SpeculativeFilter`. Lives in this header so the
+// `block_filter_strategy::speculative_filter`. Lives in this header so the
 // agent (or any other consumer) only pays the include cost when actually
 // using the Speculative strategy.
 //---------------------------------------------------------------------
@@ -544,7 +544,7 @@ template <int BlockThreads,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_filter_class<
-  BlockFilterStrategy::SpeculativeFilter,
+  block_filter_strategy::speculative_filter,
   BlockThreads,
   ItemsPerThread,
   AccumulatingBufferCapacity,

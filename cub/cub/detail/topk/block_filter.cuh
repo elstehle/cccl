@@ -26,7 +26,7 @@
 //!     performs a terminal flush of any remaining buffered items.
 //!
 //! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` in
-//! `block_filter_accumulating.cuh`, which maps a `BlockFilterStrategy` enum value
+//! `block_filter_accumulating.cuh`, which maps a `block_filter_strategy` enum value
 //! to one of the three classes here (or to the accumulating sister class).
 
 #pragma once
@@ -63,18 +63,18 @@ CUB_NAMESPACE_BEGIN
 namespace detail::topk
 {
 //---------------------------------------------------------------------
-// Strategy selector for the filter primitives. Mirrors `BlockPartitionStrategy`:
+// Strategy selector for the filter primitives. Mirrors `block_partition_strategy`:
 // picks the *filtering* shape; the orthogonal `InlinedClassify` axis is a
 // separate template / policy bool that every non-accumulating primitive accepts.
 // The mapping from a strategy enum value to a class is performed by
 // `strategy_to_filter_class_t<...>` in `block_filter_accumulating.cuh`.
 //---------------------------------------------------------------------
-enum class BlockFilterStrategy
+enum class block_filter_strategy
 {
-  Atomics,
-  Staged,
-  SharedMem,
-  AccumulatingFilter,
+  atomics,
+  staged,
+  shared_mem,
+  accumulating_filter,
   // SpeculativeFilter accumulates the selected stream in a fixed-size smem
   // buffer, but uses a *speculative* slot reservation: items whose atomicAdd
   // index lands within the buffer go to smem, items beyond capacity fall back
@@ -83,7 +83,7 @@ enum class BlockFilterStrategy
   // call in exchange for keeping `positions[]` cross-iteration-dead, which
   // restores register parity with `Atomics` while preserving the cooperative
   // batched flush on sparse streams. See `block_filter_speculative.cuh`.
-  SpeculativeFilter,
+  speculative_filter,
 };
 
 //---------------------------------------------------------------------
@@ -192,7 +192,7 @@ struct precomputed_filter_classifier
 // `InlinedClassify` selects between the precomputed-classes form (materializes a
 // `kept[]` register array up front) and the inlined-classify form (recomputes the
 // predicate at each scatter use-site, frees the registers that would hold
-// `kept[]`). Mapped from `BlockFilterStrategy::Atomics`. The `InlinedClassify`
+// `kept[]`). Mapped from `block_filter_strategy::atomics`. The `InlinedClassify`
 // axis is independent and is also accepted (with the same semantics) by
 // `block_filter_staged` and `block_filter_shared_mem`.
 //---------------------------------------------------------------------
@@ -398,7 +398,7 @@ private:
 // `block_filter_staged` -- smem scatter into a keys arena + cooperative coalesced
 // store. Per-channel value path runs sequentially after the keys phase: each
 // channel loads (sub-brokered scratch), scatters into the channel's `values[]`
-// slot, then cooperatively stores. Mapped from `BlockFilterStrategy::Staged`.
+// slot, then cooperatively stores. Mapped from `block_filter_strategy::staged`.
 //
 // `InlinedClassify` selects between materializing a `kept[ItemsPerThread]`
 // register array up front and recomputing the predicate at the per-item
@@ -648,7 +648,7 @@ private:
 // `block_filter_shared_mem` -- keys + per-channel values coexist in smem (within
 // `phase.kv`), then a single coalesced flush. Pre-Phase-1 delegate loads alias
 // with the kv arena via the top-level phase union. Mapped from
-// `BlockFilterStrategy::SharedMem`.
+// `block_filter_strategy::shared_mem`.
 //
 // Single-value-channel only today; multi-channel needs a heterogeneous
 // register-array tuple.

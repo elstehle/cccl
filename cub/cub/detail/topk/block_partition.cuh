@@ -38,7 +38,7 @@
 //! the dedicated `BlockFilter*` primitives in `block_filter.cuh`.
 //!
 //! Strategy selection is done by `strategy_to_partition_class_t<Strategy, ...>` in
-//! `block_partition_accumulating.cuh`, which maps a `BlockPartitionStrategy` enum
+//! `block_partition_accumulating.cuh`, which maps a `block_partition_strategy` enum
 //! value to one of the three classes here (or to the accumulating sister class).
 
 #pragma once
@@ -113,13 +113,13 @@ enum class candidate_class
 //                             `Atomics`. Setting the selected-stream capacity to 0
 //                             via the agent policy degrades that stream to pure
 //                             atomics (useful when the selected stream is dense).
-enum class BlockPartitionStrategy
+enum class block_partition_strategy
 {
-  Atomics,
-  Staged,
-  SharedMem,
-  AccumulatingCandidates,
-  SpeculativeBoth,
+  atomics,
+  staged,
+  shared_mem,
+  accumulating_candidates,
+  speculative_both,
 };
 
 //---------------------------------------------------------------------
@@ -538,7 +538,7 @@ using partition_storage_layout_for_t =
 // (smaller scatter loop, larger live register set for the `classes[]` array)
 // and the inlined-classify form (recomputes classification at each scatter
 // use-site, frees those registers). Mapped from
-// `BlockPartitionStrategy::Atomics`. The `InlinedClassify` axis is independent
+// `block_partition_strategy::atomics`. The `InlinedClassify` axis is independent
 // and is also accepted (with the same semantics) by `block_partition_staged` and
 // `block_partition_shared_mem`.
 //---------------------------------------------------------------------
@@ -903,7 +903,7 @@ private:
 // `block_partition_staged` -- smem scatter into a keys arena + cooperative coalesced
 // store. Per-channel value path runs sequentially after the keys phase: each
 // channel loads (sub-brokered scratch), scatters into the channel's `values[]`
-// slot, then cooperatively stores. Mapped from `BlockPartitionStrategy::Staged`.
+// slot, then cooperatively stores. Mapped from `block_partition_strategy::staged`.
 //
 // `InlinedClassify` selects between materializing a `classes[ItemsPerThread]`
 // register array up front (the candidate callback then fires from
@@ -1219,7 +1219,7 @@ private:
 // `block_partition_shared_mem` -- keys + per-channel values coexist in smem (within
 // `phase.kv`), then a single coalesced flush per stream. Pre-Phase-1 delegate
 // loads alias with the kv arena via the top-level phase union. Mapped from
-// `BlockPartitionStrategy::SharedMem`.
+// `block_partition_strategy::shared_mem`.
 //
 // Single-value-channel only today; multi-channel needs a heterogeneous
 // register-array tuple.

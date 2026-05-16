@@ -784,7 +784,7 @@ private:
 
 //---------------------------------------------------------------------
 // `strategy_to_partition_class` specialization for
-// `BlockPartitionStrategy::SpeculativeBoth`. Consumes both the per-stream
+// `block_partition_strategy::speculative_both`. Consumes both the per-stream
 // capacity slots from the metafunction's template parameter list -- the
 // candidate-stream buffer capacity is the shared `AccumulatingBufferCapacity`
 // slot (reused with the accumulating partition), and the selected-stream
@@ -812,7 +812,7 @@ template <int BlockThreads,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_partition_class<
-  BlockPartitionStrategy::SpeculativeBoth,
+  block_partition_strategy::speculative_both,
   BlockThreads,
   ItemsPerThread,
   AccumulatingBufferCapacity,

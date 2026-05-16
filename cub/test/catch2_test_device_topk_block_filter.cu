@@ -14,7 +14,7 @@
 //! for `BlockFilter` (the accumulating sister class has a separate test).
 //!
 //! The strategy sweep covers the four non-accumulating values of
-//! `BlockFilterStrategy`:
+//! `block_filter_strategy`:
 //!   Atomics, Staged, SharedMem -- crossed with `InlinedClassify` in {false, true}.
 
 #include <cub/detail/topk/block_filter.cuh>
@@ -60,7 +60,7 @@ struct driver_identify_selected_op
 // Kernel: drives one tile through BlockFilter (safe-both interface).
 //---------------------------------------------------------------------
 
-template <int BlockThreads, int ItemsPerThread, topk::BlockFilterStrategy Strategy, bool InlinedClassify, bool KeysOnly>
+template <int BlockThreads, int ItemsPerThread, topk::block_filter_strategy Strategy, bool InlinedClassify, bool KeysOnly>
 __global__ void filter_kernel(
   const int* d_keys_in,
   const int* d_values_in,
@@ -194,22 +194,22 @@ static std::vector<::cuda::std::uint8_t> make_keep(int num_items, int keep_every
 //   4 = shared_mem + precomputed-classify
 //   5 = shared_mem + inlined-classify
 #if TEST_STRAT == 0
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Atomics;
+constexpr topk::block_filter_strategy kStrategy = topk::block_filter_strategy::atomics;
 constexpr bool kInlinedClassify               = false;
 #elif TEST_STRAT == 1
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Atomics;
+constexpr topk::block_filter_strategy kStrategy = topk::block_filter_strategy::atomics;
 constexpr bool kInlinedClassify               = true;
 #elif TEST_STRAT == 2
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Staged;
+constexpr topk::block_filter_strategy kStrategy = topk::block_filter_strategy::staged;
 constexpr bool kInlinedClassify               = false;
 #elif TEST_STRAT == 3
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::Staged;
+constexpr topk::block_filter_strategy kStrategy = topk::block_filter_strategy::staged;
 constexpr bool kInlinedClassify               = true;
 #elif TEST_STRAT == 4
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::SharedMem;
+constexpr topk::block_filter_strategy kStrategy = topk::block_filter_strategy::shared_mem;
 constexpr bool kInlinedClassify               = false;
 #else
-constexpr topk::BlockFilterStrategy kStrategy = topk::BlockFilterStrategy::SharedMem;
+constexpr topk::block_filter_strategy kStrategy = topk::block_filter_strategy::shared_mem;
 constexpr bool kInlinedClassify               = true;
 #endif
 

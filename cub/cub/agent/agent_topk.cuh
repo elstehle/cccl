@@ -853,8 +853,8 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename OffsetT,
           typename OutOffsetT,
-          BlockPartitionStrategy BufferedPartStrat = BlockPartitionStrategy::Atomics,
-          BlockFilterStrategy EarlyStopFilterStrat = BlockFilterStrategy::Atomics,
+          block_partition_strategy BufferedPartStrat = block_partition_strategy::atomics,
+          block_filter_strategy EarlyStopFilterStrat = block_filter_strategy::atomics,
           bool LazyValueLoad = false,
           bool InlinedClassify             = false>
 struct agent_topk_filter_partition
@@ -1363,7 +1363,7 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename OffsetT,
           typename OutOffsetT,
-          BlockPartitionStrategy PartStrat = BlockPartitionStrategy::Atomics,
+          block_partition_strategy PartStrat = block_partition_strategy::atomics,
           bool LazyValueLoad               = false,
           bool InlinedClassify             = false>
 struct agent_topk_last_filter
