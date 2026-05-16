@@ -471,9 +471,9 @@ private:
 //
 // The non-accumulating strategy values map to one of the three classes in
 // `block_filter.cuh`:
-//   - `Atomics`                -> `BlockFilterAtomics<..., LazyValueLoad, InlinedClassify>`
-//   - `Staged`                 -> `BlockFilterStaged<..., LazyValueLoad, InlinedClassify>`
-//   - `SharedMem`              -> `BlockFilterSharedMem<..., LazyValueLoad, InlinedClassify>`
+//   - `Atomics`                -> `block_filter_atomics<..., LazyValueLoad, InlinedClassify>`
+//   - `Staged`                 -> `block_filter_staged<..., LazyValueLoad, InlinedClassify>`
+//   - `SharedMem`              -> `block_filter_shared_mem<..., LazyValueLoad, InlinedClassify>`
 //   - `AccumulatingFilter`     -> `BlockFilterAccumulating`
 //                                 (with `CandidateBufferCapacity` filled in from the
 //                                 metafunction's own `AccumulatingBufferCapacity` arg).
@@ -500,7 +500,7 @@ template <BlockFilterStrategy Strategy,
 struct strategy_to_filter_class
 {
 private:
-  using atomics_t = BlockFilterAtomics<
+  using atomics_t = block_filter_atomics<
     BlockThreads,
     ItemsPerThread,
     InlinedClassify,
@@ -515,7 +515,7 @@ private:
     DataSourceScratchTypesTuple,
     LazyValueLoad>;
 
-  using staged_t = BlockFilterStaged<
+  using staged_t = block_filter_staged<
     BlockThreads,
     ItemsPerThread,
     KeyT,
@@ -530,7 +530,7 @@ private:
     LazyValueLoad,
     InlinedClassify>;
 
-  using shared_mem_t = BlockFilterSharedMem<
+  using shared_mem_t = block_filter_shared_mem<
     BlockThreads,
     ItemsPerThread,
     KeyT,

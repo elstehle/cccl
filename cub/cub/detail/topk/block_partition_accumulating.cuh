@@ -611,9 +611,9 @@ private:
 //
 // The non-accumulating strategy values map to one of the three classes in
 // `block_partition.cuh`:
-//   - `Atomics`                -> `BlockPartitionAtomics<..., LazyValueLoad, InlinedClassify>`
-//   - `Staged`                 -> `BlockPartitionStaged<..., LazyValueLoad, InlinedClassify>`
-//   - `SharedMem`              -> `BlockPartitionSharedMem<..., LazyValueLoad, InlinedClassify>`
+//   - `Atomics`                -> `block_partition_atomics<..., LazyValueLoad, InlinedClassify>`
+//   - `Staged`                 -> `block_partition_staged<..., LazyValueLoad, InlinedClassify>`
+//   - `SharedMem`              -> `block_partition_shared_mem<..., LazyValueLoad, InlinedClassify>`
 //   - `AccumulatingCandidates` -> `BlockPartitionAccumulatingCandidates`
 //                                 (with `CandidateBufferCapacity` filled in from the
 //                                 metafunction's own `AccumulatingBufferCapacity` arg).
@@ -662,7 +662,7 @@ template <BlockPartitionStrategy Strategy,
 struct strategy_to_partition_class
 {
 private:
-  using atomics_t = BlockPartitionAtomics<
+  using atomics_t = block_partition_atomics<
     BlockThreads,
     ItemsPerThread,
     InlinedClassify,
@@ -682,7 +682,7 @@ private:
     DataSourceScratchTypesTuple,
     LazyValueLoad>;
 
-  using staged_t = BlockPartitionStaged<
+  using staged_t = block_partition_staged<
     BlockThreads,
     ItemsPerThread,
     KeyT,
@@ -702,7 +702,7 @@ private:
     LazyValueLoad,
     InlinedClassify>;
 
-  using shared_mem_t = BlockPartitionSharedMem<
+  using shared_mem_t = block_partition_shared_mem<
     BlockThreads,
     ItemsPerThread,
     KeyT,

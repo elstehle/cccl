@@ -16,9 +16,9 @@
 //! `Cap + 1`) absorbs racy overflow writes; the cooperative flush only
 //! reads `[0, Cap)`. A pair of post-classify drain loops walks the
 //! overflow bit-masks and emits each flagged item via per-item
-//! `reserve_*_(1)` -- the same hot path as `BlockPartitionAtomics`.
+//! `reserve_*_(1)` -- the same hot path as `block_partition_atomics`.
 //!
-//! The motivating design point is **register parity with `BlockPartitionAtomics`**.
+//! The motivating design point is **register parity with `block_partition_atomics`**.
 //! `BlockPartitionAccumulatingCandidates` keeps a per-thread
 //! `positions[ItemsPerThread]` array live across the multi-round
 //! `overflow_loop`, which raises the kernel's register high-water mark by
@@ -27,13 +27,13 @@
 //! per-thread `keys[]` and optional `reg_values[]` arrays die at function
 //! return and the cooperative flush only touches smem. The branchless
 //! `min(pos, Cap)` write keeps the classify-loop body identical in shape
-//! to `BlockPartitionAtomics`'s scatter (atomicAdd + write, no per-item
+//! to `block_partition_atomics`'s scatter (atomicAdd + write, no per-item
 //! predicated arm). On sparse streams the cross-tile batching benefit (one
 //! cooperative store per `Capacity` items) is preserved; on dense streams
 //! the overflow drain degrades to Atomics-equivalent per-item stores.
 //!
 //! `SelectedBufferCapacity == 0` short-circuits the selected stream to pure
-//! `BlockPartitionAtomics`-style behaviour (per-item `reserve_sel_(1)` direct
+//! `block_partition_atomics`-style behaviour (per-item `reserve_sel_(1)` direct
 //! to global, no smem buffer, no cooperative flush). This is the natural
 //! tuning when the selected stream is dense (e.g., the agent's `last_filter`
 //! pass).
@@ -181,7 +181,7 @@ public:
 
   static_assert(CandidateBufferCapacity >= 1,
                 "Speculative partition requires CandidateBufferCapacity >= 1. To disable candidate-stream buffering "
-                "altogether, use BlockPartitionAtomics.");
+                "altogether, use block_partition_atomics.");
   static_assert(SelectedBufferCapacity >= 0,
                 "SelectedBufferCapacity must be non-negative. Set it to 0 to bypass the selected smem buffer.");
   static_assert(ItemsPerThread <= 32,
@@ -311,7 +311,7 @@ private:
   // Storage type for the optional eager-loaded per-thread values array. The
   // size-1 dummy specialization (used when LazyValueLoad is true or the agent
   // is keys-only) mirrors the `int unused_values[1]{}` trick from
-  // `BlockPartitionAtomics::partition_atomics_fused` -- ptxas was observed to
+  // `block_partition_atomics::partition_atomics_fused` -- ptxas was observed to
   // keep `ItemsPerThread` zero-init writes alive even though the array is dead
   // under Lazy mode (the consuming `else`-branch in the per-item lambda is
   // discarded by `if constexpr`, but the local declaration's value-init still
@@ -348,7 +348,7 @@ private:
   }
 
   // Shared body for both partition() overloads. Dispatches the classify
-  // path on `InlinedClassify` (mirrors `BlockPartitionAtomics::partition_impl`):
+  // path on `InlinedClassify` (mirrors `block_partition_atomics::partition_impl`):
   // when true, the inlined classifier re-evaluates `identify_op_` inside the
   // scatter loop's `classifier(keys[j], j)` calls; when false, the
   // `precomputed_classifier`'s ctor materializes `candidate_class
@@ -385,7 +385,7 @@ private:
 
   // -----------------------------------------------------------------
   // Fused classify-and-scatter for the speculative variant: same
-  // structural shape as `BlockPartitionAtomics::partition_atomics_fused`
+  // structural shape as `block_partition_atomics::partition_atomics_fused`
   // (a unified per-item loop driven by an indexed classifier), but each
   // arm writes to its smem buffer using the branchless `min(pos, Cap)`
   // pattern and tracks overflow in a per-thread bit-mask. The two
@@ -422,7 +422,7 @@ private:
 
     // Step 1: classify + smem-scatter loop, *branchless on the capacity
     // bound*. Two independent arms per unrolled item -- mirroring
-    // `BlockPartitionAtomics`'s deliberate `if (selected) {...} if
+    // `block_partition_atomics`'s deliberate `if (selected) {...} if
     // (candidate) {...}` pattern, which avoids the per-item indirect-branch
     // table ptxas emits for an `if/else if` cascade. Each arm does
     // `pos = atomicAdd(&counter, 1)`, ORs `(pos >= Cap) << j` into its

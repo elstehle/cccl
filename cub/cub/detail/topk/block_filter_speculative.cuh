@@ -27,13 +27,13 @@
 //! overflow_bits` (one bit per item per thread) -- the per-thread `keys[]`
 //! and optional `reg_values[]` arrays die at the end of `partition()`
 //! because the cooperative flush only reads from smem. The intent is
-//! **register parity with `BlockFilterAtomics`**, with the cross-tile
+//! **register parity with `block_filter_atomics`**, with the cross-tile
 //! batching benefit (one cooperative store per `BufferCapacity` items)
 //! preserved on sparse streams. Dense streams degrade gracefully to
 //! Atomics-equivalent per-item global stores.
 //!
 //! The branchless `min(pos, Cap)` write keeps the classify-loop body as
-//! close to `BlockFilterAtomics`'s straight-line scatter as possible (one
+//! close to `block_filter_atomics`'s straight-line scatter as possible (one
 //! atomicAdd + one write per kept item), avoiding the per-item predicated
 //! arm that an explicit `if (pos < Cap)` would force the compiler to plumb
 //! through.
@@ -228,7 +228,7 @@ private:
   // Storage type for the optional eager-loaded per-thread values array. The
   // size-1 dummy specialization (used when LazyValueLoad is true or the agent
   // is keys-only) mirrors the `int unused_values[1]{}` trick from
-  // `BlockPartitionAtomics::partition_atomics_fused` -- ptxas was observed to
+  // `block_partition_atomics::partition_atomics_fused` -- ptxas was observed to
   // keep `ItemsPerThread` zero-init writes alive even though the array is dead
   // under Lazy mode (the consuming `else`-branch in the per-item lambda is
   // discarded by `if constexpr`, but the local declaration's value-init still
@@ -266,7 +266,7 @@ private:
   }
 
   // Shared body for both partition() overloads. Dispatches the classify
-  // path on `InlinedClassify` (mirrors `BlockFilterAtomics::filter_impl`):
+  // path on `InlinedClassify` (mirrors `block_filter_atomics::filter_impl`):
   // when true, the inlined classifier re-evaluates `identify_op_` inside
   // the scatter loop's `classifier(keys[j], j)` calls; when false, the
   // `precomputed_filter_classifier`'s ctor materializes
@@ -298,7 +298,7 @@ private:
 
   // -----------------------------------------------------------------
   // Fused classify-and-scatter for the speculative filter: same
-  // structural shape as `BlockFilterAtomics::filter_atomics_fused`
+  // structural shape as `block_filter_atomics::filter_atomics_fused`
   // (single-arm per-item loop driven by an indexed `(key,j) -> bool`
   // classifier), but the kept-item write goes to the smem buffer via the
   // branchless `min(pos, Cap)` pattern with overflow tracked in a
@@ -339,7 +339,7 @@ private:
     // sentinel slot at `ts_.keys[Cap]` absorbs racy overflow writes; the
     // cooperative flush only reads `[0, Cap)` so the sentinel content is
     // discarded. The structural intent: keep this loop as close to
-    // `BlockFilterAtomics`'s scatter shape as possible (one straight-line
+    // `block_filter_atomics`'s scatter shape as possible (one straight-line
     // atomicAdd + write per kept item, no per-item branch), so ptxas
     // doesn't have to keep `pos` alive across a predicated arm and the
     // register footprint matches the Atomics baseline.
@@ -362,7 +362,7 @@ private:
     }
 
     // Step 2: deferred drain of overflowed items. Identical to
-    // `BlockFilterAtomics`'s per-item scatter loop (per-item `reserve_sel_(1)`
+    // `block_filter_atomics`'s per-item scatter loop (per-item `reserve_sel_(1)`
     // + direct-to-global writes); reads only register state
     // (`keys[]`, `overflow_bits`, optional eager `reg_values[]`).
     _CCCL_PRAGMA_UNROLL_FULL()
