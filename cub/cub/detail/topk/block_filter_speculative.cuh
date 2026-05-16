@@ -75,7 +75,6 @@
 #include <cuda/std/__type_traits/remove_reference.h>
 #include <cuda/std/cstddef>
 #include <cuda/std/cstdint>
-#include <cuda/std/tuple>
 #include <cuda/std/utility>
 
 CUB_NAMESPACE_BEGIN
@@ -124,40 +123,57 @@ template <int BlockThreads,
           typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
-          typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
-          typename ValueTypesTuple        = ::cuda::std::tuple<>,
-          bool LazyValueLoad              = false,
-          bool InlinedClassify            = true>
+          typename ValueChannelSinksT = CUB_NS_QUALIFIER::NullType,
+          typename ValueT             = CUB_NS_QUALIFIER::NullType,
+          bool LazyValueLoad          = false,
+          bool InlinedClassify        = true>
 class block_filter_speculative
 {
 public:
-  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
-  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
   static_assert(BufferCapacity >= 1, "Speculative filter requires BufferCapacity >= 1.");
   static_assert(ItemsPerThread <= 32, "Speculative filter overflow bit-mask is a uint32_t; ItemsPerThread must be <= 32.");
-  static_assert(num_value_channels <= 1,
-                "Speculative filter supports keys-only or single-value-channel today; multi-channel needs a "
-                "heterogeneous register-array tuple analogous to the BlockFilter shared_mem path.");
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
-                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
-                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
 
-  // Reuse the accumulating filter's TempStorage layout -- the storage
-  // requirements (one counter + one keys buffer + optional per-channel values
-  // buffer) are identical. Wrapped in `cub::Uninitialized<>` at the public
-  // layer.
-  // The speculative variant allocates `BufferCapacity + 1` smem slots: the
-  // trailing "sentinel" slot lets the classify loop write *unconditionally*
-  // with `idx = min(pos, BufferCapacity)`, eliminating the per-item branch
-  // on `pos < BufferCapacity`. The cooperative flush still emits only the
-  // leading `BufferCapacity` slots, so the sentinel content is never read
-  // -- it just absorbs racy overflow writes. Hypothesis: the unconditional
-  // write keeps `pos` short-lived and lets ptxas avoid keeping it across a
-  // predicated arm.
+  // Per-stream counter + flush-broadcast slots in TempStorage. Same layout as
+  // `block_partition_accumulating_candidates::stream_counters_t`; nested here so
+  // the speculative filter is self-contained.
+  template <typename OffsetT>
+  struct stream_counters_t
+  {
+    int counter;
+    OffsetT base;
+    OffsetT granted;
+  };
+
+  // TempStorage layout. Storage requirements (one counter + one keys buffer +
+  // optional values buffer) are identical to the accumulating filter's; the
+  // speculative variant allocates `BufferCapacity + 1` smem slots: the trailing
+  // "sentinel" slot lets the classify loop write *unconditionally* with
+  // `idx = min(pos, BufferCapacity)`, eliminating the per-item branch on
+  // `pos < BufferCapacity`. The cooperative flush still emits only the leading
+  // `BufferCapacity` slots, so the sentinel content is never read -- it just
+  // absorbs racy overflow writes. Hypothesis: the unconditional write keeps
+  // `pos` short-lived and lets ptxas avoid keeping it across a predicated arm.
+  // Wrapped in `cub::Uninitialized<>` at the public layer. In keys-only mode
+  // the `_keys_only` partial specialization drops the `values[]` array.
+  template <int Capacity, bool KeysOnly>
+  struct speculative_filter_temp_storage_full
+  {
+    stream_counters_t<SelectedOffsetT> cnt;
+    KeyT keys[Capacity];
+    ValueT values[Capacity];
+  };
+  template <int Capacity>
+  struct speculative_filter_temp_storage_full<Capacity, /*KeysOnly=*/true>
+  {
+    stream_counters_t<SelectedOffsetT> cnt;
+    KeyT keys[Capacity];
+  };
+
   static constexpr int buffer_storage_slots = BufferCapacity + 1;
-  using _TempStorage =
-    accumulating_filter_temp_storage_t<KeyT, SelectedOffsetT, ValueTypesTuple, buffer_storage_slots>;
+  using _TempStorage = speculative_filter_temp_storage_full<buffer_storage_slots, keys_only>;
   struct TempStorage : CUB_NS_QUALIFIER::Uninitialized<_TempStorage>
   {};
 
@@ -170,7 +186,7 @@ public:
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksTuple& value_channel_sinks,
+    ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : temp_storage(storage.Alias())
       , reserve_sel(reserve_selected)
@@ -187,22 +203,22 @@ public:
   }
 
   // Full-tile overload.
-  template <typename ValueSourcesTuple>
+  template <typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourceT& value_source)
   {
-    filter_impl<true>(keys, /*num_items=*/tile_items, value_sources);
+    filter_impl<true>(keys, /*num_items=*/tile_items, value_source);
   }
 
   // Partial-tile overload.
-  template <typename NumItemsT, typename ValueSourcesTuple>
+  template <typename NumItemsT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& /*scratch*/,
     const KeyT (&keys)[ItemsPerThread],
     NumItemsT num_items,
-    ValueSourcesTuple& value_sources)
+    ValueSourceT& value_source)
   {
-    filter_impl<false>(keys, static_cast<int>(num_items), value_sources);
+    filter_impl<false>(keys, static_cast<int>(num_items), value_source);
   }
 
   // Terminal flush: drain any remaining buffered items.
@@ -223,7 +239,7 @@ public:
   }
 
 private:
-  using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
+  using channel_value_t = ::cuda::std::conditional_t<keys_only, int, ValueT>;
 
   // Storage type for the optional eager-loaded per-thread values array. The
   // size-1 dummy specialization (used when LazyValueLoad is true or the agent
@@ -234,32 +250,30 @@ private:
   // discarded by `if constexpr`, but the local declaration's value-init still
   // survives liveness analysis). Collapsing to a 1-element placeholder costs 1
   // register instead of `ItemsPerThread`.
-  static constexpr bool kEagerLoadValues = (!LazyValueLoad && num_value_channels == 1);
+  static constexpr bool kEagerLoadValues = (!LazyValueLoad && !keys_only);
   static constexpr int kRegValuesSize    = kEagerLoadValues ? ItemsPerThread : 1;
 
   // Dispatches eager value-loading when applicable. No-op under Lazy or keys-only.
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void eager_load_value_channel(
-    ValueSourcesTuple& value_sources, channel_value_t (&reg_values)[kRegValuesSize], int num_items)
+    ValueSourceT& value_source, channel_value_t (&reg_values)[kRegValuesSize], int num_items)
   {
-    (void) value_sources;
+    (void) value_source;
     (void) reg_values;
     (void) num_items;
     if constexpr (kEagerLoadValues)
     {
-      auto& src      = ::cuda::std::get<0>(value_sources);
-      using source_t = ::cuda::std::remove_reference_t<decltype(src)>;
-      static_assert(::cuda::std::is_same_v<typename source_t::value_t, channel_value_t>,
-                    "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
-      typename source_t::ScratchStorage scratch{};
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
+                    "Per-call value source's value_t must match the class-level ValueT template parameter.");
+      typename ValueSourceT::ScratchStorage scratch{};
       if constexpr (IsFull)
       {
-        auto h = src.submit_load(scratch);
+        auto h = value_source.submit_load(scratch);
         h.complete_load(reg_values);
       }
       else
       {
-        auto h = src.submit_load(scratch, num_items);
+        auto h = value_source.submit_load(scratch, num_items);
         h.complete_load(reg_values);
       }
     }
@@ -273,26 +287,22 @@ private:
   // `bool kept[ItemsPerThread]` up front and the scatter loop just reads
   // `kept[j]`. The shared fused scatter helper takes the classifier as a
   // template parameter so the same SASS body services both choices.
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  filter_impl(const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+  filter_impl(const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourceT& value_source)
   {
-    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
-                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
-                  "tuple; the filter pairs them positionally.");
-
     const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     if constexpr (InlinedClassify)
     {
       auto classifier = make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
-      filter_speculative_fused<IsFull>(keys, num_thread_items, classifier, value_sources, num_items);
+      filter_speculative_fused<IsFull>(keys, num_thread_items, classifier, value_source, num_items);
     }
     else
     {
       precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op};
-      filter_speculative_fused<IsFull>(keys, num_thread_items, classifier, value_sources, num_items);
+      filter_speculative_fused<IsFull>(keys, num_thread_items, classifier, value_source, num_items);
     }
   }
 
@@ -305,26 +315,26 @@ private:
   // per-thread bit-mask. The post-classify drain emits overflowed items
   // via per-item global atomics (Atomics-equivalent hot path).
   // -----------------------------------------------------------------
-  template <bool IsFull, typename Classifier, typename ValueSourcesTuple>
+  template <bool IsFull, typename Classifier, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_speculative_fused(
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
-    ValueSourcesTuple& value_sources,
+    ValueSourceT& value_source,
     int num_items)
   {
     (void) num_thread_items;
+    (void) value_source;
 
     // Size-1 placeholder when not eagerly loading (Lazy or keys-only); full-size
     // register array only when needed. See `kRegValuesSize` comment above.
     channel_value_t reg_values[kRegValuesSize]{};
-    eager_load_value_channel<IsFull>(value_sources, reg_values, num_items);
+    eager_load_value_channel<IsFull>(value_source, reg_values, num_items);
 
     auto get_value = [&](int j) -> channel_value_t {
-      if constexpr (LazyValueLoad && num_value_channels == 1)
+      if constexpr (LazyValueLoad && !keys_only)
       {
-        auto& src = ::cuda::std::get<0>(value_sources);
-        return src.gather_one(j);
+        return value_source.gather_one(j);
       }
       else
       {
@@ -352,11 +362,11 @@ private:
       {
         const int pos = atomicAdd(&temp_storage.cnt.counter, 1);
         overflow_bits |= (static_cast<::cuda::std::uint32_t>(pos >= BufferCapacity) << j);
-        const int idx           = (pos < BufferCapacity) ? pos : BufferCapacity;
-        temp_storage.keys[idx]           = keys[j];
-        if constexpr (num_value_channels == 1)
+        const int idx          = (pos < BufferCapacity) ? pos : BufferCapacity;
+        temp_storage.keys[idx] = keys[j];
+        if constexpr (!keys_only)
         {
-          CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values).values[idx] = get_value(j);
+          temp_storage.values[idx] = get_value(j);
         }
       }
     }
@@ -379,10 +389,9 @@ private:
         if (granted)
         {
           sel_iter[r.first] = sel_xform(keys[j]);
-          if constexpr (num_value_channels == 1)
+          if constexpr (!keys_only)
           {
-            auto& sink                        = ::cuda::std::get<0>(sinks);
-            sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
           }
         }
       }
@@ -453,19 +462,16 @@ private:
       }
     }
 
-    if constexpr (num_value_channels == 1)
+    if constexpr (!keys_only)
     {
-      auto& sink = ::cuda::std::get<0>(sinks);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
-
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int w = 0; w < full_flush_waves; ++w)
       {
         const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
         if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
         {
-          sink.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-            sink.selected_value_transform(vs.values[i]);
+          sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
+            sinks.selected_value_transform(temp_storage.values[i]);
         }
       }
       if constexpr (trailing_count != 0)
@@ -474,8 +480,8 @@ private:
         if (static_cast<int>(threadIdx.x) < trailing_count
             && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
         {
-          sink.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-            sink.selected_value_transform(vs.values[i]);
+          sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
+            sinks.selected_value_transform(temp_storage.values[i]);
         }
       }
     }
@@ -501,13 +507,12 @@ private:
     {
       sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
     }
-    if constexpr (num_value_channels == 1)
+    if constexpr (!keys_only)
     {
-      auto& sink = ::cuda::std::get<0>(sinks);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
-        sink.selected_values_out[base + static_cast<SelectedOffsetT>(i)] = sink.selected_value_transform(vs.values[i]);
+        sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
+          sinks.selected_value_transform(temp_storage.values[i]);
       }
     }
   }
@@ -519,7 +524,7 @@ private:
   SelectedReserveOp& reserve_sel;
   SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksTuple& sinks;
+  ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
 };
 
@@ -538,9 +543,9 @@ template <int BlockThreads,
           typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
-          typename ValueChannelSinksTuple,
-          typename ValueTypesTuple,
-          typename DataSourceScratchTypesTuple,
+          typename ValueChannelSinksT,
+          typename ValueT,
+          typename ValueDataSourceScratchT,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_filter_class<
@@ -554,17 +559,17 @@ struct strategy_to_filter_class<
   SelectedKeyOutTransformOp,
   SelectedKeyOutIt,
   IdentifySelectedOp,
-  ValueChannelSinksTuple,
-  ValueTypesTuple,
-  DataSourceScratchTypesTuple,
+  ValueChannelSinksT,
+  ValueT,
+  ValueDataSourceScratchT,
   LazyValueLoad,
   InlinedClassify>
 {
   // `InlinedClassify` is threaded through to `block_filter_speculative`'s
   // classify path (`filter_impl` dispatches between `inlined_filter_classifier`
-  // and `precomputed_filter_classifier`). `DataSourceScratchTypesTuple` is
-  // not consumed -- the Speculative filter gathers values via stack-local
-  // `source_t::ScratchStorage`.
+  // and `precomputed_filter_classifier`). `ValueDataSourceScratchT` is not
+  // consumed -- the Speculative filter gathers values via stack-local
+  // `ValueSourceT::ScratchStorage`.
   using type = block_filter_speculative<
     BlockThreads,
     ItemsPerThread,
@@ -575,8 +580,8 @@ struct strategy_to_filter_class<
     SelectedKeyOutTransformOp,
     SelectedKeyOutIt,
     IdentifySelectedOp,
-    ValueChannelSinksTuple,
-    ValueTypesTuple,
+    ValueChannelSinksT,
+    ValueT,
     LazyValueLoad,
     InlinedClassify>;
 };

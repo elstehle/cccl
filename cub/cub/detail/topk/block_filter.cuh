@@ -51,11 +51,9 @@
 #include <cuda/std/__type_traits/is_empty.h>
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/__type_traits/remove_reference.h>
-#include <cuda/std/__utility/forward.h>
 #include <cuda/std/cstddef>
 #include <cuda/std/cstdint>
 #include <cuda/std/limits>
-#include <cuda/std/tuple>
 #include <cuda/std/utility>
 
 CUB_NAMESPACE_BEGIN
@@ -101,10 +99,7 @@ struct value_channel_sinks_filter_t
 //---------------------------------------------------------------------
 // Shared scratch-storage building blocks. Per-strategy assembled `ScratchStorage`
 // structs live as nested types of the three filter classes below; the helpers
-// here (single-stream counters, classifiers) are what they compose from. The
-// shared multi-channel slots (`staged_channel_phase`, `delegate_load_slot`,
-// `values_slot`, `map_tuple_t`, ...) live in `block_partition.cuh` and are
-// reused here.
+// here (single-stream counters, classifiers) are what they compose from.
 //---------------------------------------------------------------------
 
 // Single-stream counter + broadcast slots for `Staged` / `SharedMem` filter
@@ -201,25 +196,15 @@ template <int BlockThreads,
           typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
-          typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
-          typename ValueTypesTuple             = ::cuda::std::tuple<>,
-          typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
-          bool LazyValueLoad                   = false>
+          typename ValueChannelSinksT      = CUB_NS_QUALIFIER::NullType,
+          typename ValueT                  = CUB_NS_QUALIFIER::NullType,
+          typename ValueDataSourceScratchT = CUB_NS_QUALIFIER::NullType,
+          bool LazyValueLoad               = false>
 class block_filter_atomics
 {
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
-                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
-                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
-  static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
-                  == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
-                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
-                "block_filter_atomics supports keys-only or single-value-channel today; "
-                "multi-channel needs a per-channel value array.");
-
 public:
-  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
-  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
   // Class-lifetime persistent state. Empty (no carried state across partition() calls).
   struct TempStorage
@@ -235,7 +220,7 @@ public:
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksTuple& value_channel_sinks,
+    ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
       , sel_xform(selected_key_transform)
@@ -245,45 +230,41 @@ public:
   {}
 
   // Full-tile overload: no per-item bound check inside the classify loop.
-  template <typename ValueSourcesTuple>
+  template <typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourceT& value_source)
   {
-    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
+    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_source);
   }
 
   // Partial-tile overload: classify loop bound-checks against num_items.
-  template <typename NumItemsT, typename ValueSourcesTuple>
+  template <typename NumItemsT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
-    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourceT& value_source)
   {
-    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
+    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_source);
   }
 
   // No-op terminal flush. Present for parity with `block_filter_accumulating`.
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_impl(
-    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourceT& value_source)
   {
-    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
-                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
-                  "tuple; the filter pairs them positionally.");
-
     const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     if constexpr (InlinedClassify)
     {
       auto classifier = make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
-      filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
+      filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_source);
     }
     else
     {
       precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op};
-      filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
+      filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_source);
     }
   }
 
@@ -292,64 +273,59 @@ private:
   // `Classifier` with signature `(KeyT, int j) -> bool`. The classifier
   // abstracts the precomputed-vs-inlined decision.
   // -----------------------------------------------------------------
-  template <bool IsFull, typename Classifier, typename ValueSourcesTuple>
+  template <bool IsFull, typename Classifier, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_atomics_fused(
     ScratchStorage& /*buffer*/,
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
-    ValueSourcesTuple& value_sources)
+    ValueSourceT& value_source)
   {
-    if constexpr (num_value_channels == 1)
+    if constexpr (!keys_only)
     {
-      auto& src      = ::cuda::std::get<0>(value_sources);
-      using source_t = ::cuda::std::remove_reference_t<decltype(src)>;
-      using value_t  = ::cuda::std::tuple_element_t<0, ValueTypesTuple>;
-      static_assert(::cuda::std::is_same_v<typename source_t::value_t, value_t>,
-                    "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
+                    "Per-call value source's value_t must match the class-level ValueT template parameter.");
 
       if constexpr (LazyValueLoad)
       {
         int unused_values[1]{};
-        filter_atomics_fused_scatter<IsFull, /*KeysOnly=*/false>(
-          keys, num_thread_items, classifier, value_sources, unused_values);
+        filter_atomics_fused_scatter<IsFull>(
+          keys, num_thread_items, classifier, value_source, unused_values);
       }
       else
       {
-        typename source_t::ScratchStorage chan_scratch{};
-        auto h = src.submit_load(chan_scratch);
-        value_t values[ItemsPerThread]{};
+        typename ValueSourceT::ScratchStorage chan_scratch{};
+        auto h = value_source.submit_load(chan_scratch);
+        ValueT values[ItemsPerThread]{};
         h.complete_load(values);
 
-        filter_atomics_fused_scatter<IsFull, /*KeysOnly=*/false>(
-          keys, num_thread_items, classifier, value_sources, values);
+        filter_atomics_fused_scatter<IsFull>(
+          keys, num_thread_items, classifier, value_source, values);
       }
     }
     else
     {
       int unused_dummy[1]{};
-      (void) unused_dummy;
-      filter_atomics_fused_scatter<IsFull, /*KeysOnly=*/true>(
-        keys, num_thread_items, classifier, value_sources, unused_dummy);
+      filter_atomics_fused_scatter<IsFull>(keys, num_thread_items, classifier, value_source, unused_dummy);
     }
   }
 
-  template <bool IsFull, bool KeysOnly, typename Classifier, typename ValueSourcesTuple, typename ValuesArr>
+  template <bool IsFull, typename Classifier, typename ValueSourceT, typename ValuesArr>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_atomics_fused_scatter(
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
-    ValueSourcesTuple& value_sources,
+    ValueSourceT& value_source,
     ValuesArr& values)
   {
     (void) num_thread_items;
-    (void) value_sources;
+    (void) value_source;
+    (void) values;
 
     auto get_value = [&](int j) {
       if constexpr (LazyValueLoad)
       {
-        auto& src = ::cuda::std::get<0>(value_sources);
-        return src.gather_one(j);
+        return value_source.gather_one(j);
       }
       else
       {
@@ -372,10 +348,9 @@ private:
         if (granted)
         {
           sel_iter[r.first] = sel_xform(keys[j]);
-          if constexpr (!KeysOnly)
+          if constexpr (!keys_only)
           {
-            auto& sink                        = ::cuda::std::get<0>(sinks);
-            sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
           }
         }
       }
@@ -386,7 +361,7 @@ private:
   SelectedReserveOp& reserve_sel;
   SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksTuple& sinks;
+  ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
 };
 
@@ -414,43 +389,45 @@ template <int BlockThreads,
           typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
-          typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
-          typename ValueTypesTuple             = ::cuda::std::tuple<>,
-          typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
-          bool LazyValueLoad                   = false,
-          bool InlinedClassify                 = false>
+          typename ValueChannelSinksT      = CUB_NS_QUALIFIER::NullType,
+          typename ValueT                  = CUB_NS_QUALIFIER::NullType,
+          typename ValueDataSourceScratchT = CUB_NS_QUALIFIER::NullType,
+          bool LazyValueLoad               = false,
+          bool InlinedClassify             = false>
 class block_filter_staged
 {
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
-                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
-                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
-  static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
-                  == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
-                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
-
 public:
-  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
-  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
   struct TempStorage
   {};
 
-  using value_channel_meta_tuple_t =
-    zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
+  // Per-tile scratch. `phase` is a phase union: phase 1 (key scatter) uses the
+  // `keys[]` arena; phase 2 (value scatter) reuses the same smem through the
+  // `value_phase` view, which itself is an internal union over the data source's
+  // `load` scratch and the per-tile `values[]` array. `cnt` lives outside the
+  // union because it carries the per-tile count and the broadcast `granted_*`
+  // slot across the whole `partition()` call. Mirrors the sister layout in
+  // `block_partition_staged`.
+  struct value_phase_full
+  {
+    union
+    {
+      ValueDataSourceScratchT load;
+      ValueT values[tile_items];
+    };
+  };
+  struct value_phase_empty
+  {};
+  using value_phase_t = ::cuda::std::conditional_t<keys_only, value_phase_empty, value_phase_full>;
 
-  // Per-tile scratch. `phase` is a phase_union: phase 1 (key scatter) uses the
-  // `keys[]` arena; phase 2 (per-channel value scatter) reuses the same smem
-  // through the `per_channel` view. `cnt` lives outside the union because it
-  // carries the per-tile count and the broadcast `granted_*` slot across the
-  // whole `partition()` call.
   struct ScratchStorage
   {
     union phase_t
     {
       KeyT keys[tile_items];
-      CUB_NS_QUALIFIER::detail::phase_union<
-        map_tuple_t<staged_channel_phase, value_channel_meta_tuple_t, tile_items>>
-        per_channel;
+      value_phase_t value_phase;
 
       _CCCL_HOST_DEVICE phase_t() {}
       _CCCL_HOST_DEVICE ~phase_t() {}
@@ -464,7 +441,7 @@ public:
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksTuple& value_channel_sinks,
+    ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
       , sel_xform(selected_key_transform)
@@ -473,30 +450,29 @@ public:
       , identify_op(identify_selected_op)
   {}
 
-  template <typename ValueSourcesTuple>
+  template <typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourceT& value_source)
   {
-    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
+    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_source);
   }
 
-  template <typename NumItemsT, typename ValueSourcesTuple>
+  template <typename NumItemsT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
-    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourceT& value_source)
   {
-    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
+    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_source);
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_impl(
-    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourceT& value_source)
   {
-    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
-                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
-                  "tuple; the filter pairs them positionally.");
+    (void) value_source;
+    (void) num_items;
 
     const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
@@ -541,70 +517,62 @@ private:
       sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.keys[i]);
     }
 
-    if constexpr (num_value_channels > 0)
+    if constexpr (!keys_only)
     {
-      __syncthreads();
-      tuple_for_each(value_sources, [&](auto& src, auto I_ic) {
-        constexpr int I = static_cast<int>(decltype(I_ic)::value);
-        using source_t  = ::cuda::std::remove_reference_t<decltype(src)>;
-        using value_t   = ::cuda::std::tuple_element_t<I, ValueTypesTuple>;
-        static_assert(::cuda::std::is_same_v<typename source_t::value_t, value_t>,
-                      "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
+                    "Per-call value source's value_t must match the class-level ValueT template parameter.");
 
-        auto& sink       = ::cuda::std::get<I>(sinks);
-        auto& chan_phase = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.per_channel);
-        if constexpr (LazyValueLoad)
+      __syncthreads();
+      auto& vphase = buffer.phase.value_phase;
+      if constexpr (LazyValueLoad)
+      {
+        // Lazy: skip the eager tile-wide load. Each thread gathers only the
+        // values of its surviving items via `value_source.gather_one(j)` and
+        // writes them straight into the smem arena. The data-source's `load`
+        // slot (aliased with `vphase.values` via the value-phase union) goes
+        // unused on this path.
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int j = 0; j < ItemsPerThread; ++j)
         {
-          // Lazy: skip the eager tile-wide load. Each thread gathers only the
-          // values of its surviving items via `src.gather_one(j)` and writes
-          // them straight into the smem arena. The data-source's `load` slot
-          // (aliased with `chan_phase.values` via the phase union) goes
-          // unused on this path.
-          (void) num_items;
-          _CCCL_PRAGMA_UNROLL_FULL()
-          for (int j = 0; j < ItemsPerThread; ++j)
+          if (positions[j] >= 0)
           {
-            if (positions[j] >= 0)
-            {
-              chan_phase.values[positions[j]] = src.gather_one(j);
-            }
+            vphase.values[positions[j]] = value_source.gather_one(j);
           }
+        }
+      }
+      else
+      {
+        // Eager: load the full tile into a register array, then scatter the
+        // surviving values into the smem arena.
+        ValueT reg_values[ItemsPerThread]{};
+        if constexpr (IsFull)
+        {
+          auto h = value_source.submit_load(vphase.load);
+          h.complete_load(reg_values);
         }
         else
         {
-          // Eager: load the full tile into a register array, then scatter the
-          // surviving values into the smem arena.
-          value_t reg_values[ItemsPerThread]{};
-          if constexpr (IsFull)
-          {
-            auto h = src.submit_load(chan_phase.load);
-            h.complete_load(reg_values);
-          }
-          else
-          {
-            auto h = src.submit_load(chan_phase.load, num_items);
-            h.complete_load(reg_values);
-          }
-          __syncthreads();
-
-          _CCCL_PRAGMA_UNROLL_FULL()
-          for (int j = 0; j < ItemsPerThread; ++j)
-          {
-            if (positions[j] >= 0)
-            {
-              chan_phase.values[positions[j]] = reg_values[j];
-            }
-          }
+          auto h = value_source.submit_load(vphase.load, num_items);
+          h.complete_load(reg_values);
         }
         __syncthreads();
 
-        for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int j = 0; j < ItemsPerThread; ++j)
         {
-          sink.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-            sink.selected_value_transform(chan_phase.values[i]);
+          if (positions[j] >= 0)
+          {
+            vphase.values[positions[j]] = reg_values[j];
+          }
         }
-        __syncthreads();
-      });
+      }
+      __syncthreads();
+
+      for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
+      {
+        sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
+          sinks.selected_value_transform(vphase.values[i]);
+      }
     }
     __syncthreads();
   }
@@ -636,18 +604,15 @@ private:
   SelectedReserveOp& reserve_sel;
   SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksTuple& sinks;
+  ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
 };
 
 //---------------------------------------------------------------------
-// `block_filter_shared_mem` -- keys + per-channel values coexist in smem (within
+// `block_filter_shared_mem` -- keys + value array coexist in smem (within
 // `phase.kv`), then a single coalesced flush. Pre-Phase-1 delegate loads alias
 // with the kv arena via the top-level phase union. Mapped from
 // `block_filter_strategy::shared_mem`.
-//
-// Single-value-channel only today; multi-channel needs a heterogeneous
-// register-array tuple.
 //
 // `InlinedClassify` selects between materializing a `kept[ItemsPerThread]`
 // register array up front and recomputing the predicate at the per-item
@@ -666,51 +631,49 @@ template <int BlockThreads,
           typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
-          typename ValueChannelSinksTuple      = ::cuda::std::tuple<>,
-          typename ValueTypesTuple             = ::cuda::std::tuple<>,
-          typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
-          bool LazyValueLoad                   = false,
-          bool InlinedClassify                 = false>
+          typename ValueChannelSinksT      = CUB_NS_QUALIFIER::NullType,
+          typename ValueT                  = CUB_NS_QUALIFIER::NullType,
+          typename ValueDataSourceScratchT = CUB_NS_QUALIFIER::NullType,
+          bool LazyValueLoad               = false,
+          bool InlinedClassify             = false>
 class block_filter_shared_mem
 {
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
-                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
-                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
-  static_assert(::cuda::std::tuple_size<ValueTypesTuple>::value
-                  == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
-                "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
-                "block_filter_shared_mem supports keys-only or single-value-channel today; "
-                "multi-channel needs a heterogeneous register-array tuple.");
-
 public:
-  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
-  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
   struct TempStorage
   {};
 
-  using value_channel_meta_tuple_t =
-    zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
-
   // Per-tile scratch. The `phase` union has two views: `delegate_loads` (pre-Phase-1
-  // delegate-load staging area for value channels) and `kv` (the keys + per-channel
-  // values arena used for scatter and cooperative flush). `cnt` lives outside the
-  // union, same role as in block_filter_staged.
+  // delegate-load staging area for the value channel) and `kv` (the keys + values
+  // arena used for scatter and cooperative flush). `cnt` lives outside the union,
+  // same role as in `block_filter_staged`. The `delegate_loads` slot and the
+  // `values[]` array both collapse to empty placeholders in the keys-only build.
+  struct keys_and_values_full
+  {
+    KeyT keys[tile_items];
+    ValueT values[tile_items];
+  };
+  struct keys_and_values_keys_only
+  {
+    KeyT keys[tile_items];
+  };
+  using keys_and_values_t = ::cuda::std::conditional_t<keys_only, keys_and_values_keys_only, keys_and_values_full>;
+
+  struct delegate_load_full
+  {
+    ValueDataSourceScratchT load;
+  };
+  struct delegate_load_empty
+  {};
+  using delegate_load_t = ::cuda::std::conditional_t<keys_only, delegate_load_empty, delegate_load_full>;
+
   struct ScratchStorage
   {
-    struct keys_and_values_t
-    {
-      KeyT keys[tile_items];
-      CUB_NS_QUALIFIER::detail::phase_aggregate<
-        map_tuple_t<values_slot, value_channel_meta_tuple_t, tile_items>>
-        per_channel_values;
-    };
-
     union phase_t
     {
-      CUB_NS_QUALIFIER::detail::phase_union<map_tuple1_t<delegate_load_slot, value_channel_meta_tuple_t>>
-        delegate_loads;
+      delegate_load_t delegate_loads;
       keys_and_values_t kv;
 
       _CCCL_HOST_DEVICE phase_t() {}
@@ -725,7 +688,7 @@ public:
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksTuple& value_channel_sinks,
+    ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
       , sel_xform(selected_key_transform)
@@ -734,30 +697,29 @@ public:
       , identify_op(identify_selected_op)
   {}
 
-  template <typename ValueSourcesTuple>
+  template <typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourceT& value_source)
   {
-    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
+    filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_source);
   }
 
-  template <typename NumItemsT, typename ValueSourcesTuple>
+  template <typename NumItemsT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
-    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourceT& value_source)
   {
-    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
+    filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_source);
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_impl(
-    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourceT& value_source)
   {
-    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
-                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
-                  "tuple; the filter pairs them positionally.");
+    (void) value_source;
+    (void) num_items;
 
     const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
@@ -766,20 +728,21 @@ private:
     // phase union is dead and we transition to the kv view at the next
     // __syncthreads. Skipped under `LazyValueLoad` -- the kv-scatter loop below
     // pulls values via `gather_one(j)` only for surviving items.
-    using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
-    channel_value_t reg_values[ItemsPerThread]{};
-    if constexpr (num_value_channels == 1 && !LazyValueLoad)
+    using reg_values_t = ::cuda::std::conditional_t<keys_only, int, ValueT>;
+    reg_values_t reg_values[ItemsPerThread]{};
+    if constexpr (!keys_only && !LazyValueLoad)
     {
-      auto& src       = ::cuda::std::get<0>(value_sources);
-      auto& load_slot = CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.delegate_loads);
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
+                    "Per-call value source's value_t must match the class-level ValueT template parameter.");
+      auto& load_slot = buffer.phase.delegate_loads;
       if constexpr (IsFull)
       {
-        auto h = src.submit_load(load_slot.load);
+        auto h = value_source.submit_load(load_slot.load);
         h.complete_load(reg_values);
       }
       else
       {
-        auto h = src.submit_load(load_slot.load, num_items);
+        auto h = value_source.submit_load(load_slot.load, num_items);
         h.complete_load(reg_values);
       }
     }
@@ -794,13 +757,13 @@ private:
     if constexpr (InlinedClassify)
     {
       auto classifier = make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
-      classify_and_scatter_kv(buffer, keys, classifier, value_sources, reg_values);
+      classify_and_scatter_kv(buffer, keys, classifier, value_source, reg_values);
     }
     else
     {
       precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op};
-      classify_and_scatter_kv(buffer, keys, classifier, value_sources, reg_values);
+      classify_and_scatter_kv(buffer, keys, classifier, value_source, reg_values);
     }
     __syncthreads();
 
@@ -823,17 +786,13 @@ private:
       sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.kv.keys[i]);
     }
 
-    if constexpr (num_value_channels > 0)
+    if constexpr (!keys_only)
     {
-      tuple_for_each(sinks, [&](auto& sink, auto I_ic) {
-        constexpr int I = static_cast<int>(decltype(I_ic)::value);
-        auto& vs        = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.kv.per_channel_values);
-        for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
-        {
-          sink.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-            sink.selected_value_transform(vs.values[i]);
-        }
-      });
+      for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
+      {
+        sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
+          sinks.selected_value_transform(buffer.phase.kv.values[i]);
+      }
     }
     __syncthreads();
   }
@@ -842,15 +801,15 @@ private:
   // surviving (key, value) pairs into the kv arena. `Classifier` exposes
   // `operator()(KeyT, int j) -> bool` for both modes; the value source is
   // consulted via `gather_one` only when `LazyValueLoad == true`.
-  template <typename Classifier, typename ValueSourcesTuple, typename RegValuesArr>
+  template <typename Classifier, typename ValueSourceT, typename RegValuesArr>
   _CCCL_DEVICE _CCCL_FORCEINLINE void classify_and_scatter_kv(
     ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
     Classifier& classifier,
-    ValueSourcesTuple& value_sources,
+    ValueSourceT& value_source,
     const RegValuesArr& reg_values)
   {
-    (void) value_sources;
+    (void) value_source;
     (void) reg_values;
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < ItemsPerThread; ++j)
@@ -861,16 +820,15 @@ private:
       }
       const int idx             = atomicAdd(&buffer.cnt.counter, 1);
       buffer.phase.kv.keys[idx] = keys[j];
-      if constexpr (num_value_channels == 1)
+      if constexpr (!keys_only)
       {
         if constexpr (LazyValueLoad)
         {
-          auto& src = ::cuda::std::get<0>(value_sources);
-          CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.kv.per_channel_values).values[idx] = src.gather_one(j);
+          buffer.phase.kv.values[idx] = value_source.gather_one(j);
         }
         else
         {
-          CUB_NS_QUALIFIER::detail::at<0>(buffer.phase.kv.per_channel_values).values[idx] = reg_values[j];
+          buffer.phase.kv.values[idx] = reg_values[j];
         }
       }
     }
@@ -879,7 +837,7 @@ private:
   SelectedReserveOp& reserve_sel;
   SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksTuple& sinks;
+  ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
 };
 } // namespace detail::topk

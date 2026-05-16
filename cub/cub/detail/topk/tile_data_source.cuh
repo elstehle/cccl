@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Top-k-private foundation building blocks: storage helpers, reserve callbacks,
-//! generative-iterator trait, and `TileDataSource` specializations.
+//! Top-k-private foundation building blocks: reserve callbacks, generative-iterator
+//! trait, and `TileDataSource` specializations.
 //!
 //! Architecture overview:
 //! `[topk-building-blocks-architecture_2c7af1d3.plan.md]`. This header co-locates the
@@ -11,20 +11,18 @@
 //! once the foundation stabilizes a future split into smaller headers is cheap.
 //!
 //! Layout in this header (mirrors the dependency order):
-//!   1. Compositional storage helpers (`phase_union<Tuple>`, `phase_aggregate<Tuple>`,
-//!      and the typed accessor `at<I>`) -- architecture §2.1.1; in `cub::detail`.
-//!   2. Generative-iterator trait (`is_generative_iterator`, `is_generative_iterator_v`)
+//!   1. Generative-iterator trait (`is_generative_iterator`, `is_generative_iterator_v`)
 //!      -- architecture §7.5; in `cub::detail`.
-//!   3. Reserve callbacks (`atomic_reserve_range_op`, `back_grow_capped_reserve_op`)
+//!   2. Reserve callbacks (`atomic_reserve_range_op`, `back_grow_capped_reserve_op`)
 //!      -- architecture §8; in `cub::detail::topk`.
-//!   4. `tile_load_kind` enum -- the unified policy knob spanning sync `BlockLoad`
+//!   3. `tile_load_kind` enum -- the unified policy knob spanning sync `BlockLoad`
 //!      variants and async TMA -- architecture §2.4; in `cub::detail::topk`.
-//!   5. The four `TileDataSource` specializations (in `cub::detail::topk`):
+//!   4. The four `TileDataSource` specializations (in `cub::detail::topk`):
 //!        - `direct_data_source`              gmem -> registers, no smem
 //!        - `sync_block_load_data_source`     wraps `cub::BlockLoad`
 //!        - `async_to_shared_data_source`     wraps `cub::detail::BlockLoadToShared`
 //!        - `multi_source_data_source`        runtime-switched two-source adapter
-//!   6. The `make_tile_data_source` factory which applies §7.5 to redirect
+//!   5. The `make_tile_data_source` factory which applies §7.5 to redirect
 //!      `cuda::counting_iterator` to `direct_data_source` regardless of the configured
 //!      `tile_load_kind`.
 
@@ -55,73 +53,13 @@
 #include <cuda/std/cstdint>
 #include <cuda/std/limits>
 #include <cuda/std/span>
-#include <cuda/std/tuple>
 
 CUB_NAMESPACE_BEGIN
 
 namespace detail
 {
 //---------------------------------------------------------------------
-// 1. Compositional storage helpers (architecture §2.1.1).
-//
-// `phase_union<Tuple>`     -- recursive tagged-union; tenants are sequential in time
-//                             (separated by __syncthreads()) and alias each other in smem.
-// `phase_aggregate<Tuple>` -- typed-slot aggregate; tenants coexist (alive simultaneously)
-//                             and do NOT alias.
-// `at<I>(arena&)`          -- compile-time accessor matching cuda::std::get<I> style.
-//---------------------------------------------------------------------
-
-template <typename Tuple>
-struct phase_union;
-
-template <>
-struct phase_union<::cuda::std::tuple<>>
-{};
-
-template <typename T0, typename... Rest>
-struct phase_union<::cuda::std::tuple<T0, Rest...>>
-{
-  // Trivial special members: phase_union must be trivially constructible so that
-  // `__shared__ phase_union<...>` is legal (no dynamic initialization). Both union
-  // alternatives are typed but never have their constructors / destructors run; the
-  // agent decides lifetimes via the brokering protocol.
-  union
-  {
-    T0 head;
-    phase_union<::cuda::std::tuple<Rest...>> rest;
-  };
-};
-
-template <int I, typename Head, typename... Rest>
-_CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto& at(phase_union<::cuda::std::tuple<Head, Rest...>>& a)
-{
-  if constexpr (I == 0)
-  {
-    return a.head;
-  }
-  else
-  {
-    return at<I - 1>(a.rest);
-  }
-}
-
-template <typename Tuple>
-struct phase_aggregate;
-
-template <typename... Ts>
-struct phase_aggregate<::cuda::std::tuple<Ts...>>
-{
-  ::cuda::std::tuple<Ts...> slots;
-};
-
-template <int I, typename... Ts>
-_CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto& at(phase_aggregate<::cuda::std::tuple<Ts...>>& a)
-{
-  return ::cuda::std::get<I>(a.slots);
-}
-
-//---------------------------------------------------------------------
-// 2. Generative-iterator trait (architecture §7.5).
+// 1. Generative-iterator trait (architecture §7.5).
 //
 // Phase 1 is intentionally limited to `cuda::counting_iterator`. Recursion through
 // adaptors (e.g., transform_iterator over a counting_iterator) is out of scope until
@@ -150,7 +88,7 @@ inline constexpr bool is_generative_iterator_v = is_generative_iterator<It>::val
 namespace topk
 {
 //---------------------------------------------------------------------
-// 3. Reserve callbacks (architecture §8).
+// 2. Reserve callbacks (architecture §8).
 //
 // Both follow the `(base, granted) operator()(n)` contract with the static
 // `may_grant_less` trait. Stateless function objects: empty TempStorage / ScratchStorage
@@ -195,7 +133,7 @@ struct back_grow_capped_reserve_op
 };
 
 //---------------------------------------------------------------------
-// 4. `tile_load_kind` -- the unified policy knob (architecture §2.4).
+// 3. `tile_load_kind` -- the unified policy knob (architecture §2.4).
 //
 // Spans the sync `BlockLoadAlgorithm` choices (covering everything the legacy
 // `BlockLoadAlgorithm`-based policy entry could express) plus the async TMA path.
@@ -252,7 +190,7 @@ struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose_timesliced
 };
 
 //---------------------------------------------------------------------
-// 5. `TileDataSource` specializations (architecture §7.4).
+// 4. `TileDataSource` specializations (architecture §7.4).
 //
 // Contract per architecture §7.2:
 //   - Construct with `(InputIt it, TempStorage& state)`.
@@ -263,7 +201,7 @@ struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose_timesliced
 // Default arrangement is BLOCKED: thread t gets items [t*IPT, (t+1)*IPT) of the window.
 //---------------------------------------------------------------------
 
-// 5.1 direct_data_source -- no smem; per-thread `it[base + t*IPT + j]`. Hot path.
+// 4.1 direct_data_source -- no smem; per-thread `it[base + t*IPT + j]`. Hot path.
 template <typename InputIt, int BlockThreads, int ItemsPerThread, typename OffsetT = ::cuda::std::int64_t>
 class direct_data_source
 {
@@ -344,7 +282,7 @@ private:
   OffsetT tile_base{};
 };
 
-// 5.2 sync_block_load_data_source -- wraps `cub::BlockLoad`. ScratchStorage holds the
+// 4.2 sync_block_load_data_source -- wraps `cub::BlockLoad`. ScratchStorage holds the
 // underlying BlockLoad's TempStorage (which is method-call in our taxonomy).
 template <typename InputIt,
           int BlockThreads,
@@ -411,7 +349,7 @@ private:
   OffsetT tile_base{};
 };
 
-// 5.3 async_to_shared_data_source -- wraps `cub::detail::BlockLoadToShared` (TMA on
+// 4.3 async_to_shared_data_source -- wraps `cub::detail::BlockLoadToShared` (TMA on
 // SM90+, cp.async on SM80+, scalar fallback on older arches). The mbarrier handle is
 // persistent (`TempStorage`); the staging buffer is method-call (`ScratchStorage`) and
 // must remain valid across the entire submit -> complete window (architecture §2.3).
@@ -518,9 +456,10 @@ private:
   OffsetT tile_base{};
 };
 
-// 5.4 multi_source_data_source -- runtime-switched two-source adapter. Both underlying
+// 4.4 multi_source_data_source -- runtime-switched two-source adapter. Both underlying
 // sources are alive (`TempStorage` is the aggregate of both); only one is active per
-// submit/complete window so their `ScratchStorage`s alias via `phase_union`.
+// submit/complete window so their `ScratchStorage`s alias via a hand-rolled union with
+// named members.
 template <typename SourceA, typename SourceB, typename OffsetT = ::cuda::std::int64_t>
 class multi_source_data_source
 {
@@ -535,8 +474,18 @@ public:
     typename SourceB::TempStorage b;
   };
 
-  using ScratchStorage = CUB_NS_QUALIFIER::detail::phase_union<
-    ::cuda::std::tuple<typename SourceA::ScratchStorage, typename SourceB::ScratchStorage>>;
+  // Only one of the two sources is active per submit/complete window (`pick_source_b`
+  // is set once at construction), so the two scratch slots alias via a union. The
+  // explicit special members satisfy the "trivially constructible" requirement that
+  // would otherwise be violated by the typed union alternatives' own ctors/dtors.
+  union ScratchStorage
+  {
+    typename SourceA::ScratchStorage a;
+    typename SourceB::ScratchStorage b;
+
+    _CCCL_HOST_DEVICE ScratchStorage() {}
+    _CCCL_HOST_DEVICE ~ScratchStorage() {}
+  };
 
   // Tagged-union load handles. Both alternatives are alive in the small POD; only the
   // one matching `pick_source_b` is initialized via the underlying source's submit, and only
@@ -598,18 +547,18 @@ public:
   {
     if (pick_source_b)
     {
-      return full_load_handle{{}, source_b.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s)), true};
+      return full_load_handle{{}, source_b.submit_load(s.b), true};
     }
-    return full_load_handle{source_a.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s)), {}, false};
+    return full_load_handle{source_a.submit_load(s.a), {}, false};
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
     if (pick_source_b)
     {
-      return partial_load_handle{{}, source_b.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s), num_items), true};
+      return partial_load_handle{{}, source_b.submit_load(s.b, num_items), true};
     }
-    return partial_load_handle{source_a.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s), num_items), {}, false};
+    return partial_load_handle{source_a.submit_load(s.a, num_items), {}, false};
   }
 
   // On-demand single-item gather. Dispatches to whichever underlying source is
@@ -627,7 +576,7 @@ private:
 };
 
 //---------------------------------------------------------------------
-// 6. `make_tile_data_source` factory (architecture §7.5).
+// 5. `make_tile_data_source` factory (architecture §7.5).
 //
 // Picks the concrete TileDataSource for the given `tile_load_kind`. Generative iterators
 // (today: `cuda::counting_iterator`) are statically downgraded to `direct_data_source`

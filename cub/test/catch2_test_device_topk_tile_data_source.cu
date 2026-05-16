@@ -4,7 +4,6 @@
 //! @file
 //! Unit tests for the top-k-private foundation building blocks in
 //! `cub/detail/topk/tile_data_source.cuh`:
-//!   - storage helpers (`phase_union`, `phase_aggregate`, `at<I>`)
 //!   - reserve callbacks (`atomic_reserve_range_op`, `back_grow_capped_reserve_op`)
 //!   - generative-iterator trait (`is_generative_iterator`, `is_generative_iterator_v`)
 //!   - sync `TileDataSource` specializations (direct / sync_block_load / multi_source).
@@ -19,7 +18,6 @@
 
 #include <cuda/iterator>
 #include <cuda/std/cstdint>
-#include <cuda/std/tuple>
 #include <cuda/std/type_traits>
 #include <cuda/std/utility>
 
@@ -32,114 +30,7 @@ namespace tds = cub::detail::topk;
 namespace cd  = cub::detail;
 
 //---------------------------------------------------------------------
-// 1. Storage helpers
-//---------------------------------------------------------------------
-
-// File-static (rather than anonymous-namespace) helpers: nvcc generates
-// `__device_stub__` symbols for __global__ kernels that conflict with anonymous
-// namespaces in some configurations.
-struct A8
-{
-  cuda::std::uint64_t v;
-};
-struct A16
-{
-  cuda::std::uint64_t a;
-  cuda::std::uint64_t b;
-};
-struct A32
-{
-  cuda::std::uint64_t x[4];
-};
-
-// Compile-time invariants: phase_union sizes to max-of-tenants and phase_aggregate sizes
-// to at-least sum-of-tenants (+ alignment slack).
-static_assert(sizeof(cd::phase_union<cuda::std::tuple<A8, A16>>) >= sizeof(A16),
-              "phase_union must be at least max(sizeof(Ts)...)");
-static_assert(sizeof(cd::phase_union<cuda::std::tuple<A8, A16>>) <= sizeof(A16) + alignof(A16),
-              "phase_union must not exceed max(sizeof(Ts)...) + alignment slack");
-static_assert(sizeof(cd::phase_union<cuda::std::tuple<A16, A8, A32>>) >= sizeof(A32),
-              "phase_union must be at least max(sizeof(Ts)...) over arbitrary order");
-static_assert(sizeof(cd::phase_aggregate<cuda::std::tuple<A8, A16>>) >= sizeof(A8) + sizeof(A16),
-              "phase_aggregate must be at least the sum of its tenants");
-
-struct U_t
-{
-  cuda::std::int32_t a;
-  cuda::std::int32_t b;
-};
-struct V_t
-{
-  cuda::std::int64_t v;
-};
-
-__global__ void phase_union_kernel(cuda::std::int32_t* out_a, cuda::std::int64_t* out_v)
-{
-  __shared__ cd::phase_union<cuda::std::tuple<U_t, V_t>> arena;
-
-  if (threadIdx.x == 0)
-  {
-    auto& u  = cd::at<0>(arena);
-    u.a      = 7;
-    u.b      = 11;
-    out_a[0] = u.a;
-    out_a[1] = u.b;
-
-    // Sequential phase: write to slot 1 after slot 0 is fully read out (we ourselves
-    // bracket via the 'reads happened above' ordering on a single thread).
-    auto& v  = cd::at<1>(arena);
-    v.v      = 0x12345678abcdef01LL;
-    out_v[0] = v.v;
-  }
-}
-
-C2H_TEST("topk phase_union allows typed at<I> access in two distinct phases", "[block][topk][foundation]")
-{
-  thrust::device_vector<cuda::std::int32_t> out_a(2, 0);
-  thrust::device_vector<cuda::std::int64_t> out_v(1, 0);
-
-  phase_union_kernel<<<1, 32>>>(thrust::raw_pointer_cast(out_a.data()), thrust::raw_pointer_cast(out_v.data()));
-  REQUIRE(cudaSuccess == cudaPeekAtLastError());
-  REQUIRE(cudaSuccess == cudaDeviceSynchronize());
-
-  REQUIRE(out_a[0] == 7);
-  REQUIRE(out_a[1] == 11);
-  REQUIRE(out_v[0] == 0x12345678abcdef01LL);
-}
-
-__global__ void phase_aggregate_kernel(cuda::std::int32_t* out_uba, cuda::std::int64_t* out_v)
-{
-  __shared__ cd::phase_aggregate<cuda::std::tuple<U_t, V_t>> arena;
-
-  if (threadIdx.x == 0)
-  {
-    auto& u    = cd::at<0>(arena);
-    auto& v    = cd::at<1>(arena);
-    u.a        = 1;
-    u.b        = 2;
-    v.v        = 3;
-    out_uba[0] = u.a;
-    out_uba[1] = u.b;
-    out_v[0]   = v.v;
-  }
-}
-
-C2H_TEST("topk phase_aggregate keeps coexisting tenants distinct", "[block][topk][foundation]")
-{
-  thrust::device_vector<cuda::std::int32_t> out_uba(2, 0);
-  thrust::device_vector<cuda::std::int64_t> out_v(1, 0);
-
-  phase_aggregate_kernel<<<1, 32>>>(thrust::raw_pointer_cast(out_uba.data()), thrust::raw_pointer_cast(out_v.data()));
-  REQUIRE(cudaSuccess == cudaPeekAtLastError());
-  REQUIRE(cudaSuccess == cudaDeviceSynchronize());
-
-  REQUIRE(out_uba[0] == 1);
-  REQUIRE(out_uba[1] == 2);
-  REQUIRE(out_v[0] == 3);
-}
-
-//---------------------------------------------------------------------
-// 2. Reserve callbacks
+// 1. Reserve callbacks
 //---------------------------------------------------------------------
 
 static_assert(tds::atomic_reserve_range_op<unsigned>::may_grant_less == false,
@@ -282,7 +173,7 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block
 }
 
 //---------------------------------------------------------------------
-// 3. Generative-iterator trait + factory selection
+// 2. Generative-iterator trait + factory selection
 //---------------------------------------------------------------------
 
 static_assert(cd::is_generative_iterator_v<cuda::counting_iterator<int>>,
@@ -319,7 +210,7 @@ static_assert(cuda::std::is_same_v<tds::tile_data_source_t<int*, tds::tile_load_
               "factory honors `block_load_vectorize` for raw pointers");
 
 //---------------------------------------------------------------------
-// 4. TileDataSource specializations (sync)
+// 3. TileDataSource specializations (sync)
 //---------------------------------------------------------------------
 
 template <typename ValueT, int BlockThreads, int ItemsPerThread, typename OffsetT>
@@ -623,7 +514,7 @@ C2H_TEST("topk make_tile_data_source over counting_iterator yields per-thread ar
 }
 
 //---------------------------------------------------------------------
-// 5. async_to_shared_data_source (TMA / cp.async / fallback). Gated on SM90 because
+// 4. async_to_shared_data_source (TMA / cp.async / fallback). Gated on SM90 because
 //    the TMA path requires Hopper+. On older arches the underlying primitive falls
 //    back to scalar copy and the data source is still functionally correct, but the
 //    architecture document only commits to the TMA path; we follow the convention in

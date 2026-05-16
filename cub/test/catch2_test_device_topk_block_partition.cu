@@ -9,10 +9,10 @@
 //! The test exercises the "safe-both" interface: the partition is constructed with
 //! its sinks (reserve ops, transforms, output iterators, value channel sinks) and
 //! its classify hooks (identify op, candidate callback) at the top of the kernel,
-//! and `partition()` is called per tile with just the per-tile data + a bare
-//! `cuda::std::tuple<TileDataSource...>` of value sources. After the tile loop the
-//! kernel calls `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op for
-//! `BlockPartition` (the accumulating sister class has a separate test).
+//! and `partition()` is called per tile with just the per-tile data + the live
+//! value `TileDataSource` (or `cub::NullType` for keys-only). After the tile loop
+//! the kernel calls `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op
+//! for `BlockPartition` (the accumulating sister class has a separate test).
 //!
 //! `BlockPartition` always operates as a true 2-way partition (HasCandidates is
 //! baked in). The single-stream "filter" path lives in `BlockFilter` and has its
@@ -32,7 +32,6 @@
 
 #include <cuda/std/cstdint>
 #include <cuda/std/functional>
-#include <cuda/std/tuple>
 #include <cuda/std/utility>
 
 #include <algorithm>
@@ -113,17 +112,12 @@ __global__ void partition_kernel(
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
   using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
-  using value_channel_sinks_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
-  using value_types_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<int>>;
-  using value_data_source_scratch_types_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly,
-                               ::cuda::std::tuple<>,
-                               ::cuda::std::tuple<typename value_ds_t::ScratchStorage>>;
-
-  using value_sources_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_ds_t>>;
+  using value_channel_sinks_or_null_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, value_sinks_t>;
+  using value_t_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, int>;
+  using value_data_source_scratch_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, typename value_ds_t::ScratchStorage>;
 
   using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using cand_reserve_op_t =
@@ -150,9 +144,9 @@ __global__ void partition_kernel(
     int*,
     driver_identify_op,
     counting_callback_op,
-    value_channel_sinks_tuple_t,
-    value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t,
+    value_channel_sinks_or_null_t,
+    value_t_t,
+    value_data_source_scratch_t,
     /*LazyValueLoad=*/false,
     InlinedClassify>;
 
@@ -168,39 +162,36 @@ __global__ void partition_kernel(
     keys[j]       = (idx < num_items) ? d_keys_in[idx] : 0;
   }
 
-  // Build the per-call sources tuple. `direct_data_source` has no default ctor and
-  // its TempStorage is empty so we hand it a stack-local sink.
+  // Build the per-call value source. `direct_data_source` has no default ctor and
+  // its TempStorage is empty so we hand it a stack-local sink. Under keys-only the
+  // primitive holds the reference but never reads through it.
   typename value_ds_t::TempStorage val_state{};
   value_ds_t val_ds{d_values_in, val_state};
   val_ds.set_tile_base(0);
-  auto make_sources = [&] {
+  auto make_source = [&] {
     if constexpr (KeysOnly)
     {
-      return ::cuda::std::tuple<>{};
+      return cub::NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<value_ds_t>{val_ds};
+      return val_ds;
     }
   };
-  value_sources_tuple_t sources = make_sources();
+  auto value_source = make_source();
 
-  // Build the sinks tuple (captured by ctor).
+  // Build the sinks (captured by ctor).
   auto make_sinks = [&] {
     if constexpr (KeysOnly)
     {
-      return ::cuda::std::tuple<>{};
+      return cub::NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<value_sinks_t>{
-        value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}}};
-      // (value_sinks_t no longer carries `value_t`/`scratch_t` typedefs; those go
-      // via the partition_t template's `value_types_tuple_t` /
-      // `value_data_source_scratch_types_tuple_t` parameters.)
+      return value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}};
     }
   };
-  value_channel_sinks_tuple_t sinks = make_sinks();
+  auto sinks = make_sinks();
 
   driver_identify_op identify_op{d_classes_in, key_offset};
   counting_callback_op callback_op{d_callback_count};
@@ -233,11 +224,11 @@ __global__ void partition_kernel(
 
   if (num_items == BlockThreads * ItemsPerThread)
   {
-    partition.partition(scratch, keys, sources);
+    partition.partition(scratch, keys, value_source);
   }
   else
   {
-    partition.partition(scratch, keys, num_items, sources);
+    partition.partition(scratch, keys, num_items, value_source);
   }
 
   // No-op for BlockPartition; present for parity with the accumulating sister class.

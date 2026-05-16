@@ -8,10 +8,10 @@
 //! The test exercises the "safe-both" interface: the filter is constructed with
 //! its sinks (reserve op, transform, output iterator, value channel sink) AND
 //! its `identify_selected_op` predicate at the top of the kernel, and
-//! `partition()` is called per tile with just the per-tile data + a bare
-//! `cuda::std::tuple<TileDataSource...>` of value sources. After the call the
-//! kernel invokes `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op
-//! for `BlockFilter` (the accumulating sister class has a separate test).
+//! `partition()` is called per tile with just the per-tile data + the live value
+//! `TileDataSource` (or `cub::NullType` for keys-only). After the call the kernel
+//! invokes `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op for
+//! `BlockFilter` (the accumulating sister class has a separate test).
 //!
 //! The strategy sweep covers the four non-accumulating values of
 //! `block_filter_strategy`:
@@ -27,7 +27,6 @@
 
 #include <cuda/std/cstdint>
 #include <cuda/std/functional>
-#include <cuda/std/tuple>
 #include <cuda/std/utility>
 
 #include <algorithm>
@@ -75,18 +74,12 @@ __global__ void filter_kernel(
 
   // Single-stream sink-side bundle.
   using value_sinks_t = topk::value_channel_sinks_filter_t<int*, ::cuda::std::identity>;
-  using value_channel_sinks_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
-  using value_types_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<int>>;
-  using value_data_source_scratch_types_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly,
-                               ::cuda::std::tuple<>,
-                               ::cuda::std::tuple<typename value_ds_t::ScratchStorage>>;
-
-  // Per-call sources tuple: bare tuple of TileDataSource. Empty when keys-only.
-  using value_sources_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_ds_t>>;
+  using value_channel_sinks_or_null_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, value_sinks_t>;
+  using value_t_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, int>;
+  using value_data_source_scratch_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, typename value_ds_t::ScratchStorage>;
 
   using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t          = ::cuda::std::identity;
@@ -102,9 +95,9 @@ __global__ void filter_kernel(
     xform_t,
     int*,
     driver_identify_selected_op,
-    value_channel_sinks_tuple_t,
-    value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t,
+    value_channel_sinks_or_null_t,
+    value_t_t,
+    value_data_source_scratch_t,
     /*LazyValueLoad=*/false,
     InlinedClassify>;
 
@@ -120,34 +113,34 @@ __global__ void filter_kernel(
     keys[j]       = (idx < num_items) ? d_keys_in[idx] : 0;
   }
 
-  // Per-call sources tuple: stack-local data source for the value channel.
+  // Per-call value source: stack-local data source for the value channel.
   typename value_ds_t::TempStorage val_state{};
   value_ds_t val_ds{d_values_in, val_state};
   val_ds.set_tile_base(0);
-  auto make_sources = [&] {
+  auto make_source = [&] {
     if constexpr (KeysOnly)
     {
-      return ::cuda::std::tuple<>{};
+      return cub::NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<value_ds_t>{val_ds};
+      return val_ds;
     }
   };
-  value_sources_tuple_t sources = make_sources();
+  auto value_source = make_source();
 
-  // Sinks tuple (captured by ctor).
+  // Sinks (captured by ctor).
   auto make_sinks = [&] {
     if constexpr (KeysOnly)
     {
-      return ::cuda::std::tuple<>{};
+      return cub::NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<value_sinks_t>{value_sinks_t{d_sel_vals, ::cuda::std::identity{}}};
+      return value_sinks_t{d_sel_vals, ::cuda::std::identity{}};
     }
   };
-  value_channel_sinks_tuple_t sinks = make_sinks();
+  auto sinks = make_sinks();
 
   driver_identify_selected_op identify_op{d_keep_in, key_offset};
   xform_t key_transform{};
@@ -157,11 +150,11 @@ __global__ void filter_kernel(
 
   if (num_items == BlockThreads * ItemsPerThread)
   {
-    filter.partition(scratch, keys, sources);
+    filter.partition(scratch, keys, value_source);
   }
   else
   {
-    filter.partition(scratch, keys, num_items, sources);
+    filter.partition(scratch, keys, num_items, value_source);
   }
 
   // No-op for BlockFilter; present for parity with block_filter_accumulating.
