@@ -3,7 +3,7 @@
 
 //! @file
 //! Top-k-private `BlockFilterSpeculative` -- single-stream sister of
-//! `BlockFilter` / `BlockFilterAccumulating`. Like `BlockFilterAccumulating`
+//! `BlockFilter` / `block_filter_accumulating`. Like `block_filter_accumulating`
 //! it buffers items matching a unary `IdentifySelected(key) -> bool` predicate
 //! in a fixed-size smem buffer across multiple `partition()` calls and flushes
 //! cooperatively when the buffer fills. Unlike the accumulating variant the
@@ -20,7 +20,7 @@
 //! flush emits the leading `BufferCapacity` items and resets the counter
 //! to 0.
 //!
-//! The design point versus `BlockFilterAccumulating`: the latter keeps a
+//! The design point versus `block_filter_accumulating`: the latter keeps a
 //! per-thread `positions[ItemsPerThread]` array live across the multi-round
 //! `overflow_loop`, raising the register high-water mark by `ItemsPerThread`
 //! ints. `BlockFilterSpeculative` replaces that with a single `uint32_t
@@ -39,7 +39,7 @@
 //! through.
 //!
 //! Shares the same "safe-both" ctor + per-call interface as `BlockFilter` and
-//! `BlockFilterAccumulating`:
+//! `block_filter_accumulating`:
 //!   - Sinks + classify hook captured at ctor.
 //!   - Per-call `partition(scratch, keys, [num_items,] value_sources)`.
 //!   - Argless `epilogue()` for the terminal partial flush.
@@ -90,7 +90,7 @@ namespace detail::topk
 // `bf_acc_detail::accumulating_filter_temp_storage_t` layout (one counter
 // + flush-broadcast slots, one keys buffer, optional per-channel values
 // buffer) since the storage requirements are identical to
-// `BlockFilterAccumulating`. Distinguished from `BlockFilterAccumulating`
+// `block_filter_accumulating`. Distinguished from `block_filter_accumulating`
 // by the per-call control flow:
 //
 //   1. Fused classify + speculative reserve + (smem | bit-flag) loop.

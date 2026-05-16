@@ -17,7 +17,7 @@
 //!     into the same arena; a single coalesced store per stream.
 //!
 //! Interface ("safe-both") contract shared with the accumulating sister class
-//! `BlockPartitionAccumulatingCandidates` (`block_partition_accumulating.cuh`):
+//! `block_partition_accumulating_candidates` (`block_partition_accumulating.cuh`):
 //!   - All sinks (reserve ops, output iterators, transforms, value-channel sink
 //!     tuple) AND the classify hooks (`identify_candidates_op`,
 //!     `candidate_callback_op`) are captured by ctor and stored as members.
@@ -101,7 +101,7 @@ enum class candidate_class
 //   SharedMem              -- block_partition_shared_mem. Typed `keys[]` + per-channel
 //                             `values[]` packed into the same arena; a single
 //                             coalesced store per stream.
-//   AccumulatingCandidates -- BlockPartitionAccumulatingCandidates: candidate stream
+//   AccumulatingCandidates -- block_partition_accumulating_candidates: candidate stream
 //                             buffered in smem and accumulated across multiple tiles;
 //                             selected stream goes direct-to-global. Used by the
 //                             agent's `buffered`-mode pass.

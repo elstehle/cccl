@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Unit tests for the top-k-private `BlockFilterAccumulating` primitive in
+//! Unit tests for the top-k-private `block_filter_accumulating` primitive in
 //! `cub/detail/topk/block_filter_accumulating.cuh`. Drives multiple tiles
 //! through a single block, exercising:
 //!   - cross-tile smem accumulation when the per-tile reservation count stays
@@ -53,7 +53,7 @@ struct driver_identify_selected_op
 
 //---------------------------------------------------------------------
 // Kernel: drives `num_tiles` tiles through one block of
-// `BlockFilterAccumulating`, then calls `epilogue()`.
+// `block_filter_accumulating`, then calls `epilogue()`.
 //---------------------------------------------------------------------
 
 template <int BlockThreads, int ItemsPerThread, int BufferCapacity, bool KeysOnly, bool LazyValueLoad>
@@ -82,7 +82,7 @@ __global__ void acc_filter_kernel(
   using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t          = ::cuda::std::identity;
 
-  using filter_t = topk::BlockFilterAccumulating<
+  using filter_t = topk::block_filter_accumulating<
     BlockThreads,
     ItemsPerThread,
     BufferCapacity,
@@ -253,7 +253,7 @@ void run_accumulating_filter_test(int num_tiles, int last_tile_items, int keep_e
 // Test cases
 //---------------------------------------------------------------------
 
-C2H_TEST("BlockFilterAccumulating accumulates across tiles below capacity", "[block][topk][accumulating]")
+C2H_TEST("block_filter_accumulating accumulates across tiles below capacity", "[block][topk][accumulating]")
 {
   // Tile size = 64 * 4 = 256. Buffer capacity = 256 (one full tile worth). Per-tile
   // kept count is roughly tile_items / keep_every ~= 256/13 ~= 19; with 4 tiles we
@@ -273,7 +273,7 @@ C2H_TEST("BlockFilterAccumulating accumulates across tiles below capacity", "[bl
                                /*LazyValueLoad=*/false>(NumTiles, LastTileItems, KeepEvery);
 }
 
-C2H_TEST("BlockFilterAccumulating triggers in-tile overflow loop", "[block][topk][accumulating]")
+C2H_TEST("block_filter_accumulating triggers in-tile overflow loop", "[block][topk][accumulating]")
 {
   // Buffer capacity = 8 (much smaller than per-tile kept count). Per-tile kept
   // count ~= 256/3 ~= 85. Each tile triggers many flush rounds.
@@ -291,7 +291,7 @@ C2H_TEST("BlockFilterAccumulating triggers in-tile overflow loop", "[block][topk
                                /*LazyValueLoad=*/false>(NumTiles, LastTileItems, KeepEvery);
 }
 
-C2H_TEST("BlockFilterAccumulating keys-only", "[block][topk][accumulating]")
+C2H_TEST("block_filter_accumulating keys-only", "[block][topk][accumulating]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -306,7 +306,7 @@ C2H_TEST("BlockFilterAccumulating keys-only", "[block][topk][accumulating]")
                                /*LazyValueLoad=*/false>(NumTiles, LastTileItems, /*keep_every=*/5);
 }
 
-C2H_TEST("BlockFilterAccumulating lazy value load", "[block][topk][accumulating]")
+C2H_TEST("block_filter_accumulating lazy value load", "[block][topk][accumulating]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -321,7 +321,7 @@ C2H_TEST("BlockFilterAccumulating lazy value load", "[block][topk][accumulating]
                                /*LazyValueLoad=*/true>(NumTiles, LastTileItems, /*keep_every=*/5);
 }
 
-C2H_TEST("BlockFilterAccumulating partial trailing tile", "[block][topk][accumulating]")
+C2H_TEST("block_filter_accumulating partial trailing tile", "[block][topk][accumulating]")
 {
   // Last tile has 173 valid items out of tile_items (256). The classify loop
   // must drop OOB items and the per-item bound check must hold.

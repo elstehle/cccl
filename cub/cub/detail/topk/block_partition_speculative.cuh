@@ -4,7 +4,7 @@
 //! @file
 //! Top-k-private speculative-accumulating partition primitive
 //! `BlockPartitionSpeculative` -- dual-stream sister of
-//! `BlockPartitionAccumulatingCandidates` and `BlockPartition`. Like the
+//! `block_partition_accumulating_candidates` and `BlockPartition`. Like the
 //! accumulating sibling, both the candidate and the selected streams accumulate
 //! across multiple `partition()` calls into fixed-size shared-memory buffers,
 //! and the cooperative full-buffer flush amortizes the per-item global-atomic
@@ -19,7 +19,7 @@
 //! `reserve_*_(1)` -- the same hot path as `block_partition_atomics`.
 //!
 //! The motivating design point is **register parity with `block_partition_atomics`**.
-//! `BlockPartitionAccumulatingCandidates` keeps a per-thread
+//! `block_partition_accumulating_candidates` keeps a per-thread
 //! `positions[ItemsPerThread]` array live across the multi-round
 //! `overflow_loop`, which raises the kernel's register high-water mark by
 //! `ItemsPerThread` ints. The speculative variant replaces that with two
@@ -39,7 +39,7 @@
 //! pass).
 //!
 //! Shares the same "safe-both" ctor + per-call interface as `BlockPartition`
-//! and `BlockPartitionAccumulatingCandidates`:
+//! and `block_partition_accumulating_candidates`:
 //!   - Sinks + classify hook + candidate callback captured at ctor.
 //!   - Per-call `partition(scratch, keys, [num_items,] value_sources)`.
 //!   - Argless `epilogue()` for the terminal partial flush.
