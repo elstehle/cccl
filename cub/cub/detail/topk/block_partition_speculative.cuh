@@ -3,7 +3,7 @@
 
 //! @file
 //! Top-k-private speculative-accumulating partition primitive
-//! `BlockPartitionSpeculative` -- dual-stream sister of
+//! `block_partition_speculative` -- dual-stream sister of
 //! `block_partition_accumulating_candidates` and `BlockPartition`. Like the
 //! accumulating sibling, both the candidate and the selected streams accumulate
 //! across multiple `partition()` calls into fixed-size shared-memory buffers,
@@ -124,7 +124,7 @@ struct speculative_partition_temp_storage_t
 } // namespace bp_spec_detail
 
 //---------------------------------------------------------------------
-// `BlockPartitionSpeculative`
+// `block_partition_speculative`
 //
 // Algorithm (per-tile):
 //   1. Optionally eager-load values into `reg_values[ItemsPerThread]`
@@ -173,7 +173,7 @@ template <int BlockThreads,
           typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false,
           bool InlinedClassify            = true>
-class BlockPartitionSpeculative
+class block_partition_speculative
 {
 public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
@@ -222,7 +222,7 @@ public:
   {};
 
   // COLLECTIVE ctor.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartitionSpeculative(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_speculative(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
@@ -834,7 +834,7 @@ struct strategy_to_partition_class<
   LazyValueLoad,
   InlinedClassify>
 {
-  using type = BlockPartitionSpeculative<
+  using type = block_partition_speculative<
     BlockThreads,
     ItemsPerThread,
     AccumulatingBufferCapacity,

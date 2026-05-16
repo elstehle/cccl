@@ -621,7 +621,7 @@ private:
 //                                 (its fused classify-and-act loop has no separate
 //                                 pre-classify step), so the `InlinedClassify` bool
 //                                 has no effect there.
-//   - `SpeculativeBoth`        -> `BlockPartitionSpeculative` (in
+//   - `SpeculativeBoth`        -> `block_partition_speculative` (in
 //                                 `block_partition_speculative.cuh` -- the
 //                                 partial specialization lives there to keep the
 //                                 include cost optional). Consumes both

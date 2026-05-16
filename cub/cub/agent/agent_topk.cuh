@@ -942,7 +942,7 @@ struct agent_topk_filter_partition
   using identify_selected_op_t  = topk_identify_selected_op<IdentifyCandidatesOpT>;
 
   // The buffered-mode primitive (`BlockPartition`,
-  // `block_partition_accumulating_candidates`, or `BlockPartitionSpeculative`).
+  // `block_partition_accumulating_candidates`, or `block_partition_speculative`).
   using buffered_partition_t = strategy_to_partition_class_t<
     BufferedPartStrat,
     block_threads,

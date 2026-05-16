@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Unit tests for the top-k-private `BlockPartitionSpeculative` primitive in
+//! Unit tests for the top-k-private `block_partition_speculative` primitive in
 //! `cub/detail/topk/block_partition_speculative.cuh`. Drives multiple tiles
 //! through a single block, exercising:
 //!   - the `SelectedBufferCapacity > 0` path: both streams accumulate
@@ -65,7 +65,7 @@ struct counting_callback_op
 
 //---------------------------------------------------------------------
 // Kernel: drives `num_tiles` tiles through one block of
-// `BlockPartitionSpeculative`, then calls `epilogue()`.
+// `block_partition_speculative`, then calls `epilogue()`.
 //---------------------------------------------------------------------
 
 template <int BlockThreads,
@@ -104,7 +104,7 @@ __global__ void spec_partition_kernel(
   using cand_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t           = ::cuda::std::identity;
 
-  using partition_t = topk::BlockPartitionSpeculative<
+  using partition_t = topk::block_partition_speculative<
     BlockThreads,
     ItemsPerThread,
     CandidateBufferCapacity,
@@ -337,7 +337,7 @@ void run_speculative_partition_test(int num_tiles, int last_tile_items, int sele
 // Test cases
 //---------------------------------------------------------------------
 
-C2H_TEST("BlockPartitionSpeculative both streams accumulate across tiles below capacity", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative both streams accumulate across tiles below capacity", "[block][topk][speculative]")
 {
   // Tile = 64*4 = 256. Cand cap = 256, sel cap = 128. Per-tile cand count ~=
   // 256/13 = 19; per-tile sel count ~= 256/7 = 36. Over 4 tiles: ~80 cands,
@@ -361,7 +361,7 @@ C2H_TEST("BlockPartitionSpeculative both streams accumulate across tiles below c
                                  /*LazyValueLoad=*/false>(NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
-C2H_TEST("BlockPartitionSpeculative triggers in-tile candidate overflow drain", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative triggers in-tile candidate overflow drain", "[block][topk][speculative]")
 {
   // Cand cap = 8, but per-tile cand count ~= 256/3 ~= 85. Most candidates drain
   // via per-item global atomics. Sel cap = 256, sel sparse.
@@ -382,7 +382,7 @@ C2H_TEST("BlockPartitionSpeculative triggers in-tile candidate overflow drain", 
                                  /*LazyValueLoad=*/false>(NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
-C2H_TEST("BlockPartitionSpeculative triggers in-tile selected overflow drain", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative triggers in-tile selected overflow drain", "[block][topk][speculative]")
 {
   // Sel cap = 8, but per-tile sel count ~= 256/3 ~= 85. Most selected drain
   // via per-item global atomics. Cand cap = 256, cand sparse.
@@ -403,7 +403,7 @@ C2H_TEST("BlockPartitionSpeculative triggers in-tile selected overflow drain", "
                                  /*LazyValueLoad=*/false>(NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
-C2H_TEST("BlockPartitionSpeculative selected-bypass (SelCap=0) routes selected through atomics", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative selected-bypass (SelCap=0) routes selected through atomics", "[block][topk][speculative]")
 {
   // SelectedBufferCapacity = 0: the selected stream goes pure-Atomics; only
   // the candidate stream uses the smem buffer + cooperative flush. Sel dense,
@@ -425,7 +425,7 @@ C2H_TEST("BlockPartitionSpeculative selected-bypass (SelCap=0) routes selected t
                                  /*LazyValueLoad=*/false>(NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
-C2H_TEST("BlockPartitionSpeculative keys-only", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative keys-only", "[block][topk][speculative]")
 {
   constexpr int BlockThreads      = 64;
   constexpr int ItemsPerThread    = 4;
@@ -443,7 +443,7 @@ C2H_TEST("BlockPartitionSpeculative keys-only", "[block][topk][speculative]")
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }
 
-C2H_TEST("BlockPartitionSpeculative lazy value load", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative lazy value load", "[block][topk][speculative]")
 {
   constexpr int BlockThreads      = 64;
   constexpr int ItemsPerThread    = 4;
@@ -461,7 +461,7 @@ C2H_TEST("BlockPartitionSpeculative lazy value load", "[block][topk][speculative
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }
 
-C2H_TEST("BlockPartitionSpeculative partial trailing tile", "[block][topk][speculative]")
+C2H_TEST("block_partition_speculative partial trailing tile", "[block][topk][speculative]")
 {
   // Last tile has 173 valid items out of tile_items (256).
   constexpr int BlockThreads      = 64;

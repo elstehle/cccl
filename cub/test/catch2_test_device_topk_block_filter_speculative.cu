@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Unit tests for the top-k-private `BlockFilterSpeculative` primitive in
+//! Unit tests for the top-k-private `block_filter_speculative` primitive in
 //! `cub/detail/topk/block_filter_speculative.cuh`. Drives multiple tiles
 //! through a single block, exercising:
 //!   - cross-tile smem accumulation when the per-tile reservation count stays
@@ -53,7 +53,7 @@ struct driver_identify_selected_op
 
 //---------------------------------------------------------------------
 // Kernel: drives `num_tiles` tiles through one block of
-// `BlockFilterSpeculative`, then calls `epilogue()`.
+// `block_filter_speculative`, then calls `epilogue()`.
 //---------------------------------------------------------------------
 
 template <int BlockThreads, int ItemsPerThread, int BufferCapacity, bool KeysOnly, bool LazyValueLoad>
@@ -82,7 +82,7 @@ __global__ void spec_filter_kernel(
   using sel_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t          = ::cuda::std::identity;
 
-  using filter_t = topk::BlockFilterSpeculative<
+  using filter_t = topk::block_filter_speculative<
     BlockThreads,
     ItemsPerThread,
     BufferCapacity,
@@ -248,7 +248,7 @@ void run_speculative_filter_test(int num_tiles, int last_tile_items, int keep_ev
 // Test cases
 //---------------------------------------------------------------------
 
-C2H_TEST("BlockFilterSpeculative accumulates across tiles below capacity", "[block][topk][speculative]")
+C2H_TEST("block_filter_speculative accumulates across tiles below capacity", "[block][topk][speculative]")
 {
   // Tile size = 64 * 4 = 256. Buffer capacity = 256 (one full tile worth). Per-tile
   // kept count is roughly 256/13 ~= 19; with 4 tiles we get ~80 selected total --
@@ -268,7 +268,7 @@ C2H_TEST("BlockFilterSpeculative accumulates across tiles below capacity", "[blo
                               /*LazyValueLoad=*/false>(NumTiles, LastTileItems, KeepEvery);
 }
 
-C2H_TEST("BlockFilterSpeculative triggers in-tile overflow drain", "[block][topk][speculative]")
+C2H_TEST("block_filter_speculative triggers in-tile overflow drain", "[block][topk][speculative]")
 {
   // Buffer capacity = 8, but the per-tile kept count ~= 256/3 ~= 85. Each tile's
   // post-partition() counter exceeds capacity by a wide margin, so the bulk of
@@ -288,7 +288,7 @@ C2H_TEST("BlockFilterSpeculative triggers in-tile overflow drain", "[block][topk
                               /*LazyValueLoad=*/false>(NumTiles, LastTileItems, KeepEvery);
 }
 
-C2H_TEST("BlockFilterSpeculative keys-only", "[block][topk][speculative]")
+C2H_TEST("block_filter_speculative keys-only", "[block][topk][speculative]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -303,7 +303,7 @@ C2H_TEST("BlockFilterSpeculative keys-only", "[block][topk][speculative]")
                               /*LazyValueLoad=*/false>(NumTiles, LastTileItems, /*keep_every=*/5);
 }
 
-C2H_TEST("BlockFilterSpeculative lazy value load", "[block][topk][speculative]")
+C2H_TEST("block_filter_speculative lazy value load", "[block][topk][speculative]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -318,7 +318,7 @@ C2H_TEST("BlockFilterSpeculative lazy value load", "[block][topk][speculative]")
                               /*LazyValueLoad=*/true>(NumTiles, LastTileItems, /*keep_every=*/5);
 }
 
-C2H_TEST("BlockFilterSpeculative partial trailing tile", "[block][topk][speculative]")
+C2H_TEST("block_filter_speculative partial trailing tile", "[block][topk][speculative]")
 {
   // Last tile has 173 valid items out of tile_items (256). The classify loop
   // must force OOB items to `not-kept` and the per-item bound check must hold.
@@ -335,7 +335,7 @@ C2H_TEST("BlockFilterSpeculative partial trailing tile", "[block][topk][speculat
                               /*LazyValueLoad=*/false>(NumTiles, LastTileItems, /*keep_every=*/5);
 }
 
-C2H_TEST("BlockFilterSpeculative exact-fit single tile", "[block][topk][speculative]")
+C2H_TEST("block_filter_speculative exact-fit single tile", "[block][topk][speculative]")
 {
   // Edge case: post-partition() counter == BufferCapacity exactly. No overflow
   // drain, but the cooperative flush should still fire and the counter should
