@@ -82,24 +82,33 @@ struct topk_policy
   // Three independent strategy knobs, one per pass.
   //   - `buffered_partition_strategy` is a `BlockPartitionStrategy` value -- the
   //     three non-accumulating values select one of `BlockPartition{Atomics,Staged,
-  //     SharedMem}`, and `AccumulatingCandidates` selects
-  //     `BlockPartitionAccumulatingCandidates`.
+  //     SharedMem}`, `AccumulatingCandidates` selects
+  //     `BlockPartitionAccumulatingCandidates`, and `SpeculativeBoth` selects
+  //     `BlockPartitionSpeculative`.
   //   - `early_stop_filter_strategy` is a `BlockFilterStrategy` value -- the three
   //     non-accumulating values select one of `BlockFilter{Atomics,Staged,
-  //     SharedMem}`, and `AccumulatingFilter` selects `BlockFilterAccumulating`.
-  //     The early-stop pass operates as a 1-stream filter (the candidate-side
-  //     machinery is statically elided), so it has its own enum independent of the
-  //     buffered-pass partition enum.
-  //   - `last_filter_partition_strategy` accepts any `BlockPartitionStrategy` value
-  //     (including `AccumulatingCandidates`).
+  //     SharedMem}`, `AccumulatingFilter` selects `BlockFilterAccumulating`, and
+  //     `SpeculativeFilter` selects `BlockFilterSpeculative`. The early-stop pass
+  //     operates as a 1-stream filter (the candidate-side machinery is statically
+  //     elided), so it has its own enum independent of the buffered-pass
+  //     partition enum.
+  //   - `last_filter_partition_strategy` accepts any `BlockPartitionStrategy`
+  //     value (including `AccumulatingCandidates` and `SpeculativeBoth`).
   BlockPartitionStrategy buffered_partition_strategy    = BlockPartitionStrategy::Atomics;
   BlockFilterStrategy early_stop_filter_strategy        = BlockFilterStrategy::Atomics;
   BlockPartitionStrategy last_filter_partition_strategy = BlockPartitionStrategy::Atomics;
 
   // Smem-slot count for the accumulating partition / filter variants' per-stream
-  // buffer. Only consulted when `buffered_partition_strategy == AccumulatingCandidates`
-  // and/or `early_stop_filter_strategy == AccumulatingFilter`. Ignored otherwise.
+  // buffer. Reused as the candidate-stream buffer capacity for `SpeculativeBoth`
+  // and the selected-stream buffer capacity for `SpeculativeFilter`. Ignored by
+  // the non-accumulating strategies.
   int accumulating_buffer_capacity = 256;
+
+  // Smem-slot count for the selected-stream buffer of the `SpeculativeBoth`
+  // partition strategy. `0` short-circuits the selected smem buffer to pure
+  // per-item global atomics for the selected stream -- useful when the
+  // selected stream is dense. Ignored by every other strategy.
+  int speculative_selected_buffer_capacity = 128;
 
   value_materialization_mode value_materialization = value_materialization_mode::indexed;
 
@@ -127,6 +136,7 @@ struct topk_policy
         && lhs.early_stop_filter_strategy == rhs.early_stop_filter_strategy
         && lhs.last_filter_partition_strategy == rhs.last_filter_partition_strategy
         && lhs.accumulating_buffer_capacity == rhs.accumulating_buffer_capacity
+        && lhs.speculative_selected_buffer_capacity == rhs.speculative_selected_buffer_capacity
         && lhs.value_materialization == rhs.value_materialization && lhs.lazy_value_load == rhs.lazy_value_load
         && lhs.inlined_classify == rhs.inlined_classify;
   }
@@ -149,6 +159,7 @@ struct topk_policy
         << ", .early_stop_filter_strategy = " << static_cast<int>(p.early_stop_filter_strategy)
         << ", .last_filter_partition_strategy = " << static_cast<int>(p.last_filter_partition_strategy)
         << ", .accumulating_buffer_capacity = " << p.accumulating_buffer_capacity
+        << ", .speculative_selected_buffer_capacity = " << p.speculative_selected_buffer_capacity
         << ", .value_materialization = " << static_cast<int>(p.value_materialization)
         << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false")
         << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") << " }";
@@ -175,30 +186,63 @@ struct policy_selector
       // Try to load 16 bytes per thread: int64 -> 2, int32 -> 4, int16 -> 8.
       const int items_per_thread = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
       return topk_policy{
-        /*.threads_per_block             =*/ 512,
-        /*.items_per_thread              =*/ items_per_thread,
-        /*.bits_per_pass                 =*/ bits_per_pass,
-        /*.keys_tile_load_kind           =*/ tile_load_kind::block_load_vectorize,
-        /*.scan_algorithm                =*/ BLOCK_SCAN_WARP_SCANS,
-        /*.buffered_partition_strategy   =*/ BlockPartitionStrategy::Atomics,
-        /*.early_stop_filter_strategy    =*/ BlockFilterStrategy::Atomics,
-        /*.last_filter_partition_strategy=*/ BlockPartitionStrategy::Atomics,
-        /*.accumulating_buffer_capacity  =*/ 256};
+        /*.threads_per_block                  =*/ 512,
+        /*.items_per_thread                   =*/ items_per_thread,
+        /*.bits_per_pass                      =*/ bits_per_pass,
+        /*.keys_tile_load_kind                =*/ tile_load_kind::block_load_vectorize,
+        /*.scan_algorithm                     =*/ BLOCK_SCAN_WARP_SCANS,
+        /*.buffered_partition_strategy        =*/ BlockPartitionStrategy::Atomics,
+        /*.early_stop_filter_strategy         =*/ BlockFilterStrategy::Atomics,
+        /*.last_filter_partition_strategy     =*/ BlockPartitionStrategy::Atomics,
+        /*.accumulating_buffer_capacity       =*/ 256,
+        /*.speculative_selected_buffer_capacity=*/ 128};
+
+      // Speculative B200/B300 tuning candidate (commented out -- engaged once
+      // benchmarks confirm a throughput win over Atomics). The candidate buffer
+      // is sized to `tile_items` so the cooperative flush single-rounds even
+      // when every tile item is a candidate; the selected buffer stays at 128
+      // to bound smem footprint for value-bearing topk on int64+int64.
+      //
+      // Measured register footprint on SM 70 (cub.test.device.topk_pairs.lid_0,
+      // inline-drain Speculative classes; see `block_filter_speculative.cuh` /
+      // `block_partition_speculative.cuh`):
+      //   * SpeculativeBoth + SpeculativeFilter:   avg +6.0 reg, max +17 reg.
+      //   * SpeculativeBoth + Atomics filter:      avg +0.2 reg, max +11 reg
+      //                                            (best register parity).
+      //   * Atomics partition + SpeculativeFilter: avg +2.0 reg, max +18 reg.
+      // The dual-speculative cost is dominated by the FILTER kernel having
+      // *both* the buffered-partition path and the early-stop filter path
+      // compiled in (runtime mode switch); the kernel REG count is the union
+      // of their live sets, so per-mode parity is achievable but the union
+      // bloats.
+      //
+      // return topk_policy{
+      //   /*.threads_per_block                  =*/ 512,
+      //   /*.items_per_thread                   =*/ items_per_thread,
+      //   /*.bits_per_pass                      =*/ bits_per_pass,
+      //   /*.keys_tile_load_kind                =*/ tile_load_kind::block_load_vectorize,
+      //   /*.scan_algorithm                     =*/ BLOCK_SCAN_WARP_SCANS,
+      //   /*.buffered_partition_strategy        =*/ BlockPartitionStrategy::SpeculativeBoth,
+      //   /*.early_stop_filter_strategy         =*/ BlockFilterStrategy::SpeculativeFilter,
+      //   /*.last_filter_partition_strategy     =*/ BlockPartitionStrategy::Atomics,
+      //   /*.accumulating_buffer_capacity       =*/ 512 * items_per_thread,
+      //   /*.speculative_selected_buffer_capacity=*/ 128};
     }
 
     // Default tuning used on older architectures.
     const int items_per_thread =
       ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size, 1, nominal_4b_items_per_thread);
     return topk_policy{
-      /*.threads_per_block             =*/ 512,
-      /*.items_per_thread              =*/ items_per_thread,
-      /*.bits_per_pass                 =*/ bits_per_pass,
-      /*.keys_tile_load_kind           =*/ tile_load_kind::block_load_vectorize,
-      /*.scan_algorithm                =*/ BLOCK_SCAN_WARP_SCANS,
-      /*.buffered_partition_strategy   =*/ BlockPartitionStrategy::Atomics,
-      /*.early_stop_filter_strategy    =*/ BlockFilterStrategy::Atomics,
-      /*.last_filter_partition_strategy=*/ BlockPartitionStrategy::Atomics,
-      /*.accumulating_buffer_capacity  =*/ 256};
+      /*.threads_per_block                  =*/ 512,
+      /*.items_per_thread                   =*/ items_per_thread,
+      /*.bits_per_pass                      =*/ bits_per_pass,
+      /*.keys_tile_load_kind                =*/ tile_load_kind::block_load_vectorize,
+      /*.scan_algorithm                     =*/ BLOCK_SCAN_WARP_SCANS,
+      /*.buffered_partition_strategy        =*/ BlockPartitionStrategy::Atomics,
+      /*.early_stop_filter_strategy         =*/ BlockFilterStrategy::Atomics,
+      /*.last_filter_partition_strategy     =*/ BlockPartitionStrategy::Atomics,
+      /*.accumulating_buffer_capacity       =*/ 256,
+      /*.speculative_selected_buffer_capacity=*/ 128};
   }
 };
 

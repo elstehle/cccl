@@ -75,6 +75,15 @@ enum class BlockFilterStrategy
   Staged,
   SharedMem,
   AccumulatingFilter,
+  // SpeculativeFilter accumulates the selected stream in a fixed-size smem
+  // buffer, but uses a *speculative* slot reservation: items whose atomicAdd
+  // index lands within the buffer go to smem, items beyond capacity fall back
+  // to per-item global atomics (Atomics-equivalent). The trade is one extra
+  // per-thread uint32 bitmask and one extra `__syncthreads()` per Partition()
+  // call in exchange for keeping `positions[]` cross-iteration-dead, which
+  // restores register parity with `Atomics` while preserving the cooperative
+  // batched flush on sparse streams. See `block_filter_speculative.cuh`.
+  SpeculativeFilter,
 };
 
 //---------------------------------------------------------------------
