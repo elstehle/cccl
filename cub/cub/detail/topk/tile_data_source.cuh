@@ -308,23 +308,23 @@ public:
     }
   };
 
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE direct_data_source(InputIt it, TempStorage& /*state*/)
-      : it_(it)
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE direct_data_source(InputIt input_it, TempStorage& /*state*/)
+      : it(input_it)
   {}
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT base)
   {
-    tile_base_ = tile_base;
+    tile_base = base;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& /*scratch*/)
   {
-    return full_load_handle{it_ + tile_base_};
+    return full_load_handle{it + tile_base};
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& /*scratch*/, OffsetT num_items)
   {
-    return partial_load_handle{it_ + tile_base_, num_items};
+    return partial_load_handle{it + tile_base, num_items};
   }
 
   // On-demand single-item gather. Used by the lazy value-load path in
@@ -338,13 +338,13 @@ public:
   // out-of-range items as `rejected`.
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
-    const OffsetT idx = tile_base_ + static_cast<OffsetT>(threadIdx.x) * ItemsPerThread + item_idx;
-    return it_[idx];
+    const OffsetT idx = tile_base + static_cast<OffsetT>(threadIdx.x) * ItemsPerThread + item_idx;
+    return it[idx];
   }
 
 private:
-  InputIt it_;
-  OffsetT tile_base_{};
+  InputIt it;
+  OffsetT tile_base{};
 };
 
 // 5.2 sync_block_load_data_source -- wraps `cub::BlockLoad`. ScratchStorage holds the
@@ -390,28 +390,28 @@ public:
     }
   };
 
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE sync_block_load_data_source(InputIt it, TempStorage& /*state*/)
-      : it_(it)
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE sync_block_load_data_source(InputIt input_it, TempStorage& /*state*/)
+      : it(input_it)
   {}
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT base)
   {
-    tile_base_ = tile_base;
+    tile_base = base;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& scratch)
   {
-    return full_load_handle{it_ + tile_base_, &scratch};
+    return full_load_handle{it + tile_base, &scratch};
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& scratch, OffsetT num_items)
   {
-    return partial_load_handle{it_ + tile_base_, &scratch, num_items};
+    return partial_load_handle{it + tile_base, &scratch, num_items};
   }
 
 private:
-  InputIt it_;
-  OffsetT tile_base_{};
+  InputIt it;
+  OffsetT tile_base{};
 };
 
 // 5.3 async_to_shared_data_source -- wraps `cub::detail::BlockLoadToShared` (TMA on
@@ -480,45 +480,45 @@ public:
     }
   };
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE async_to_shared_data_source(InputIt it, TempStorage& state)
-      : it_(it)
-      , loader_(state.barrier)
+  _CCCL_DEVICE _CCCL_FORCEINLINE async_to_shared_data_source(InputIt input_it, TempStorage& state)
+      : it(input_it)
+      , loader(state.barrier)
   {}
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT base)
   {
-    tile_base_ = tile_base;
+    tile_base = base;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& scratch)
   {
     ::cuda::std::span<char> dst{scratch.buf, sizeof(scratch.buf)};
-    ::cuda::std::span<const value_t> src{it_ + tile_base_, static_cast<::cuda::std::size_t>(tile_items)};
-    auto span  = loader_.template CopyAsync<value_t, GmemAlign>(dst, src);
-    auto token = loader_.Commit();
-    return full_load_handle{span, ::cuda::std::move(token), &loader_};
+    ::cuda::std::span<const value_t> src{it + tile_base, static_cast<::cuda::std::size_t>(tile_items)};
+    auto span  = loader.template CopyAsync<value_t, GmemAlign>(dst, src);
+    auto token = loader.Commit();
+    return full_load_handle{span, ::cuda::std::move(token), &loader};
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& scratch, OffsetT num_items)
   {
     ::cuda::std::span<char> dst{scratch.buf, sizeof(scratch.buf)};
-    ::cuda::std::span<const value_t> src{it_ + tile_base_, static_cast<::cuda::std::size_t>(num_items)};
-    auto span  = loader_.template CopyAsync<value_t, GmemAlign>(dst, src);
-    auto token = loader_.Commit();
-    return partial_load_handle{span, ::cuda::std::move(token), num_items, &loader_};
+    ::cuda::std::span<const value_t> src{it + tile_base, static_cast<::cuda::std::size_t>(num_items)};
+    auto span  = loader.template CopyAsync<value_t, GmemAlign>(dst, src);
+    auto token = loader.Commit();
+    return partial_load_handle{span, ::cuda::std::move(token), num_items, &loader};
   }
 
   // Make the persistent mbarrier reusable. Caller (the agent) pairs this with its own
   // lifetime end; the primitive itself does the necessary __syncthreads internally.
   _CCCL_DEVICE _CCCL_FORCEINLINE void invalidate()
   {
-    loader_.Invalidate();
+    loader.Invalidate();
   }
 
 private:
-  InputIt it_;
-  loader_t loader_;
-  OffsetT tile_base_{};
+  InputIt it;
+  loader_t loader;
+  OffsetT tile_base{};
 };
 
 // 5.4 multi_source_data_source -- runtime-switched two-source adapter. Both underlying
@@ -542,7 +542,7 @@ public:
     ::cuda::std::tuple<typename SourceA::ScratchStorage, typename SourceB::ScratchStorage>>;
 
   // Tagged-union load handles. Both alternatives are alive in the small POD; only the
-  // one matching `pick_b_` is initialized via the underlying source's submit, and only
+  // one matching `pick_source_b` is initialized via the underlying source's submit, and only
   // it is read in `complete_load`. The runtime branch is constant within a kernel
   // launch (set once by the agent), so the compiler eliminates the dead branch.
   struct full_load_handle
@@ -586,47 +586,47 @@ public:
   };
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE multi_source_data_source(SourceA a, SourceB b, bool pick_b)
-      : a_(a)
-      , b_(b)
-      , pick_b_(pick_b)
+      : source_a(a)
+      , source_b(b)
+      , pick_source_b(pick_b)
   {}
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
   {
-    a_.set_tile_base(tile_base);
-    b_.set_tile_base(tile_base);
+    source_a.set_tile_base(tile_base);
+    source_b.set_tile_base(tile_base);
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
-    if (pick_b_)
+    if (pick_source_b)
     {
-      return full_load_handle{{}, b_.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s)), true};
+      return full_load_handle{{}, source_b.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s)), true};
     }
-    return full_load_handle{a_.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s)), {}, false};
+    return full_load_handle{source_a.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s)), {}, false};
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
-    if (pick_b_)
+    if (pick_source_b)
     {
-      return partial_load_handle{{}, b_.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s), num_items), true};
+      return partial_load_handle{{}, source_b.submit_load(CUB_NS_QUALIFIER::detail::at<1>(s), num_items), true};
     }
-    return partial_load_handle{a_.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s), num_items), {}, false};
+    return partial_load_handle{source_a.submit_load(CUB_NS_QUALIFIER::detail::at<0>(s), num_items), {}, false};
   }
 
   // On-demand single-item gather. Dispatches to whichever underlying source is
-  // active (`pick_b_` is set once at construction, so the branch is constant
+  // active (`pick_source_b` is set once at construction, so the branch is constant
   // within a kernel launch and ptxas eliminates the dead arm).
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
-    return pick_b_ ? b_.gather_one(item_idx) : a_.gather_one(item_idx);
+    return pick_source_b ? source_b.gather_one(item_idx) : source_a.gather_one(item_idx);
   }
 
 private:
-  SourceA a_;
-  SourceB b_;
-  bool pick_b_;
+  SourceA source_a;
+  SourceB source_b;
+  bool pick_source_b;
 };
 
 //---------------------------------------------------------------------

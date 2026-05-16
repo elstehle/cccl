@@ -241,11 +241,11 @@ public:
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
-      : reserve_sel_(reserve_selected)
-      , sel_xform_(selected_key_transform)
-      , sel_iter_(selected_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_selected_op)
+      : reserve_sel(reserve_selected)
+      , sel_xform(selected_key_transform)
+      , sel_iter(selected_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_selected_op)
   {}
 
   // Full-tile overload: no per-item bound check inside the classify loop.
@@ -280,13 +280,13 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
+      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
       filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
     }
     else
     {
       bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-        keys, num_thread_items, identify_op_};
+        keys, num_thread_items, identify_op};
       filter_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, value_sources);
     }
   }
@@ -367,7 +367,7 @@ private:
       const bool keep = classifier(keys[j], j);
       if (keep)
       {
-        const auto r = reserve_sel_(SelectedOffsetT{1});
+        const auto r = reserve_sel(SelectedOffsetT{1});
         bool granted = true;
         if constexpr (SelectedReserveOp::may_grant_less)
         {
@@ -375,10 +375,10 @@ private:
         }
         if (granted)
         {
-          sel_iter_[r.first] = sel_xform_(keys[j]);
+          sel_iter[r.first] = sel_xform(keys[j]);
           if constexpr (!KeysOnly)
           {
-            auto& sink                        = ::cuda::std::get<0>(sinks_);
+            auto& sink                        = ::cuda::std::get<0>(sinks);
             sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
           }
         }
@@ -387,11 +387,11 @@ private:
   }
 
   // Captured at ctor; used by every partition() call.
-  SelectedReserveOp& reserve_sel_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  SelectedKeyOutIt sel_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifySelectedOp& identify_op_;
+  SelectedReserveOp& reserve_sel;
+  SelectedKeyOutTransformOp& sel_xform;
+  SelectedKeyOutIt sel_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifySelectedOp& identify_op;
 };
 
 //---------------------------------------------------------------------
@@ -470,11 +470,11 @@ public:
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
-      : reserve_sel_(reserve_selected)
-      , sel_xform_(selected_key_transform)
-      , sel_iter_(selected_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_selected_op)
+      : reserve_sel(reserve_selected)
+      , sel_xform(selected_key_transform)
+      , sel_iter(selected_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_selected_op)
   {}
 
   template <typename ValueSourcesTuple>
@@ -514,13 +514,13 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
+      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
       classify_and_scatter_keys(buffer, keys, classifier, positions);
     }
     else
     {
       bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-        keys, num_thread_items, identify_op_};
+        keys, num_thread_items, identify_op};
       classify_and_scatter_keys(buffer, keys, classifier, positions);
     }
     __syncthreads();
@@ -529,7 +529,7 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel              = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
+      const auto sel              = reserve_sel(static_cast<SelectedOffsetT>(selected_cnt));
       buffer.cnt.global_base      = sel.first;
       buffer.cnt.granted_selected = static_cast<SelectedOffsetT>(sel.second);
     }
@@ -542,7 +542,7 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter_[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform_(buffer.phase.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.keys[i]);
     }
 
     if constexpr (num_value_channels > 0)
@@ -555,7 +555,7 @@ private:
         static_assert(::cuda::std::is_same_v<typename source_t::value_t, value_t>,
                       "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
 
-        auto& sink       = ::cuda::std::get<I>(sinks_);
+        auto& sink       = ::cuda::std::get<I>(sinks);
         auto& chan_phase = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.per_channel);
         if constexpr (LazyValueLoad)
         {
@@ -637,11 +637,11 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  SelectedKeyOutIt sel_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifySelectedOp& identify_op_;
+  SelectedReserveOp& reserve_sel;
+  SelectedKeyOutTransformOp& sel_xform;
+  SelectedKeyOutIt sel_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifySelectedOp& identify_op;
 };
 
 //---------------------------------------------------------------------
@@ -731,11 +731,11 @@ public:
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
-      : reserve_sel_(reserve_selected)
-      , sel_xform_(selected_key_transform)
-      , sel_iter_(selected_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_selected_op)
+      : reserve_sel(reserve_selected)
+      , sel_xform(selected_key_transform)
+      , sel_iter(selected_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_selected_op)
   {}
 
   template <typename ValueSourcesTuple>
@@ -797,13 +797,13 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op_, num_thread_items);
+      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
       classify_and_scatter_kv(buffer, keys, classifier, value_sources, reg_values);
     }
     else
     {
       bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-        keys, num_thread_items, identify_op_};
+        keys, num_thread_items, identify_op};
       classify_and_scatter_kv(buffer, keys, classifier, value_sources, reg_values);
     }
     __syncthreads();
@@ -812,7 +812,7 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel              = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
+      const auto sel              = reserve_sel(static_cast<SelectedOffsetT>(selected_cnt));
       buffer.cnt.global_base      = sel.first;
       buffer.cnt.granted_selected = static_cast<SelectedOffsetT>(sel.second);
     }
@@ -824,12 +824,12 @@ private:
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter_[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform_(buffer.phase.kv.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.kv.keys[i]);
     }
 
     if constexpr (num_value_channels > 0)
     {
-      bp_detail::tuple_for_each(sinks_, [&](auto& sink, auto I_ic) {
+      bp_detail::tuple_for_each(sinks, [&](auto& sink, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
         auto& vs        = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.kv.per_channel_values);
         for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
@@ -880,11 +880,11 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  SelectedKeyOutIt sel_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifySelectedOp& identify_op_;
+  SelectedReserveOp& reserve_sel;
+  SelectedKeyOutTransformOp& sel_xform;
+  SelectedKeyOutIt sel_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifySelectedOp& identify_op;
 };
 } // namespace detail::topk
 

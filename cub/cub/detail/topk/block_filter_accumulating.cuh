@@ -153,16 +153,16 @@ public:
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
-      : ts_(storage.Alias())
-      , reserve_sel_(reserve_selected)
-      , sel_xform_(selected_key_transform)
-      , sel_iter_(selected_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_selected_op)
+      : temp_storage(storage.Alias())
+      , reserve_sel(reserve_selected)
+      , sel_xform(selected_key_transform)
+      , sel_iter(selected_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_selected_op)
   {
     if (threadIdx.x == 0)
     {
-      ts_.cnt.counter = 0;
+      temp_storage.cnt.counter = 0;
     }
     __syncthreads();
   }
@@ -190,14 +190,14 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue()
   {
     __syncthreads();
-    const int leftover = ts_.cnt.counter;
+    const int leftover = temp_storage.cnt.counter;
     if (leftover > 0)
     {
       cooperative_flush_partial(leftover);
       __syncthreads();
       if (threadIdx.x == 0)
       {
-        ts_.cnt.counter = 0;
+        temp_storage.cnt.counter = 0;
       }
       __syncthreads();
     }
@@ -280,8 +280,8 @@ private:
     for (int j = 0; j < ItemsPerThread; ++j)
     {
       const bool is_valid = IsFull ? true : (j < num_thread_items);
-      const bool keep     = is_valid ? static_cast<bool>(identify_op_(keys[j])) : false;
-      positions[j]        = keep ? atomicAdd(&ts_.cnt.counter, 1) : -1;
+      const bool keep     = is_valid ? static_cast<bool>(identify_op(keys[j])) : false;
+      positions[j]        = keep ? atomicAdd(&temp_storage.cnt.counter, 1) : -1;
     }
     __syncthreads();
 
@@ -298,7 +298,7 @@ private:
   {
     for (int iter = 0; iter < max_flush_iters; ++iter)
     {
-      const int cnt = ts_.cnt.counter;
+      const int cnt = temp_storage.cnt.counter;
       if (cnt < BufferCapacity)
       {
         scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/cnt);
@@ -320,7 +320,7 @@ private:
       __syncthreads();
       if (threadIdx.x == 0)
       {
-        ts_.cnt.counter = cnt - BufferCapacity;
+        temp_storage.cnt.counter = cnt - BufferCapacity;
       }
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int j = 0; j < ItemsPerThread; ++j)
@@ -343,10 +343,10 @@ private:
     {
       if (positions[j] >= 0 && positions[j] < upper_bound)
       {
-        ts_.keys[positions[j]] = keys[j];
+        temp_storage.keys[positions[j]] = keys[j];
         if constexpr (num_value_channels == 1)
         {
-          CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values).values[positions[j]] = get_value(j);
+          CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values).values[positions[j]] = get_value(j);
         }
       }
     }
@@ -366,15 +366,15 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto r    = reserve_sel_(static_cast<SelectedOffsetT>(BufferCapacity));
-      ts_.cnt.base    = r.first;
-      ts_.cnt.granted = static_cast<SelectedOffsetT>(r.second);
+      const auto r    = reserve_sel(static_cast<SelectedOffsetT>(BufferCapacity));
+      temp_storage.cnt.base    = r.first;
+      temp_storage.cnt.granted = static_cast<SelectedOffsetT>(r.second);
     }
     __syncthreads();
 
-    const SelectedOffsetT base = ts_.cnt.base;
+    const SelectedOffsetT base = temp_storage.cnt.base;
     const SelectedOffsetT to_write =
-      SelectedReserveOp::may_grant_less ? ts_.cnt.granted : static_cast<SelectedOffsetT>(BufferCapacity);
+      SelectedReserveOp::may_grant_less ? temp_storage.cnt.granted : static_cast<SelectedOffsetT>(BufferCapacity);
 
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int w = 0; w < full_flush_waves; ++w)
@@ -382,7 +382,7 @@ private:
       const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
       if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
       {
-        sel_iter_[base + static_cast<SelectedOffsetT>(i)] = sel_xform_(ts_.keys[i]);
+        sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
       }
     }
     if constexpr (trailing_count != 0)
@@ -391,14 +391,14 @@ private:
       if (static_cast<int>(threadIdx.x) < trailing_count
           && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
       {
-        sel_iter_[base + static_cast<SelectedOffsetT>(i)] = sel_xform_(ts_.keys[i]);
+        sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
       }
     }
 
     if constexpr (num_value_channels == 1)
     {
-      auto& sink = ::cuda::std::get<0>(sinks_);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values);
+      auto& sink = ::cuda::std::get<0>(sinks);
+      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
 
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int w = 0; w < full_flush_waves; ++w)
@@ -428,24 +428,24 @@ private:
   {
     if (threadIdx.x == 0)
     {
-      const auto r    = reserve_sel_(static_cast<SelectedOffsetT>(count));
-      ts_.cnt.base    = r.first;
-      ts_.cnt.granted = static_cast<SelectedOffsetT>(r.second);
+      const auto r    = reserve_sel(static_cast<SelectedOffsetT>(count));
+      temp_storage.cnt.base    = r.first;
+      temp_storage.cnt.granted = static_cast<SelectedOffsetT>(r.second);
     }
     __syncthreads();
 
-    const SelectedOffsetT base = ts_.cnt.base;
+    const SelectedOffsetT base = temp_storage.cnt.base;
     const SelectedOffsetT to_write =
-      SelectedReserveOp::may_grant_less ? ts_.cnt.granted : static_cast<SelectedOffsetT>(count);
+      SelectedReserveOp::may_grant_less ? temp_storage.cnt.granted : static_cast<SelectedOffsetT>(count);
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
     {
-      sel_iter_[base + static_cast<SelectedOffsetT>(i)] = sel_xform_(ts_.keys[i]);
+      sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
     }
     if constexpr (num_value_channels == 1)
     {
-      auto& sink = ::cuda::std::get<0>(sinks_);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values);
+      auto& sink = ::cuda::std::get<0>(sinks);
+      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
         sink.selected_values_out[base + static_cast<SelectedOffsetT>(i)] = sink.selected_value_transform(vs.values[i]);
@@ -456,12 +456,12 @@ private:
   // ---------------------------------------------------------------
   // Member state.
   // ---------------------------------------------------------------
-  _TempStorage& ts_;
-  SelectedReserveOp& reserve_sel_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  SelectedKeyOutIt sel_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifySelectedOp& identify_op_;
+  _TempStorage& temp_storage;
+  SelectedReserveOp& reserve_sel;
+  SelectedKeyOutTransformOp& sel_xform;
+  SelectedKeyOutIt sel_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifySelectedOp& identify_op;
 };
 
 //---------------------------------------------------------------------
