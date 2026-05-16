@@ -43,6 +43,7 @@
 
 #include <cub/detail/topk/block_filter.cuh>
 #include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/block_partition_accumulating.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
@@ -59,39 +60,18 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-namespace bf_acc_detail
-{
-// Per-stream counter + flush-broadcast slots in TempStorage. Same layout as
-// `bp_acc_detail::stream_counters_t` but lives in the filter namespace so the
-// header dependency stays one-way (block_filter_accumulating.cuh ->
-// block_filter.cuh) without pulling in the accumulating partition header.
-template <typename OffsetT>
-struct stream_counters_t
-{
-  int counter;
-  OffsetT base;
-  OffsetT granted;
-};
-
-// Per-channel value array slot in TempStorage.
-template <typename ValueT, int Capacity>
-struct value_buf_slot_t
-{
-  ValueT values[Capacity];
-};
-
 // Persistent TempStorage layout for an accumulating filter. One smem buffer
 // (key + per-channel values) plus the stream's counter + broadcast slots.
-// Wrapped in `cub::Uninitialized<>` at the public layer.
+// Wrapped in `cub::Uninitialized<>` at the public layer. Reuses
+// `stream_counters_t` and `value_buf_slot_t` from the accumulating partition.
 template <typename KeyT, typename OffsetT, typename ValueTypesTuple, int Capacity>
 struct accumulating_filter_temp_storage_t
 {
   stream_counters_t<OffsetT> cnt;
   KeyT keys[Capacity];
-  CUB_NS_QUALIFIER::detail::phase_aggregate<bp_detail::map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
+  CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
     per_channel_values;
 };
-} // namespace bf_acc_detail
 
 //---------------------------------------------------------------------
 // `block_filter_accumulating`
@@ -135,7 +115,7 @@ public:
   // Internal `_TempStorage` is the actual buffer + counters; the publicly-exposed
   // `TempStorage` wraps it in `cub::Uninitialized<>` so the user can declare
   // `__shared__ filter_t::TempStorage` directly.
-  using _TempStorage = bf_acc_detail::accumulating_filter_temp_storage_t<KeyT, SelectedOffsetT, ValueTypesTuple, BufferCapacity>;
+  using _TempStorage = accumulating_filter_temp_storage_t<KeyT, SelectedOffsetT, ValueTypesTuple, BufferCapacity>;
   struct TempStorage : CUB_NS_QUALIFIER::Uninitialized<_TempStorage>
   {};
 
@@ -204,7 +184,7 @@ public:
   }
 
 private:
-  using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
+  using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
 
   // Eagerly load the (single) channel's per-thread values from the per-call source.
   // No-op when keys-only or when LazyValueLoad is true.

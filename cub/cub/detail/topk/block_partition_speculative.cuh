@@ -79,8 +79,6 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-namespace bp_spec_detail
-{
 // Per-stream persistent storage. Reuses the accumulating partition's
 // `stream_counters_t` (`counter` + `base` + `granted` flush-broadcast slots)
 // and `value_buf_slot_t`, but keeps the dual-stream nature explicit by
@@ -94,10 +92,10 @@ namespace bp_spec_detail
 template <typename KeyT, typename OffsetT, typename ValueTypesTuple, int Capacity>
 struct speculative_stream_storage_t
 {
-  bp_acc_detail::stream_counters_t<OffsetT> cnt;
+  stream_counters_t<OffsetT> cnt;
   KeyT keys[Capacity];
   CUB_NS_QUALIFIER::detail::phase_aggregate<
-    bp_detail::map_tuple_t<bp_acc_detail::value_buf_slot_t, ValueTypesTuple, Capacity>>
+    map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
     per_channel_values;
 };
 
@@ -121,7 +119,6 @@ struct speculative_partition_temp_storage_t
   speculative_stream_storage_t<KeyT, CandidateOffsetT, ValueTypesTuple, CandidateCapacity> cand;
   speculative_stream_storage_t<KeyT, SelectedOffsetT, ValueTypesTuple, SelectedCapacity> sel;
 };
-} // namespace bp_spec_detail
 
 //---------------------------------------------------------------------
 // `block_partition_speculative`
@@ -209,7 +206,7 @@ public:
   // the publicly-exposed `TempStorage` wraps it in `cub::Uninitialized<>` so
   // the user can declare `__shared__ partition_t::TempStorage` directly.
   using _TempStorage =
-    bp_spec_detail::speculative_partition_temp_storage_t<KeyT,
+    speculative_partition_temp_storage_t<KeyT,
                                                          CandidateOffsetT,
                                                          SelectedOffsetT,
                                                          ValueTypesTuple,
@@ -306,7 +303,7 @@ public:
   }
 
 private:
-  using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
+  using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
 
   // Storage type for the optional eager-loaded per-thread values array. The
   // size-1 dummy specialization (used when LazyValueLoad is true or the agent
@@ -364,11 +361,11 @@ private:
                   "Per-call value sources tuple must have the same length as the class-level value channel sinks "
                   "tuple; the partition pairs them positionally.");
 
-    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
+      auto classifier = make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       partition_speculative_fused<IsFull>(keys, num_thread_items, classifier, callback_op, value_sources, num_items);
     }
     else
@@ -376,9 +373,9 @@ private:
       // `precomputed_classifier`'s ctor fires `callback_op` for every
       // candidate item; the scatter loop then uses `noop_callback_op` to
       // avoid double-firing.
-      bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op, callback_op};
-      bp_detail::noop_callback_op noop_cb{};
+      noop_callback_op noop_cb{};
       partition_speculative_fused<IsFull>(keys, num_thread_items, classifier, noop_cb, value_sources, num_items);
     }
   }

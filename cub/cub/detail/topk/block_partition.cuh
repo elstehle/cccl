@@ -150,13 +150,10 @@ struct value_channel_sinks_t
 //---------------------------------------------------------------------
 // Shared scratch-storage building blocks (architecture §9.4). Per-strategy
 // assembled `ScratchStorage` structs live as nested types of the three
-// partition classes below; this `bp_detail` namespace just holds the pieces
-// (counters, per-channel slots, tuple-mapping helpers, classifiers) that they
-// compose from.
+// partition classes below; the helpers here (counters, per-channel slots,
+// tuple-mapping helpers, classifiers) are what they compose from.
 //---------------------------------------------------------------------
 
-namespace bp_detail
-{
 // Counters for the staged / shared_mem strategies. Phase 1 uses 32-bit smem atomics
 // (`int counters[2]`); Phase 2 uses the actual offset types for the global bases. The
 // two phases are separated by `__syncthreads()` so the union reuse is safe. `cnt`
@@ -530,7 +527,6 @@ using partition_storage_layout_for_t =
                            KeysSourceScratchT,
                            PrefixSumT>;
 
-} // namespace bp_detail
 
 //---------------------------------------------------------------------
 // `block_partition_atomics` -- per-non-rejected-item global atomic + scatter,
@@ -645,7 +641,7 @@ private:
                   "Per-call value sources tuple must have the same length as the class-level value channel sinks "
                   "tuple; the partition pairs them positionally.");
 
-    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     if constexpr (CandidateReserveOp::may_grant_less)
     {
@@ -677,15 +673,15 @@ private:
   {
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
+      auto classifier = make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       partition_atomics_fused<IsFull, HasCandidateStream>(
         buffer, keys, num_thread_items, classifier, callback_op, value_sources);
     }
     else
     {
-      bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op, callback_op};
-      bp_detail::noop_callback_op noop_cb{};
+      noop_callback_op noop_cb{};
       partition_atomics_fused<IsFull, HasCandidateStream>(
         buffer, keys, num_thread_items, classifier, noop_cb, value_sources);
     }
@@ -953,7 +949,7 @@ public:
   {};
 
   using value_channel_meta_tuple_t =
-    bp_detail::zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
+    zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
 
   // Per-tile scratch. `phase` is a phase_union: phase 1 (key scatter) uses the
   // `keys[]` arena; phase 2 (per-channel value scatter) reuses the same smem
@@ -966,14 +962,14 @@ public:
     {
       KeyT keys[tile_items];
       CUB_NS_QUALIFIER::detail::phase_union<
-        bp_detail::map_tuple_t<bp_detail::staged_channel_phase, value_channel_meta_tuple_t, tile_items>>
+        map_tuple_t<staged_channel_phase, value_channel_meta_tuple_t, tile_items>>
         per_channel;
 
       _CCCL_HOST_DEVICE phase_t() {}
       _CCCL_HOST_DEVICE ~phase_t() {}
     } phase;
 
-    bp_detail::partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
+    partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
   };
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_staged(
@@ -1023,7 +1019,7 @@ private:
                   "Per-call value sources tuple must have the same length as the class-level value channel sinks "
                   "tuple; the partition pairs them positionally.");
 
-    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     int positions[ItemsPerThread];
 
@@ -1037,7 +1033,7 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
+      auto classifier = make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       classify_and_scatter_keys</*FireCallbackInline=*/true>(buffer, keys, classifier, positions);
     }
     else
@@ -1045,7 +1041,7 @@ private:
       // `precomputed_classifier`'s ctor fires the candidate callback for every
       // `candidate`-classified item, so the scatter loop below only needs to
       // route into the smem arena.
-      bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op, callback_op};
       classify_and_scatter_keys</*FireCallbackInline=*/false>(buffer, keys, classifier, positions);
     }
@@ -1092,7 +1088,7 @@ private:
     if constexpr (num_value_channels > 0)
     {
       __syncthreads();
-      bp_detail::tuple_for_each(value_sources, [&](auto& src, auto I_ic) {
+      tuple_for_each(value_sources, [&](auto& src, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
         using source_t  = ::cuda::std::remove_reference_t<decltype(src)>;
         using value_t   = ::cuda::std::tuple_element_t<I, ValueTypesTuple>;
@@ -1274,7 +1270,7 @@ public:
   {};
 
   using value_channel_meta_tuple_t =
-    bp_detail::zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
+    zip_value_channel_metas_t<ValueTypesTuple, DataSourceScratchTypesTuple>;
 
   // Per-tile scratch. The `phase` union has two views: `delegate_loads` (pre-Phase-1
   // delegate-load staging area for value channels) and `kv` (the keys + per-channel
@@ -1286,13 +1282,13 @@ public:
     {
       KeyT keys[tile_items];
       CUB_NS_QUALIFIER::detail::phase_aggregate<
-        bp_detail::map_tuple_t<bp_detail::values_slot, value_channel_meta_tuple_t, tile_items>>
+        map_tuple_t<values_slot, value_channel_meta_tuple_t, tile_items>>
         per_channel_values;
     };
 
     union phase_t
     {
-      CUB_NS_QUALIFIER::detail::phase_union<bp_detail::map_tuple1_t<bp_detail::delegate_load_slot, value_channel_meta_tuple_t>>
+      CUB_NS_QUALIFIER::detail::phase_union<map_tuple1_t<delegate_load_slot, value_channel_meta_tuple_t>>
         delegate_loads;
       keys_and_values_t kv;
 
@@ -1300,7 +1296,7 @@ public:
       _CCCL_HOST_DEVICE ~phase_t() {}
     } phase;
 
-    bp_detail::partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
+    partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
   };
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_shared_mem(
@@ -1350,14 +1346,14 @@ private:
                   "Per-call value sources tuple must have the same length as the class-level value channel sinks "
                   "tuple; the partition pairs them positionally.");
 
-    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     // Pre-Phase-1: when eagerly loading, fetch the channel's values into a register
     // array via the delegate-load slot. After this, the delegate_loads view of the
     // phase union is dead and we transition to the kv view at the next
     // __syncthreads. Skipped under `LazyValueLoad` -- the kv-scatter loop below
     // pulls values via `gather_one(j)` only for surviving items.
-    using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
+    using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
     channel_value_t reg_values[ItemsPerThread]{};
     if constexpr (num_value_channels == 1 && !LazyValueLoad)
     {
@@ -1386,7 +1382,7 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
+      auto classifier = make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       classify_and_scatter_kv</*FireCallbackInline=*/true>(buffer, keys, classifier, value_sources, reg_values);
     }
     else
@@ -1394,7 +1390,7 @@ private:
       // `precomputed_classifier`'s ctor fires the candidate callback for every
       // `candidate`-classified item, so the scatter loop only needs to route into
       // the kv arena.
-      bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op, callback_op};
       classify_and_scatter_kv</*FireCallbackInline=*/false>(buffer, keys, classifier, value_sources, reg_values);
     }
@@ -1436,7 +1432,7 @@ private:
 
     if constexpr (num_value_channels > 0)
     {
-      bp_detail::tuple_for_each(sinks, [&](auto& sink, auto I_ic) {
+      tuple_for_each(sinks, [&](auto& sink, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
         auto& vs        = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.kv.per_channel_values);
         for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
