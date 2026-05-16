@@ -84,11 +84,11 @@ struct topk_policy
   //     three non-accumulating values select one of `BlockPartition{Atomics,Staged,
   //     SharedMem}`, `AccumulatingCandidates` selects
   //     `block_partition_accumulating_candidates`, and `SpeculativeBoth` selects
-  //     `BlockPartitionSpeculative`.
+  //     `block_partition_speculative`.
   //   - `early_stop_filter_strategy` is a `BlockFilterStrategy` value -- the three
   //     non-accumulating values select one of `BlockFilter{Atomics,Staged,
   //     SharedMem}`, `AccumulatingFilter` selects `block_filter_accumulating`, and
-  //     `SpeculativeFilter` selects `BlockFilterSpeculative`. The early-stop pass
+  //     `SpeculativeFilter` selects `block_filter_speculative`. The early-stop pass
   //     operates as a 1-stream filter (the candidate-side machinery is statically
   //     elided), so it has its own enum independent of the buffered-pass
   //     partition enum.

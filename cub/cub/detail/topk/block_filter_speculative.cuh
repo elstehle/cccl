@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Top-k-private `BlockFilterSpeculative` -- single-stream sister of
+//! Top-k-private `block_filter_speculative` -- single-stream sister of
 //! `BlockFilter` / `block_filter_accumulating`. Like `block_filter_accumulating`
 //! it buffers items matching a unary `IdentifySelected(key) -> bool` predicate
 //! in a fixed-size smem buffer across multiple `partition()` calls and flushes
@@ -23,7 +23,7 @@
 //! The design point versus `block_filter_accumulating`: the latter keeps a
 //! per-thread `positions[ItemsPerThread]` array live across the multi-round
 //! `overflow_loop`, raising the register high-water mark by `ItemsPerThread`
-//! ints. `BlockFilterSpeculative` replaces that with a single `uint32_t
+//! ints. `block_filter_speculative` replaces that with a single `uint32_t
 //! overflow_bits` (one bit per item per thread) -- the per-thread `keys[]`
 //! and optional `reg_values[]` arrays die at the end of `partition()`
 //! because the cooperative flush only reads from smem. The intent is
@@ -84,7 +84,7 @@ namespace detail::topk
 {
 
 //---------------------------------------------------------------------
-// `BlockFilterSpeculative`
+// `block_filter_speculative`
 //
 // Speculative single-stream sister of `BlockFilter`. Reuses the
 // `bf_acc_detail::accumulating_filter_temp_storage_t` layout (one counter
@@ -128,7 +128,7 @@ template <int BlockThreads,
           typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false,
           bool InlinedClassify            = true>
-class BlockFilterSpeculative
+class block_filter_speculative
 {
 public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
@@ -165,7 +165,7 @@ public:
   {};
 
   // COLLECTIVE ctor.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterSpeculative(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_speculative(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
@@ -560,12 +560,12 @@ struct strategy_to_filter_class<
   LazyValueLoad,
   InlinedClassify>
 {
-  // `InlinedClassify` is threaded through to `BlockFilterSpeculative`'s
+  // `InlinedClassify` is threaded through to `block_filter_speculative`'s
   // classify path (`filter_impl` dispatches between `inlined_filter_classifier`
   // and `precomputed_filter_classifier`). `DataSourceScratchTypesTuple` is
   // not consumed -- the Speculative filter gathers values via stack-local
   // `source_t::ScratchStorage`.
-  using type = BlockFilterSpeculative<
+  using type = block_filter_speculative<
     BlockThreads,
     ItemsPerThread,
     AccumulatingBufferCapacity,

@@ -105,7 +105,7 @@ enum class candidate_class
 //                             buffered in smem and accumulated across multiple tiles;
 //                             selected stream goes direct-to-global. Used by the
 //                             agent's `buffered`-mode pass.
-//   SpeculativeBoth        -- BlockPartitionSpeculative: both candidate and selected
+//   SpeculativeBoth        -- block_partition_speculative: both candidate and selected
 //                             streams accumulate in smem, but with speculative slot
 //                             reservation -- items overflowing the buffer fall back
 //                             to per-item global atomics. Trades one bit-mask uint32
