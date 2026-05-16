@@ -6,7 +6,7 @@
 //! `BlockPartitionSpeculative` -- dual-stream sister of
 //! `BlockPartitionAccumulatingCandidates` and `BlockPartition`. Like the
 //! accumulating sibling, both the candidate and the selected streams accumulate
-//! across multiple `Partition()` calls into fixed-size shared-memory buffers,
+//! across multiple `partition()` calls into fixed-size shared-memory buffers,
 //! and the cooperative full-buffer flush amortizes the per-item global-atomic
 //! cost. Unlike the accumulating sibling, each per-item slot reservation is
 //! *speculative + branchless*: an item does `pos = atomicAdd(&counter, 1)`,
@@ -41,7 +41,7 @@
 //! Shares the same "safe-both" ctor + per-call interface as `BlockPartition`
 //! and `BlockPartitionAccumulatingCandidates`:
 //!   - Sinks + classify hook + candidate callback captured at ctor.
-//!   - Per-call `Partition(scratch, keys, [num_items,] value_sources)`.
+//!   - Per-call `partition(scratch, keys, [num_items,] value_sources)`.
 //!   - Argless `epilogue()` for the terminal partial flush.
 //!
 //! `LazyValueLoad = true` is the natural default for the Speculative variant:
@@ -258,14 +258,14 @@ public:
   // Full-tile overload.
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     partition_impl<true>(keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload.
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& /*scratch*/,
     const KeyT (&keys)[ItemsPerThread],
     NumItemsT num_items,
@@ -347,7 +347,7 @@ private:
     }
   }
 
-  // Shared body for both Partition() overloads. Dispatches the classify
+  // Shared body for both partition() overloads. Dispatches the classify
   // path on `InlinedClassify` (mirrors `BlockPartitionAtomics::partition_impl`):
   // when true, the inlined classifier re-evaluates `identify_op_` inside the
   // scatter loop's `classifier(keys[j], j)` calls; when false, the

@@ -8,7 +8,7 @@
 //! The test exercises the "safe-both" interface: the filter is constructed with
 //! its sinks (reserve op, transform, output iterator, value channel sink) AND
 //! its `identify_selected_op` predicate at the top of the kernel, and
-//! `Partition()` is called per tile with just the per-tile data + a bare
+//! `partition()` is called per tile with just the per-tile data + a bare
 //! `cuda::std::tuple<TileDataSource...>` of value sources. After the call the
 //! kernel invokes `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op
 //! for `BlockFilter` (the accumulating sister class has a separate test).
@@ -157,11 +157,11 @@ __global__ void filter_kernel(
 
   if (num_items == BlockThreads * ItemsPerThread)
   {
-    filter.Partition(scratch, keys, sources);
+    filter.partition(scratch, keys, sources);
   }
   else
   {
-    filter.Partition(scratch, keys, num_items, sources);
+    filter.partition(scratch, keys, num_items, sources);
   }
 
   // No-op for BlockFilter; present for parity with BlockFilterAccumulating.
@@ -320,7 +320,7 @@ C2H_TEST("BlockFilter partial tile leaves OOB items unscattered", "[block][topk]
   constexpr int ItemsPerThread = 4;
   constexpr int tile_items     = BlockThreads * ItemsPerThread;
 
-  // Partial tile with `tile_items - 17` valid items. The filter's `Partition()`
+  // Partial tile with `tile_items - 17` valid items. The filter's `partition()`
   // partial overload computes per-thread valid counts; OOB items are forced to
   // `false` and never appear in the output.
   const int num_items = tile_items - 17;

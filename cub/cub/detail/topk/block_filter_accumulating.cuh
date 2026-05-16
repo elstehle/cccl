@@ -4,11 +4,11 @@
 //! @file
 //! Top-k-private `BlockFilterAccumulating` -- single-stream sister of
 //! `BlockFilter`. Buffers items matching a unary `IdentifySelected(key) -> bool`
-//! predicate in shared memory across multiple `Partition()` calls and flushes
+//! predicate in shared memory across multiple `partition()` calls and flushes
 //! only when the buffer fills (or in the terminal `epilogue()`).
 //!
 //! Shares the same "safe-both" interface as `BlockFilter`: sinks + identify op
-//! captured at ctor; per-call `Partition(scratch, keys, [num_items,] value_sources)`;
+//! captured at ctor; per-call `partition(scratch, keys, [num_items,] value_sources)`;
 //! argless `epilogue()`. Implements the same multi-round overflow algorithm as
 //! `BlockPartitionAccumulatingCandidates`, but with only one stream.
 //!
@@ -118,7 +118,7 @@ public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
-  // Compile-time upper bound on `overflow_loop` iterations per `Partition()` call.
+  // Compile-time upper bound on `overflow_loop` iterations per `partition()` call.
   // See the sibling class `BlockPartitionAccumulatingCandidates::max_flush_iters`
   // for the full derivation. When `BufferCapacity >= tile_items` this evaluates
   // to 2 and NVCC can straight-line the loop.
@@ -170,14 +170,14 @@ public:
   // Full-tile overload.
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     filter_impl<true>(keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload.
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& /*scratch*/,
     const KeyT (&keys)[ItemsPerThread],
     NumItemsT num_items,
@@ -235,7 +235,7 @@ private:
     }
   }
 
-  // Shared body for both Partition() overloads. Classify-into-positions[]
+  // Shared body for both partition() overloads. Classify-into-positions[]
   // then overflow loop. Single stream -- every kept item goes into the smem
   // buffer.
   template <bool IsFull, typename ValueSourcesTuple>

@@ -1167,7 +1167,7 @@ private:
   }
 
   // Single mode-agnostic helper that iterates the tile space: full-tile loop +
-  // possible trailing partial tile, both calling `primitive.Partition(...)` with
+  // possible trailing partial tile, both calling `primitive.partition(...)` with
   // just `(scratch, keys, [num_items,] value_sources)`. Finishes with
   // `primitive.epilogue()`. The `arena` parameter is one of the two mode-specific
   // storage layouts; both expose the same `get_*()` accessors.
@@ -1193,7 +1193,7 @@ private:
       h.complete_load(items);
       __syncthreads();
 
-      primitive.Partition(arena.get_partition_scratch(), items, value_sources);
+      primitive.partition(arena.get_partition_scratch(), items, value_sources);
     }
 
     // Trailing partial tile (handled by exactly one block)
@@ -1213,7 +1213,7 @@ private:
         h.complete_load(items);
         __syncthreads();
 
-        primitive.Partition(arena.get_partition_scratch(), items, partial_items, value_sources);
+        primitive.partition(arena.get_partition_scratch(), items, partial_items, value_sources);
       }
     }
 
@@ -1251,7 +1251,7 @@ public:
     if (mode == sink_mode::early_stop)
     {
       // Early-stop branch: no histogram is accumulated, no kth-bucket scan runs.
-      // The filter primitive's `Partition()` writes selected items directly to `d_keys_out` via `reserve_sel`.
+      // The filter primitive's `partition()` writes selected items directly to `d_keys_out` via `reserve_sel`.
       //
       // `keys_source_state` lives in this arm (so it can alias with the
       // buffered arm's footprint), hence the keys-source is constructed here
@@ -1551,11 +1551,11 @@ private:
   {
     if constexpr (IsFull)
     {
-      partition.Partition(storage.partition_arena.get_partition_scratch(), keys, value_sources);
+      partition.partition(storage.partition_arena.get_partition_scratch(), keys, value_sources);
     }
     else
     {
-      partition.Partition(storage.partition_arena.get_partition_scratch(), keys, num_items_in_tile, value_sources);
+      partition.partition(storage.partition_arena.get_partition_scratch(), keys, num_items_in_tile, value_sources);
     }
   }
 

@@ -155,11 +155,11 @@ __global__ void acc_filter_kernel(
 
     if (items_in_tile == tile_items)
     {
-      filter.Partition(scratch, keys, sources);
+      filter.partition(scratch, keys, sources);
     }
     else
     {
-      filter.Partition(scratch, keys, items_in_tile, sources);
+      filter.partition(scratch, keys, items_in_tile, sources);
     }
   }
 

@@ -5,7 +5,7 @@
 //! Top-k-private `BlockFilterSpeculative` -- single-stream sister of
 //! `BlockFilter` / `BlockFilterAccumulating`. Like `BlockFilterAccumulating`
 //! it buffers items matching a unary `IdentifySelected(key) -> bool` predicate
-//! in a fixed-size smem buffer across multiple `Partition()` calls and flushes
+//! in a fixed-size smem buffer across multiple `partition()` calls and flushes
 //! cooperatively when the buffer fills. Unlike the accumulating variant the
 //! per-item slot reservation is *speculative + branchless*: each kept item
 //! does `pos = atomicAdd(&counter, 1)`, ORs `(pos >= Cap) << j` into a
@@ -15,7 +15,7 @@
 //! overflow writes; the cooperative flush only reads `[0, Cap)`. After the
 //! classify loop a separate drain loop walks `overflow_bits`, emitting each
 //! flagged item via per-item `reserve_sel_(1)` (Atomics-equivalent
-//! behaviour for the overflow tail). When the post-`Partition()` counter
+//! behaviour for the overflow tail). When the post-`partition()` counter
 //! reaches or exceeds `BufferCapacity`, a single cooperative full-buffer
 //! flush emits the leading `BufferCapacity` items and resets the counter
 //! to 0.
@@ -25,7 +25,7 @@
 //! `overflow_loop`, raising the register high-water mark by `ItemsPerThread`
 //! ints. `BlockFilterSpeculative` replaces that with a single `uint32_t
 //! overflow_bits` (one bit per item per thread) -- the per-thread `keys[]`
-//! and optional `reg_values[]` arrays die at the end of `Partition()`
+//! and optional `reg_values[]` arrays die at the end of `partition()`
 //! because the cooperative flush only reads from smem. The intent is
 //! **register parity with `BlockFilterAtomics`**, with the cross-tile
 //! batching benefit (one cooperative store per `BufferCapacity` items)
@@ -41,7 +41,7 @@
 //! Shares the same "safe-both" ctor + per-call interface as `BlockFilter` and
 //! `BlockFilterAccumulating`:
 //!   - Sinks + classify hook captured at ctor.
-//!   - Per-call `Partition(scratch, keys, [num_items,] value_sources)`.
+//!   - Per-call `partition(scratch, keys, [num_items,] value_sources)`.
 //!   - Argless `epilogue()` for the terminal partial flush.
 //!
 //! `LazyValueLoad` semantics match the sibling accumulating class: when
@@ -189,14 +189,14 @@ public:
   // Full-tile overload.
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     filter_impl<true>(keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload.
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& /*scratch*/,
     const KeyT (&keys)[ItemsPerThread],
     NumItemsT num_items,
@@ -265,7 +265,7 @@ private:
     }
   }
 
-  // Shared body for both Partition() overloads. Dispatches the classify
+  // Shared body for both partition() overloads. Dispatches the classify
   // path on `InlinedClassify` (mirrors `BlockFilterAtomics::filter_impl`):
   // when true, the inlined classifier re-evaluates `identify_op_` inside
   // the scatter loop's `classifier(keys[j], j)` calls; when false, the

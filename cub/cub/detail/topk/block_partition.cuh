@@ -79,7 +79,7 @@ namespace detail::topk
 
 // The three classes emitted by top-k's classifier. `rejected` is also the
 // out-of-bounds marker; the partial-tile path forces OOB items to `rejected` inside
-// the primitives' `Partition()` calls.
+// the primitives' `partition()` calls.
 enum class candidate_class
 {
   selected,
@@ -161,7 +161,7 @@ namespace bp_detail
 // (`int counters[2]`); Phase 2 uses the actual offset types for the global bases. The
 // two phases are separated by `__syncthreads()` so the union reuse is safe. `cnt`
 // lives outside the per-phase union (architecture O8): it stays alive across the
-// entire `Partition()` call.
+// entire `partition()` call.
 //
 // `granted_*` are broadcast-only fields written by thread 0 after the reserve op
 // returns and read by every thread before the cooperative flush. They live outside
@@ -576,7 +576,7 @@ public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
-  // Class-lifetime persistent state. Empty (no carried state across Partition() calls).
+  // Class-lifetime persistent state. Empty (no carried state across partition() calls).
   struct TempStorage
   {};
 
@@ -613,14 +613,14 @@ public:
   // Full-tile overload: no per-item bound check inside the classify loop.
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     partition_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload: classify loop bound-checks against num_items.
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
     partition_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
@@ -863,7 +863,7 @@ private:
     }
   }
 
-  // Captured at ctor; used by every Partition() call.
+  // Captured at ctor; used by every partition() call.
   SelectedReserveOp& reserve_sel_;
   CandidateReserveOp& reserve_cand_;
   SelectedKeyOutTransformOp& sel_xform_;
@@ -959,7 +959,7 @@ public:
   // `keys[]` arena; phase 2 (per-channel value scatter) reuses the same smem
   // through the `per_channel` view. `cnt` lives outside the union because it
   // carries the per-tile counts and the broadcast `granted_*` slots across the
-  // whole `Partition()` call.
+  // whole `partition()` call.
   struct ScratchStorage
   {
     union phase_t
@@ -1000,13 +1000,13 @@ public:
 
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     partition_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
     partition_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
@@ -1327,13 +1327,13 @@ public:
 
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     partition_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
     partition_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
