@@ -621,6 +621,19 @@ private:
 //                                 (its fused classify-and-act loop has no separate
 //                                 pre-classify step), so the `InlinedClassify` bool
 //                                 has no effect there.
+//   - `SpeculativeBoth`        -> `BlockPartitionSpeculative` (in
+//                                 `block_partition_speculative.cuh` -- the
+//                                 partial specialization lives there to keep the
+//                                 include cost optional). Consumes both
+//                                 `AccumulatingBufferCapacity` (candidate stream)
+//                                 and `SpeculativeSelectedBufferCapacity` (selected
+//                                 stream; `0` short-circuits the selected smem
+//                                 buffer to pure-Atomics).
+//
+// `SpeculativeSelectedBufferCapacity` is ignored by every strategy except
+// `SpeculativeBoth`; the slot is unconditionally present on the metafunction
+// signature so each agent can thread its tuning value through without having
+// to inspect the strategy value.
 //
 // The agent uses this to define `using buffered_partition_t = typename
 // strategy_to_partition_class<...>::type` -- a single point that hides the dispatch.
@@ -629,6 +642,7 @@ template <BlockPartitionStrategy Strategy,
           int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,
+          int SpeculativeSelectedBufferCapacity,
           typename KeyT,
           typename SelectedOffsetT,
           typename CandidateOffsetT,
@@ -717,6 +731,7 @@ public:
 template <int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,
+          int SpeculativeSelectedBufferCapacity,
           typename KeyT,
           typename SelectedOffsetT,
           typename CandidateOffsetT,
@@ -738,6 +753,7 @@ struct strategy_to_partition_class<
   BlockThreads,
   ItemsPerThread,
   AccumulatingBufferCapacity,
+  SpeculativeSelectedBufferCapacity,
   KeyT,
   SelectedOffsetT,
   CandidateOffsetT,
@@ -760,7 +776,9 @@ struct strategy_to_partition_class<
   // `InlinedClassify` parameter. It also loads value channels via stack-local
   // `source_t::ScratchStorage` and so doesn't consume the
   // `DataSourceScratchTypesTuple` parameter; both are accepted for parity with the
-  // non-accumulating branch (the agent always supplies them).
+  // non-accumulating branch (the agent always supplies them). The single-stream
+  // accumulating variant only buffers the candidate stream and so does not consume
+  // `SpeculativeSelectedBufferCapacity` either.
   using type = BlockPartitionAccumulatingCandidates<
     BlockThreads,
     ItemsPerThread,
@@ -785,6 +803,7 @@ template <BlockPartitionStrategy Strategy,
           int BlockThreads,
           int ItemsPerThread,
           int AccumulatingBufferCapacity,
+          int SpeculativeSelectedBufferCapacity,
           typename KeyT,
           typename SelectedOffsetT,
           typename CandidateOffsetT,
@@ -806,6 +825,7 @@ using strategy_to_partition_class_t = typename strategy_to_partition_class<
   BlockThreads,
   ItemsPerThread,
   AccumulatingBufferCapacity,
+  SpeculativeSelectedBufferCapacity,
   KeyT,
   SelectedOffsetT,
   CandidateOffsetT,

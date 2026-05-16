@@ -105,12 +105,21 @@ enum class candidate_class
 //                             buffered in smem and accumulated across multiple tiles;
 //                             selected stream goes direct-to-global. Used by the
 //                             agent's `buffered`-mode pass.
+//   SpeculativeBoth        -- BlockPartitionSpeculative: both candidate and selected
+//                             streams accumulate in smem, but with speculative slot
+//                             reservation -- items overflowing the buffer fall back
+//                             to per-item global atomics. Trades one bit-mask uint32
+//                             per stream + one sync for register parity with
+//                             `Atomics`. Setting the selected-stream capacity to 0
+//                             via the agent policy degrades that stream to pure
+//                             atomics (useful when the selected stream is dense).
 enum class BlockPartitionStrategy
 {
   Atomics,
   Staged,
   SharedMem,
   AccumulatingCandidates,
+  SpeculativeBoth,
 };
 
 //---------------------------------------------------------------------

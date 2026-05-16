@@ -299,7 +299,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.scan_algorithm,
-                    policy.keys_tile_load_kind>;
+                    policy.keys_tile_load_kind,
+                    policy.accumulating_buffer_capacity,
+                    policy.speculative_selected_buffer_capacity>;
   using agent_t = AgentTopKHistogram<agent_topk_policy_t, KeyInputIteratorT, ExtractBinOpT, OffsetT, OutOffsetT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
@@ -372,7 +374,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.scan_algorithm,
-                    policy.keys_tile_load_kind>;
+                    policy.keys_tile_load_kind,
+                    policy.accumulating_buffer_capacity,
+                    policy.speculative_selected_buffer_capacity>;
 
   static constexpr BlockPartitionStrategy buffered_part_strat = policy.buffered_partition_strategy;
   static constexpr BlockFilterStrategy early_stop_filter_strat = policy.early_stop_filter_strategy;
@@ -551,7 +555,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
                     policy.items_per_thread,
                     policy.bits_per_pass,
                     policy.scan_algorithm,
-                    policy.keys_tile_load_kind>;
+                    policy.keys_tile_load_kind,
+                    policy.accumulating_buffer_capacity,
+                    policy.speculative_selected_buffer_capacity>;
 
   static constexpr BlockPartitionStrategy part_strat = policy.last_filter_partition_strategy;
   static constexpr bool lazy_value_load              = policy.lazy_value_load;

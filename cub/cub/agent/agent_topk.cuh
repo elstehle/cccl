@@ -20,8 +20,10 @@
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/detail/topk/block_filter.cuh>
 #include <cub/detail/topk/block_filter_accumulating.cuh>
+#include <cub/detail/topk/block_filter_speculative.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/block_partition_accumulating.cuh>
+#include <cub/detail/topk/block_partition_speculative.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
@@ -56,14 +58,25 @@ namespace detail::topk
 //! @tparam AccumulatingBufferCapacity
 //!   Number of smem slots in the per-stream buffer for the
 //!   `AccumulatingCandidates` partition strategy / `AccumulatingFilter` filter
-//!   strategy (irrelevant for the non-accumulating strategies).
+//!   strategy (irrelevant for the non-accumulating strategies). Also reused
+//!   as the candidate-stream buffer capacity for the `SpeculativeBoth` /
+//!   `SpeculativeFilter` strategies.
+//!
+//! @tparam SpeculativeSelectedBufferCapacity
+//!   Number of smem slots in the selected-stream buffer for the
+//!   `SpeculativeBoth` partition strategy (the agent's selected stream goes
+//!   to a typically-dense output, so a smaller capacity than the candidate
+//!   buffer often pays best). `0` short-circuits the selected smem buffer
+//!   to pure-Atomics, useful when the selected stream is dense enough that
+//!   buffering does not pay. Ignored by every other strategy.
 //!
 template <int ThreadsPerBlock,
           int ItemsPerThread,
           int BitsPerPass,
           BlockScanAlgorithm ScanAlgorithm,
-          tile_load_kind KeysTileLoadKind = tile_load_kind::block_load_vectorize,
-          int AccumulatingBufferCapacity  = 256>
+          tile_load_kind KeysTileLoadKind         = tile_load_kind::block_load_vectorize,
+          int AccumulatingBufferCapacity          = 256,
+          int SpeculativeSelectedBufferCapacity   = 128>
 struct AgentTopKPolicy
 {
   static constexpr int block_threads                  = ThreadsPerBlock;
@@ -74,8 +87,9 @@ struct AgentTopKPolicy
   // Used by the new agents to pick a TileDataSource specialization for the keys
   // stream. Defaults to the legacy `BLOCK_LOAD_VECTORIZE` mapping so existing call
   // sites that don't set it preserve current behavior.
-  static constexpr tile_load_kind keys_tile_load_kind = KeysTileLoadKind;
-  static constexpr int accumulating_buffer_capacity   = AccumulatingBufferCapacity;
+  static constexpr tile_load_kind keys_tile_load_kind         = KeysTileLoadKind;
+  static constexpr int accumulating_buffer_capacity           = AccumulatingBufferCapacity;
+  static constexpr int speculative_selected_buffer_capacity   = SpeculativeSelectedBufferCapacity;
 };
 
 template <typename KeyT, bool CanTwiddle = detail::radix::can_twiddle<KeyT>>
@@ -842,7 +856,7 @@ template <typename AgentTopKPolicyT,
           BlockPartitionStrategy BufferedPartStrat = BlockPartitionStrategy::Atomics,
           BlockFilterStrategy EarlyStopFilterStrat = BlockFilterStrategy::Atomics,
           bool LazyValueLoad = false,
-          bool InlinedClassify = false>
+          bool InlinedClassify             = false>
 struct agent_topk_filter_partition
 {
   using key_in_t   = it_value_t<KeyInputIteratorT>;
@@ -927,13 +941,14 @@ struct agent_topk_filter_partition
   // Specialized for early_stop: Any non-rejected item goes to the user-provided output iterator
   using identify_selected_op_t  = topk_identify_selected_op<IdentifyCandidatesOpT>;
 
-  // The buffered-mode primitive (`BlockPartition` or
-  // `BlockPartitionAccumulatingCandidates`).
+  // The buffered-mode primitive (`BlockPartition`,
+  // `BlockPartitionAccumulatingCandidates`, or `BlockPartitionSpeculative`).
   using buffered_partition_t = strategy_to_partition_class_t<
     BufferedPartStrat,
     block_threads,
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
+    AgentTopKPolicyT::speculative_selected_buffer_capacity,
     key_in_t,
     selected_offset_t,
     candidate_offset_t,
@@ -1413,6 +1428,7 @@ struct agent_topk_last_filter
     block_threads,
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
+    AgentTopKPolicyT::speculative_selected_buffer_capacity,
     key_in_t,
     selected_offset_t,
     candidate_offset_t,
