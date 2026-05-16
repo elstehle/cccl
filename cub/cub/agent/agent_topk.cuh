@@ -995,12 +995,12 @@ struct agent_topk_filter_partition
   struct empty_prefix_sum_t
   {};
 
-  using buffered_storage_layout_t = bp_detail::partition_storage_layout_for_t<
+  using buffered_storage_layout_t = partition_storage_layout_for_t<
     buffered_partition_t,
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
-  using early_stop_storage_layout_t = bp_detail::partition_storage_layout_for_t<
+  using early_stop_storage_layout_t = partition_storage_layout_for_t<
     early_stop_filter_t,
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
@@ -1455,7 +1455,7 @@ struct agent_topk_last_filter
   struct empty_prefix_sum_t
   {};
 
-  using storage_layout_t = bp_detail::partition_storage_layout_for_t<
+  using storage_layout_t = partition_storage_layout_for_t<
     partition_t,
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;

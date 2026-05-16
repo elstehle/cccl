@@ -214,8 +214,6 @@ enum class tile_load_kind
   block_load_to_shared_async,
 };
 
-namespace detail_tds
-{
 // Mapping from `tile_load_kind` to `cub::BlockLoadAlgorithm`. Used by the sync data
 // source factory; the async kind is handled by a different specialization so we do not
 // need a mapping for it here.
@@ -252,7 +250,6 @@ struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose_timesliced
 {
   static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED;
 };
-} // namespace detail_tds
 
 //---------------------------------------------------------------------
 // 5. `TileDataSource` specializations (architecture §7.4).
@@ -638,8 +635,6 @@ private:
 // doesn't live in memory.
 //---------------------------------------------------------------------
 
-namespace detail_tds
-{
 // Tag-dispatch helper: factory_impl<Kind, IsGen> picks the data source type.
 template <tile_load_kind Kind, bool IsGenerative>
 struct factory_impl;
@@ -682,7 +677,6 @@ _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_warp_transpose);
 _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_warp_transpose_timesliced);
 
 #undef _CUB_DETAIL_TOPK_SYNC_BL_FACTORY
-} // namespace detail_tds
 
 // Type alias selecting the concrete TileDataSource type for the given configuration.
 // `OffsetT` defaults to `int64_t` to handle large problems; per-call overflow can be
@@ -694,7 +688,7 @@ template <typename It,
           typename OffsetT              = ::cuda::std::int64_t,
           ::cuda::std::size_t GmemAlign = alignof(CUB_NS_QUALIFIER::detail::it_value_t<It>)>
 using tile_data_source_t =
-  typename detail_tds::factory_impl<ConfiguredKind,
+  typename factory_impl<ConfiguredKind,
                                     CUB_NS_QUALIFIER::detail::is_generative_iterator_v<::cuda::std::remove_cv_t<It>>>::
     template data_source_t<It, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>;
 

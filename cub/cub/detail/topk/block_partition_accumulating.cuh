@@ -74,8 +74,6 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-namespace bp_acc_detail
-{
 // Per-stream counter + flush-broadcast slots in TempStorage.
 //   `counter`  -- per-tile reservation counter (0..BufferCapacity); persisted across
 //                 partition() calls so the buffer can accumulate across tiles.
@@ -109,10 +107,9 @@ struct accumulating_temp_storage_t
 {
   stream_counters_t<OffsetT> cnt;
   KeyT keys[Capacity];
-  CUB_NS_QUALIFIER::detail::phase_aggregate<bp_detail::map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
+  CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
     per_channel_values;
 };
-} // namespace bp_acc_detail
 
 //---------------------------------------------------------------------
 // `block_partition_accumulating_candidates`
@@ -174,7 +171,7 @@ public:
   // has a non-trivial `DeviceWord storage[N]` member, so `is_empty_v` is false and
   // the persistent + scratch layout is selected).
   using _TempStorage =
-    bp_acc_detail::accumulating_temp_storage_t<KeyT, CandidateOffsetT, ValueTypesTuple, CandidateBufferCapacity>;
+    accumulating_temp_storage_t<KeyT, CandidateOffsetT, ValueTypesTuple, CandidateBufferCapacity>;
   struct TempStorage : CUB_NS_QUALIFIER::Uninitialized<_TempStorage>
   {};
 
@@ -257,7 +254,7 @@ public:
 private:
   // First/only channel's value_t (or `int` if keys-only). Used to size the optional
   // per-thread eager-load register array.
-  using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
+  using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
 
   // Eagerly load the (single) channel's per-thread values from the per-call source.
   // No-op when keys-only or when LazyValueLoad is true.

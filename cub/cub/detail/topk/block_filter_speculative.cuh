@@ -87,7 +87,7 @@ namespace detail::topk
 // `block_filter_speculative`
 //
 // Speculative single-stream sister of `BlockFilter`. Reuses the
-// `bf_acc_detail::accumulating_filter_temp_storage_t` layout (one counter
+// `accumulating_filter_temp_storage_t` layout (one counter
 // + flush-broadcast slots, one keys buffer, optional per-channel values
 // buffer) since the storage requirements are identical to
 // `block_filter_accumulating`. Distinguished from `block_filter_accumulating`
@@ -157,7 +157,7 @@ public:
   // predicated arm.
   static constexpr int buffer_storage_slots = BufferCapacity + 1;
   using _TempStorage =
-    bf_acc_detail::accumulating_filter_temp_storage_t<KeyT, SelectedOffsetT, ValueTypesTuple, buffer_storage_slots>;
+    accumulating_filter_temp_storage_t<KeyT, SelectedOffsetT, ValueTypesTuple, buffer_storage_slots>;
   struct TempStorage : CUB_NS_QUALIFIER::Uninitialized<_TempStorage>
   {};
 
@@ -223,7 +223,7 @@ public:
   }
 
 private:
-  using channel_value_t = typename bp_detail::value_t_or_default<ValueTypesTuple>::type;
+  using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
 
   // Storage type for the optional eager-loaded per-thread values array. The
   // size-1 dummy specialization (used when LazyValueLoad is true or the agent
@@ -281,16 +281,16 @@ private:
                   "Per-call value sources tuple must have the same length as the class-level value channel sinks "
                   "tuple; the filter pairs them positionally.");
 
-    const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+    const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bf_detail::make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
+      auto classifier = make_inlined_filter_classifier<IsFull>(identify_op, num_thread_items);
       filter_speculative_fused<IsFull>(keys, num_thread_items, classifier, value_sources, num_items);
     }
     else
     {
-      bf_detail::precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
+      precomputed_filter_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op};
       filter_speculative_fused<IsFull>(keys, num_thread_items, classifier, value_sources, num_items);
     }
