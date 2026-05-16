@@ -6,7 +6,7 @@
 //! -- sister class to `BlockPartition` that buffers the `candidate` stream (key +
 //! per-channel values per slot) in shared memory across multiple `partition()` calls
 //! and flushes only when the buffer fills. Selected items go direct-to-global through
-//! `reserve_sel_`. Used by the agent's `buffered`-mode pass.
+//! `reserve_sel`. Used by the agent's `buffered`-mode pass.
 //!
 //! The early_stop / "buffer the selected stream" path lives in the dedicated
 //! single-stream `block_filter_accumulating` primitive
@@ -23,7 +23,7 @@
 //!   1. Fused classify + reserve + act loop. `identify_op` runs once per item.
 //!      Rejected and out-of-bounds items get `positions[j] = -1`. Candidate items
 //!      buffer into smem with `positions[j] = atomicAdd(&counter, 1)`; selected
-//!      items go direct-to-global via `reserve_sel_` and `positions[j] = -1`.
+//!      items go direct-to-global via `reserve_sel` and `positions[j] = -1`.
 //!      `positions[]` encodes both classification (skip vs. pending) and the
 //!      smem slot index.
 //!   2. Multi-round overflow loop (cooperative):
@@ -118,7 +118,7 @@ struct accumulating_temp_storage_t
 // `block_partition_accumulating_candidates`
 //
 // Buffers items classified `candidate` in shared memory across multiple `partition()`
-// calls; selected items go direct-to-global via `reserve_sel_`. Used by the agent's
+// calls; selected items go direct-to-global via `reserve_sel`. Used by the agent's
 // `buffered`-mode pass.
 //---------------------------------------------------------------------
 template <int BlockThreads,
@@ -198,20 +198,20 @@ public:
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op)
-      : ts_(storage.Alias())
-      , reserve_sel_(reserve_selected)
-      , reserve_cand_(reserve_candidate)
-      , sel_xform_(selected_key_transform)
-      , cand_xform_(candidate_key_transform)
-      , sel_iter_(selected_keys_out)
-      , cand_iter_(candidate_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_candidates_op)
-      , callback_op_(candidate_callback_op)
+      : temp_storage(storage.Alias())
+      , reserve_sel(reserve_selected)
+      , reserve_cand(reserve_candidate)
+      , sel_xform(selected_key_transform)
+      , cand_xform(candidate_key_transform)
+      , sel_iter(selected_keys_out)
+      , cand_iter(candidate_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_candidates_op)
+      , callback_op(candidate_callback_op)
   {
     if (threadIdx.x == 0)
     {
-      ts_.cnt.counter = 0;
+      temp_storage.cnt.counter = 0;
     }
     __syncthreads();
   }
@@ -241,14 +241,14 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue()
   {
     __syncthreads();
-    const int leftover = ts_.cnt.counter;
+    const int leftover = temp_storage.cnt.counter;
     if (leftover > 0)
     {
       cooperative_flush_partial(leftover);
       __syncthreads();
       if (threadIdx.x == 0)
       {
-        ts_.cnt.counter = 0;
+        temp_storage.cnt.counter = 0;
       }
       __syncthreads();
     }
@@ -337,7 +337,7 @@ private:
     for (int j = 0; j < ItemsPerThread; ++j)
     {
       const bool is_valid     = IsFull ? true : (j < num_thread_items);
-      const candidate_class c = is_valid ? identify_op_(keys[j]) : candidate_class::rejected;
+      const candidate_class c = is_valid ? identify_op(keys[j]) : candidate_class::rejected;
 
       if (c == candidate_class::rejected)
       {
@@ -348,13 +348,13 @@ private:
         // Fire the candidate callback (architecture §10.2: every `candidate`-
         // classified item, regardless of whether it ends up dropped during a
         // capped flush). Then reserve the smem slot.
-        callback_op_(keys[j]);
-        positions[j] = atomicAdd(&ts_.cnt.counter, 1);
+        callback_op(keys[j]);
+        positions[j] = atomicAdd(&temp_storage.cnt.counter, 1);
       }
       else
       {
-        // c == candidate_class::selected: direct global atomic via reserve_sel_.
-        const auto r = reserve_sel_(SelectedOffsetT{1});
+        // c == candidate_class::selected: direct global atomic via reserve_sel.
+        const auto r = reserve_sel(SelectedOffsetT{1});
         bool granted = true;
         if constexpr (SelectedReserveOp::may_grant_less)
         {
@@ -362,10 +362,10 @@ private:
         }
         if (granted)
         {
-          sel_iter_[r.first] = sel_xform_(keys[j]);
+          sel_iter[r.first] = sel_xform(keys[j]);
           if constexpr (num_value_channels == 1)
           {
-            auto& sink                        = ::cuda::std::get<0>(sinks_);
+            auto& sink                        = ::cuda::std::get<0>(sinks);
             sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
           }
         }
@@ -406,7 +406,7 @@ private:
   {
     for (int iter = 0; iter < max_flush_iters; ++iter)
     {
-      const int cnt = ts_.cnt.counter;
+      const int cnt = temp_storage.cnt.counter;
       if (cnt < CandidateBufferCapacity)
       {
         // Drain-remainder branch: scatter what's left into smem, mark the
@@ -435,7 +435,7 @@ private:
       __syncthreads();
       if (threadIdx.x == 0)
       {
-        ts_.cnt.counter = cnt - CandidateBufferCapacity;
+        temp_storage.cnt.counter = cnt - CandidateBufferCapacity;
       }
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int j = 0; j < ItemsPerThread; ++j)
@@ -460,10 +460,10 @@ private:
     {
       if (positions[j] >= 0 && positions[j] < upper_bound)
       {
-        ts_.keys[positions[j]] = keys[j];
+        temp_storage.keys[positions[j]] = keys[j];
         if constexpr (num_value_channels == 1)
         {
-          CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values).values[positions[j]] = get_value(j);
+          CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values).values[positions[j]] = get_value(j);
         }
       }
     }
@@ -498,15 +498,15 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto r    = reserve_cand_(static_cast<CandidateOffsetT>(CandidateBufferCapacity));
-      ts_.cnt.base    = r.first;
-      ts_.cnt.granted = static_cast<CandidateOffsetT>(r.second);
+      const auto r    = reserve_cand(static_cast<CandidateOffsetT>(CandidateBufferCapacity));
+      temp_storage.cnt.base    = r.first;
+      temp_storage.cnt.granted = static_cast<CandidateOffsetT>(r.second);
     }
     __syncthreads();
 
-    const CandidateOffsetT base = ts_.cnt.base;
+    const CandidateOffsetT base = temp_storage.cnt.base;
     const CandidateOffsetT to_write =
-      CandidateReserveOp::may_grant_less ? ts_.cnt.granted : static_cast<CandidateOffsetT>(CandidateBufferCapacity);
+      CandidateReserveOp::may_grant_less ? temp_storage.cnt.granted : static_cast<CandidateOffsetT>(CandidateBufferCapacity);
 
     // Keys stream: full waves first, then an optional trailing partial wave.
     _CCCL_PRAGMA_UNROLL_FULL()
@@ -515,7 +515,7 @@ private:
       const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
       if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
       {
-        cand_iter_[base + static_cast<CandidateOffsetT>(i)] = cand_xform_(ts_.keys[i]);
+        cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
       }
     }
     if constexpr (trailing_count != 0)
@@ -524,15 +524,15 @@ private:
       if (static_cast<int>(threadIdx.x) < trailing_count
           && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
       {
-        cand_iter_[base + static_cast<CandidateOffsetT>(i)] = cand_xform_(ts_.keys[i]);
+        cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
       }
     }
 
     // Values channel (optional): same shape.
     if constexpr (num_value_channels == 1)
     {
-      auto& sink = ::cuda::std::get<0>(sinks_);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values);
+      auto& sink = ::cuda::std::get<0>(sinks);
+      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
 
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int w = 0; w < full_flush_waves; ++w)
@@ -563,24 +563,24 @@ private:
   {
     if (threadIdx.x == 0)
     {
-      const auto r    = reserve_cand_(static_cast<CandidateOffsetT>(count));
-      ts_.cnt.base    = r.first;
-      ts_.cnt.granted = static_cast<CandidateOffsetT>(r.second);
+      const auto r    = reserve_cand(static_cast<CandidateOffsetT>(count));
+      temp_storage.cnt.base    = r.first;
+      temp_storage.cnt.granted = static_cast<CandidateOffsetT>(r.second);
     }
     __syncthreads();
 
-    const CandidateOffsetT base = ts_.cnt.base;
+    const CandidateOffsetT base = temp_storage.cnt.base;
     const CandidateOffsetT to_write =
-      CandidateReserveOp::may_grant_less ? ts_.cnt.granted : static_cast<CandidateOffsetT>(count);
+      CandidateReserveOp::may_grant_less ? temp_storage.cnt.granted : static_cast<CandidateOffsetT>(count);
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
     {
-      cand_iter_[base + static_cast<CandidateOffsetT>(i)] = cand_xform_(ts_.keys[i]);
+      cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
     }
     if constexpr (num_value_channels == 1)
     {
-      auto& sink = ::cuda::std::get<0>(sinks_);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(ts_.per_channel_values);
+      auto& sink = ::cuda::std::get<0>(sinks);
+      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
         sink.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
@@ -592,16 +592,16 @@ private:
   // ---------------------------------------------------------------
   // Member state.
   // ---------------------------------------------------------------
-  _TempStorage& ts_;
-  SelectedReserveOp& reserve_sel_;
-  CandidateReserveOp& reserve_cand_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  CandidateKeyOutTransformOp& cand_xform_;
-  SelectedKeyOutIt sel_iter_;
-  CandidateKeyOutIt cand_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifyCandidatesOp& identify_op_;
-  CandidateCallbackOp& callback_op_;
+  _TempStorage& temp_storage;
+  SelectedReserveOp& reserve_sel;
+  CandidateReserveOp& reserve_cand;
+  SelectedKeyOutTransformOp& sel_xform;
+  CandidateKeyOutTransformOp& cand_xform;
+  SelectedKeyOutIt sel_iter;
+  CandidateKeyOutIt cand_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifyCandidatesOp& identify_op;
+  CandidateCallbackOp& callback_op;
 };
 
 //---------------------------------------------------------------------

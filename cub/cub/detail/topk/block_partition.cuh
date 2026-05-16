@@ -599,15 +599,15 @@ public:
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op)
-      : reserve_sel_(reserve_selected)
-      , reserve_cand_(reserve_candidate)
-      , sel_xform_(selected_key_transform)
-      , cand_xform_(candidate_key_transform)
-      , sel_iter_(selected_keys_out)
-      , cand_iter_(candidate_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_candidates_op)
-      , callback_op_(candidate_callback_op)
+      : reserve_sel(reserve_selected)
+      , reserve_cand(reserve_candidate)
+      , sel_xform(selected_key_transform)
+      , cand_xform(candidate_key_transform)
+      , sel_iter(selected_keys_out)
+      , cand_iter(candidate_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_candidates_op)
+      , callback_op(candidate_callback_op)
   {}
 
   // Full-tile overload: no per-item bound check inside the classify loop.
@@ -631,7 +631,7 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
-  // Top-level dispatch: peels off `cand_reserve_open_` at the tile boundary
+  // Top-level dispatch: peels off `cand_reserve_open` at the tile boundary
   // (only when the candidate reserve op can grant less than requested) and
   // selects the `HasCandidateStream` specialization. The per-thread flag is
   // mutated inside the `HasCandidateStream=true` scatter when a thread
@@ -649,7 +649,7 @@ private:
 
     if constexpr (CandidateReserveOp::may_grant_less)
     {
-      if (cand_reserve_open_)
+      if (cand_reserve_open)
       {
         partition_dispatch_classify<IsFull, /*HasCandidateStream=*/true>(buffer, keys, num_thread_items, value_sources);
       }
@@ -677,14 +677,14 @@ private:
   {
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op_, num_thread_items);
+      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       partition_atomics_fused<IsFull, HasCandidateStream>(
-        buffer, keys, num_thread_items, classifier, callback_op_, value_sources);
+        buffer, keys, num_thread_items, classifier, callback_op, value_sources);
     }
     else
     {
       bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-        keys, num_thread_items, identify_op_, callback_op_};
+        keys, num_thread_items, identify_op, callback_op};
       bp_detail::noop_callback_op noop_cb{};
       partition_atomics_fused<IsFull, HasCandidateStream>(
         buffer, keys, num_thread_items, classifier, noop_cb, value_sources);
@@ -700,10 +700,10 @@ private:
   // already fired callbacks at construction).
   //
   // `HasCandidateStream` selects between the full path (per-candidate
-  // `reserve_cand_` + write) and the closed-stream specialization (no
+  // `reserve_cand` + write) and the closed-stream specialization (no
   // candidate-side reserve/write at all; the candidate callback is still
   // fired, so the threshold-update protocol is preserved). The dispatch is
-  // peeled by `partition_impl` from the per-thread `cand_reserve_open_`
+  // peeled by `partition_impl` from the per-thread `cand_reserve_open`
   // flag.
   // -----------------------------------------------------------------
   template <bool IsFull, bool HasCandidateStream, typename Classifier, typename CandidateCallbackOpT, typename ValueSourcesTuple>
@@ -753,7 +753,7 @@ private:
   // item -- avoids the per-item indirect-branch table in `c[0x2]` that ptxas would
   // emit for a 3-way `rejected` / `selected` / `candidate` cascade.
   //
-  // With `HasCandidateStream=false`, the per-item `reserve_cand_` + candidate
+  // With `HasCandidateStream=false`, the per-item `reserve_cand` + candidate
   // write block is elided entirely (the candidate callback still fires for
   // every candidate-classified item). The `any_cand_granted_zero` flag is
   // also elided -- it only exists in the `HasCandidateStream=true` path,
@@ -789,8 +789,8 @@ private:
       }
     };
 
-    // Tracks per-thread "saw 0 from `reserve_cand_`" within this tile. Folded
-    // into `cand_reserve_open_` after the loop so the next tile dispatches to
+    // Tracks per-thread "saw 0 from `reserve_cand`" within this tile. Folded
+    // into `cand_reserve_open` after the loop so the next tile dispatches to
     // the `HasCandidateStream=false` specialization for this thread. Lives in
     // the `HasCandidateStream=true` && `may_grant_less=true` path only;
     // everywhere else the gating `if constexpr`s leave it dead. The
@@ -814,7 +814,7 @@ private:
 
       if (c == candidate_class::selected)
       {
-        const auto r = reserve_sel_(SelectedOffsetT{1});
+        const auto r = reserve_sel(SelectedOffsetT{1});
         bool granted = true;
         if constexpr (SelectedReserveOp::may_grant_less)
         {
@@ -822,10 +822,10 @@ private:
         }
         if (granted)
         {
-          sel_iter_[r.first] = sel_xform_(keys[j]);
+          sel_iter[r.first] = sel_xform(keys[j]);
           if constexpr (!KeysOnly)
           {
-            auto& sink                        = ::cuda::std::get<0>(sinks_);
+            auto& sink                        = ::cuda::std::get<0>(sinks);
             sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
           }
         }
@@ -834,7 +834,7 @@ private:
       {
         if (c == candidate_class::candidate)
         {
-          const auto r = reserve_cand_(CandidateOffsetT{1});
+          const auto r = reserve_cand(CandidateOffsetT{1});
           bool granted = true;
           if constexpr (CandidateReserveOp::may_grant_less)
           {
@@ -843,10 +843,10 @@ private:
           }
           if (granted)
           {
-            cand_iter_[r.first] = cand_xform_(keys[j]);
+            cand_iter[r.first] = cand_xform(keys[j]);
             if constexpr (!KeysOnly)
             {
-              auto& sink                         = ::cuda::std::get<0>(sinks_);
+              auto& sink                         = ::cuda::std::get<0>(sinks);
               sink.candidate_values_out[r.first] = sink.candidate_value_transform(get_value(j));
             }
           }
@@ -858,27 +858,27 @@ private:
     {
       if (any_cand_granted_zero)
       {
-        cand_reserve_open_ = false;
+        cand_reserve_open = false;
       }
     }
   }
 
   // Captured at ctor; used by every partition() call.
-  SelectedReserveOp& reserve_sel_;
-  CandidateReserveOp& reserve_cand_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  CandidateKeyOutTransformOp& cand_xform_;
-  SelectedKeyOutIt sel_iter_;
-  CandidateKeyOutIt cand_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifyCandidatesOp& identify_op_;
-  CandidateCallbackOp& callback_op_;
+  SelectedReserveOp& reserve_sel;
+  CandidateReserveOp& reserve_cand;
+  SelectedKeyOutTransformOp& sel_xform;
+  CandidateKeyOutTransformOp& cand_xform;
+  SelectedKeyOutIt sel_iter;
+  CandidateKeyOutIt cand_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifyCandidatesOp& identify_op;
+  CandidateCallbackOp& callback_op;
 
   // Per-thread monotonic flag for the candidate stream. Only consulted when
   // `CandidateReserveOp::may_grant_less` is true (otherwise the reserve op
   // never grants less than requested and the flag is dead code).
   //
-  // Top-k guarantees: once `reserve_cand_` grants 0 for any thread, the
+  // Top-k guarantees: once `reserve_cand` grants 0 for any thread, the
   // device-global candidate counter is past the back-grow cap, so every
   // *subsequent* call from *any* thread also grants 0. We exploit that by
   // tracking the per-thread observation inside the scatter loop and, once
@@ -889,14 +889,14 @@ private:
   // §10.2) and skip the selected stream, equivalent to the granted-0 drop
   // path in the full-stream specialization.
   //
-  // Convergence is bounded: any thread that called `reserve_cand_(1)` and
+  // Convergence is bounded: any thread that called `reserve_cand(1)` and
   // observed 0 has flag=false by tile end; any thread that didn't classify
   // a candidate in that tile retains flag=true, but its next candidate
   // observation will set the flag, so all threads converge to flag=false
   // within one extra tile of tail-divergence. The flag is `may_grant_less`-
   // gated at compile time, so the `may_grant_less=false` path pays nothing
   // (no runtime branch, no extra template instantiation).
-  bool cand_reserve_open_ = true;
+  bool cand_reserve_open = true;
 };
 
 //---------------------------------------------------------------------
@@ -987,15 +987,15 @@ public:
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op)
-      : reserve_sel_(reserve_selected)
-      , reserve_cand_(reserve_candidate)
-      , sel_xform_(selected_key_transform)
-      , cand_xform_(candidate_key_transform)
-      , sel_iter_(selected_keys_out)
-      , cand_iter_(candidate_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_candidates_op)
-      , callback_op_(candidate_callback_op)
+      : reserve_sel(reserve_selected)
+      , reserve_cand(reserve_candidate)
+      , sel_xform(selected_key_transform)
+      , cand_xform(candidate_key_transform)
+      , sel_iter(selected_keys_out)
+      , cand_iter(candidate_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_candidates_op)
+      , callback_op(candidate_callback_op)
   {}
 
   template <typename ValueSourcesTuple>
@@ -1037,7 +1037,7 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op_, num_thread_items);
+      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       classify_and_scatter_keys</*FireCallbackInline=*/true>(buffer, keys, classifier, positions);
     }
     else
@@ -1046,7 +1046,7 @@ private:
       // `candidate`-classified item, so the scatter loop below only needs to
       // route into the smem arena.
       bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-        keys, num_thread_items, identify_op_, callback_op_};
+        keys, num_thread_items, identify_op, callback_op};
       classify_and_scatter_keys</*FireCallbackInline=*/false>(buffer, keys, classifier, positions);
     }
     __syncthreads();
@@ -1057,11 +1057,11 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel                   = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
+      const auto sel                   = reserve_sel(static_cast<SelectedOffsetT>(selected_cnt));
       buffer.cnt.global_bases.selected = sel.first;
       buffer.cnt.granted_selected      = static_cast<SelectedOffsetT>(sel.second);
 
-      const auto cand                   = reserve_cand_(static_cast<CandidateOffsetT>(candidate_cnt));
+      const auto cand                   = reserve_cand(static_cast<CandidateOffsetT>(candidate_cnt));
       buffer.cnt.global_bases.candidate = cand.first;
       buffer.cnt.granted_candidate      = static_cast<CandidateOffsetT>(cand.second);
     }
@@ -1078,12 +1078,12 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter_[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform_(buffer.phase.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.keys[i]);
     }
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
     {
-      cand_iter_[cand_base + static_cast<CandidateOffsetT>(i)] =
-        cand_xform_(buffer.phase.keys[tile_items - candidate_cnt + i]);
+      cand_iter[cand_base + static_cast<CandidateOffsetT>(i)] =
+        cand_xform(buffer.phase.keys[tile_items - candidate_cnt + i]);
     }
 
     // Per-channel values phases. Each channel's load + scatter is sequential in time
@@ -1099,7 +1099,7 @@ private:
         static_assert(::cuda::std::is_same_v<typename source_t::value_t, value_t>,
                       "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
 
-        auto& sink       = ::cuda::std::get<I>(sinks_);
+        auto& sink       = ::cuda::std::get<I>(sinks);
         auto& chan_phase = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.per_channel);
         if constexpr (LazyValueLoad)
         {
@@ -1181,7 +1181,7 @@ private:
         // Architecture §10.2: callback fires for every `candidate`-classified item.
         if (c == candidate_class::candidate)
         {
-          callback_op_(keys[j]);
+          callback_op(keys[j]);
         }
       }
       if (c == candidate_class::rejected)
@@ -1204,15 +1204,15 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel_;
-  CandidateReserveOp& reserve_cand_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  CandidateKeyOutTransformOp& cand_xform_;
-  SelectedKeyOutIt sel_iter_;
-  CandidateKeyOutIt cand_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifyCandidatesOp& identify_op_;
-  CandidateCallbackOp& callback_op_;
+  SelectedReserveOp& reserve_sel;
+  CandidateReserveOp& reserve_cand;
+  SelectedKeyOutTransformOp& sel_xform;
+  CandidateKeyOutTransformOp& cand_xform;
+  SelectedKeyOutIt sel_iter;
+  CandidateKeyOutIt cand_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifyCandidatesOp& identify_op;
+  CandidateCallbackOp& callback_op;
 };
 
 //---------------------------------------------------------------------
@@ -1314,15 +1314,15 @@ public:
     ValueChannelSinksTuple& value_channel_sinks,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op)
-      : reserve_sel_(reserve_selected)
-      , reserve_cand_(reserve_candidate)
-      , sel_xform_(selected_key_transform)
-      , cand_xform_(candidate_key_transform)
-      , sel_iter_(selected_keys_out)
-      , cand_iter_(candidate_keys_out)
-      , sinks_(value_channel_sinks)
-      , identify_op_(identify_candidates_op)
-      , callback_op_(candidate_callback_op)
+      : reserve_sel(reserve_selected)
+      , reserve_cand(reserve_candidate)
+      , sel_xform(selected_key_transform)
+      , cand_xform(candidate_key_transform)
+      , sel_iter(selected_keys_out)
+      , cand_iter(candidate_keys_out)
+      , sinks(value_channel_sinks)
+      , identify_op(identify_candidates_op)
+      , callback_op(candidate_callback_op)
   {}
 
   template <typename ValueSourcesTuple>
@@ -1386,7 +1386,7 @@ private:
 
     if constexpr (InlinedClassify)
     {
-      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op_, num_thread_items);
+      auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op, num_thread_items);
       classify_and_scatter_kv</*FireCallbackInline=*/true>(buffer, keys, classifier, value_sources, reg_values);
     }
     else
@@ -1395,7 +1395,7 @@ private:
       // `candidate`-classified item, so the scatter loop only needs to route into
       // the kv arena.
       bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
-        keys, num_thread_items, identify_op_, callback_op_};
+        keys, num_thread_items, identify_op, callback_op};
       classify_and_scatter_kv</*FireCallbackInline=*/false>(buffer, keys, classifier, value_sources, reg_values);
     }
     __syncthreads();
@@ -1405,11 +1405,11 @@ private:
 
     if (threadIdx.x == 0)
     {
-      const auto sel                   = reserve_sel_(static_cast<SelectedOffsetT>(selected_cnt));
+      const auto sel                   = reserve_sel(static_cast<SelectedOffsetT>(selected_cnt));
       buffer.cnt.global_bases.selected = sel.first;
       buffer.cnt.granted_selected      = static_cast<SelectedOffsetT>(sel.second);
 
-      const auto cand                   = reserve_cand_(static_cast<CandidateOffsetT>(candidate_cnt));
+      const auto cand                   = reserve_cand(static_cast<CandidateOffsetT>(candidate_cnt));
       buffer.cnt.global_bases.candidate = cand.first;
       buffer.cnt.granted_candidate      = static_cast<CandidateOffsetT>(cand.second);
     }
@@ -1426,17 +1426,17 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter_[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform_(buffer.phase.kv.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.kv.keys[i]);
     }
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
     {
-      cand_iter_[cand_base + static_cast<CandidateOffsetT>(i)] =
-        cand_xform_(buffer.phase.kv.keys[tile_items - candidate_cnt + i]);
+      cand_iter[cand_base + static_cast<CandidateOffsetT>(i)] =
+        cand_xform(buffer.phase.kv.keys[tile_items - candidate_cnt + i]);
     }
 
     if constexpr (num_value_channels > 0)
     {
-      bp_detail::tuple_for_each(sinks_, [&](auto& sink, auto I_ic) {
+      bp_detail::tuple_for_each(sinks, [&](auto& sink, auto I_ic) {
         constexpr int I = static_cast<int>(decltype(I_ic)::value);
         auto& vs        = CUB_NS_QUALIFIER::detail::at<I>(buffer.phase.kv.per_channel_values);
         for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
@@ -1477,7 +1477,7 @@ private:
       {
         if (c == candidate_class::candidate)
         {
-          callback_op_(keys[j]);
+          callback_op(keys[j]);
         }
       }
       if (c == candidate_class::rejected)
@@ -1510,15 +1510,15 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel_;
-  CandidateReserveOp& reserve_cand_;
-  SelectedKeyOutTransformOp& sel_xform_;
-  CandidateKeyOutTransformOp& cand_xform_;
-  SelectedKeyOutIt sel_iter_;
-  CandidateKeyOutIt cand_iter_;
-  ValueChannelSinksTuple& sinks_;
-  IdentifyCandidatesOp& identify_op_;
-  CandidateCallbackOp& callback_op_;
+  SelectedReserveOp& reserve_sel;
+  CandidateReserveOp& reserve_cand;
+  SelectedKeyOutTransformOp& sel_xform;
+  CandidateKeyOutTransformOp& cand_xform;
+  SelectedKeyOutIt sel_iter;
+  CandidateKeyOutIt cand_iter;
+  ValueChannelSinksTuple& sinks;
+  IdentifyCandidatesOp& identify_op;
+  CandidateCallbackOp& callback_op;
 };
 } // namespace detail::topk
 
