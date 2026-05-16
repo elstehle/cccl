@@ -6,13 +6,13 @@
 //! `BlockPartition*` primitives in `block_partition.cuh`). Three self-contained
 //! class templates -- one per filter strategy:
 //!
-//!   - `BlockFilterAtomics<..., InlinedClassify>` -- no smem; per-kept-item global
+//!   - `block_filter_atomics<..., InlinedClassify>` -- no smem; per-kept-item global
 //!     atomic + scatter. `InlinedClassify == false` precomputes a `kept[ItemsPerThread]`
 //!     register array up front; `InlinedClassify == true` recomputes the predicate
 //!     at each scatter use-site.
-//!   - `BlockFilterStaged` -- smem scatter into a keys arena + cooperative coalesced
+//!   - `block_filter_staged` -- smem scatter into a keys arena + cooperative coalesced
 //!     store; per-channel values run sequentially after the keys phase.
-//!   - `BlockFilterSharedMem` -- typed `keys[]` + per-channel `values[]` packed
+//!   - `block_filter_shared_mem` -- typed `keys[]` + per-channel `values[]` packed
 //!     into the same arena; a single coalesced store.
 //!
 //! Interface ("safe-both") contract shared with the accumulating sister class
@@ -159,8 +159,8 @@ make_inlined_filter_classifier(Op& op, int num_thread_items)
 // Precomputed-classes adapter: at construction runs the predicate over the
 // per-thread keys array; `operator()(KeyT, int j)` returns the cached bool.
 // Items past `num_thread_items` (partial path) are forced to `false`. Reusable
-// across `BlockFilterAtomics<InlinedClassify=false>`, `BlockFilterStaged`,
-// and `BlockFilterSharedMem` -- the latter two consume `.kept` directly.
+// across `block_filter_atomics<InlinedClassify=false>`, `block_filter_staged`,
+// and `block_filter_shared_mem` -- the latter two consume `.kept` directly.
 template <typename KeyT, int ItemsPerThread, bool IsFull>
 struct precomputed_filter_classifier
 {
@@ -188,13 +188,13 @@ struct precomputed_filter_classifier
 } // namespace bf_detail
 
 //---------------------------------------------------------------------
-// `BlockFilterAtomics` -- per-kept-item global atomic + scatter, no smem.
+// `block_filter_atomics` -- per-kept-item global atomic + scatter, no smem.
 // `InlinedClassify` selects between the precomputed-classes form (materializes a
 // `kept[]` register array up front) and the inlined-classify form (recomputes the
 // predicate at each scatter use-site, frees the registers that would hold
 // `kept[]`). Mapped from `BlockFilterStrategy::Atomics`. The `InlinedClassify`
 // axis is independent and is also accepted (with the same semantics) by
-// `BlockFilterStaged` and `BlockFilterSharedMem`.
+// `block_filter_staged` and `block_filter_shared_mem`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -209,7 +209,7 @@ template <int BlockThreads,
           typename ValueTypesTuple             = ::cuda::std::tuple<>,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false>
-class BlockFilterAtomics
+class block_filter_atomics
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
@@ -218,7 +218,7 @@ class BlockFilterAtomics
                   == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
                 "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
-                "BlockFilterAtomics supports keys-only or single-value-channel today; "
+                "block_filter_atomics supports keys-only or single-value-channel today; "
                 "multi-channel needs a per-channel value array.");
 
 public:
@@ -234,7 +234,7 @@ public:
   struct ScratchStorage
   {};
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterAtomics(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_atomics(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
@@ -395,7 +395,7 @@ private:
 };
 
 //---------------------------------------------------------------------
-// `BlockFilterStaged` -- smem scatter into a keys arena + cooperative coalesced
+// `block_filter_staged` -- smem scatter into a keys arena + cooperative coalesced
 // store. Per-channel value path runs sequentially after the keys phase: each
 // channel loads (sub-brokered scratch), scatters into the channel's `values[]`
 // slot, then cooperatively stores. Mapped from `BlockFilterStrategy::Staged`.
@@ -423,7 +423,7 @@ template <int BlockThreads,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false,
           bool InlinedClassify                 = false>
-class BlockFilterStaged
+class block_filter_staged
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
@@ -463,7 +463,7 @@ public:
     bf_detail::filter_counters<SelectedOffsetT> cnt;
   };
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterStaged(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_staged(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
@@ -645,7 +645,7 @@ private:
 };
 
 //---------------------------------------------------------------------
-// `BlockFilterSharedMem` -- keys + per-channel values coexist in smem (within
+// `block_filter_shared_mem` -- keys + per-channel values coexist in smem (within
 // `phase.kv`), then a single coalesced flush. Pre-Phase-1 delegate loads alias
 // with the kv arena via the top-level phase union. Mapped from
 // `BlockFilterStrategy::SharedMem`.
@@ -675,7 +675,7 @@ template <int BlockThreads,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false,
           bool InlinedClassify                 = false>
-class BlockFilterSharedMem
+class block_filter_shared_mem
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
@@ -684,7 +684,7 @@ class BlockFilterSharedMem
                   == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
                 "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
-                "BlockFilterSharedMem supports keys-only or single-value-channel today; "
+                "block_filter_shared_mem supports keys-only or single-value-channel today; "
                 "multi-channel needs a heterogeneous register-array tuple.");
 
 public:
@@ -700,7 +700,7 @@ public:
   // Per-tile scratch. The `phase` union has two views: `delegate_loads` (pre-Phase-1
   // delegate-load staging area for value channels) and `kv` (the keys + per-channel
   // values arena used for scatter and cooperative flush). `cnt` lives outside the
-  // union, same role as in BlockFilterStaged.
+  // union, same role as in block_filter_staged.
   struct ScratchStorage
   {
     struct keys_and_values_t
@@ -724,7 +724,7 @@ public:
     bf_detail::filter_counters<SelectedOffsetT> cnt;
   };
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterSharedMem(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_shared_mem(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,

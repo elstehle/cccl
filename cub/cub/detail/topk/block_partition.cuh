@@ -5,15 +5,15 @@
 //! Top-k-private non-accumulating partition primitives (architecture §9). Three
 //! self-contained class templates -- one per partitioning strategy:
 //!
-//!   - `BlockPartitionAtomics<..., InlinedClassify>` -- no smem; per-non-rejected-item
+//!   - `block_partition_atomics<..., InlinedClassify>` -- no smem; per-non-rejected-item
 //!     global atomic + scatter. `InlinedClassify == false` precomputes a
 //!     `classes[ItemsPerThread]` register array up front; `InlinedClassify == true`
 //!     recomputes the classification at each scatter use-site (frees the registers
 //!     that would hold `classes[]`).
-//!   - `BlockPartitionStaged` -- smem scatter into a keys arena + cooperative
+//!   - `block_partition_staged` -- smem scatter into a keys arena + cooperative
 //!     coalesced store; per-channel values run sequentially after the keys phase,
 //!     sub-brokering one slot of the phase union.
-//!   - `BlockPartitionSharedMem` -- typed `keys[]` + per-channel `values[]` packed
+//!   - `block_partition_shared_mem` -- typed `keys[]` + per-channel `values[]` packed
 //!     into the same arena; a single coalesced store per stream.
 //!
 //! Interface ("safe-both") contract shared with the accumulating sister class
@@ -93,12 +93,12 @@ enum class candidate_class
 // to a class is performed by `strategy_to_partition_class_t<...>` in
 // `block_partition_accumulating.cuh`.
 //
-//   Atomics                -- BlockPartitionAtomics. No smem; per-non-rejected-item
+//   Atomics                -- block_partition_atomics. No smem; per-non-rejected-item
 //                             global atomic + scatter.
-//   Staged                 -- BlockPartitionStaged. Smem scatter into a keys arena +
+//   Staged                 -- block_partition_staged. Smem scatter into a keys arena +
 //                             cooperative coalesced store; per-channel values run
 //                             sequentially after the keys phase.
-//   SharedMem              -- BlockPartitionSharedMem. Typed `keys[]` + per-channel
+//   SharedMem              -- block_partition_shared_mem. Typed `keys[]` + per-channel
 //                             `values[]` packed into the same arena; a single
 //                             coalesced store per stream.
 //   AccumulatingCandidates -- BlockPartitionAccumulatingCandidates: candidate stream
@@ -347,8 +347,8 @@ _CCCL_DEVICE _CCCL_FORCEINLINE inlined_classifier<IsFull, Op> make_inlined_class
 
 // Precomputed-classes adapter: builds a `classes[ItemsPerThread]` register array
 // up front and fires the candidate callback once per `candidate`-classified item.
-// Reusable across `BlockPartitionAtomics<InlinedClassify=false>`, `BlockPartitionStaged`,
-// and `BlockPartitionSharedMem` -- the latter two consume the `classes` array
+// Reusable across `block_partition_atomics<InlinedClassify=false>`, `block_partition_staged`,
+// and `block_partition_shared_mem` -- the latter two consume the `classes` array
 // directly from `.classes`.
 //
 // `operator()(KeyT, int j)` returns `classes[j]`, ignoring the key.
@@ -533,14 +533,14 @@ using partition_storage_layout_for_t =
 } // namespace bp_detail
 
 //---------------------------------------------------------------------
-// `BlockPartitionAtomics` -- per-non-rejected-item global atomic + scatter,
+// `block_partition_atomics` -- per-non-rejected-item global atomic + scatter,
 // no smem. `InlinedClassify` selects between the precomputed-classes form
 // (smaller scatter loop, larger live register set for the `classes[]` array)
 // and the inlined-classify form (recomputes classification at each scatter
 // use-site, frees those registers). Mapped from
 // `BlockPartitionStrategy::Atomics`. The `InlinedClassify` axis is independent
-// and is also accepted (with the same semantics) by `BlockPartitionStaged` and
-// `BlockPartitionSharedMem`.
+// and is also accepted (with the same semantics) by `block_partition_staged` and
+// `block_partition_shared_mem`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -560,7 +560,7 @@ template <int BlockThreads,
           typename ValueTypesTuple             = ::cuda::std::tuple<>,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false>
-class BlockPartitionAtomics
+class block_partition_atomics
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
@@ -569,7 +569,7 @@ class BlockPartitionAtomics
                   == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
                 "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
-                "BlockPartitionAtomics supports keys-only or single-value-channel today; "
+                "block_partition_atomics supports keys-only or single-value-channel today; "
                 "multi-channel needs a per-channel value array.");
 
 public:
@@ -588,7 +588,7 @@ public:
   // Ctor (safe-both shape): captures sinks + classify hooks. The TempStorage
   // parameter is unused (Atomics has no persistent state) but is taken for
   // parity with the accumulating sister class.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartitionAtomics(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_atomics(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
@@ -900,7 +900,7 @@ private:
 };
 
 //---------------------------------------------------------------------
-// `BlockPartitionStaged` -- smem scatter into a keys arena + cooperative coalesced
+// `block_partition_staged` -- smem scatter into a keys arena + cooperative coalesced
 // store. Per-channel value path runs sequentially after the keys phase: each
 // channel loads (sub-brokered scratch), scatters into the channel's `values[]`
 // slot, then cooperatively stores. Mapped from `BlockPartitionStrategy::Staged`.
@@ -936,7 +936,7 @@ template <int BlockThreads,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false,
           bool InlinedClassify                 = false>
-class BlockPartitionStaged
+class block_partition_staged
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
@@ -976,7 +976,7 @@ public:
     bp_detail::partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
   };
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartitionStaged(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_staged(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
@@ -1216,7 +1216,7 @@ private:
 };
 
 //---------------------------------------------------------------------
-// `BlockPartitionSharedMem` -- keys + per-channel values coexist in smem (within
+// `block_partition_shared_mem` -- keys + per-channel values coexist in smem (within
 // `phase.kv`), then a single coalesced flush per stream. Pre-Phase-1 delegate
 // loads alias with the kv arena via the top-level phase union. Mapped from
 // `BlockPartitionStrategy::SharedMem`.
@@ -1254,7 +1254,7 @@ template <int BlockThreads,
           typename DataSourceScratchTypesTuple = ::cuda::std::tuple<>,
           bool LazyValueLoad                   = false,
           bool InlinedClassify                 = false>
-class BlockPartitionSharedMem
+class block_partition_shared_mem
 {
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
                   == ::cuda::std::tuple_size<ValueTypesTuple>::value,
@@ -1263,7 +1263,7 @@ class BlockPartitionSharedMem
                   == ::cuda::std::tuple_size<DataSourceScratchTypesTuple>::value,
                 "ValueTypesTuple and DataSourceScratchTypesTuple must have the same length.");
   static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value <= 1,
-                "BlockPartitionSharedMem supports keys-only or single-value-channel today; "
+                "block_partition_shared_mem supports keys-only or single-value-channel today; "
                 "multi-channel needs a heterogeneous register-array tuple.");
 
 public:
@@ -1279,7 +1279,7 @@ public:
   // Per-tile scratch. The `phase` union has two views: `delegate_loads` (pre-Phase-1
   // delegate-load staging area for value channels) and `kv` (the keys + per-channel
   // values arena used for scatter and cooperative flush). `cnt` lives outside the
-  // union, same role as in BlockPartitionStaged.
+  // union, same role as in block_partition_staged.
   struct ScratchStorage
   {
     struct keys_and_values_t
@@ -1303,7 +1303,7 @@ public:
     bp_detail::partition_counters<SelectedOffsetT, CandidateOffsetT> cnt;
   };
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartitionSharedMem(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_shared_mem(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
