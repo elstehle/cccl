@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Top-k-private accumulating partition primitive `BlockPartitionAccumulatingCandidates`
+//! Top-k-private accumulating partition primitive `block_partition_accumulating_candidates`
 //! -- sister class to `BlockPartition` that buffers the `candidate` stream (key +
 //! per-channel values per slot) in shared memory across multiple `partition()` calls
 //! and flushes only when the buffer fills. Selected items go direct-to-global through
 //! `reserve_sel_`. Used by the agent's `buffered`-mode pass.
 //!
 //! The early_stop / "buffer the selected stream" path lives in the dedicated
-//! single-stream `BlockFilterAccumulating` primitive
+//! single-stream `block_filter_accumulating` primitive
 //! (`block_filter_accumulating.cuh`).
 //!
 //! Shares `BlockPartition`'s "safe-both" interface: same ctor shape
@@ -115,7 +115,7 @@ struct accumulating_temp_storage_t
 } // namespace bp_acc_detail
 
 //---------------------------------------------------------------------
-// `BlockPartitionAccumulatingCandidates`
+// `block_partition_accumulating_candidates`
 //
 // Buffers items classified `candidate` in shared memory across multiple `partition()`
 // calls; selected items go direct-to-global via `reserve_sel_`. Used by the agent's
@@ -138,7 +138,7 @@ template <int BlockThreads,
           typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
           typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false>
-class BlockPartitionAccumulatingCandidates
+class block_partition_accumulating_candidates
 {
 public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
@@ -187,7 +187,7 @@ public:
   // `.Alias()`, zero-initializes the persistent smem counter (thread 0), and then
   // `__syncthreads()` so all threads observe the initialization before they reach
   // any subsequent `atomicAdd(&counter, ...)` inside `partition()`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartitionAccumulatingCandidates(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_accumulating_candidates(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
@@ -614,7 +614,7 @@ private:
 //   - `Atomics`                -> `block_partition_atomics<..., LazyValueLoad, InlinedClassify>`
 //   - `Staged`                 -> `block_partition_staged<..., LazyValueLoad, InlinedClassify>`
 //   - `SharedMem`              -> `block_partition_shared_mem<..., LazyValueLoad, InlinedClassify>`
-//   - `AccumulatingCandidates` -> `BlockPartitionAccumulatingCandidates`
+//   - `AccumulatingCandidates` -> `block_partition_accumulating_candidates`
 //                                 (with `CandidateBufferCapacity` filled in from the
 //                                 metafunction's own `AccumulatingBufferCapacity` arg).
 //                                 The accumulating variant always classifies inline
@@ -779,7 +779,7 @@ struct strategy_to_partition_class<
   // non-accumulating branch (the agent always supplies them). The single-stream
   // accumulating variant only buffers the candidate stream and so does not consume
   // `SpeculativeSelectedBufferCapacity` either.
-  using type = BlockPartitionAccumulatingCandidates<
+  using type = block_partition_accumulating_candidates<
     BlockThreads,
     ItemsPerThread,
     AccumulatingBufferCapacity,

@@ -16,7 +16,7 @@
 //!     into the same arena; a single coalesced store.
 //!
 //! Interface ("safe-both") contract shared with the accumulating sister class
-//! `BlockFilterAccumulating` (`block_filter_accumulating.cuh`):
+//! `block_filter_accumulating` (`block_filter_accumulating.cuh`):
 //!   - All sinks (reserve op, output iterator, transform, value-channel sink
 //!     tuple) AND the `identify_selected_op` predicate are captured by ctor and
 //!     stored as members. Per-call args reduce to per-tile data plus a bare
@@ -264,7 +264,7 @@ public:
     filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
   }
 
-  // No-op terminal flush. Present for parity with `BlockFilterAccumulating`.
+  // No-op terminal flush. Present for parity with `block_filter_accumulating`.
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:

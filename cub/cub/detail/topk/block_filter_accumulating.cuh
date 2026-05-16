@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Top-k-private `BlockFilterAccumulating` -- single-stream sister of
+//! Top-k-private `block_filter_accumulating` -- single-stream sister of
 //! `BlockFilter`. Buffers items matching a unary `IdentifySelected(key) -> bool`
 //! predicate in shared memory across multiple `partition()` calls and flushes
 //! only when the buffer fills (or in the terminal `epilogue()`).
@@ -10,9 +10,9 @@
 //! Shares the same "safe-both" interface as `BlockFilter`: sinks + identify op
 //! captured at ctor; per-call `partition(scratch, keys, [num_items,] value_sources)`;
 //! argless `epilogue()`. Implements the same multi-round overflow algorithm as
-//! `BlockPartitionAccumulatingCandidates`, but with only one stream.
+//! `block_partition_accumulating_candidates`, but with only one stream.
 //!
-//! Algorithm (mirrored on `BlockPartitionAccumulatingCandidates::accumulating_partition_base`):
+//! Algorithm (mirrored on `block_partition_accumulating_candidates::accumulating_partition_base`):
 //!   1. Fused classify + reserve-into-smem-buffer loop. `identify_selected_op`
 //!      runs once per item. Rejected and out-of-bounds items get
 //!      `positions[j] = -1`. Otherwise the item's smem slot index is
@@ -94,7 +94,7 @@ struct accumulating_filter_temp_storage_t
 } // namespace bf_acc_detail
 
 //---------------------------------------------------------------------
-// `BlockFilterAccumulating`
+// `block_filter_accumulating`
 //
 // Single-stream sister of `BlockFilter` (single output, single buffer,
 // single counter). Used by the agent's `early_stop`-mode pass when the
@@ -112,14 +112,14 @@ template <int BlockThreads,
           typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
           typename ValueTypesTuple        = ::cuda::std::tuple<>,
           bool LazyValueLoad              = false>
-class BlockFilterAccumulating
+class block_filter_accumulating
 {
 public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
   // Compile-time upper bound on `overflow_loop` iterations per `partition()` call.
-  // See the sibling class `BlockPartitionAccumulatingCandidates::max_flush_iters`
+  // See the sibling class `block_partition_accumulating_candidates::max_flush_iters`
   // for the full derivation. When `BufferCapacity >= tile_items` this evaluates
   // to 2 and NVCC can straight-line the loop.
   static constexpr int max_flush_iters = (tile_items + BufferCapacity - 1) / BufferCapacity + 1;
@@ -146,7 +146,7 @@ public:
   // COLLECTIVE ctor: all threads in the block must construct together.
   // Unwraps the `Uninitialized<>` wrapper via `.Alias()`, zero-inits the smem
   // counter (thread 0), then `__syncthreads()`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE BlockFilterAccumulating(
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_accumulating(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
     SelectedKeyOutTransformOp& selected_key_transform,
@@ -289,7 +289,7 @@ private:
     overflow_loop(positions, keys, get_value);
   }
 
-  // Multi-round overflow loop. See `BlockPartitionAccumulatingCandidates::overflow_loop`
+  // Multi-round overflow loop. See `block_partition_accumulating_candidates::overflow_loop`
   // for the design notes -- the counted-`for` shape, the merged `cnt >= Capacity`
   // branch, and the `Capacity >= tile_items` fast path apply identically here.
   template <typename GetValueFn>
@@ -353,7 +353,7 @@ private:
   }
 
   // Cooperative-flush primitives. See the matching pair in
-  // `BlockPartitionAccumulatingCandidates` (`block_partition_accumulating.cuh`)
+  // `block_partition_accumulating_candidates` (`block_partition_accumulating.cuh`)
   // for the full design notes: the hot-path full-buffer overload constant-folds
   // its `count` to `BufferCapacity` and unrolls the strided output loop into
   // `full_flush_waves = Capacity / BlockThreads` register-stride waves plus an
@@ -474,7 +474,7 @@ private:
 //   - `Atomics`                -> `block_filter_atomics<..., LazyValueLoad, InlinedClassify>`
 //   - `Staged`                 -> `block_filter_staged<..., LazyValueLoad, InlinedClassify>`
 //   - `SharedMem`              -> `block_filter_shared_mem<..., LazyValueLoad, InlinedClassify>`
-//   - `AccumulatingFilter`     -> `BlockFilterAccumulating`
+//   - `AccumulatingFilter`     -> `block_filter_accumulating`
 //                                 (with `CandidateBufferCapacity` filled in from the
 //                                 metafunction's own `AccumulatingBufferCapacity` arg).
 //                                 The accumulating variant always classifies inline,
@@ -587,7 +587,7 @@ struct strategy_to_filter_class<
   // value channels via stack-local `source_t::ScratchStorage` and so doesn't
   // consume the `DataSourceScratchTypesTuple` parameter; both are accepted for
   // parity with the non-accumulating branch (the agent always supplies them).
-  using type = BlockFilterAccumulating<
+  using type = block_filter_accumulating<
     BlockThreads,
     ItemsPerThread,
     AccumulatingBufferCapacity,

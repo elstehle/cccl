@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Unit tests for the top-k-private `BlockPartitionAccumulatingCandidates` primitive
+//! Unit tests for the top-k-private `block_partition_accumulating_candidates` primitive
 //! in `cub/detail/topk/block_partition_accumulating.cuh`. Drives multiple tiles
 //! through a single block, exercising:
 //!   - cross-tile smem accumulation when the per-tile reservation count stays
@@ -16,7 +16,7 @@
 //!
 //! The early-stop/selected-buffering counterpart lives in
 //! `catch2_test_device_topk_block_filter_accumulating.cu` -- it tests
-//! `BlockFilterAccumulating`, the dedicated single-stream filter primitive.
+//! `block_filter_accumulating`, the dedicated single-stream filter primitive.
 //!
 //! Test scope is bounded to the `atomic_reserve_range_op` reserve op (matching
 //! the agent's `buffered`-mode pass). The `back_grow_capped_reserve_op`
@@ -75,7 +75,7 @@ struct counting_callback_op
 
 //---------------------------------------------------------------------
 // Kernel: drives `num_tiles` tiles through one block of
-// `BlockPartitionAccumulatingCandidates`, then calls `epilogue()`.
+// `block_partition_accumulating_candidates`, then calls `epilogue()`.
 //---------------------------------------------------------------------
 
 template <int BlockThreads, int ItemsPerThread, int BufferCapacity, bool KeysOnly, bool LazyValueLoad>
@@ -109,7 +109,7 @@ __global__ void acc_partition_kernel(
   using cand_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
   using xform_t           = ::cuda::std::identity;
 
-  using partition_t = topk::BlockPartitionAccumulatingCandidates<
+  using partition_t = topk::block_partition_accumulating_candidates<
     BlockThreads,
     ItemsPerThread,
     BufferCapacity,
@@ -352,7 +352,7 @@ void run_accumulating_test(int num_tiles, int last_tile_items, int selected_ever
 // Test cases
 //---------------------------------------------------------------------
 
-C2H_TEST("BlockPartitionAccumulatingCandidates accumulates across tiles below capacity", "[block][topk][accumulating]")
+C2H_TEST("block_partition_accumulating_candidates accumulates across tiles below capacity", "[block][topk][accumulating]")
 {
   // Tile size = 64 * 4 = 256. Buffer capacity = 256 (one full tile worth). Per-tile
   // candidate count is roughly tile_items / candidate_every ~= 256/13 ~= 19; with 4
@@ -370,7 +370,7 @@ C2H_TEST("BlockPartitionAccumulatingCandidates accumulates across tiles below ca
     NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
-C2H_TEST("BlockPartitionAccumulatingCandidates triggers in-tile overflow loop", "[block][topk][accumulating]")
+C2H_TEST("block_partition_accumulating_candidates triggers in-tile overflow loop", "[block][topk][accumulating]")
 {
   // Buffer capacity = 8 (much smaller than per-tile candidate count). Per-tile
   // candidate count ~= 256/3 ~= 85 with candidate_every = 3 (and selected_every very
@@ -387,7 +387,7 @@ C2H_TEST("BlockPartitionAccumulatingCandidates triggers in-tile overflow loop", 
     NumTiles, LastTileItems, SelectedEvery, CandidateEvery);
 }
 
-C2H_TEST("BlockPartitionAccumulatingCandidates keys-only", "[block][topk][accumulating]")
+C2H_TEST("block_partition_accumulating_candidates keys-only", "[block][topk][accumulating]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -399,7 +399,7 @@ C2H_TEST("BlockPartitionAccumulatingCandidates keys-only", "[block][topk][accumu
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }
 
-C2H_TEST("BlockPartitionAccumulatingCandidates lazy value load", "[block][topk][accumulating]")
+C2H_TEST("block_partition_accumulating_candidates lazy value load", "[block][topk][accumulating]")
 {
   constexpr int BlockThreads   = 64;
   constexpr int ItemsPerThread = 4;
@@ -411,7 +411,7 @@ C2H_TEST("BlockPartitionAccumulatingCandidates lazy value load", "[block][topk][
     NumTiles, LastTileItems, /*selected_every=*/5, /*candidate_every=*/7);
 }
 
-C2H_TEST("BlockPartitionAccumulatingCandidates partial trailing tile", "[block][topk][accumulating]")
+C2H_TEST("block_partition_accumulating_candidates partial trailing tile", "[block][topk][accumulating]")
 {
   // Last tile has 173 valid items out of tile_items (256). The classify loop must
   // force OOB items to `rejected` and the per-item bound check must hold.

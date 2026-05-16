@@ -164,7 +164,7 @@ __global__ void filter_kernel(
     filter.partition(scratch, keys, num_items, sources);
   }
 
-  // No-op for BlockFilter; present for parity with BlockFilterAccumulating.
+  // No-op for BlockFilter; present for parity with block_filter_accumulating.
   filter.epilogue();
 }
 

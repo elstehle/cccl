@@ -942,7 +942,7 @@ struct agent_topk_filter_partition
   using identify_selected_op_t  = topk_identify_selected_op<IdentifyCandidatesOpT>;
 
   // The buffered-mode primitive (`BlockPartition`,
-  // `BlockPartitionAccumulatingCandidates`, or `BlockPartitionSpeculative`).
+  // `block_partition_accumulating_candidates`, or `BlockPartitionSpeculative`).
   using buffered_partition_t = strategy_to_partition_class_t<
     BufferedPartStrat,
     block_threads,
@@ -966,7 +966,7 @@ struct agent_topk_filter_partition
     effective_lazy_value_load,
     InlinedClassify>;
 
-  // The early-stop-mode primitive (`BlockFilter` or `BlockFilterAccumulating`).
+  // The early-stop-mode primitive (`BlockFilter` or `block_filter_accumulating`).
   using early_stop_filter_t = strategy_to_filter_class_t<
     EarlyStopFilterStrat,
     block_threads,
@@ -1379,7 +1379,7 @@ struct agent_topk_last_filter
   // last_filter operates as a true 2-way partition (it both writes selected items
   // to the front of d_keys_out AND back-grow-cap writes "kth"-class candidates to
   // the back). `BlockPartition` (any non-accumulating strategy) and
-  // `BlockPartitionAccumulatingCandidates` are both supported -- the cooperative
+  // `block_partition_accumulating_candidates` are both supported -- the cooperative
   // flush in the accumulating variant honors the `back_grow_capped_reserve_op`'s
   // `may_grant_less` semantics by dropping items beyond the granted count,
   // equivalent (modulo flush-chunk granularity) to the per-item drop the Atomics
@@ -1449,7 +1449,7 @@ struct agent_topk_last_filter
   // last_filter's smem: keys-source persistent state plus the same partition layout
   // helper the filter agent uses. For `BlockPartition` the partition state is empty
   // (so the layout collapses to a 2-arm union of `keys_source_scratch` and
-  // `partition_scratch`); for `BlockPartitionAccumulatingCandidates` the persistent
+  // `partition_scratch`); for `block_partition_accumulating_candidates` the persistent
   // slot buffers live in `partition_state`. There's no `prefix_sum` here, so we
   // hand the layout helper an empty `prefix_sum` placeholder type.
   struct empty_prefix_sum_t
