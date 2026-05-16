@@ -193,11 +193,11 @@ __global__ void spec_partition_kernel(
 
     if (items_in_tile == tile_items)
     {
-      partition.Partition(scratch, keys, sources);
+      partition.partition(scratch, keys, sources);
     }
     else
     {
-      partition.Partition(scratch, keys, items_in_tile, sources);
+      partition.partition(scratch, keys, items_in_tile, sources);
     }
   }
 

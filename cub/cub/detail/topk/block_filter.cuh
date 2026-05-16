@@ -79,7 +79,7 @@ enum class BlockFilterStrategy
   // buffer, but uses a *speculative* slot reservation: items whose atomicAdd
   // index lands within the buffer go to smem, items beyond capacity fall back
   // to per-item global atomics (Atomics-equivalent). The trade is one extra
-  // per-thread uint32 bitmask and one extra `__syncthreads()` per Partition()
+  // per-thread uint32 bitmask and one extra `__syncthreads()` per partition()
   // call in exchange for keeping `positions[]` cross-iteration-dead, which
   // restores register parity with `Atomics` while preserving the cooperative
   // batched flush on sparse streams. See `block_filter_speculative.cuh`.
@@ -225,7 +225,7 @@ public:
   static constexpr int tile_items         = BlockThreads * ItemsPerThread;
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
-  // Class-lifetime persistent state. Empty (no carried state across Partition() calls).
+  // Class-lifetime persistent state. Empty (no carried state across partition() calls).
   struct TempStorage
   {};
 
@@ -251,14 +251,14 @@ public:
   // Full-tile overload: no per-item bound check inside the classify loop.
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload: classify loop bound-checks against num_items.
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
     filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
@@ -386,7 +386,7 @@ private:
     }
   }
 
-  // Captured at ctor; used by every Partition() call.
+  // Captured at ctor; used by every partition() call.
   SelectedReserveOp& reserve_sel_;
   SelectedKeyOutTransformOp& sel_xform_;
   SelectedKeyOutIt sel_iter_;
@@ -446,7 +446,7 @@ public:
   // `keys[]` arena; phase 2 (per-channel value scatter) reuses the same smem
   // through the `per_channel` view. `cnt` lives outside the union because it
   // carries the per-tile count and the broadcast `granted_*` slot across the
-  // whole `Partition()` call.
+  // whole `partition()` call.
   struct ScratchStorage
   {
     union phase_t
@@ -479,13 +479,13 @@ public:
 
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
     filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);
@@ -740,13 +740,13 @@ public:
 
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     filter_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_sources);
   }
 
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourcesTuple& value_sources)
   {
     filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_sources);

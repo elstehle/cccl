@@ -8,11 +8,11 @@
 //!   - cross-tile smem accumulation when the per-tile reservation count stays
 //!     below the buffer capacity (no in-tile flush; the terminal `epilogue()`
 //!     drains whatever's in the buffer).
-//!   - in-tile overflow: when the post-Partition() counter exceeds capacity,
+//!   - in-tile overflow: when the post-partition() counter exceeds capacity,
 //!     items beyond Capacity drain via per-item global atomics and the buffer
 //!     is cooperatively flushed once. Unlike the accumulating variant there
 //!     is no multi-round overflow loop -- a single drain + a single flush per
-//!     `Partition()` call suffice by construction.
+//!     `partition()` call suffice by construction.
 //!   - both `LazyValueLoad` modes (forced off for keys-only).
 //!   - keys-only and paired keys+values.
 //!   - one config with a trailing partial tile.
@@ -151,11 +151,11 @@ __global__ void spec_filter_kernel(
 
     if (items_in_tile == tile_items)
     {
-      filter.Partition(scratch, keys, sources);
+      filter.partition(scratch, keys, sources);
     }
     else
     {
-      filter.Partition(scratch, keys, items_in_tile, sources);
+      filter.partition(scratch, keys, items_in_tile, sources);
     }
   }
 
@@ -271,7 +271,7 @@ C2H_TEST("BlockFilterSpeculative accumulates across tiles below capacity", "[blo
 C2H_TEST("BlockFilterSpeculative triggers in-tile overflow drain", "[block][topk][speculative]")
 {
   // Buffer capacity = 8, but the per-tile kept count ~= 256/3 ~= 85. Each tile's
-  // post-Partition() counter exceeds capacity by a wide margin, so the bulk of
+  // post-partition() counter exceeds capacity by a wide margin, so the bulk of
   // kept items flow through the per-item global-atomic overflow drain. One
   // cooperative flush per tile drains the leading 8 buffered items.
   constexpr int BlockThreads   = 64;
@@ -337,7 +337,7 @@ C2H_TEST("BlockFilterSpeculative partial trailing tile", "[block][topk][speculat
 
 C2H_TEST("BlockFilterSpeculative exact-fit single tile", "[block][topk][speculative]")
 {
-  // Edge case: post-Partition() counter == BufferCapacity exactly. No overflow
+  // Edge case: post-partition() counter == BufferCapacity exactly. No overflow
   // drain, but the cooperative flush should still fire and the counter should
   // reset to 0 cleanly. tile_items = 64. keep_every = 4 -> 16 kept per tile.
   // BufferCapacity = 32 -> exactly two tiles fill the buffer.

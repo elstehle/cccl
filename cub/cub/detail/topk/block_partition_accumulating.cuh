@@ -4,7 +4,7 @@
 //! @file
 //! Top-k-private accumulating partition primitive `BlockPartitionAccumulatingCandidates`
 //! -- sister class to `BlockPartition` that buffers the `candidate` stream (key +
-//! per-channel values per slot) in shared memory across multiple `Partition()` calls
+//! per-channel values per slot) in shared memory across multiple `partition()` calls
 //! and flushes only when the buffer fills. Selected items go direct-to-global through
 //! `reserve_sel_`. Used by the agent's `buffered`-mode pass.
 //!
@@ -15,7 +15,7 @@
 //! Shares `BlockPartition`'s "safe-both" interface: same ctor shape
 //! `(TempStorage&, reserve_sel, reserve_cand, sel_xform, cand_xform, sel_it, cand_it,
 //! value_channel_sinks, identify_candidates_op, candidate_callback_op)`, same
-//! per-call `Partition(scratch, keys, [num_items,] value_sources)`, and an argless
+//! per-call `partition(scratch, keys, [num_items,] value_sources)`, and an argless
 //! `epilogue()`. Sinks + classify hooks are captured at ctor so the consistency
 //! invariant for accumulating across calls is enforced by construction.
 //!
@@ -28,7 +28,7 @@
 //!      smem slot index.
 //!   2. Multi-round overflow loop (cooperative):
 //!        - if `counter < BufferCapacity`: scatter pending items to smem; defer
-//!          the global flush so subsequent `Partition()` calls can keep
+//!          the global flush so subsequent `partition()` calls can keep
 //!          accumulating.
 //!        - if `counter == BufferCapacity`: scatter all pending items to smem +
 //!          cooperative flush + reset `counter` to 0.
@@ -36,7 +36,7 @@
 //!          BufferCapacity` to smem + cooperative flush + renumber positions
 //!          (subtract BufferCapacity from the still-pending ones) + decrement
 //!          counter; loop until `counter <= BufferCapacity`.
-//!   3. `epilogue()` (called by the agent after all `Partition()` calls): if the
+//!   3. `epilogue()` (called by the agent after all `partition()` calls): if the
 //!      counter is non-zero, run a single round of the cooperative flush. Counter is
 //!      < BufferCapacity by construction at this point.
 //!
@@ -78,7 +78,7 @@ namespace bp_acc_detail
 {
 // Per-stream counter + flush-broadcast slots in TempStorage.
 //   `counter`  -- per-tile reservation counter (0..BufferCapacity); persisted across
-//                 Partition() calls so the buffer can accumulate across tiles.
+//                 partition() calls so the buffer can accumulate across tiles.
 //   `base`     -- broadcast: written by thread 0 inside the cooperative-flush
 //                 primitives, read by every thread before the strided write.
 //   `granted`  -- broadcast: same; relevant only for `may_grant_less` reserve ops.
@@ -117,7 +117,7 @@ struct accumulating_temp_storage_t
 //---------------------------------------------------------------------
 // `BlockPartitionAccumulatingCandidates`
 //
-// Buffers items classified `candidate` in shared memory across multiple `Partition()`
+// Buffers items classified `candidate` in shared memory across multiple `partition()`
 // calls; selected items go direct-to-global via `reserve_sel_`. Used by the agent's
 // `buffered`-mode pass.
 //---------------------------------------------------------------------
@@ -145,7 +145,7 @@ public:
   static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
 
   // Compile-time upper bound on the number of times `overflow_loop` iterates per
-  // `Partition()` call. By the cross-call invariant the entrant counter is in
+  // `partition()` call. By the cross-call invariant the entrant counter is in
   // `[0, CandidateBufferCapacity - 1]`, and each call adds at most `tile_items`
   // atomicAdd reservations, so the post-add counter is bounded by
   // `CandidateBufferCapacity - 1 + tile_items`. Each `>=`-branch round drains
@@ -186,7 +186,7 @@ public:
   // the object together. Internally it unwraps the `Uninitialized<>` wrapper via
   // `.Alias()`, zero-initializes the persistent smem counter (thread 0), and then
   // `__syncthreads()` so all threads observe the initialization before they reach
-  // any subsequent `atomicAdd(&counter, ...)` inside `Partition()`.
+  // any subsequent `atomicAdd(&counter, ...)` inside `partition()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE BlockPartitionAccumulatingCandidates(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
@@ -219,14 +219,14 @@ public:
   // Full-tile overload.
   template <typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  Partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
   {
     partition_impl<true>(keys, /*num_items=*/tile_items, value_sources);
   }
 
   // Partial-tile overload.
   template <typename NumItemsT, typename ValueSourcesTuple>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void Partition(
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& /*scratch*/,
     const KeyT (&keys)[ItemsPerThread],
     NumItemsT num_items,
@@ -236,7 +236,7 @@ public:
   }
 
   // Terminal flush: drain any remaining buffered items. No overflow possible because
-  // every `Partition()` call leaves the counter < CandidateBufferCapacity by
+  // every `partition()` call leaves the counter < CandidateBufferCapacity by
   // construction.
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue()
   {
@@ -288,7 +288,7 @@ private:
     }
   }
 
-  // Shared body for both Partition() overloads. Performs:
+  // Shared body for both partition() overloads. Performs:
   //   - num_thread_items computation (full vs. partial),
   //   - eager value-channel load (when LazyValueLoad == false),
   //   - fused classify + reserve + (direct-write for selected stream) loop,
@@ -411,7 +411,7 @@ private:
       {
         // Drain-remainder branch: scatter what's left into smem, mark the
         // pending slots as consumed (the buffer accumulates across the next
-        // `Partition()` call), and exit.
+        // `partition()` call), and exit.
         scatter_pending_to_smem(positions, keys, get_value, /*upper_bound=*/cnt);
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < ItemsPerThread; ++j)

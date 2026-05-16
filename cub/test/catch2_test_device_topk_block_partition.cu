@@ -9,7 +9,7 @@
 //! The test exercises the "safe-both" interface: the partition is constructed with
 //! its sinks (reserve ops, transforms, output iterators, value channel sinks) and
 //! its classify hooks (identify op, candidate callback) at the top of the kernel,
-//! and `Partition()` is called per tile with just the per-tile data + a bare
+//! and `partition()` is called per tile with just the per-tile data + a bare
 //! `cuda::std::tuple<TileDataSource...>` of value sources. After the tile loop the
 //! kernel calls `partition.epilogue()`, which is a `_CCCL_FORCEINLINE` no-op for
 //! `BlockPartition` (the accumulating sister class has a separate test).
@@ -233,11 +233,11 @@ __global__ void partition_kernel(
 
   if (num_items == BlockThreads * ItemsPerThread)
   {
-    partition.Partition(scratch, keys, sources);
+    partition.partition(scratch, keys, sources);
   }
   else
   {
-    partition.Partition(scratch, keys, num_items, sources);
+    partition.partition(scratch, keys, num_items, sources);
   }
 
   // No-op for BlockPartition; present for parity with the accumulating sister class.
@@ -534,7 +534,7 @@ C2H_TEST("BlockPartition partial tile leaves OOB items unscattered", "[block][to
   constexpr int ItemsPerThread = 4;
   constexpr int tile_items     = BlockThreads * ItemsPerThread;
 
-  // Partial tile with `tile_items - 17` valid items. The partition's `Partition()`
+  // Partial tile with `tile_items - 17` valid items. The partition's `partition()`
   // partial overload computes per-thread valid counts; OOB items are forced to
   // `rejected` and never appear in either output.
   const int num_items = tile_items - 17;
