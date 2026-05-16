@@ -894,35 +894,30 @@ struct agent_topk_filter_partition
   using buffered_cand_val_out_t = value_in_t*;
   using buffered_cand_key_out_t = key_in_t*;
 
-  // Buffered-mode sinks bundle: 2-stream `value_channel_sinks_t` (selected +
-  // candidate). Empty tuple for keys-only.
-  using buffered_value_channel_sinks_for_agent_t =
+  // Buffered-mode sinks: 2-stream `value_channel_sinks_t` (selected + candidate).
+  // `NullType` for keys-only; the block primitive captures the reference but
+  // never reads through it under `keys_only`.
+  using buffered_value_channel_sinks_concrete_t =
     value_channel_sinks_t<val_out_t, buffered_cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
-  using buffered_value_channel_sinks_tuple_t = ::cuda::std::conditional_t<
-    keys_only,
-    ::cuda::std::tuple<>,
-    ::cuda::std::tuple<buffered_value_channel_sinks_for_agent_t>>;
+  using buffered_value_channel_sinks_t =
+    ::cuda::std::conditional_t<keys_only, NullType, buffered_value_channel_sinks_concrete_t>;
 
-  // Early-stop sinks bundle: 1-stream `value_channel_sinks_filter_t` (selected only).
-  using early_stop_value_channel_sinks_for_agent_t =
+  // Early-stop sinks: 1-stream `value_channel_sinks_filter_t` (selected only).
+  using early_stop_value_channel_sinks_concrete_t =
     value_channel_sinks_filter_t<val_out_t, ::cuda::std::identity>;
-  using early_stop_value_channel_sinks_tuple_t = ::cuda::std::conditional_t<
-    keys_only,
-    ::cuda::std::tuple<>,
-    ::cuda::std::tuple<early_stop_value_channel_sinks_for_agent_t>>;
+  using early_stop_value_channel_sinks_t =
+    ::cuda::std::conditional_t<keys_only, NullType, early_stop_value_channel_sinks_concrete_t>;
 
-  // Per-channel `value_t` (sized to one element per channel), supplied to the
-  // partition class so it can size its smem `value_t values[N]` arrays.
-  using value_types_tuple_t =
-    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_in_t>>;
+  // Value-channel type fed to the block primitive as `ValueT`. `NullType`
+  // selects the keys-only paths inside the primitives (via their internal
+  // `keys_only` constexpr).
+  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_in_t>;
+
   // Per-channel data-source `ScratchStorage`, supplied to the partition class so
-  // it can size its per-channel `load` slots in the Staged / SharedMem scratch.
-  using value_data_source_scratch_types_tuple_t =
-    ::cuda::std::conditional_t<keys_only,
-                               ::cuda::std::tuple<>,
-                               ::cuda::std::tuple<typename value_source_t::ScratchStorage>>;
-  using value_sources_tuple_t =
-    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
+  // it can size its `load` slot in the Staged / SharedMem scratch. `NullType`
+  // collapses to a no-op slot in keys-only mode.
+  using agent_value_data_source_scratch_t =
+    ::cuda::std::conditional_t<keys_only, NullType, typename value_source_t::ScratchStorage>;
 
     // Offset types used to index into the selected and candidate iterators (and counter updates)
   using selected_offset_t  = OutOffsetT;
@@ -960,9 +955,9 @@ struct agent_topk_filter_partition
     buffered_cand_key_out_t,
     IdentifyCandidatesOpT,
     histogram_callback_op_t,
-    buffered_value_channel_sinks_tuple_t,
-    value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t,
+    buffered_value_channel_sinks_t,
+    agent_value_t,
+    agent_value_data_source_scratch_t,
     effective_lazy_value_load,
     InlinedClassify>;
 
@@ -978,9 +973,9 @@ struct agent_topk_filter_partition
     key_xform_t,
     KeyOutputIteratorT,
     identify_selected_op_t,
-    early_stop_value_channel_sinks_tuple_t,
-    value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t,
+    early_stop_value_channel_sinks_t,
+    agent_value_t,
+    agent_value_data_source_scratch_t,
     effective_lazy_value_load,
     InlinedClassify>;
 
@@ -1116,20 +1111,21 @@ struct agent_topk_filter_partition
   {}
 
 private:
-  // Per-mode sinks-tuple factories. Each returns a tuple of length 0 (keys-only)
-  // or 1 (with values).
+  // Per-mode sinks factories. Each returns a single sink (with values) or a
+  // `NullType` placeholder (keys-only). The result is captured by reference at
+  // the block primitive's ctor; under keys-only the primitive holds the
+  // reference but never reads through it.
   _CCCL_DEVICE _CCCL_FORCEINLINE auto
   make_buffered_value_channel_sinks([[maybe_unused]] buffered_cand_val_out_t cand_val_out)
   {
     if constexpr (keys_only)
     {
-      return ::cuda::std::tuple<>{};
+      return NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<buffered_value_channel_sinks_for_agent_t>{
-        buffered_value_channel_sinks_for_agent_t{
-          d_values_out, cand_val_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+      return buffered_value_channel_sinks_concrete_t{
+        d_values_out, cand_val_out, ::cuda::std::identity{}, ::cuda::std::identity{}};
     }
   }
 
@@ -1137,22 +1133,23 @@ private:
   {
     if constexpr (keys_only)
     {
-      return ::cuda::std::tuple<>{};
+      return NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<early_stop_value_channel_sinks_for_agent_t>{
-        early_stop_value_channel_sinks_for_agent_t{d_values_out, ::cuda::std::identity{}}};
+      return early_stop_value_channel_sinks_concrete_t{d_values_out, ::cuda::std::identity{}};
     }
   }
 
-  // Per-tile value sources tuple. Both modes consume the same value source type.
+  // Per-tile value source. Returns the concrete `multi_source_data_source` for
+  // values-mode, `NullType` for keys-only. Both modes consume the same value
+  // source type at the partition primitive's templated `partition()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sources(OffsetT tile_base)
   {
     (void) tile_base;
     if constexpr (keys_only)
     {
-      return ::cuda::std::tuple<>{};
+      return NullType{};
     }
     else
     {
@@ -1162,13 +1159,13 @@ private:
       value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
       value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
       val_src.set_tile_base(tile_base);
-      return ::cuda::std::tuple<value_source_t>{val_src};
+      return val_src;
     }
   }
 
   // Single mode-agnostic helper that iterates the tile space: full-tile loop +
   // possible trailing partial tile, both calling `primitive.partition(...)` with
-  // just `(scratch, keys, [num_items,] value_sources)`. Finishes with
+  // just `(scratch, keys, [num_items,] value_source)`. Finishes with
   // `primitive.epilogue()`. The `arena` parameter is one of the two mode-specific
   // storage layouts; both expose the same `get_*()` accessors.
   template <typename Primitive, typename StorageLayout>
@@ -1185,7 +1182,7 @@ private:
       const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
 
       keys_source.set_tile_base(tile_base);
-      value_sources_tuple_t value_sources = make_value_channel_sources(tile_base);
+      auto value_source = make_value_channel_sources(tile_base);
 
       __syncthreads();
       key_in_t items[items_per_thread];
@@ -1193,7 +1190,7 @@ private:
       h.complete_load(items);
       __syncthreads();
 
-      primitive.partition(arena.get_partition_scratch(), items, value_sources);
+      primitive.partition(arena.get_partition_scratch(), items, value_source);
     }
 
     // Trailing partial tile (handled by exactly one block)
@@ -1205,7 +1202,7 @@ private:
         const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
 
         keys_source.set_tile_base(tile_base);
-        value_sources_tuple_t value_sources = make_value_channel_sources(tile_base);
+        auto value_source = make_value_channel_sources(tile_base);
 
         __syncthreads();
         key_in_t items[items_per_thread];
@@ -1213,7 +1210,7 @@ private:
         h.complete_load(items);
         __syncthreads();
 
-        primitive.partition(arena.get_partition_scratch(), items, partial_items, value_sources);
+        primitive.partition(arena.get_partition_scratch(), items, partial_items, value_source);
       }
     }
 
@@ -1403,18 +1400,20 @@ struct agent_topk_last_filter
   using val_out_t      = ValueOutputIteratorT;
   using cand_val_out_t = ValueOutputIteratorT; // selected and candidate share d_values_out
 
-  using value_channel_sinks_for_agent_t =
+  // Sinks-bundle: concrete `value_channel_sinks_t` for values-mode, `NullType`
+  // placeholder for keys-only.
+  using value_channel_sinks_concrete_t =
     value_channel_sinks_t<val_out_t, cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
-  using value_channel_sinks_tuple_t =
-    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_channel_sinks_for_agent_t>>;
-  using value_types_tuple_t =
-    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_in_t>>;
-  using value_data_source_scratch_types_tuple_t =
-    ::cuda::std::conditional_t<keys_only,
-                               ::cuda::std::tuple<>,
-                               ::cuda::std::tuple<typename value_source_t::ScratchStorage>>;
-  using value_sources_tuple_t =
-    ::cuda::std::conditional_t<keys_only, ::cuda::std::tuple<>, ::cuda::std::tuple<value_source_t>>;
+  using value_channel_sinks_or_null_t =
+    ::cuda::std::conditional_t<keys_only, NullType, value_channel_sinks_concrete_t>;
+
+  // Value-channel type fed to the block primitive as `ValueT`.
+  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_in_t>;
+
+  // Per-channel data-source `ScratchStorage`, used to size the partition's
+  // `load` slot in the Staged / SharedMem scratch.
+  using agent_value_data_source_scratch_t =
+    ::cuda::std::conditional_t<keys_only, NullType, typename value_source_t::ScratchStorage>;
 
   // Reserve-op types: selected stream uses an atomic reserve, candidate stream uses
   // back-grow-capped (writes ties at the back of the output).
@@ -1440,9 +1439,9 @@ struct agent_topk_last_filter
     KeyOutputIteratorT,
     IdentifyCandidatesOpT,
     topk_noop_candidate_callback_op,
-    value_channel_sinks_tuple_t,
-    value_types_tuple_t,
-    value_data_source_scratch_types_tuple_t,
+    value_channel_sinks_or_null_t,
+    agent_value_t,
+    agent_value_data_source_scratch_t,
     effective_lazy_value_load,
     InlinedClassify>;
 
@@ -1513,13 +1512,13 @@ private:
   {
     if constexpr (keys_only)
     {
-      return ::cuda::std::tuple<>{};
+      return NullType{};
     }
     else
     {
       // last_filter sends both selected and candidate values to `d_values_out`.
-      return ::cuda::std::tuple<value_channel_sinks_for_agent_t>{
-        value_channel_sinks_for_agent_t{d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+      return value_channel_sinks_concrete_t{
+        d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}};
     }
   }
 
@@ -1528,7 +1527,7 @@ private:
     (void) tile_base;
     if constexpr (keys_only)
     {
-      return ::cuda::std::tuple<>{};
+      return NullType{};
     }
     else
     {
@@ -1538,24 +1537,24 @@ private:
       value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
       value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
       val_src.set_tile_base(tile_base);
-      return ::cuda::std::tuple<value_source_t>{val_src};
+      return val_src;
     }
   }
 
-  template <bool IsFull>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void do_partition(
     partition_t& partition,
     const key_in_t (&keys)[items_per_thread],
     OffsetT num_items_in_tile,
-    value_sources_tuple_t& value_sources)
+    ValueSourceT& value_source)
   {
     if constexpr (IsFull)
     {
-      partition.partition(storage.partition_arena.get_partition_scratch(), keys, value_sources);
+      partition.partition(storage.partition_arena.get_partition_scratch(), keys, value_source);
     }
     else
     {
-      partition.partition(storage.partition_arena.get_partition_scratch(), keys, num_items_in_tile, value_sources);
+      partition.partition(storage.partition_arena.get_partition_scratch(), keys, num_items_in_tile, value_source);
     }
   }
 
@@ -1606,14 +1605,14 @@ public:
       const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
 
       keys_source.set_tile_base(tile_base);
-      value_sources_tuple_t value_sources = make_value_channel_sources(tile_base);
+      auto value_source = make_value_channel_sources(tile_base);
 
       __syncthreads();
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
       __syncthreads();
-      do_partition</*IsFull=*/true>(partition, items, /*num_items_in_tile=*/tile_items, value_sources);
+      do_partition</*IsFull=*/true>(partition, items, /*num_items_in_tile=*/tile_items, value_source);
     }
 
     // --- trailing partial tile (handled by exactly one block) ------------
@@ -1625,14 +1624,14 @@ public:
         const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
 
         keys_source.set_tile_base(tile_base);
-        value_sources_tuple_t value_sources = make_value_channel_sources(tile_base);
+        auto value_source = make_value_channel_sources(tile_base);
 
         __syncthreads();
         key_in_t items[items_per_thread];
         auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), partial_items);
         h.complete_load(items);
         __syncthreads();
-        do_partition</*IsFull=*/false>(partition, items, partial_items, value_sources);
+        do_partition</*IsFull=*/false>(partition, items, partial_items, value_source);
       }
     }
 

@@ -67,49 +67,12 @@
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/__type_traits/remove_reference.h>
 #include <cuda/std/cstddef>
-#include <cuda/std/tuple>
 #include <cuda/std/utility>
 
 CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-// Per-stream counter + flush-broadcast slots in TempStorage.
-//   `counter`  -- per-tile reservation counter (0..BufferCapacity); persisted across
-//                 partition() calls so the buffer can accumulate across tiles.
-//   `base`     -- broadcast: written by thread 0 inside the cooperative-flush
-//                 primitives, read by every thread before the strided write.
-//   `granted`  -- broadcast: same; relevant only for `may_grant_less` reserve ops.
-template <typename OffsetT>
-struct stream_counters_t
-{
-  int counter;
-  OffsetT base;
-  OffsetT granted;
-};
-
-// Per-channel value array slot in TempStorage. Indexed by element type (the
-// per-channel `value_t` from the agent-supplied `ValueTypesTuple`).
-template <typename ValueT, int Capacity>
-struct value_buf_slot_t
-{
-  ValueT values[Capacity];
-};
-
-// Persistent TempStorage layout. One smem buffer (key + per-channel values) plus
-// the candidate stream's counter + broadcast slots. The accumulating class wraps
-// this in `cub::Uninitialized<...>` and exposes the wrapper as the public
-// `TempStorage` so users can declare `__shared__ partition_t::TempStorage`
-// without tripping CUDA's "dynamic initialization not supported for `__shared__`"
-// rule.
-template <typename KeyT, typename OffsetT, typename ValueTypesTuple, int Capacity>
-struct accumulating_temp_storage_t
-{
-  stream_counters_t<OffsetT> cnt;
-  KeyT keys[Capacity];
-  CUB_NS_QUALIFIER::detail::phase_aggregate<map_tuple_t<value_buf_slot_t, ValueTypesTuple, Capacity>>
-    per_channel_values;
-};
 
 //---------------------------------------------------------------------
 // `block_partition_accumulating_candidates`
@@ -132,14 +95,14 @@ template <int BlockThreads,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
           typename CandidateCallbackOp,
-          typename ValueChannelSinksTuple = ::cuda::std::tuple<>,
-          typename ValueTypesTuple        = ::cuda::std::tuple<>,
-          bool LazyValueLoad              = false>
+          typename ValueChannelSinksT = CUB_NS_QUALIFIER::NullType,
+          typename ValueT             = CUB_NS_QUALIFIER::NullType,
+          bool LazyValueLoad          = false>
 class block_partition_accumulating_candidates
 {
 public:
-  static constexpr int tile_items         = BlockThreads * ItemsPerThread;
-  static constexpr int num_value_channels = static_cast<int>(::cuda::std::tuple_size<ValueChannelSinksTuple>::value);
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
   // Compile-time upper bound on the number of times `overflow_loop` iterates per
   // `partition()` call. By the cross-call invariant the entrant counter is in
@@ -156,22 +119,46 @@ public:
     (tile_items + CandidateBufferCapacity - 1) / CandidateBufferCapacity + 1;
 
   static_assert(CandidateBufferCapacity >= 1, "Accumulating partition requires CandidateBufferCapacity >= 1.");
-  static_assert(num_value_channels <= 1,
-                "Accumulating partition supports keys-only or single-value-channel today; multi-channel needs a "
-                "heterogeneous register-array tuple analogous to the BlockPartition shared_mem path.");
-  static_assert(::cuda::std::tuple_size<ValueChannelSinksTuple>::value
-                  == ::cuda::std::tuple_size<ValueTypesTuple>::value,
-                "ValueChannelSinksTuple and ValueTypesTuple must have the same length.");
 
-  // Internal `_TempStorage` is the actual buffer + counters. The publicly-exposed
-  // `TempStorage` wraps it in `cub::Uninitialized<>` so the user can declare
-  // `__shared__ partition_t::TempStorage` directly. The agent's
-  // `partition_storage_layout_for_t` selector consults
-  // `is_empty_v<TempStorage>` to pick the right smem aliasing layout (the wrapper
-  // has a non-trivial `DeviceWord storage[N]` member, so `is_empty_v` is false and
-  // the persistent + scratch layout is selected).
-  using _TempStorage =
-    accumulating_temp_storage_t<KeyT, CandidateOffsetT, ValueTypesTuple, CandidateBufferCapacity>;
+  // Per-stream counter + flush-broadcast slots in TempStorage.
+  //   `counter`  -- per-tile reservation counter (0..BufferCapacity); persisted across
+  //                 partition() calls so the buffer can accumulate across tiles.
+  //   `base`     -- broadcast: written by thread 0 inside the cooperative-flush
+  //                 primitives, read by every thread before the strided write.
+  //   `granted`  -- broadcast: same; relevant only for `may_grant_less` reserve ops.
+  template <typename OffsetT>
+  struct stream_counters_t
+  {
+    int counter;
+    OffsetT base;
+    OffsetT granted;
+  };
+
+  // Persistent TempStorage layout. Keys arena + optional value arena (collapses
+  // to nothing in keys-only mode) plus the candidate stream's counter +
+  // broadcast slots. The accumulating class wraps this in
+  // `cub::Uninitialized<...>` and exposes the wrapper as the public `TempStorage`
+  // so users can declare `__shared__ partition_t::TempStorage` without tripping
+  // CUDA's "dynamic initialization not supported for `__shared__`" rule. The
+  // agent's `partition_storage_layout_for_t` selector consults
+  // `is_empty_v<TempStorage>` to pick the right smem aliasing layout (the
+  // wrapper has a non-trivial `DeviceWord storage[N]` member, so `is_empty_v`
+  // is false and the persistent + scratch layout is selected).
+  template <int Capacity, bool KeysOnly>
+  struct accumulating_temp_storage_full
+  {
+    stream_counters_t<CandidateOffsetT> cnt;
+    KeyT keys[Capacity];
+    ValueT values[Capacity];
+  };
+  template <int Capacity>
+  struct accumulating_temp_storage_full<Capacity, /*KeysOnly=*/true>
+  {
+    stream_counters_t<CandidateOffsetT> cnt;
+    KeyT keys[Capacity];
+  };
+
+  using _TempStorage = accumulating_temp_storage_full<CandidateBufferCapacity, keys_only>;
   struct TempStorage : CUB_NS_QUALIFIER::Uninitialized<_TempStorage>
   {};
 
@@ -192,7 +179,7 @@ public:
     CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
-    ValueChannelSinksTuple& value_channel_sinks,
+    ValueChannelSinksT& value_channel_sinks,
     IdentifyCandidatesOp& identify_candidates_op,
     CandidateCallbackOp& candidate_callback_op)
       : temp_storage(storage.Alias())
@@ -214,22 +201,22 @@ public:
   }
 
   // Full-tile overload.
-  template <typename ValueSourcesTuple>
+  template <typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourcesTuple& value_sources)
+  partition(ScratchStorage& /*scratch*/, const KeyT (&keys)[ItemsPerThread], ValueSourceT& value_source)
   {
-    partition_impl<true>(keys, /*num_items=*/tile_items, value_sources);
+    partition_impl<true>(keys, /*num_items=*/tile_items, value_source);
   }
 
   // Partial-tile overload.
-  template <typename NumItemsT, typename ValueSourcesTuple>
+  template <typename NumItemsT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
     ScratchStorage& /*scratch*/,
     const KeyT (&keys)[ItemsPerThread],
     NumItemsT num_items,
-    ValueSourcesTuple& value_sources)
+    ValueSourceT& value_source)
   {
-    partition_impl<false>(keys, static_cast<int>(num_items), value_sources);
+    partition_impl<false>(keys, static_cast<int>(num_items), value_source);
   }
 
   // Terminal flush: drain any remaining buffered items. No overflow possible because
@@ -254,32 +241,30 @@ public:
 private:
   // First/only channel's value_t (or `int` if keys-only). Used to size the optional
   // per-thread eager-load register array.
-  using channel_value_t = typename value_t_or_default<ValueTypesTuple>::type;
+  using channel_value_t = ::cuda::std::conditional_t<keys_only, int, ValueT>;
 
   // Eagerly load the (single) channel's per-thread values from the per-call source.
   // No-op when keys-only or when LazyValueLoad is true.
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void eager_load_value_channel(
-    ValueSourcesTuple& value_sources, channel_value_t (&reg_values)[ItemsPerThread], int num_items)
+    ValueSourceT& value_source, channel_value_t (&reg_values)[ItemsPerThread], int num_items)
   {
-    (void) value_sources;
+    (void) value_source;
     (void) reg_values;
     (void) num_items;
-    if constexpr (!LazyValueLoad && num_value_channels == 1)
+    if constexpr (!LazyValueLoad && !keys_only)
     {
-      auto& src      = ::cuda::std::get<0>(value_sources);
-      using source_t = ::cuda::std::remove_reference_t<decltype(src)>;
-      static_assert(::cuda::std::is_same_v<typename source_t::value_t, channel_value_t>,
-                    "Per-call value source's value_t must match the class-level ValueTypesTuple element.");
-      typename source_t::ScratchStorage scratch{};
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
+                    "Per-call value source's value_t must match the class-level ValueT template parameter.");
+      typename ValueSourceT::ScratchStorage scratch{};
       if constexpr (IsFull)
       {
-        auto h = src.submit_load(scratch);
+        auto h = value_source.submit_load(scratch);
         h.complete_load(reg_values);
       }
       else
       {
-        auto h = src.submit_load(scratch, num_items);
+        auto h = value_source.submit_load(scratch, num_items);
         h.complete_load(reg_values);
       }
     }
@@ -290,14 +275,11 @@ private:
   //   - eager value-channel load (when LazyValueLoad == false),
   //   - fused classify + reserve + (direct-write for selected stream) loop,
   //   - multi-round overflow loop on the candidate stream's smem buffer.
-  template <bool IsFull, typename ValueSourcesTuple>
+  template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  partition_impl(const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
+  partition_impl(const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourceT& value_source)
   {
-    static_assert(::cuda::std::tuple_size<ValueSourcesTuple>::value == num_value_channels,
-                  "Per-call value sources tuple must have the same length as the class-level value channel sinks "
-                  "tuple; the partition pairs them positionally.");
-
+    (void) value_source;
     int num_thread_items;
     if constexpr (IsFull)
     {
@@ -312,13 +294,12 @@ private:
     }
 
     channel_value_t reg_values[ItemsPerThread]{};
-    eager_load_value_channel<IsFull>(value_sources, reg_values, num_items);
+    eager_load_value_channel<IsFull>(value_source, reg_values, num_items);
 
     auto get_value = [&](int j) -> channel_value_t {
-      if constexpr (LazyValueLoad && num_value_channels == 1)
+      if constexpr (LazyValueLoad && !keys_only)
       {
-        auto& src = ::cuda::std::get<0>(value_sources);
-        return src.gather_one(j);
+        return value_source.gather_one(j);
       }
       else
       {
@@ -360,10 +341,9 @@ private:
         if (granted)
         {
           sel_iter[r.first] = sel_xform(keys[j]);
-          if constexpr (num_value_channels == 1)
+          if constexpr (!keys_only)
           {
-            auto& sink                        = ::cuda::std::get<0>(sinks);
-            sink.selected_values_out[r.first] = sink.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
           }
         }
         positions[j] = -1;
@@ -458,9 +438,9 @@ private:
       if (positions[j] >= 0 && positions[j] < upper_bound)
       {
         temp_storage.keys[positions[j]] = keys[j];
-        if constexpr (num_value_channels == 1)
+        if constexpr (!keys_only)
         {
-          CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values).values[positions[j]] = get_value(j);
+          temp_storage.values[positions[j]] = get_value(j);
         }
       }
     }
@@ -526,19 +506,16 @@ private:
     }
 
     // Values channel (optional): same shape.
-    if constexpr (num_value_channels == 1)
+    if constexpr (!keys_only)
     {
-      auto& sink = ::cuda::std::get<0>(sinks);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
-
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int w = 0; w < full_flush_waves; ++w)
       {
         const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
         if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
         {
-          sink.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-            sink.candidate_value_transform(vs.values[i]);
+          sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
+            sinks.candidate_value_transform(temp_storage.values[i]);
         }
       }
       if constexpr (trailing_count != 0)
@@ -547,8 +524,8 @@ private:
         if (static_cast<int>(threadIdx.x) < trailing_count
             && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
         {
-          sink.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-            sink.candidate_value_transform(vs.values[i]);
+          sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
+            sinks.candidate_value_transform(temp_storage.values[i]);
         }
       }
     }
@@ -574,14 +551,12 @@ private:
     {
       cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
     }
-    if constexpr (num_value_channels == 1)
+    if constexpr (!keys_only)
     {
-      auto& sink = ::cuda::std::get<0>(sinks);
-      auto& vs   = CUB_NS_QUALIFIER::detail::at<0>(temp_storage.per_channel_values);
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
-        sink.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-          sink.candidate_value_transform(vs.values[i]);
+        sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
+          sinks.candidate_value_transform(temp_storage.values[i]);
       }
     }
   }
@@ -596,7 +571,7 @@ private:
   CandidateKeyOutTransformOp& cand_xform;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
-  ValueChannelSinksTuple& sinks;
+  ValueChannelSinksT& sinks;
   IdentifyCandidatesOp& identify_op;
   CandidateCallbackOp& callback_op;
 };
@@ -651,9 +626,9 @@ template <block_partition_strategy Strategy,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
           typename CandidateCallbackOp,
-          typename ValueChannelSinksTuple,
-          typename ValueTypesTuple,
-          typename DataSourceScratchTypesTuple,
+          typename ValueChannelSinksT,
+          typename ValueT,
+          typename ValueDataSourceScratchT,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_partition_class
@@ -674,9 +649,9 @@ private:
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
     CandidateCallbackOp,
-    ValueChannelSinksTuple,
-    ValueTypesTuple,
-    DataSourceScratchTypesTuple,
+    ValueChannelSinksT,
+    ValueT,
+    ValueDataSourceScratchT,
     LazyValueLoad>;
 
   using staged_t = block_partition_staged<
@@ -693,9 +668,9 @@ private:
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
     CandidateCallbackOp,
-    ValueChannelSinksTuple,
-    ValueTypesTuple,
-    DataSourceScratchTypesTuple,
+    ValueChannelSinksT,
+    ValueT,
+    ValueDataSourceScratchT,
     LazyValueLoad,
     InlinedClassify>;
 
@@ -713,9 +688,9 @@ private:
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
     CandidateCallbackOp,
-    ValueChannelSinksTuple,
-    ValueTypesTuple,
-    DataSourceScratchTypesTuple,
+    ValueChannelSinksT,
+    ValueT,
+    ValueDataSourceScratchT,
     LazyValueLoad,
     InlinedClassify>;
 
@@ -740,9 +715,9 @@ template <int BlockThreads,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
           typename CandidateCallbackOp,
-          typename ValueChannelSinksTuple,
-          typename ValueTypesTuple,
-          typename DataSourceScratchTypesTuple,
+          typename ValueChannelSinksT,
+          typename ValueT,
+          typename ValueDataSourceScratchT,
           bool LazyValueLoad,
           bool InlinedClassify>
 struct strategy_to_partition_class<
@@ -762,17 +737,17 @@ struct strategy_to_partition_class<
   CandidateKeyOutIt,
   IdentifyCandidatesOp,
   CandidateCallbackOp,
-  ValueChannelSinksTuple,
-  ValueTypesTuple,
-  DataSourceScratchTypesTuple,
+  ValueChannelSinksT,
+  ValueT,
+  ValueDataSourceScratchT,
   LazyValueLoad,
   InlinedClassify>
 {
   // The accumulating prototype always classifies inline (its fused classify-and-act
   // loop has no separate pre-classify step), so it does not consume the
   // `InlinedClassify` parameter. It also loads value channels via stack-local
-  // `source_t::ScratchStorage` and so doesn't consume the
-  // `DataSourceScratchTypesTuple` parameter; both are accepted for parity with the
+  // `ValueSourceT::ScratchStorage` and so doesn't consume the
+  // `ValueDataSourceScratchT` parameter; both are accepted for parity with the
   // non-accumulating branch (the agent always supplies them). The single-stream
   // accumulating variant only buffers the candidate stream and so does not consume
   // `SpeculativeSelectedBufferCapacity` either.
@@ -791,8 +766,8 @@ struct strategy_to_partition_class<
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
     CandidateCallbackOp,
-    ValueChannelSinksTuple,
-    ValueTypesTuple,
+    ValueChannelSinksT,
+    ValueT,
     LazyValueLoad>;
 };
 
@@ -812,9 +787,9 @@ template <block_partition_strategy Strategy,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
           typename CandidateCallbackOp,
-          typename ValueChannelSinksTuple,
-          typename ValueTypesTuple,
-          typename DataSourceScratchTypesTuple,
+          typename ValueChannelSinksT,
+          typename ValueT,
+          typename ValueDataSourceScratchT,
           bool LazyValueLoad,
           bool InlinedClassify>
 using strategy_to_partition_class_t = typename strategy_to_partition_class<
@@ -834,9 +809,9 @@ using strategy_to_partition_class_t = typename strategy_to_partition_class<
   CandidateKeyOutIt,
   IdentifyCandidatesOp,
   CandidateCallbackOp,
-  ValueChannelSinksTuple,
-  ValueTypesTuple,
-  DataSourceScratchTypesTuple,
+  ValueChannelSinksT,
+  ValueT,
+  ValueDataSourceScratchT,
   LazyValueLoad,
   InlinedClassify>::type;
 } // namespace detail::topk

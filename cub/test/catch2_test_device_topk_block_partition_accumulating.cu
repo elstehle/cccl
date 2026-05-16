@@ -33,7 +33,6 @@
 
 #include <cuda/std/cstdint>
 #include <cuda/std/functional>
-#include <cuda/std/tuple>
 #include <cuda/std/utility>
 
 #include <algorithm>
@@ -98,12 +97,10 @@ __global__ void acc_partition_kernel(
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
   using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
-  using value_channel_sinks_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_sinks_t>>;
-  using value_types_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<int>>;
-  using value_sources_tuple_t =
-    ::cuda::std::conditional_t<KeysOnly, ::cuda::std::tuple<>, ::cuda::std::tuple<value_ds_t>>;
+  using value_channel_sinks_or_null_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, value_sinks_t>;
+  using value_t_t =
+    ::cuda::std::conditional_t<KeysOnly, cub::NullType, int>;
 
   using sel_reserve_op_t  = topk::atomic_reserve_range_op<unsigned int>;
   using cand_reserve_op_t = topk::atomic_reserve_range_op<unsigned int>;
@@ -124,8 +121,8 @@ __global__ void acc_partition_kernel(
     int*,
     driver_identify_op,
     counting_callback_op,
-    value_channel_sinks_tuple_t,
-    value_types_tuple_t,
+    value_channel_sinks_or_null_t,
+    value_t_t,
     LazyValueLoad>;
 
   // `partition_t::TempStorage` is an `Uninitialized<>` wrapper internally, so a
@@ -133,19 +130,18 @@ __global__ void acc_partition_kernel(
   __shared__ typename partition_t::TempStorage partition_ts;
   __shared__ typename partition_t::ScratchStorage scratch;
 
-  // Build the sinks tuple (captured by ctor).
+  // Build the sinks (captured by ctor).
   auto make_sinks = [&] {
     if constexpr (KeysOnly)
     {
-      return ::cuda::std::tuple<>{};
+      return cub::NullType{};
     }
     else
     {
-      return ::cuda::std::tuple<value_sinks_t>{
-        value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}}};
+      return value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}};
     }
   };
-  value_channel_sinks_tuple_t sinks = make_sinks();
+  auto sinks = make_sinks();
 
   sel_reserve_op_t reserve_sel{d_sel_counter};
   cand_reserve_op_t reserve_cand{d_cand_counter};
@@ -183,31 +179,31 @@ __global__ void acc_partition_kernel(
       keys[j]              = (local_idx < items_in_tile) ? d_keys_in[global_idx] : 0;
     }
 
-    // Build the per-call sources tuple (set_tile_base for the current tile).
+    // Build the per-call value source (set_tile_base for the current tile).
     typename value_ds_t::TempStorage val_state{};
     value_ds_t val_ds{d_values_in, val_state};
     val_ds.set_tile_base(tile_base);
-    auto make_sources = [&] {
+    auto make_source = [&] {
       if constexpr (KeysOnly)
       {
-        return ::cuda::std::tuple<>{};
+        return cub::NullType{};
       }
       else
       {
-        return ::cuda::std::tuple<value_ds_t>{val_ds};
+        return val_ds;
       }
     };
-    value_sources_tuple_t sources = make_sources();
+    auto value_source = make_source();
 
     __syncthreads();
 
     if (items_in_tile == tile_items)
     {
-      partition.partition(scratch, keys, sources);
+      partition.partition(scratch, keys, value_source);
     }
     else
     {
-      partition.partition(scratch, keys, items_in_tile, sources);
+      partition.partition(scratch, keys, items_in_tile, value_source);
     }
   }
 
