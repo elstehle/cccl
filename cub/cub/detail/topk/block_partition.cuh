@@ -631,6 +631,12 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
+  // Top-level dispatch: peels off `cand_reserve_open_` at the tile boundary
+  // (only when the candidate reserve op can grant less than requested) and
+  // selects the `HasCandidateStream` specialization. The per-thread flag is
+  // mutated inside the `HasCandidateStream=true` scatter when a thread
+  // observes a 0-grant; subsequent tiles then take the cheaper specialization
+  // for that thread.
   template <bool IsFull, typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_impl(
     ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourcesTuple& value_sources)
@@ -641,17 +647,47 @@ private:
 
     const int num_thread_items = bp_detail::compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
 
+    if constexpr (CandidateReserveOp::may_grant_less)
+    {
+      if (cand_reserve_open_)
+      {
+        partition_dispatch_classify<IsFull, /*HasCandidateStream=*/true>(buffer, keys, num_thread_items, value_sources);
+      }
+      else
+      {
+        partition_dispatch_classify<IsFull, /*HasCandidateStream=*/false>(buffer, keys, num_thread_items, value_sources);
+      }
+    }
+    else
+    {
+      // `may_grant_less=false`: the reserve op never grants 0, so the
+      // candidate stream stays open for the lifetime of this thread. Skip
+      // the runtime branch and the `HasCandidateStream=false` template
+      // instantiation entirely.
+      partition_dispatch_classify<IsFull, /*HasCandidateStream=*/true>(buffer, keys, num_thread_items, value_sources);
+    }
+  }
+
+  // Inner classifier-dispatch: same shape as the old `partition_impl` body,
+  // factored out so the cand-stream dispatch above doesn't need to duplicate
+  // it. Both `HasCandidateStream` paths flow through here.
+  template <bool IsFull, bool HasCandidateStream, typename ValueSourcesTuple>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition_dispatch_classify(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_thread_items, ValueSourcesTuple& value_sources)
+  {
     if constexpr (InlinedClassify)
     {
       auto classifier = bp_detail::make_inlined_classifier<IsFull>(identify_op_, num_thread_items);
-      partition_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, callback_op_, value_sources);
+      partition_atomics_fused<IsFull, HasCandidateStream>(
+        buffer, keys, num_thread_items, classifier, callback_op_, value_sources);
     }
     else
     {
       bp_detail::precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{
         keys, num_thread_items, identify_op_, callback_op_};
       bp_detail::noop_callback_op noop_cb{};
-      partition_atomics_fused<IsFull>(buffer, keys, num_thread_items, classifier, noop_cb, value_sources);
+      partition_atomics_fused<IsFull, HasCandidateStream>(
+        buffer, keys, num_thread_items, classifier, noop_cb, value_sources);
     }
   }
 
@@ -662,8 +698,15 @@ private:
   // either the original `candidate_callback_op` (inlined-classify path) or a
   // `noop_callback_op` (precomputed-classify path, where the classifier
   // already fired callbacks at construction).
+  //
+  // `HasCandidateStream` selects between the full path (per-candidate
+  // `reserve_cand_` + write) and the closed-stream specialization (no
+  // candidate-side reserve/write at all; the candidate callback is still
+  // fired, so the threshold-update protocol is preserved). The dispatch is
+  // peeled by `partition_impl` from the per-thread `cand_reserve_open_`
+  // flag.
   // -----------------------------------------------------------------
-  template <bool IsFull, typename Classifier, typename CandidateCallbackOpT, typename ValueSourcesTuple>
+  template <bool IsFull, bool HasCandidateStream, typename Classifier, typename CandidateCallbackOpT, typename ValueSourcesTuple>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused(
     ScratchStorage& /*buffer*/,
     const KeyT (&keys)[ItemsPerThread],
@@ -683,7 +726,7 @@ private:
       if constexpr (LazyValueLoad)
       {
         int unused_values[1]{};
-        partition_atomics_fused_scatter<IsFull, /*KeysOnly=*/false>(
+        partition_atomics_fused_scatter<IsFull, HasCandidateStream, /*KeysOnly=*/false>(
           keys, num_thread_items, classifier, candidate_callback_op, value_sources, unused_values);
       }
       else
@@ -693,7 +736,7 @@ private:
         value_t values[ItemsPerThread]{};
         h.complete_load(values);
 
-        partition_atomics_fused_scatter<IsFull, /*KeysOnly=*/false>(
+        partition_atomics_fused_scatter<IsFull, HasCandidateStream, /*KeysOnly=*/false>(
           keys, num_thread_items, classifier, candidate_callback_op, value_sources, values);
       }
     }
@@ -701,7 +744,7 @@ private:
     {
       int unused_dummy[1]{};
       (void) unused_dummy;
-      partition_atomics_fused_scatter<IsFull, /*KeysOnly=*/true>(
+      partition_atomics_fused_scatter<IsFull, HasCandidateStream, /*KeysOnly=*/true>(
         keys, num_thread_items, classifier, candidate_callback_op, value_sources, unused_dummy);
     }
   }
@@ -709,7 +752,16 @@ private:
   // Unified scatter loop. Two independent 2-way (do/skip) branches per unrolled
   // item -- avoids the per-item indirect-branch table in `c[0x2]` that ptxas would
   // emit for a 3-way `rejected` / `selected` / `candidate` cascade.
+  //
+  // With `HasCandidateStream=false`, the per-item `reserve_cand_` + candidate
+  // write block is elided entirely (the candidate callback still fires for
+  // every candidate-classified item). The `any_cand_granted_zero` flag is
+  // also elided -- it only exists in the `HasCandidateStream=true` path,
+  // where it records that the per-thread candidate stream just closed so
+  // the outer dispatcher can take the cheaper specialization on the next
+  // tile.
   template <bool IsFull,
+            bool HasCandidateStream,
             bool KeysOnly,
             typename Classifier,
             typename CandidateCallbackOpT,
@@ -737,13 +789,24 @@ private:
       }
     };
 
+    // Tracks per-thread "saw 0 from `reserve_cand_`" within this tile. Folded
+    // into `cand_reserve_open_` after the loop so the next tile dispatches to
+    // the `HasCandidateStream=false` specialization for this thread. Lives in
+    // the `HasCandidateStream=true` && `may_grant_less=true` path only;
+    // everywhere else the gating `if constexpr`s leave it dead. The
+    // `[[maybe_unused]]` attribute suppresses the "unused variable" warning
+    // on the dead-code paths without taking the variable's address (which a
+    // `(void)` cast would).
+    [[maybe_unused]] bool any_cand_granted_zero = false;
+
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < ItemsPerThread; ++j)
     {
       const candidate_class c = classifier(keys[j], j);
 
       // Architecture §10.2: callback fires for every `candidate`-classified item,
-      // including ones the candidate reserve op subsequently drops (cap clamp).
+      // including ones the candidate reserve op subsequently drops (cap clamp)
+      // and the ones we drop here when the candidate stream has closed.
       if (c == candidate_class::candidate)
       {
         candidate_callback_op(keys[j]);
@@ -767,23 +830,35 @@ private:
           }
         }
       }
-      if (c == candidate_class::candidate)
+      if constexpr (HasCandidateStream)
       {
-        const auto r = reserve_cand_(CandidateOffsetT{1});
-        bool granted = true;
-        if constexpr (CandidateReserveOp::may_grant_less)
+        if (c == candidate_class::candidate)
         {
-          granted = (r.second != CandidateOffsetT{0});
-        }
-        if (granted)
-        {
-          cand_iter_[r.first] = cand_xform_(keys[j]);
-          if constexpr (!KeysOnly)
+          const auto r = reserve_cand_(CandidateOffsetT{1});
+          bool granted = true;
+          if constexpr (CandidateReserveOp::may_grant_less)
           {
-            auto& sink                         = ::cuda::std::get<0>(sinks_);
-            sink.candidate_values_out[r.first] = sink.candidate_value_transform(get_value(j));
+            granted               = (r.second != CandidateOffsetT{0});
+            any_cand_granted_zero = any_cand_granted_zero || !granted;
+          }
+          if (granted)
+          {
+            cand_iter_[r.first] = cand_xform_(keys[j]);
+            if constexpr (!KeysOnly)
+            {
+              auto& sink                         = ::cuda::std::get<0>(sinks_);
+              sink.candidate_values_out[r.first] = sink.candidate_value_transform(get_value(j));
+            }
           }
         }
+      }
+    }
+
+    if constexpr (HasCandidateStream && CandidateReserveOp::may_grant_less)
+    {
+      if (any_cand_granted_zero)
+      {
+        cand_reserve_open_ = false;
       }
     }
   }
@@ -798,6 +873,30 @@ private:
   ValueChannelSinksTuple& sinks_;
   IdentifyCandidatesOp& identify_op_;
   CandidateCallbackOp& callback_op_;
+
+  // Per-thread monotonic flag for the candidate stream. Only consulted when
+  // `CandidateReserveOp::may_grant_less` is true (otherwise the reserve op
+  // never grants less than requested and the flag is dead code).
+  //
+  // Top-k guarantees: once `reserve_cand_` grants 0 for any thread, the
+  // device-global candidate counter is past the back-grow cap, so every
+  // *subsequent* call from *any* thread also grants 0. We exploit that by
+  // tracking the per-thread observation inside the scatter loop and, once
+  // set, dispatching the next tile's classify+scatter to a
+  // `HasCandidateStream=false`-specialized instantiation that drops the
+  // per-item candidate-reserve atomic + candidate-write entirely. Items
+  // classified as `candidate` still fire the candidate callback (architecture
+  // §10.2) and skip the selected stream, equivalent to the granted-0 drop
+  // path in the full-stream specialization.
+  //
+  // Convergence is bounded: any thread that called `reserve_cand_(1)` and
+  // observed 0 has flag=false by tile end; any thread that didn't classify
+  // a candidate in that tile retains flag=true, but its next candidate
+  // observation will set the flag, so all threads converge to flag=false
+  // within one extra tile of tail-divergence. The flag is `may_grant_less`-
+  // gated at compile time, so the `may_grant_less=false` path pays nothing
+  // (no runtime branch, no extra template instantiation).
+  bool cand_reserve_open_ = true;
 };
 
 //---------------------------------------------------------------------

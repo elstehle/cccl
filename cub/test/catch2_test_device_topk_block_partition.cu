@@ -138,6 +138,7 @@ __global__ void partition_kernel(
     BlockThreads,
     ItemsPerThread,
     /*AccumulatingBufferCapacity=*/0,
+    /*SpeculativeSelectedBufferCapacity=*/0,
     int,
     unsigned int,
     unsigned int,
