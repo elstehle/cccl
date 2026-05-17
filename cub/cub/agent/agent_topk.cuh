@@ -503,6 +503,77 @@ struct topk_candidate_filter_op
   }
 };
 
+
+//---------------------------------------------------------------------
+// agent_topk_filter_partition & agent_topk_last_filter helpers
+//---------------------------------------------------------------------
+
+
+//---------------------------------------------------------------------
+// sink_mode: compile-time selector for agent_topk_filter_partition.
+//
+// Each mode corresponds to one behavior of the legacy sink_* family and drives a
+// single-kernel runtime switch in DeviceTopKFilterKernel. `early_stop` is the final
+// collapsed pass; `buffered` writes output and stages remaining candidates into a
+// back buffer. The "scout" mode that only builds a histogram (formerly
+// `unbuffered`) is now handled by `AgentTopKHistogram` with a candidate filter,
+// and is intentionally no longer part of this enum.
+//---------------------------------------------------------------------
+
+enum class sink_mode
+{
+  early_stop, // selected + candidate -> d_keys_out front; no histogram
+  buffered, // selected -> d_keys_out; candidate -> out_buf; histogram over candidates
+};
+
+// No-op candidate callback. Used by `agent_topk_last_filter` (no histogram is
+// accumulated on the last filter pass; the partition primitive still requires
+// a callable).
+struct topk_noop_candidate_callback_op
+{
+  template <typename T>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const T&) const
+  {}
+};
+
+// Wraps an `IdentifyCandidatesOp` (3-state classifier returning `candidate_class`)
+// into a unary `bool` predicate suitable for the single-stream `BlockFilter`
+// primitive. Folds the architecture's "early_stop collapses candidate -> selected"
+// rule into the wrapper: any non-rejected item is kept.
+template <typename IdentifyCandidatesOpT>
+struct topk_identify_selected_op
+{
+  IdentifyCandidatesOpT identify_candidates_op;
+
+  template <typename KeyT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE bool operator()(const KeyT& key) const
+  {
+    return identify_candidates_op(key) != candidate_class::rejected;
+  }
+};
+
+// Histogram callback: increments the agent's smem histogram for every
+// `candidate`-classified key. Mirrors the legacy `process_tile`'s inline atomicAdd
+// per item; architecture §10.2 describes the same pattern as a callback.
+template <typename ExtractBinOpT, typename CounterT>
+struct topk_histogram_callback_op
+{
+  ExtractBinOpT extract_bin_op;
+  CounterT* smem_histogram;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE topk_histogram_callback_op(ExtractBinOpT eb, CounterT* hist)
+      : extract_bin_op(eb)
+      , smem_histogram(hist)
+  {}
+
+  template <typename KeyT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const KeyT& key) const
+  {
+    const int bucket = extract_bin_op(key);
+    atomicAdd(smem_histogram + bucket, CounterT{1});
+  }
+};
+
 //---------------------------------------------------------------------
 // AgentTopKHistogram: histogram agent shared by pass 0 and the unbuffered
 // filter passes. Owns _TempStorage, instantiates a TileDataSource for the
@@ -755,22 +826,6 @@ struct AgentTopKHistogram
   }
 };
 
-//---------------------------------------------------------------------
-// sink_mode: compile-time selector for agent_topk_filter_partition.
-//
-// Each mode corresponds to one behavior of the legacy sink_* family and drives a
-// single-kernel runtime switch in DeviceTopKFilterKernel. `early_stop` is the final
-// collapsed pass; `buffered` writes output and stages remaining candidates into a
-// back buffer. The "scout" mode that only builds a histogram (formerly
-// `unbuffered`) is now handled by `AgentTopKHistogram` with a candidate filter,
-// and is intentionally no longer part of this enum.
-//---------------------------------------------------------------------
-
-enum class sink_mode
-{
-  early_stop, // selected + candidate -> d_keys_out front; no histogram
-  buffered, // selected -> d_keys_out; candidate -> out_buf; histogram over candidates
-};
 
 //---------------------------------------------------------------------
 // agent_topk_filter_partition: agent for passes 1..num_passes-1 (the
@@ -796,53 +851,6 @@ enum class sink_mode
 // are passed to `run()` rather than being stored on the agent.
 //---------------------------------------------------------------------
 
-// No-op candidate callback. Used by `agent_topk_last_filter` (no histogram is
-// accumulated on the last filter pass; the partition primitive still requires
-// a callable).
-struct topk_noop_candidate_callback_op
-{
-  template <typename T>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const T&) const
-  {}
-};
-
-// Wraps an `IdentifyCandidatesOp` (3-state classifier returning `candidate_class`)
-// into a unary `bool` predicate suitable for the single-stream `BlockFilter`
-// primitive. Folds the architecture's "early_stop collapses candidate -> selected"
-// rule into the wrapper: any non-rejected item is kept.
-template <typename IdentifyCandidatesOpT>
-struct topk_identify_selected_op
-{
-  IdentifyCandidatesOpT identify_candidates_op;
-
-  template <typename KeyT>
-  _CCCL_DEVICE _CCCL_FORCEINLINE bool operator()(const KeyT& key) const
-  {
-    return identify_candidates_op(key) != candidate_class::rejected;
-  }
-};
-
-// Histogram callback: increments the agent's smem histogram for every
-// `candidate`-classified key. Mirrors the legacy `process_tile`'s inline atomicAdd
-// per item; architecture §10.2 describes the same pattern as a callback.
-template <typename ExtractBinOpT, typename CounterT>
-struct topk_histogram_callback_op
-{
-  ExtractBinOpT extract_bin_op;
-  CounterT* smem_histogram;
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE topk_histogram_callback_op(ExtractBinOpT eb, CounterT* hist)
-      : extract_bin_op(eb)
-      , smem_histogram(hist)
-  {}
-
-  template <typename KeyT>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void operator()(const KeyT& key) const
-  {
-    const int bucket = extract_bin_op(key);
-    atomicAdd(smem_histogram + bucket, CounterT{1});
-  }
-};
 
 template <typename AgentTopKPolicyT,
           typename KeyInputIteratorT,
