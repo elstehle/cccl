@@ -883,6 +883,20 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         detail::identity_decomposer_t,
         OffsetT,
         OutOffsetT>;
+      // Per-segment epilogue for the histogram pass: runs after the histogram kernel finishes,
+      // one CTA per large segment, doing the prefix-sum + bucket-finder + counter update +
+      // (optional) global histogram reset. Replaces the per-tile `finalize_pass` that used to
+      // live inside `agent_batched_topk_histogram::run`.
+      auto finalize_histogram_kernel_ptr = device_segmented_topk_finalize_histogram_kernel<
+        PolicySelector,
+        SegmentSizeParameterT,
+        KParameterT,
+        NumSegmentsParameterT,
+        segment_id_provider_t,
+        large_segments_count_it_t,
+        OffsetT,
+        OutOffsetT,
+        key_in_t>;
       // The filter and last-filter kernels read/write the per-segment candidate buffer through
       // the value-channel iterators, so we instantiate them on the *effective* iterator types
       // (see `effective_d_value_segments_*` above). In materialized mode these are aliases for
@@ -926,11 +940,17 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // multi-CTA kernel iterates the tile space via a grid-stride loop; physical CTAs whose
       // stride-loop body never executes early-exit. Mirrors the single-problem
       // `dispatch_topk.cuh` approach.
-      int histogram_blocks_per_sm   = 0;
-      int filter_blocks_per_sm      = 0;
-      int last_filter_blocks_per_sm = 0;
+      int histogram_blocks_per_sm          = 0;
+      int finalize_histogram_blocks_per_sm = 0;
+      int filter_blocks_per_sm             = 0;
+      int last_filter_blocks_per_sm        = 0;
       if (const auto error = CubDebug(
             MaxSmOccupancy(histogram_blocks_per_sm, histogram_kernel_ptr, multi_worker_threads_per_block)))
+      {
+        return error;
+      }
+      if (const auto error = CubDebug(MaxSmOccupancy(
+            finalize_histogram_blocks_per_sm, finalize_histogram_kernel_ptr, multi_worker_threads_per_block)))
       {
         return error;
       }
@@ -946,14 +966,27 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       }
       const auto histogram_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(histogram_blocks_per_sm * num_sms), total_large_tiles_upper_bound);
+      // Finalize-histogram launches one CTA per large segment; cap at the host-known
+      // segment-count upper bound (`num_segments_upper_bound`) rather than at
+      // `total_large_tiles_upper_bound`. The kernel's grid-stride loop bounds itself against the
+      // device-side `num_large_segments` (read through `large_segments_count_it`), so an
+      // over-sized cap is also safe -- this just avoids pointlessly launching CTAs we know we
+      // won't use.
+      const auto finalize_histogram_grid_size = (::cuda::std::min) (
+        static_cast<unsigned int>(finalize_histogram_blocks_per_sm * num_sms),
+        static_cast<unsigned int>(num_segments_upper_bound));
       const auto filter_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(filter_blocks_per_sm * num_sms), total_large_tiles_upper_bound);
       const auto last_filter_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(last_filter_blocks_per_sm * num_sms), total_large_tiles_upper_bound);
 
-      // Pass 0: dedicated histogram-only kernel over the per-segment original inputs.
+      // Pass 0: dedicated histogram-only kernel over the per-segment original inputs, followed
+      // by the per-segment epilogue (prefix-sum + bucket-finder + counter update + optional
+      // global-histogram reset). Splitting the epilogue out of the histogram kernel removes the
+      // per-tile `finalize_pass` cost from the histogram CTAs at the price of one extra cheap
+      // device-side kernel launch per pass.
       {
-        const int reset_histogram = num_passes != 1;
+        const bool reset_histogram = num_passes != 1;
         if (const auto error = CubDebug(
               THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
                 histogram_grid_size, multi_worker_threads_per_block, 0, stream)
@@ -972,6 +1005,23 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                   total_bits,
                   reset_histogram,
                   decomposer)))
+        {
+          return error;
+        }
+        if (const auto error = CubDebug(
+              THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
+                finalize_histogram_grid_size, multi_worker_threads_per_block, 0, stream)
+                .doit(
+                  finalize_histogram_kernel_ptr,
+                  segment_sizes,
+                  k,
+                  num_segments,
+                  segment_id_provider,
+                  d_seg_counters,
+                  d_seg_histograms,
+                  large_segments_count_it,
+                  0,
+                  reset_histogram)))
         {
           return error;
         }

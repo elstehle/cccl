@@ -131,6 +131,15 @@ struct multi_worker_policy
   // When `true`, the per-pass classification computed scatter use-site rather than materialized into a `classes[]` array up front.
   bool inlined_classify;
 
+  // Number of consecutive tiles a single CTA processes before grid-striding to the next chunk
+  // (`gridDim.x * histogram_tiles_per_chunk` apart). Used by the histogram-only kernel as the
+  // inner-loop count: when consecutive tiles belong to the same segment, the per-segment smem
+  // histogram is initialized once at the top of the chunk and merged into the per-segment global
+  // histogram once at the bottom, amortizing init / merge work across the chunk. A chunk that
+  // crosses a segment boundary flushes the current segment's smem histogram, re-initializes it
+  // for the next segment, and continues. Set to `1` to fall back to one-tile-per-grid-stride.
+  int histogram_tiles_per_chunk;
+
   _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block //
@@ -145,7 +154,8 @@ struct multi_worker_policy
         && lhs.speculative_selected_buffer_capacity == rhs.speculative_selected_buffer_capacity //
         && lhs.value_materialization == rhs.value_materialization //
         && lhs.lazy_value_load == rhs.lazy_value_load //
-        && lhs.inlined_classify == rhs.inlined_classify;
+        && lhs.inlined_classify == rhs.inlined_classify //
+        && lhs.histogram_tiles_per_chunk == rhs.histogram_tiles_per_chunk;
   }
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
@@ -168,7 +178,8 @@ struct multi_worker_policy
               << ", .speculative_selected_buffer_capacity = " << p.speculative_selected_buffer_capacity //
               << ", .value_materialization = " << static_cast<int>(p.value_materialization) //
               << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") //
-              << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") << " }";
+              << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") //
+              << ", .histogram_tiles_per_chunk = " << p.histogram_tiles_per_chunk << " }";
   }
 #endif // _CCCL_HOSTED()
 };
@@ -261,7 +272,8 @@ struct policy_selector
         /*.speculative_selected_buffer_capacity =*/128,
         /*.value_materialization                =*/detail::topk::value_materialization_mode::indexed,
         /*.lazy_value_load                      =*/true,
-        /*.inlined_classify                     =*/true}};
+        /*.inlined_classify                     =*/true,
+        /*.histogram_tiles_per_chunk            =*/4}};
   }
 };
 

@@ -297,6 +297,17 @@ struct multi_worker_agent_policy_lift
     mw.accumulating_buffer_capacity,
     mw.speculative_selected_buffer_capacity>;
 };
+
+// Lift `multi_worker_per_segment_policy.histogram_tiles_per_chunk` to a compile-time integral
+// constant the histogram kernel can use as a `static constexpr` loop bound. Kept separate from
+// `multi_worker_agent_policy_lift` because the agent's compile-time policy struct
+// (`AgentTopKPolicy`) does not carry this knob -- it is consumed only by the kernel's
+// outer/inner grid-stride loop, not by the agent's smem layout or template logic.
+template <typename PolicySelector>
+struct histogram_tiles_per_chunk
+{
+  static constexpr int value = current_policy<PolicySelector>().multi_worker_per_segment_policy.histogram_tiles_per_chunk;
+};
 } // namespace topk_seg_kernel_detail
 
 template <typename PolicySelector,
@@ -381,16 +392,131 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     extract_bin_op,
     num_large_segments);
 
-  // Grid-stride loop: the dispatch sizes the grid by `MaxSmOccupancy * num_sms` capped at the
-  // host-side `total_large_tiles_upper_bound`, so a CTA may process multiple tiles per launch
-  // when there are more tiles than physical slots. Each `agent.run(global_tile_id, ...)`
-  // ends with `finalize_pass`'s `__syncthreads_or` (the last barrier inside the call), which
-  // serves as the per-iteration boundary; no extra `__syncthreads()` is needed here.
-  for (LargeSegmentTileOffsetT global_tile_id = static_cast<LargeSegmentTileOffsetT>(blockIdx.x);
-       global_tile_id < total_large_tiles;
-       global_tile_id += static_cast<LargeSegmentTileOffsetT>(gridDim.x))
+  // Chunked grid-stride loop. Each CTA processes `tiles_per_chunk` consecutive tiles per stride;
+  // inside the chunk the agent groups tiles by segment so the smem histogram is initialised once
+  // per (chunk x segment) pair and merged into the per-segment global slab once per (chunk x
+  // segment) pair (instead of once per tile in the previous design). `tiles_per_chunk = 1`
+  // falls back to a plain one-tile-per-stride loop.
+  //
+  // This kernel no longer runs the per-segment prefix-sum / bucket-finder epilogue; that work
+  // is done by `device_segmented_topk_finalize_histogram_kernel` after this kernel completes.
+  // `reset_histogram` is consumed by the finalize kernel rather than here.
+  (void) reset_histogram;
+  static constexpr int tiles_per_chunk =
+    topk_seg_kernel_detail::histogram_tiles_per_chunk<PolicySelector>::value;
+  const LargeSegmentTileOffsetT stride =
+    static_cast<LargeSegmentTileOffsetT>(gridDim.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
+  for (LargeSegmentTileOffsetT chunk_start =
+         static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
+       chunk_start < total_large_tiles;
+       chunk_start += stride)
   {
-    agent.run(global_tile_id, pass, reset_histogram);
+    agent.process_chunk(chunk_start, tiles_per_chunk, total_large_tiles, pass);
+  }
+}
+
+// Per-segment epilogue kernel for the histogram pass. Runs after
+// `device_segmented_topk_histogram_kernel` finishes (host-side launch ordering on the same
+// stream ensures all CTAs of the histogram kernel retire before this kernel starts). One CTA per
+// large segment in a grid-strided loop: prefix-sums that segment's global histogram, finds the
+// bucket containing the k-th key, updates the per-segment counter, and (optionally) zeros the
+// histogram slab for the next pass.
+//
+// Splitting this out of the histogram kernel removes the per-tile `finalize_pass` cost (a
+// `__threadfence` + `__syncthreads_or` chain plus the prefix-sum scratch's smem footprint) from
+// the histogram CTAs. The trade-off is one extra cheap kernel launch per pass on this path.
+template <typename PolicySelector,
+          typename SegmentSizeParameterT,
+          typename KParameterT,
+          typename NumSegmentsParameterT,
+          typename SegmentIdProviderT,
+          typename LargeSegmentsCountItT,
+          typename OffsetT,
+          typename OutOffsetT,
+          typename KeyInT>
+#if _CCCL_HAS_CONCEPTS()
+  requires batched_topk_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
+__launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
+  _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_finalize_histogram_kernel(
+    SegmentSizeParameterT segment_sizes,
+    KParameterT k_param,
+    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
+    detail::topk::counter<KeyInT, OffsetT, OutOffsetT>* d_segment_counters,
+    _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
+    _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
+    _CCCL_GRID_CONSTANT const int pass,
+    _CCCL_GRID_CONSTANT const bool reset_histogram)
+{
+  using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
+  static constexpr int block_threads = agent_topk_policy_t::block_threads;
+  static constexpr int bits_per_pass = agent_topk_policy_t::bits_per_pass;
+  static constexpr int num_buckets   = 1 << bits_per_pass;
+
+  using counter_t                   = detail::topk::counter<KeyInT, OffsetT, OutOffsetT>;
+  using block_identify_kth_bucket_t = detail::topk::block_identify_kth_bucket<
+    block_threads,
+    bits_per_pass,
+    agent_topk_policy_t::scan_algorithm,
+    OffsetT,
+    OutOffsetT>;
+
+  __shared__ union
+  {
+    typename block_identify_kth_bucket_t::TempStorage prefix_sum;
+  } temp_storage;
+
+  const typename NumSegmentsParameterT::value_type num_large_segments =
+    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+
+  // Grid-stride loop over queue slots. One CTA owns one segment for the duration of that
+  // segment's epilogue; CTAs are independent and write to disjoint counter / histogram slabs.
+  using queue_idx_t = typename NumSegmentsParameterT::value_type;
+  for (queue_idx_t queue_idx = static_cast<queue_idx_t>(blockIdx.x); queue_idx < num_large_segments;
+       queue_idx += static_cast<queue_idx_t>(gridDim.x))
+  {
+    const auto segment_id      = segment_id_provider[queue_idx];
+    const OffsetT num_items    = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
+    counter_t* segment_counter = d_segment_counters + queue_idx;
+    OffsetT* segment_histogram = d_segment_histograms + queue_idx * num_buckets;
+
+    // Clip `k` to the segment's input size (same as the histogram agent did pre-refactor; see
+    // the comment on that clip for why).
+    const OutOffsetT k = (::cuda::std::min) (
+      static_cast<OutOffsetT>(k_param.get_param(segment_id)), static_cast<OutOffsetT>(num_items));
+
+    // Per-segment counter update + kth-bucket find. `on_kth_bucket` writes the kth bucket's
+    // bin index into the counter's `kth_key_bits` for the next pass to consume, and decrements
+    // `k` by the count of already-selected items.
+    auto on_kth_bucket =
+      [segment_counter, pass](OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates) {
+        segment_counter->k                  = static_cast<OutOffsetT>(current_k - num_selected);
+        segment_counter->num_candidates_out = num_candidates;
+        detail::topk::set_kth_key_bits<bits_per_pass>(
+          segment_counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
+      };
+
+    if (threadIdx.x == 0)
+    {
+      segment_counter->num_candidates_in      = num_items;
+      segment_counter->num_candidates_written = 0;
+    }
+
+    block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(segment_histogram, k, on_kth_bucket);
+
+    if (reset_histogram)
+    {
+      // Zero the per-segment histogram slab so the next pass starts clean. The two
+      // `__syncthreads()` bracket the reset against the kth-bucket primitive's smem reuse and
+      // against the next iteration's load.
+      __syncthreads();
+      detail::topk::init_histogram<block_threads, num_buckets>(segment_histogram);
+    }
+
+    // Separate iterations work on independent counter / histogram slabs but share the smem
+    // `temp_storage.prefix_sum` arena; barrier between iterations.
+    __syncthreads();
   }
 }
 
