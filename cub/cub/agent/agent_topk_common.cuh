@@ -40,6 +40,7 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
+#include <cuda/std/cstdint>
 
 CUB_NAMESPACE_BEGIN
 
@@ -253,11 +254,24 @@ set_kth_key_bits(key_prefix_storage_t<KeyT>& prefix, const int pass, const int b
 //   - `num_candidates_in` is monotonically non-increasing across the buffered chain (the
 //     candidate set can only shrink); the early-stop epilogue terminates the chain by writing
 //     0 here.
-template <typename KeyInT, typename OffsetT, typename OutOffsetT>
-struct alignas(128) counter
+// Cross-pass scalar state. The fields are grouped (and the storage type of
+// `load_from_candidates_buffer` widened from `bool` to `::cuda::std::uint32_t`) so that the
+// entry-of-pass `LDG.E.128` against this struct lands four clean 32-bit values in consecutive
+// scalar registers. With `bool` storage, ptxas inserted a `PRMT` to extract byte 12 out of the
+// 16-byte vector load; that `PRMT` is a per-thread op that blocks the `R2UR` heuristic from
+// moving any of the loaded fields into uniform registers (see the register-pressure
+// investigation notes for the batched filter kernel). The widened uint32 lets the load
+// produce four `R2UR`-eligible scalars.
+//
+// `OffsetT` and `OutOffsetT` are independent at the type level but must each be 32-bit for the
+// `LDG.E.128` to cover the whole struct in one transaction (16 bytes = 4*4). The dispatch
+// already fixes the batched OffsetT/OutOffsetT to `::cuda::std::uint32_t`; the single-problem
+// path also lands here when the user picks 32-bit offsets, which is the throughput-sensitive
+// case for the per-pass counter read. Wider offset types still work, they just spill the load
+// into multiple `LDG.E.64` transactions and forfeit the `R2UR` win.
+template <typename OffsetT, typename OutOffsetT>
+struct alignas(16) counter_cross_pass_state
 {
-  // ----- (1) Cross-pass scalar state -----
-
   // Top-k items still to be identified after this pass commits its writes. Updated by
   // `on_kth_bucket` to `current_k - num_selected` at each pass's epilogue.
   OutOffsetT k;
@@ -280,7 +294,27 @@ struct alignas(128) counter
   // flipped to `true` exactly once when the first filter pass writes to the candidate buffer; it
   // then sticks because the candidate set is monotonically non-increasing across passes (once we
   // fit in the back buffer we keep fitting).
-  bool load_from_candidates_buffer;
+  //
+  // Stored as `uint32_t` rather than `bool` purely to keep the four-field-in-one-cache-line load
+  // free of byte-extracting PRMT (see the struct-level note above). Read/write sites keep their
+  // `bool` semantics via implicit conversions.
+  ::cuda::std::uint32_t load_from_candidates_buffer;
+};
+
+template <typename KeyInT, typename OffsetT, typename OutOffsetT>
+struct alignas(128) counter : counter_cross_pass_state<OffsetT, OutOffsetT>
+{
+  // ----- (1) Cross-pass scalar state -----
+  //
+  // Inherited from `counter_cross_pass_state` so they land at offsets [0..16) of `counter`,
+  // sized to one `LDG.E.128`. See the base struct's comment block for the grouping rationale.
+  //
+  // Inherited members (so existing `counter->k` / `counter->num_candidates_*` /
+  // `counter->load_from_candidates_buffer` access patterns keep compiling):
+  //   - `OutOffsetT k`
+  //   - `OffsetT    num_candidates_out`
+  //   - `OffsetT    num_candidates_in`
+  //   - `uint32_t   load_from_candidates_buffer`
 
   // We determine the bits of the k_th key inside the mask processed by the pass. The already
   // known bits are stored in `kth_key_bits`. It's used to discriminate whether an element is a
