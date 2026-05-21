@@ -1,0 +1,925 @@
+.text._ZN3cub17_V_300500_SM_10006detail12batched_topk38device_segmented_topk_histogram_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE1EN4cuda3__417constant_iteratorIPKalEENS1_6params13uniform_paramIlLl0ELl268435456EEENSG_IlLl1ELl8388608EEENSG_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_PKT6_PNS7_7counterINS9_3std3__415iterator_traitsINSY_ISN_vE10value_typeEvE10value_typeET9_T10_EEPS13_T7_iibT8_:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 329
+        /*0000*/                   LDC R1, c[0x0][0x37c] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 355
+        /*0010*/                   LDC.64 R2, c[0x0][0x3c8] ;
+        /*0020*/                   LDCU.64 UR26, c[0x0][0x358] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 357
+        /*0030*/                   LDCU.64 UR4, c[0x0][0x3b0] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 355
+        /*0040*/                   LD.E.64 R2, desc[UR26][R2.64] ;
+        /*0050*/                   R2UR UR16, R2 ;
+        /*0060*/                   R2UR UR17, R3 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 357
+        /*0070*/                   ULEA UR4, UP0, UR16, UR4, 0x2 ;
+        /*0080*/                   ULEA.HI.X UR5, UR16, UR5, UR17, 0x2, UP0 ;
+        /*0090*/                   IMAD.U32 R4, RZ, RZ, UR4 ;
+        /*00a0*/                   IMAD.U32 R5, RZ, RZ, UR5 ;
+        /*00b0*/                   LD.E R4, desc[UR26][R4.64] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 410
+        /*00c0*/                   S2UR UR20, SR_CTAID.X ;
+        /*00d0*/                   USHF.L.U32 UR20, UR20, 0x2, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 357
+        /*00e0*/                   R2UR UR29, R4 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 411
+        /*00f0*/                   UISETP.GE.U32.AND UP0, UPT, UR20, UR29, UPT ;
+        /*0100*/                   PLOP3.LUT P0, PT, PT, PT, UP0, 0x80, 0x8 ;
+        /*0110*/               @P0 EXIT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 133
+        /*0120*/                   LDCU UR4, c[0x0][0x3d0] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 391
+        /*0130*/                   S2R R0, SR_TID.X ;
+        /*0140*/                   S2UR UR5, SR_CgaCtaId ;
+        /*0150*/                   UISETP.LT.U32.AND UP0, UPT, UR16, 0x1, UPT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 78
+        /*0160*/                   UMOV UR19, 0xffffffff ;
+        /*0170*/                   PLOP3.LUT P1, PT, PT, PT, UP0, 0x80, 0x8 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 134
+        /*0180*/                   ULEA UR18, -UR4, URZ, 0x3 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 391
+        /*0190*/                   UMOV UR4, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 134
+        /*01a0*/                   UISETP.LT.AND UP1, UPT, URZ, UR18, UPT ;
+        /*01b0*/                   IMAD.U32 R2, RZ, RZ, UR18 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 391
+        /*01c0*/                   ULEA UR4, UR5, UR4, 0x18 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 134
+        /*01d0*/                   USEL UR18, URZ, UR18, !UP1 ;
+        /*01e0*/                   VIADDMNMX R2, R2, 0x8, RZ, !PT ;
+        /*01f0*/                   R2UR UR6, R2 ;
+        /*0200*/                   IMAD.U32 R2, RZ, RZ, UR17 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 391
+        /*0210*/                   LOP3.LUT P0, RZ, R0.reuse, 0x1f, RZ, 0xc0, !PT ;
+        /*0220*/                   LEA R36, R0, UR4, 0x2 ;
+        /*0230*/                   ISETP.LT.OR.EX P0, PT, R2, RZ, P0, P1 ;
+        /*0240*/                   IMAD.WIDE.U32 R2, R0, 0x10, RZ ;
+        /*0250*/                   P2R R37, PR, RZ, 0x1 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 77
+        /*0260*/                   UIADD3 UR6, UPT, UPT, -UR18, UR6, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 78
+        /*0270*/                   USHF.L.U32 UR19, UR19, UR6, URZ ;
+.L_x_2868:
+        /*0280*/                   UMOV UR21, 0xffffffff ;
+        /*0290*/                   UMOV UR6, URZ ;
+        /*02a0*/                   UMOV UR7, URZ ;
+        /*02b0*/                   UMOV UR8, URZ ;
+        /*02c0*/                   UMOV UR9, URZ ;
+        /*02d0*/                   UMOV UR12, URZ ;
+        /*02e0*/                   UMOV UR10, URZ ;
+        /*02f0*/                   UMOV UR11, URZ ;
+        /*0300*/                   UMOV UR13, URZ ;
+        /*0310*/                   UMOV UR4, URZ ;
+        /*0320*/                   UMOV UR5, URZ ;
+.L_x_2865:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 644
+        /*0330*/                   UIADD3 UR28, UPT, UPT, UR8, UR20, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 645
+        /*0340*/                   UISETP.GE.U32.AND UP0, UPT, UR28, UR29, UPT ;
+        /*0350*/                   BRA.U UP0, `(.L_x_2823) ;
+        /*0360*/                   ISETP.NE.AND P1, PT, R37, RZ, PT ;
+        /*0370*/                   BSSY.RECONVERGENT B0, `(.L_x_2824) ;
+        /*0380*/                   LOP3.LUT P0, RZ, R0, 0x1f, RZ, 0xc0, !PT ;
+        /*0390*/                   SEL R4, RZ, 0xffffffff, P0 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 601
+        /*03a0*/               @P1 BRA `(.L_x_2825) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 123
+        /*03b0*/                   LDCU.64 UR34, c[0x0][0x3b0] ;
+        /*03c0*/                   UMOV UR14, URZ ;
+        /*03d0*/                   UMOV UR15, URZ ;
+        /*03e0*/                   UMOV UR24, UR16 ;
+        /*03f0*/                   UMOV UR25, UR17 ;
+.L_x_2826:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 122
+        /*0400*/                   USHF.R.U64 UR22, UR24, 0x1, UR25 ;
+        /*0410*/                   USHF.R.U32.HI UR23, URZ, 0x1, UR25 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 123
+        /*0420*/                   UIADD3 UR32, UP0, UPT, UR22, UR14, URZ ;
+        /*0430*/                   UIADD3.X UR33, UPT, UPT, UR23, UR15, URZ, UP0, !UPT ;
+        /*0440*/                   ULEA UR30, UP0, UR32, UR34, 0x2 ;
+        /*0450*/                   ULEA.HI.X UR31, UR32, UR35, UR33, 0x2, UP0 ;
+        /*0460*/                   IMAD.U32 R4, RZ, RZ, UR30 ;
+        /*0470*/                   IMAD.U32 R5, RZ, RZ, UR31 ;
+        /*0480*/                   LD.E R4, desc[UR26][R4.64] ;
+        /*0490*/                   R2UR UR30, R4 ;
+        /*04a0*/                   UISETP.GE.U32.AND UP1, UPT, UR28, UR30, UPT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 130
+        /*04b0*/                   @UP1 ULOP3.LUT UR30, URZ, UR22, URZ, 0x33, !UPT ;
+        /*04c0*/                   @UP1 ULOP3.LUT UR31, URZ, UR23, URZ, 0x33, !UPT ;
+        /*04d0*/                   @UP1 UIADD3 UR22, UP0, UPT, UR24, UR30, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 129
+        /*04e0*/                   @UP1 UIADD3 UR14, UP2, UPT, UR32, 0x1, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 130
+        /*04f0*/                   @UP1 UIADD3.X UR23, UPT, UPT, UR25, UR31, URZ, UP0, !UPT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 120
+        /*0500*/                   UISETP.GT.U32.AND UP0, UPT, UR22, URZ, UPT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 129
+        /*0510*/                   @UP1 UIADD3.X UR15, UPT, UPT, URZ, UR33, URZ, UP2, !UPT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_search.cuh", line 120
+        /*0520*/                   UISETP.GT.AND.EX UP0, UPT, UR23, URZ, UPT, UP0 ;
+        /*0530*/                   UMOV UR24, UR22 ;
+        /*0540*/                   UMOV UR25, UR23 ;
+        /*0550*/                   BRA.U UP0, `(.L_x_2826) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 603
+        /*0560*/                   UIADD3 UR14, UPT, UPT, UR14, -0x1, URZ ;
+        /*0570*/                   IMAD.U32 R4, RZ, RZ, UR14 ;
+.L_x_2825:
+        /*0580*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2824:
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/sm_30_intrinsics.hpp", line 373
+        /*0590*/                   SHFL.IDX PT, R4, R4, RZ, 0x1f ;
+        /*05a0*/                   R2UR UR14, R4 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 652
+        /*05b0*/                   UISETP.NE.AND UP0, UPT, UR14, UR21, UPT ;
+        /*05c0*/                   BRA.U !UP0, `(.L_x_2827) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 655
+        /*05d0*/                   UISETP.NE.AND UP0, UPT, UR21, -0x1, UPT ;
+        /*05e0*/                   BRA.U !UP0, `(.L_x_2828) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 657
+        /*05f0*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*0600*/                   ISETP.GT.U32.AND P0, PT, R0, 0xff, PT ;
+        /*0610*/                   BSSY.RECONVERGENT B0, `(.L_x_2828) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 388
+        /*0620*/               @P0 BRA `(.L_x_2829) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 390
+        /*0630*/                   LDS R23, [R36] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 391
+        /*0640*/                   ISETP.NE.AND P0, PT, R23, RZ, PT ;
+        /*0650*/              @!P0 BRA `(.L_x_2829) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 393
+        /*0660*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x4 ;
+        /*0670*/                   IMAD.WIDE.U32 R4, R0, R5, UR6 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*0680*/                   ATOM.E.ADD.STRONG.GPU PT, RZ, desc[UR26][R4.64], R23 ;
+.L_x_2829:
+        /*0690*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2828:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 670
+        /*06a0*/                   LDCU.64 UR4, c[0x0][0x3b0] ;
+        /*06b0*/                   ISETP.GT.U32.AND P0, PT, R0, 0xff, PT ;
+        /*06c0*/                   LDCU UR12, c[0x0][0x390] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 669
+        /*06d0*/                   LDCU.64 UR6, c[0x0][0x3c0] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 670
+        /*06e0*/                   UIMAD.WIDE.U32 UR4, UR14, 0x4, UR4 ;
+        /*06f0*/                   IMAD.U32 R4, RZ, RZ, UR4 ;
+        /*0700*/                   IMAD.U32 R5, RZ, RZ, UR5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 676
+        /*0710*/                   LDCU.64 UR4, c[0x0][0x388] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 670
+        /*0720*/                   LD.E R4, desc[UR26][R4.64] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 669
+        /*0730*/                   USHF.L.U32 UR13, UR14, 0x8, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 674
+        /*0740*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*0750*/                   ULOP3.LUT UR9, UR12, 0x1fff, URZ, 0xc0, !UPT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 669
+        /*0760*/                   UIMAD.WIDE.U32 UR6, UR13, 0x4, UR6 ;
+        /*0770*/                   USHF.R.U32.HI UR12, URZ, 0xd, UR12 ;
+        /*0780*/                   LDCU UR11, c[0x0][0x390] ;
+        /*0790*/                   UMOV UR21, UR14 ;
+        /*07a0*/                   UMOV UR13, UR4 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 365
+        /*07b0*/              @!P0 STS [R36], RZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 676
+        /*07c0*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 674
+        /*07d0*/                   R2UR UR10, R4 ;
+.L_x_2827:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 679
+        /*07e0*/                   UIADD3 UR14, UPT, UPT, -UR10, UR28, URZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 690
+        /*07f0*/                   UISETP.GE.U32.AND UP0, UPT, UR14, UR12, UPT ;
+        /*0800*/                   BRA.U UP0, `(.L_x_2830) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 695
+        /*0810*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/detail/topk/tile_data_source.cuh", line 339
+        /*0820*/                   ULEA UR22, UR14, UR13, 0xd ;
+        /*0830*/                   UIMAD.WIDE.U32 UR14, UR14, 0x2000, UR4 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 203
+        /*0840*/                   ULOP3.LUT UP0, URZ, UR22, 0x3, URZ, 0xc0, !UPT ;
+        /*0850*/                   BRA.U UP0, `(.L_x_2831) ;
+        /*0860*/                   IMAD.SHL.U32 R23, R0, 0x4, RZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 212
+        /*0870*/                   IMAD.U32 R4, RZ, RZ, UR14 ;
+        /*0880*/                   IMAD.U32 R5, RZ, RZ, UR15 ;
+        /*0890*/                   IMAD.WIDE.U32 R4, R23, 0x4, R4 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_load.cuh", line 326
+        /*08a0*/                   LDG.E R22, desc[UR26][R4.64] ;
+        /*08b0*/                   LDG.E R27, desc[UR26][R4.64+0x4] ;
+        /*08c0*/                   LDG.E R31, desc[UR26][R4.64+0x8] ;
+        /*08d0*/                   LDG.E R34, desc[UR26][R4.64+0xc] ;
+        /*08e0*/                   PRMT R24, R22, 0x7771, RZ ;
+        /*08f0*/                   PRMT R25, R22.reuse, 0x7772, RZ ;
+        /*0900*/                   PRMT R23, R22.reuse, 0x7770, RZ ;
+        /*0910*/                   PRMT R28, R27.reuse, 0x7770, RZ ;
+        /*0920*/                   PRMT R29, R27, 0x7771, RZ ;
+        /*0930*/                   PRMT R26, R22, 0x7773, RZ ;
+        /*0940*/                   PRMT R32, R31, 0x7770, RZ ;
+        /*0950*/                   PRMT R33, R31.reuse, 0x7771, RZ ;
+        /*0960*/                   PRMT R4, R31, 0x7772, RZ ;
+        /*0970*/                   PRMT R30, R27, 0x7772, RZ ;
+        /*0980*/                   PRMT R31, R31, 0x7773, RZ ;
+        /*0990*/                   PRMT R35, R34.reuse, 0x7771, RZ ;
+        /*09a0*/                   PRMT R5, R34, 0x7770, RZ ;
+        /*09b0*/                   PRMT R38, R34.reuse, 0x7772, RZ ;
+        /*09c0*/                   PRMT R39, R34, 0x7773, RZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 226
+        /*09d0*/                   PRMT R41, R24, 0x7610, R41 ;
+        /*09e0*/                   PRMT R22, R25, 0x7610, R22 ;
+        /*09f0*/                   PRMT R40, R23, 0x7610, R40 ;
+        /*0a00*/                   PRMT R24, R28, 0x7610, R24 ;
+        /*0a10*/                   PRMT R25, R29, 0x7610, R25 ;
+        /*0a20*/                   PRMT R23, R26, 0x7610, R23 ;
+        /*0a30*/                   PRMT R28, R32, 0x7610, R28 ;
+        /*0a40*/                   PRMT R29, R33, 0x7610, R29 ;
+        /*0a50*/                   PRMT R26, R30, 0x7610, R26 ;
+        /*0a60*/                   PRMT R32, R31, 0x7610, R32 ;
+        /*0a70*/                   PRMT R33, R35, 0x7610, R33 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/thread/thread_load.cuh", line 326
+        /*0a80*/                   PRMT R27, R27, 0x7773, RZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 226
+        /*0a90*/                   PRMT R30, R4, 0x7610, R30 ;
+        /*0aa0*/                   PRMT R31, R5, 0x7610, R31 ;
+        /*0ab0*/                   PRMT R34, R38, 0x7610, R34 ;
+        /*0ac0*/                   PRMT R35, R39, 0x7610, R35 ;
+        /*0ad0*/                   BRA `(.L_x_2832) ;
+.L_x_2831:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 69
+        /*0ae0*/                   IADD3 R4, P0, PT, R2, UR14, RZ ;
+        /*0af0*/                   IADD3.X R5, PT, PT, R3, UR15, RZ, P0, !PT ;
+        /*0b00*/                   LDG.E.U8 R40, desc[UR26][R4.64] ;
+        /*0b10*/                   LDG.E.U8 R41, desc[UR26][R4.64+0x1] ;
+        /*0b20*/                   LDG.E.U8 R22, desc[UR26][R4.64+0x2] ;
+        /*0b30*/                   LDG.E.U8 R23, desc[UR26][R4.64+0x3] ;
+        /*0b40*/                   LDG.E.U8 R24, desc[UR26][R4.64+0x4] ;
+        /*0b50*/                   LDG.E.U8 R25, desc[UR26][R4.64+0x5] ;
+        /*0b60*/                   LDG.E.U8 R26, desc[UR26][R4.64+0x6] ;
+        /*0b70*/                   LDG.E.U8 R27, desc[UR26][R4.64+0x7] ;
+        /*0b80*/                   LDG.E.U8 R28, desc[UR26][R4.64+0x8] ;
+        /*0b90*/                   LDG.E.U8 R29, desc[UR26][R4.64+0x9] ;
+        /*0ba0*/                   LDG.E.U8 R30, desc[UR26][R4.64+0xa] ;
+        /*0bb0*/                   LDG.E.U8 R32, desc[UR26][R4.64+0xb] ;
+        /*0bc0*/                   LDG.E.U8 R31, desc[UR26][R4.64+0xc] ;
+        /*0bd0*/                   LDG.E.U8 R33, desc[UR26][R4.64+0xd] ;
+        /*0be0*/                   LDG.E.U8 R34, desc[UR26][R4.64+0xe] ;
+        /*0bf0*/                   LDG.E.U8 R35, desc[UR26][R4.64+0xf] ;
+.L_x_2832:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*0c00*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0c10*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*0c20*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0c30*/                   IMAD.MOV.U32 R4, RZ, RZ, 0x7f ;
+        /*0c40*/                   LOP3.LUT R40, R40, 0xffff, R5.reuse, 0x48, !PT ;
+        /*0c50*/                   LOP3.LUT R41, R41, 0xffff, R4.reuse, 0x48, !PT ;
+        /*0c60*/                   LOP3.LUT R22, R22, 0xffff, R5, 0x48, !PT ;
+        /*0c70*/                   LOP3.LUT R23, R23, 0xffff, R4, 0x48, !PT ;
+        /*0c80*/                   LOP3.LUT R40, R40, 0xff, RZ, 0xc0, !PT ;
+        /*0c90*/                   LOP3.LUT R41, R41, 0xff, RZ, 0xc0, !PT ;
+        /*0ca0*/                   LOP3.LUT R22, R22, 0xff, RZ, 0xc0, !PT ;
+        /*0cb0*/                   LOP3.LUT R23, R23, 0xff, RZ, 0xc0, !PT ;
+        /*0cc0*/                   SHF.R.U32.HI R40, RZ, UR18, R40 ;
+        /*0cd0*/                   SHF.R.U32.HI R41, RZ, UR18, R41 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*0ce0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0cf0*/                   SHF.R.U32.HI R22, RZ, UR18, R22 ;
+        /*0d00*/                   SHF.R.U32.HI R23, RZ, UR18, R23 ;
+        /*0d10*/                   LOP3.LUT R40, R40, UR19, RZ, 0x30, !PT ;
+        /*0d20*/                   LOP3.LUT R41, R41, UR19, RZ, 0x30, !PT ;
+        /*0d30*/                   LOP3.LUT R22, R22, UR19, RZ, 0x30, !PT ;
+        /*0d40*/                   LOP3.LUT R23, R23, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*0d50*/                   LEA R40, R40, UR14, 0x2 ;
+        /*0d60*/                   LEA R41, R41, UR14, 0x2 ;
+        /*0d70*/                   LEA R22, R22, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*0d80*/                   ATOMS.POPC.INC.32 RZ, [R40+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*0d90*/                   LEA R23, R23, UR14, 0x2 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0da0*/                   LOP3.LUT R24, R24, 0xffff, R5.reuse, 0x48, !PT ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*0db0*/                   ATOMS.POPC.INC.32 RZ, [R41+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0dc0*/                   LOP3.LUT R25, R25, 0xffff, R4.reuse, 0x48, !PT ;
+        /*0dd0*/                   LOP3.LUT R26, R26, 0xffff, R5, 0x48, !PT ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*0de0*/                   ATOMS.POPC.INC.32 RZ, [R22+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0df0*/                   LOP3.LUT R27, R27, 0xffff, R4, 0x48, !PT ;
+        /*0e00*/                   LOP3.LUT R24, R24, 0xff, RZ, 0xc0, !PT ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*0e10*/                   ATOMS.POPC.INC.32 RZ, [R23+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*0e20*/                   LOP3.LUT R28, R28, 0xffff, R5.reuse, 0x48, !PT ;
+        /*0e30*/                   LOP3.LUT R25, R25, 0xff, RZ, 0xc0, !PT ;
+        /*0e40*/                   IMAD.MOV.U32 R22, RZ, RZ, 0x7f ;
+        /*0e50*/                   LOP3.LUT R29, R29, 0xffff, R4, 0x48, !PT ;
+        /*0e60*/                   LOP3.LUT R30, R30, 0xffff, R5, 0x48, !PT ;
+        /*0e70*/                   IMAD.MOV.U32 R23, RZ, RZ, 0x7f ;
+        /*0e80*/                   LOP3.LUT R26, R26, 0xff, RZ, 0xc0, !PT ;
+        /*0e90*/                   LOP3.LUT R27, R27, 0xff, RZ, 0xc0, !PT ;
+        /*0ea0*/                   LOP3.LUT R32, R32, 0xffff, R23, 0x48, !PT ;
+        /*0eb0*/                   SHF.R.U32.HI R24, RZ, UR18, R24 ;
+        /*0ec0*/                   LOP3.LUT R31, R31, 0xffff, R4, 0x48, !PT ;
+        /*0ed0*/                   LOP3.LUT R28, R28, 0xff, RZ, 0xc0, !PT ;
+        /*0ee0*/                   SHF.R.U32.HI R25, RZ, UR18, R25 ;
+        /*0ef0*/                   LOP3.LUT R33, R33, 0xffff, R22, 0x48, !PT ;
+        /*0f00*/                   LOP3.LUT R29, R29, 0xff, RZ, 0xc0, !PT ;
+        /*0f10*/                   LOP3.LUT R34, R34, 0xffff, R5, 0x48, !PT ;
+        /*0f20*/                   LOP3.LUT R30, R30, 0xff, RZ, 0xc0, !PT ;
+        /*0f30*/                   SHF.R.U32.HI R26, RZ, UR18, R26 ;
+        /*0f40*/                   LOP3.LUT R35, R35, 0xffff, R4, 0x48, !PT ;
+        /*0f50*/                   SHF.R.U32.HI R27, RZ, UR18, R27 ;
+        /*0f60*/                   LOP3.LUT R32, R32, 0xff, RZ, 0xc0, !PT ;
+        /*0f70*/                   LOP3.LUT R24, R24, UR19, RZ, 0x30, !PT ;
+        /*0f80*/                   SHF.R.U32.HI R28, RZ, UR18, R28 ;
+        /*0f90*/                   LOP3.LUT R31, R31, 0xff, RZ, 0xc0, !PT ;
+        /*0fa0*/                   LOP3.LUT R25, R25, UR19, RZ, 0x30, !PT ;
+        /*0fb0*/                   SHF.R.U32.HI R29, RZ, UR18, R29 ;
+        /*0fc0*/                   LOP3.LUT R33, R33, 0xff, RZ, 0xc0, !PT ;
+        /*0fd0*/                   SHF.R.U32.HI R30, RZ, UR18, R30 ;
+        /*0fe0*/                   LOP3.LUT R26, R26, UR19, RZ, 0x30, !PT ;
+        /*0ff0*/                   LOP3.LUT R34, R34, 0xff, RZ, 0xc0, !PT ;
+        /*1000*/                   LOP3.LUT R27, R27, UR19, RZ, 0x30, !PT ;
+        /*1010*/                   LOP3.LUT R35, R35, 0xff, RZ, 0xc0, !PT ;
+        /*1020*/                   SHF.R.U32.HI R32, RZ, UR18, R32 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*1030*/                   LEA R24, R24, UR14, 0x2 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1040*/                   LOP3.LUT R28, R28, UR19, RZ, 0x30, !PT ;
+        /*1050*/                   SHF.R.U32.HI R31, RZ, UR18, R31 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1060*/                   ATOMS.POPC.INC.32 RZ, [R24+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*1070*/                   LEA R25, R25, UR14, 0x2 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1080*/                   LOP3.LUT R29, R29, UR19, RZ, 0x30, !PT ;
+        /*1090*/                   SHF.R.U32.HI R33, RZ, UR18, R33 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*10a0*/                   ATOMS.POPC.INC.32 RZ, [R25+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*10b0*/                   LOP3.LUT R30, R30, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*10c0*/                   LEA R26, R26, UR14, 0x2 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*10d0*/                   SHF.R.U32.HI R34, RZ, UR18, R34 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*10e0*/                   LEA R27, R27, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*10f0*/                   ATOMS.POPC.INC.32 RZ, [R26+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1100*/                   SHF.R.U32.HI R35, RZ, UR18, R35 ;
+        /*1110*/                   LOP3.LUT R32, R32, UR19, RZ, 0x30, !PT ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1120*/                   ATOMS.POPC.INC.32 RZ, [R27+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*1130*/                   LEA R28, R28, UR14, 0x2 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1140*/                   LOP3.LUT R31, R31, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*1150*/                   LEA R29, R29, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1160*/                   ATOMS.POPC.INC.32 RZ, [R28+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1170*/                   LOP3.LUT R33, R33, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*1180*/                   LEA R30, R30, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1190*/                   ATOMS.POPC.INC.32 RZ, [R29+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*11a0*/                   LOP3.LUT R34, R34, UR19, RZ, 0x30, !PT ;
+        /*11b0*/                   LOP3.LUT R35, R35, UR19, RZ, 0x30, !PT ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*11c0*/                   ATOMS.POPC.INC.32 RZ, [R30+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*11d0*/                   LEA R32, R32, UR14, 0x2 ;
+        /*11e0*/                   LEA R31, R31, UR14, 0x2 ;
+        /*11f0*/                   LEA R33, R33, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1200*/                   ATOMS.POPC.INC.32 RZ, [R32+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 573
+        /*1210*/                   LEA R34, R34, UR14, 0x2 ;
+        /*1220*/                   LEA R35, R35, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1230*/                   ATOMS.POPC.INC.32 RZ, [R31+URZ] ;
+        /*1240*/                   ATOMS.POPC.INC.32 RZ, [R33+URZ] ;
+        /*1250*/                   ATOMS.POPC.INC.32 RZ, [R34+URZ] ;
+        /*1260*/                   ATOMS.POPC.INC.32 RZ, [R35+URZ] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 642
+        /*1270*/                   BRA `(.L_x_2833) ;
+.L_x_2830:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 701
+        /*1280*/                   UISETP.NE.AND UP0, UPT, UR9, URZ, UPT ;
+        /*1290*/                   UISETP.NE.OR UP0, UPT, UR14, UR12, !UP0 ;
+        /*12a0*/                   BRA.U UP0, `(.L_x_2833) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 706
+        /*12b0*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*12c0*/                   IMAD.SHL.U32 R4, R0, 0x10, RZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 703
+        /*12d0*/                   USHF.L.U32 UR14, UR12, 0xd, URZ ;
+        /*12e0*/                   VIADD R5, R4.reuse, 0x1 ;
+        /*12f0*/                   VIADD R22, R4.reuse, 0x2 ;
+        /*1300*/                   VIADD R24, R4, 0x3 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1310*/                   ISETP.GE.U32.AND P3, PT, R5, UR9, PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1320*/                   IMAD.U32 R23, RZ, RZ, UR14 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1330*/                   ISETP.GE.U32.AND P2, PT, R22, UR9, PT ;
+        /*1340*/                   VIADD R5, R4, 0x4 ;
+        /*1350*/                   ISETP.GE.U32.AND P1, PT, R24, UR9, PT ;
+        /*1360*/                   VIADD R24, R4, 0x5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1370*/                   IADD3 R22, P4, P5, R2, UR4, R23 ;
+        /*1380*/                   VIADD R25, R4.reuse, 0x6 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1390*/                   ISETP.GE.U32.AND P0, PT, R5, UR9, PT ;
+        /*13a0*/                   VIADD R5, R4, 0x7 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*13b0*/                   IADD3.X R23, PT, PT, R3, UR5, RZ, P4, P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*13c0*/                   ISETP.GE.U32.AND P5, PT, R24, UR9, PT ;
+        /*13d0*/                   VIADD R24, R4.reuse, 0x8 ;
+        /*13e0*/                   ISETP.GE.U32.AND P4, PT, R25, UR9, PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*13f0*/              @!P3 LDG.E.U8 R15, desc[UR26][R22.64+0x1] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1400*/                   ISETP.GE.U32.AND P3, PT, R5, UR9, PT ;
+        /*1410*/                   VIADD R5, R4, 0x9 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1420*/              @!P2 LDG.E.U8 R16, desc[UR26][R22.64+0x2] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1430*/                   ISETP.GE.U32.AND P2, PT, R24, UR9, PT ;
+        /*1440*/                   VIADD R24, R4.reuse, 0xa ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1450*/              @!P1 LDG.E.U8 R17, desc[UR26][R22.64+0x3] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1460*/                   ISETP.GE.U32.AND P1, PT, R5, UR9, PT ;
+        /*1470*/                   VIADD R5, R4, 0xb ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1480*/              @!P0 LDG.E.U8 R18, desc[UR26][R22.64+0x4] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1490*/                   ISETP.GE.U32.AND P0, PT, R24, UR9, PT ;
+        /*14a0*/                   VIADD R24, R4.reuse, 0xc ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*14b0*/              @!P5 LDG.E.U8 R19, desc[UR26][R22.64+0x5] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*14c0*/                   ISETP.GE.U32.AND P5, PT, R5, UR9, PT ;
+        /*14d0*/                   VIADD R5, R4, 0xd ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*14e0*/              @!P4 LDG.E.U8 R20, desc[UR26][R22.64+0x6] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*14f0*/                   ISETP.GE.U32.AND P4, PT, R24, UR9, PT ;
+        /*1500*/                   VIADD R24, R4, 0xe ;
+        /*1510*/                   VIADD R4, R4, 0xf ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1520*/              @!P1 LDG.E.U8 R7, desc[UR26][R22.64+0x9] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*1530*/                   ISETP.GE.U32.AND P1, PT, R4, UR9, PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 710
+        /*1540*/                   VIADD R4, R2, UR14 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1550*/              @!P5 LDG.E.U8 R9, desc[UR26][R22.64+0xb] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 712
+        /*1560*/                   ISETP.LT.U32.AND P5, PT, R4.reuse, UR11, PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1570*/              @!P4 LDG.E.U8 R10, desc[UR26][R22.64+0xc] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 712
+        /*1580*/                   IADD3 R4, PT, PT, -R4, UR11, RZ ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1590*/              @!P3 LDG.E.U8 R21, desc[UR26][R22.64+0x7] ;
+        /*15a0*/                   ISETP.EQ.OR P4, PT, R4, RZ, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*15b0*/                   ISETP.GE.U32.AND P3, PT, R5, UR9, PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*15c0*/              @!P2 LDG.E.U8 R6, desc[UR26][R22.64+0x8] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*15d0*/                   ISETP.GE.U32.AND P2, PT, R24, UR9, PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*15e0*/              @!P0 LDG.E.U8 R8, desc[UR26][R22.64+0xa] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 112
+        /*15f0*/                   ISETP.GE.U32.AND P0, PT, R2, UR9, PT ;
+        /*1600*/                   BSSY.RECONVERGENT B0, `(.L_x_2834) ;
+        /*1610*/                   ISETP.LT.U32.OR P6, PT, R4.reuse, 0x6, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/block/block_load.cuh", line 114
+        /*1620*/              @!P1 LDG.E.U8 R13, desc[UR26][R22.64+0xf] ;
+        /*1630*/                   ISETP.LT.U32.OR P1, PT, R4, 0x4, !P5 ;
+        /*1640*/              @!P3 LDG.E.U8 R11, desc[UR26][R22.64+0xd] ;
+        /*1650*/                   ISETP.LT.U32.OR P3, PT, R4, 0x2, !P5 ;
+        /*1660*/              @!P2 LDG.E.U8 R12, desc[UR26][R22.64+0xe] ;
+        /*1670*/                   ISETP.LT.U32.OR P2, PT, R4, 0x3, !P5 ;
+        /*1680*/              @!P0 LDG.E.U8 R14, desc[UR26][R22.64] ;
+        /*1690*/                   ISETP.LT.U32.OR P0, PT, R4, 0x5, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*16a0*/               @P4 BRA `(.L_x_2835) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*16b0*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*16c0*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*16d0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*16e0*/                   LOP3.LUT R5, R14, 0xff, R5, 0x48, !PT ;
+        /*16f0*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1700*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1710*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1720*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1730*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2835:
+        /*1740*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2834:
+        /*1750*/                   BSSY.RECONVERGENT B0, `(.L_x_2836) ;
+        /*1760*/                   ISETP.LT.U32.OR P4, PT, R4, 0x7, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1770*/               @P3 BRA `(.L_x_2837) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1780*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1790*/                   IMAD.MOV.U32 R22, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*17a0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*17b0*/                   LOP3.LUT R5, R15, 0xff, R22, 0x48, !PT ;
+        /*17c0*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*17d0*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*17e0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*17f0*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1800*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2837:
+        /*1810*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2836:
+        /*1820*/                   BSSY.RECONVERGENT B0, `(.L_x_2838) ;
+        /*1830*/                   ISETP.LT.U32.OR P3, PT, R4, 0x8, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1840*/               @P2 BRA `(.L_x_2839) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1850*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1860*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1870*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1880*/                   LOP3.LUT R5, R16, 0xff, R5, 0x48, !PT ;
+        /*1890*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*18a0*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*18b0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*18c0*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*18d0*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2839:
+        /*18e0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2838:
+        /*18f0*/                   BSSY.RECONVERGENT B0, `(.L_x_2840) ;
+        /*1900*/                   ISETP.LT.U32.OR P2, PT, R4, 0x9, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1910*/               @P1 BRA `(.L_x_2841) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1920*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1930*/                   IMAD.MOV.U32 R22, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1940*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1950*/                   LOP3.LUT R5, R17, 0xff, R22, 0x48, !PT ;
+        /*1960*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1970*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1980*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1990*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*19a0*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2841:
+        /*19b0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2840:
+        /*19c0*/                   BSSY.RECONVERGENT B0, `(.L_x_2842) ;
+        /*19d0*/                   ISETP.LT.U32.OR P1, PT, R4, 0xa, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*19e0*/               @P0 BRA `(.L_x_2843) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*19f0*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1a00*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1a10*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1a20*/                   LOP3.LUT R5, R18, 0xff, R5, 0x48, !PT ;
+        /*1a30*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1a40*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1a50*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1a60*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1a70*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2843:
+        /*1a80*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2842:
+        /*1a90*/                   BSSY.RECONVERGENT B0, `(.L_x_2844) ;
+        /*1aa0*/                   ISETP.LT.U32.OR P0, PT, R4, 0xb, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1ab0*/               @P6 BRA `(.L_x_2845) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1ac0*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1ad0*/                   IMAD.MOV.U32 R22, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1ae0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1af0*/                   LOP3.LUT R5, R19, 0xff, R22, 0x48, !PT ;
+        /*1b00*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1b10*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1b20*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1b30*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1b40*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2845:
+        /*1b50*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2844:
+        /*1b60*/                   BSSY.RECONVERGENT B0, `(.L_x_2846) ;
+        /*1b70*/                   ISETP.LT.U32.OR P6, PT, R4, 0xc, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1b80*/               @P4 BRA `(.L_x_2847) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1b90*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1ba0*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1bb0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1bc0*/                   LOP3.LUT R5, R20, 0xff, R5, 0x48, !PT ;
+        /*1bd0*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1be0*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1bf0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1c00*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1c10*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2847:
+        /*1c20*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2846:
+        /*1c30*/                   BSSY.RECONVERGENT B0, `(.L_x_2848) ;
+        /*1c40*/                   ISETP.LT.U32.OR P4, PT, R4, 0xd, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1c50*/               @P3 BRA `(.L_x_2849) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1c60*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1c70*/                   IMAD.MOV.U32 R22, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1c80*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1c90*/                   LOP3.LUT R5, R21, 0xff, R22, 0x48, !PT ;
+        /*1ca0*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1cb0*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1cc0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1cd0*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1ce0*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2849:
+        /*1cf0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2848:
+        /*1d00*/                   BSSY.RECONVERGENT B0, `(.L_x_2850) ;
+        /*1d10*/                   ISETP.LT.U32.OR P3, PT, R4, 0xe, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1d20*/               @P2 BRA `(.L_x_2851) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1d30*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1d40*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1d50*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1d60*/                   LOP3.LUT R5, R6, 0xff, R5, 0x48, !PT ;
+        /*1d70*/                   SHF.R.U32.HI R5, RZ, UR18, R5 ;
+        /*1d80*/                   LOP3.LUT R5, R5, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1d90*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1da0*/                   LEA R5, R5, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1db0*/                   ATOMS.POPC.INC.32 RZ, [R5+URZ] ;
+.L_x_2851:
+        /*1dc0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2850:
+        /*1dd0*/                   BSSY.RECONVERGENT B0, `(.L_x_2852) ;
+        /*1de0*/                   ISETP.LT.U32.OR P2, PT, R4.reuse, 0xf, !P5 ;
+        /*1df0*/                   ISETP.LT.U32.OR P5, PT, R4, 0x10, !P5 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1e00*/               @P1 BRA `(.L_x_2853) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1e10*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1e20*/                   IMAD.MOV.U32 R4, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1e30*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1e40*/                   LOP3.LUT R4, R7, 0xff, R4, 0x48, !PT ;
+        /*1e50*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*1e60*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1e70*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1e80*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1e90*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2853:
+        /*1ea0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2852:
+        /*1eb0*/                   BSSY.RECONVERGENT B0, `(.L_x_2854) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1ec0*/               @P0 BRA `(.L_x_2855) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1ed0*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1ee0*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1ef0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1f00*/                   LOP3.LUT R4, R8, 0xff, R5, 0x48, !PT ;
+        /*1f10*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*1f20*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1f30*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*1f40*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*1f50*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2855:
+        /*1f60*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2854:
+        /*1f70*/                   BSSY.RECONVERGENT B0, `(.L_x_2856) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*1f80*/               @P6 BRA `(.L_x_2857) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1f90*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1fa0*/                   IMAD.MOV.U32 R4, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1fb0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*1fc0*/                   LOP3.LUT R4, R9, 0xff, R4, 0x48, !PT ;
+        /*1fd0*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*1fe0*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*1ff0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*2000*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*2010*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2857:
+        /*2020*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2856:
+        /*2030*/                   BSSY.RECONVERGENT B0, `(.L_x_2858) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*2040*/               @P4 BRA `(.L_x_2859) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2050*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*2060*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2070*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*2080*/                   LOP3.LUT R4, R10, 0xff, R5, 0x48, !PT ;
+        /*2090*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*20a0*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*20b0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*20c0*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*20d0*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2859:
+        /*20e0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2858:
+        /*20f0*/                   BSSY.RECONVERGENT B0, `(.L_x_2860) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*2100*/               @P3 BRA `(.L_x_2861) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2110*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*2120*/                   IMAD.MOV.U32 R4, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2130*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*2140*/                   LOP3.LUT R4, R11, 0xff, R4, 0x48, !PT ;
+        /*2150*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*2160*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2170*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*2180*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*2190*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2861:
+        /*21a0*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2860:
+        /*21b0*/                   BSSY.RECONVERGENT B0, `(.L_x_2862) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*21c0*/               @P2 BRA `(.L_x_2863) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*21d0*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*21e0*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*21f0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*2200*/                   LOP3.LUT R4, R12, 0xff, R5, 0x48, !PT ;
+        /*2210*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*2220*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2230*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*2240*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*2250*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2863:
+        /*2260*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2862:
+        /*2270*/                   BSSY.RECONVERGENT B0, `(.L_x_2833) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 584
+        /*2280*/               @P5 BRA `(.L_x_2864) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*2290*/                   S2UR UR15, SR_CgaCtaId ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*22a0*/                   IMAD.MOV.U32 R4, RZ, RZ, 0x7f ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*22b0*/                   UMOV UR14, 0x400 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/dispatch_topk_common.cuh", line 113
+        /*22c0*/                   LOP3.LUT R4, R13, 0xff, R4, 0x48, !PT ;
+        /*22d0*/                   SHF.R.U32.HI R4, RZ, UR18, R4 ;
+        /*22e0*/                   LOP3.LUT R4, R4, UR19, RZ, 0x30, !PT ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 587
+        /*22f0*/                   ULEA UR14, UR15, UR14, 0x18 ;
+        /*2300*/                   LEA R4, R4, UR14, 0x2 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*2310*/                   ATOMS.POPC.INC.32 RZ, [R4+URZ] ;
+.L_x_2864:
+        /*2320*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2833:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 642
+        /*2330*/                   UIADD3 UR8, UPT, UPT, UR8, 0x1, URZ ;
+        /*2340*/                   UISETP.NE.AND UP0, UPT, UR8, 0x4, UPT ;
+        /*2350*/                   BRA.U UP0, `(.L_x_2865) ;
+.L_x_2823:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 727
+        /*2360*/                   UISETP.NE.AND UP0, UPT, UR21, -0x1, UPT ;
+        /*2370*/                   BRA.U !UP0, `(.L_x_2866) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_batched_topk.cuh", line 729
+        /*2380*/                   BAR.SYNC.DEFER_BLOCKING 0x0 ;
+        /*2390*/                   ISETP.GT.U32.AND P0, PT, R0, 0xff, PT ;
+        /*23a0*/                   BSSY.RECONVERGENT B0, `(.L_x_2866) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 388
+        /*23b0*/               @P0 BRA `(.L_x_2867) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 390
+        /*23c0*/                   LDS R23, [R36] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 391
+        /*23d0*/                   ISETP.NE.AND P0, PT, R23, RZ, PT ;
+        /*23e0*/              @!P0 BRA `(.L_x_2867) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/agent/agent_topk_common.cuh", line 393
+        /*23f0*/                   IMAD.MOV.U32 R5, RZ, RZ, 0x4 ;
+        /*2400*/                   IMAD.WIDE.U32 R4, R0, R5, UR6 ;
+	//## File "/usr/local/cuda/targets/x86_64-linux/include/device_atomic_functions.hpp", line 112
+        /*2410*/                   ATOM.E.ADD.STRONG.GPU PT, RZ, desc[UR26][R4.64], R23 ;
+.L_x_2867:
+        /*2420*/                   BSYNC.RECONVERGENT B0 ;
+.L_x_2866:
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 408
+        /*2430*/                   LDCU UR4, c[0x0][0x370] ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 412
+        /*2440*/                   ULEA UR20, UR4, UR20, 0x2 ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 411
+        /*2450*/                   UISETP.GE.U32.AND UP0, UPT, UR20, UR29, UPT ;
+        /*2460*/                   BRA.U !UP0, `(.L_x_2868) ;
+	//## File "/cccl_fork/cccl/lib/cmake/cub/../../../cub/cub/device/dispatch/kernels/kernel_batched_topk.cuh", line 416
+        /*2470*/                   EXIT ;
+.L_x_2869:
+        /*2480*/                   BRA `(.L_x_2869);
+        /*2490*/                   NOP;
+        /*24a0*/                   NOP;
+        /*24b0*/                   NOP;
+        /*24c0*/                   NOP;
+        /*24d0*/                   NOP;
+        /*24e0*/                   NOP;
+        /*24f0*/                   NOP;
+        /*2500*/                   NOP;
+        /*2510*/                   NOP;
+        /*2520*/                   NOP;
+        /*2530*/                   NOP;
+        /*2540*/                   NOP;
+        /*2550*/                   NOP;
+        /*2560*/                   NOP;
+        /*2570*/                   NOP;
+.L_x_3611:
+
+
+//--------------------- .text._ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_ --------------------------
+	.section	.text._ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_,"ax",@progbits
+	.align	128
+        .global         _ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_
+        .type           _ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_,@function
+        .size           _ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_,(.L_x_3612 - _ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_)
+        .other          _ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_,@"STO_CUDA_ENTRY STV_DEFAULT"
+_ZN3cub17_V_300500_SM_10006detail12batched_topk40device_segmented_topk_last_filter_kernelINS2_26policy_selector_from_typesIaNS0_8NullTypeElLl8388608EEELNS1_4topk6selectE0EN4cuda3__417constant_iteratorIPKalEENSB_IPalEEPPS5_SI_NS1_6params13uniform_paramIlLl0ELl268435456EEENSK_IlLl1ELl8388608EEENSK_IlLl1ELl1EEEPljPyNS1_21identity_decomposer_tEjjEEvT1_T2_T3_T4_T5_T6_T7_T8_PKT9_PNS7_7counterINS9_3std3__415iterator_traitsINS15_ISR_vE10value_typeEvE10value_typeET12_T13_EEPS19_PNS15_INS15_IST_vE10value_typeEvE10value_typeES1A_T10_iiT11_:
