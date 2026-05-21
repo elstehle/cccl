@@ -1,20 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "cuda/__iterator/constant_iterator.h"
 #include <cub/device/device_topk.cuh>
+#include <cub/device/dispatch/dispatch_batched_topk.cuh>
 
 #include <cuda/__execution/determinism.h>
 #include <cuda/__execution/output_ordering.h>
 #include <cuda/__execution/require.h>
 #include <cuda/__execution/tune.h>
+#include <cuda/iterator>
+#include <cuda/std/cstdint>
 
 #include <nvbench_helper.cuh>
+
+// Compile-time toggle: when non-zero, the benchmark routes the workload through the
+// segmented-batch dispatch (`cub::detail::batched_topk::dispatch`) configured with a single
+// segment instead of `cub::DeviceTopK`. Intended as a rough comparison of the segmented-batch
+// implementation against the single-problem dispatch on equivalent workloads.
+#ifndef CUB_BENCH_TOPK_USE_BATCHED
+#  define CUB_BENCH_TOPK_USE_BATCHED 1
+#endif
 
 // %RANGE% TUNE_ITEMS_PER_THREAD ipt 1:24:1
 // %RANGE% TUNE_THREADS_PER_BLOCK tpb 128:1024:32
 // %RANGE% TUNE_KEYS_TILE_LOAD_KIND ld 0:2:1
 
-#if !TUNE_BASE
+#if !TUNE_BASE && !CUB_BENCH_TOPK_USE_BATCHED
 template <class KeyInT>
 struct policy_selector_t
 {
@@ -39,7 +51,7 @@ struct policy_selector_t
       cub::BLOCK_SCAN_WARP_SCANS};
   }
 };
-#endif // !TUNE_BASE
+#endif // !TUNE_BASE && !CUB_BENCH_TOPK_USE_BATCHED
 
 template <typename KeyT, typename OffsetT, typename OutOffsetT>
 void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, OffsetT, OutOffsetT>)
@@ -67,14 +79,70 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, OffsetT, OutOffse
   state.add_global_memory_reads<KeyT>(elements, "InputKeys");
   state.add_global_memory_writes<KeyT>(selected_elements, "OutputKeys");
 
+#if CUB_BENCH_TOPK_USE_BATCHED
+  // Wrap the input/output pointers in the iterator-of-iterators expected by the segmented-batch
+  // dispatch. With a single segment the outer iterator always dereferences to the same key
+  // pointer, so `constant_iterator{ptr}` exactly models what the API needs.
+  auto d_keys_in_it  = ::cuda::make_constant_iterator(d_keys_in);
+  auto d_keys_out_it = ::cuda::make_constant_iterator(d_keys_out);
+
+  // Static upper bounds matching the maxima of the benchmark axes (lower bounds left at the
+  // parameter-type defaults). These tighten the candidate-buffer sizing in the dispatch and
+  // feed into compile-time policy resolution. Must be kept in sync with the axis ranges below.
+  constexpr ::cuda::std::int64_t max_elements          = ::cuda::std::int64_t{1} << 28;
+  constexpr ::cuda::std::int64_t max_selected_elements = ::cuda::std::int64_t{1} << 23;
+  constexpr ::cuda::std::int64_t max_num_segments      = 1;
+
+  cub::detail::batched_topk::segment_size_uniform<0, max_elements> segment_sizes_param{
+    static_cast<::cuda::std::int64_t>(elements)};
+  cub::detail::batched_topk::k_uniform<1, max_selected_elements> k_param{
+    static_cast<::cuda::std::int64_t>(selected_elements)};
+  cub::detail::batched_topk::select_direction_static<cub::detail::topk::select::max> direction_param{};
+  cub::detail::batched_topk::num_segments_uniform<1, max_num_segments> num_segments_param{
+    ::cuda::std::int64_t{1}};
+  cub::detail::batched_topk::total_num_items_guarantee<1, max_elements> total_items_param{
+    static_cast<::cuda::std::int64_t>(elements)};
+
+  size_t temp_size{};
+  cub::detail::batched_topk::dispatch(
+    nullptr,
+    temp_size,
+    d_keys_in_it,
+    d_keys_out_it,
+    static_cast<cub::NullType**>(nullptr),
+    static_cast<cub::NullType**>(nullptr),
+    segment_sizes_param,
+    k_param,
+    direction_param,
+    num_segments_param,
+    total_items_param);
+  thrust::device_vector<nvbench::uint8_t> temp(temp_size, thrust::no_init);
+  auto* temp_storage = thrust::raw_pointer_cast(temp.data());
+
+  state.exec(nvbench::exec_tag::gpu | nvbench::exec_tag::no_batch, [&](nvbench::launch& launch) {
+    cub::detail::batched_topk::dispatch(
+      temp_storage,
+      temp_size,
+      d_keys_in_it,
+      d_keys_out_it,
+      static_cast<cub::NullType**>(nullptr),
+      static_cast<cub::NullType**>(nullptr),
+      segment_sizes_param,
+      k_param,
+      direction_param,
+      num_segments_param,
+      total_items_param,
+      launch.get_stream());
+  });
+#else // CUB_BENCH_TOPK_USE_BATCHED
   // TODO(bgruber): call cub::DeviceTopK::MaxKeys with a the caching_allocator_t once we have an env-overload without
   // temporary storage
   auto env = cuda::std::execution::env{
     cuda::execution::require(cuda::execution::determinism::not_guaranteed, cuda::execution::output_ordering::unsorted)
-#if !TUNE_BASE
+#  if !TUNE_BASE
       ,
     cuda::execution::tune(policy_selector_t<KeyT>{})
-#endif // !TUNE_BASE
+#  endif // !TUNE_BASE
   };
 
   // Allocate temporary storage
@@ -101,6 +169,7 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, OffsetT, OutOffse
       static_cast<OutOffsetT>(selected_elements),
       env_with_stream);
   });
+#endif // CUB_BENCH_TOPK_USE_BATCHED
 }
 
 NVBENCH_BENCH_TYPES(topk_keys, NVBENCH_TYPE_AXES(fundamental_types, offset_types, offset_types))

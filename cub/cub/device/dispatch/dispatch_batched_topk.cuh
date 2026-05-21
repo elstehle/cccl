@@ -17,10 +17,12 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cub/agent/agent_topk_common.cuh>
 #include <cub/detail/choose_offset.cuh>
 #include <cub/detail/segmented_params.cuh>
 #include <cub/device/dispatch/dispatch_common.cuh>
 #include <cub/device/dispatch/dispatch_scan.cuh>
+#include <cub/device/dispatch/dispatch_topk_common.cuh>
 #include <cub/device/dispatch/kernels/kernel_batched_topk.cuh>
 #include <cub/device/dispatch/tuning/tuning_batched_topk.cuh>
 #include <cub/util_device.cuh>
@@ -31,9 +33,14 @@
 #include <thrust/system/cuda/detail/core/triple_chevron_launch.h>
 
 #include <cuda/__cmath/ceil_div.h>
+#include <cuda/__iterator/constant_iterator.h>
 #include <cuda/__iterator/counting_iterator.h>
 #include <cuda/__iterator/transform_iterator.h>
+#include <cuda/__iterator/transform_output_iterator.h>
+#include <cuda/std/__algorithm/max.h>
+#include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__functional/operations.h>
+#include <cuda/std/__type_traits/conditional.h>
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/cstdint>
 #include <cuda/std/limits>
@@ -147,17 +154,43 @@ struct total_num_items_guarantee
 // per-segment tile counts that we exclusive-scan to obtain per-segment tile
 // offsets.
 // -----------------------------------------------------------------------------
-template <class SegmentSizeParameterT, class TotalNumItemsValueType>
+template <class SegmentSizeParameterT, class TotalNumItemsValueType, class NumSegmentsValueT>
 struct segment_size_to_tile_count_op
 {
   SegmentSizeParameterT segment_sizes;
   int large_segment_agent_tile_size;
+  // Cutoff used to make the op safe to evaluate at the index (at position `num_segments`) for the total aggregate. The
+  // all-large-segments path scans over `num_segments + 1` inputs so the inclusive total ends up in the
+  // trailing slot of the offset table; for that to work without indexing past the end of `segment_sizes`, the op short-circuits to 0 at the sentinel.
+  NumSegmentsValueT num_segments;
 
   template <typename SegmentIndexT>
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr TotalNumItemsValueType operator()(SegmentIndexT segment_id) const
   {
+    if (static_cast<NumSegmentsValueT>(segment_id) >= num_segments)
+    {
+      return TotalNumItemsValueType{0};
+    }
     return static_cast<TotalNumItemsValueType>(
       ::cuda::ceil_div(segment_sizes.get_param(segment_id), large_segment_agent_tile_size));
+  }
+};
+
+// -----------------------------------------------------------------------------
+// Helper: constant-value transform op.
+//
+// Used by the all-large-segments path to feed the `num_segments` to the multi-CTA kernels through the same
+// `LargeSegmentsCountItT` interface the mixed path uses to feed `&d_counters->large_segments_count`. Kept local to the dispatch until a second user appears.
+// -----------------------------------------------------------------------------
+template <typename ValueT>
+struct constant_value_op
+{
+  ValueT value;
+
+  template <typename IndexT>
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr ValueT operator()(IndexT) const
+  {
+    return value;
   }
 };
 
