@@ -1,0 +1,59 @@
+kernel        key    val   off  oOff   REG   smem  stack   lmem   cmem
+----------------------------------------------------------------------
+histogram      i8      -   u32   u32    28   3072      0      0    945
+
+filter         i8     i8   u32   u32    32   3072      0      0   1029
+last_filt      i8     i8   u32   u32    32      0      0      0    984
+
+filter         i8    i16   u32   u32    32   3072      0      0   1029
+last_filt      i8    i16   u32   u32    32      0      0      0    984
+
+filter         i8    i32   u32   u32    32   3072      0      0   1029
+last_filt      i8    i32   u32   u32    32      0      0      0    984
+
+filter         i8    i64   u32   u32    32   3072      8      0   1029
+last_filt      i8    i64   u32   u32    32      0      0      0    984
+
+histogram     i16      -   u32   u32    30   9232      0      0    945
+
+filter        i16     i8   u32   u32    32   9232      0      0   1029
+last_filt     i16     i8   u32   u32    32      0      0      0    984
+
+filter        i16    i16   u32   u32    32   9232      0      0   1029
+last_filt     i16    i16   u32   u32    32      0      0      0    984
+
+filter        i16    i32   u32   u32    32   9232      0      0   1029
+last_filt     i16    i32   u32   u32    32      0      0      0    984
+
+filter        i16    i64   u32   u32    32   9232      0      0   1029
+last_filt     i16    i64   u32   u32    32      0      0      0    984
+
+histogram     i32      -   u32   u32    31   9232      0      0    945
+
+filter        i32     i8   u32   u32    32   9232      0      0   1029
+last_filt     i32     i8   u32   u32    32      0      0      0    984
+
+filter        i32    i16   u32   u32    32   9232      0      0   1029
+last_filt     i32    i16   u32   u32    32      0      0      0    984
+
+filter        i32    i32   u32   u32    32   9232      0      0   1029
+last_filt     i32    i32   u32   u32    32      0      0      0    984
+
+filter        i32    i64   u32   u32    32   9232      0      0   1029
+last_filt     i32    i64   u32   u32    32      0      0      0    984
+
+histogram     i64      -   u32   u32    30   9232      0      0    945
+
+filter        i64     i8   u32   u32    32   9232      0      0   1029
+last_filt     i64     i8   u32   u32    32      0      0      0    984
+
+filter        i64    i16   u32   u32    32   9232      0      0   1029
+last_filt     i64    i16   u32   u32    32      0      0      0    984
+
+filter        i64    i32   u32   u32    32   9232      0      0   1029
+last_filt     i64    i32   u32   u32    32      0      0      0    984
+
+filter        i64    i64   u32   u32    32   9232      0      0   1029
+last_filt     i64    i64   u32   u32    32      0      0      0    984
+
+(36 kernels shown)

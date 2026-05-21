@@ -1,0 +1,31 @@
+kernel        key   off  oOff   REG   smem  stack   lmem   cmem
+---------------------------------------------------------------
+histogram      i8   u32   u32    28   3072      0      0    945
+filter         i8   u32   u32    32   3072      0      0   1021
+last_filt      i8   u32   u32    32      0      0      0    976
+
+histogram     i16   u32   u32    30   9232      0      0    945
+filter        i16   u32   u32    32   9232      0      0   1021
+last_filt     i16   u32   u32    31      0      0      0    976
+
+histogram     f32   u32   u32    31   9232      0      0    945
+filter        f32   u32   u32    32   9232      0      0   1021
+last_filt     f32   u32   u32    31      0      0      0    976
+
+histogram     i32   u32   u32    31   9232      0      0    945
+filter        i32   u32   u32    32   9232      0      0   1021
+last_filt     i32   u32   u32    30      0      0      0    976
+
+histogram     f64   u32   u32    30   9232      0      0    945
+filter        f64   u32   u32    32   9232      0      0   1021
+last_filt     f64   u32   u32    31      0      0      0    976
+
+histogram     i64   u32   u32    30   9232      0      0    945
+filter        i64   u32   u32    32   9232      0      0   1021
+last_filt     i64   u32   u32    32      0      0      0    976
+
+histogram    i128   u32   u32    23   3072      0      0    945
+filter       i128   u32   u32    31   3072      0      0   1021
+last_filt    i128   u32   u32    32      0      0      0    976
+
+(21 kernels shown)

@@ -1,0 +1,75 @@
+kernel        key    val   off  oOff   REG   smem  stack   lmem   cmem
+----------------------------------------------------------------------
+histogram      i8      -   u32   u32    55   3072      0      0    986
+
+worker         i8     i8   u32   u32   255  34832    136      0   1016
+filter         i8     i8   u32   u32   114   3072      0      0   1098
+last_filt      i8     i8   u32   u32    64      0      0      0   1073
+
+worker         i8    i16   u32   u32   255  34832    672      0   1016
+filter         i8    i16   u32   u32   106   3072      0      0   1098
+last_filt      i8    i16   u32   u32    64      0      0      0   1073
+
+worker         i8    i32   u32   u32   255  34832      0      0   1016
+filter         i8    i32   u32   u32   106   3072      0      0   1098
+last_filt      i8    i32   u32   u32    64      0      0      0   1073
+
+worker         i8    i64   u32   u32   128  34832      0      0   1016
+filter         i8    i64   u32   u32   106   3072      0      0   1098
+last_filt      i8    i64   u32   u32    64      0      0      0   1073
+
+histogram     i16      -   u32   u32    49   9232      0      0    986
+
+worker        i16     i8   u32   u32   255  34832   1424      0   1016
+filter        i16     i8   u32   u32    64   9232      0      0   1098
+last_filt     i16     i8   u32   u32    32      0      8      0   1073
+
+worker        i16    i16   u32   u32   255  34832    904      0   1016
+filter        i16    i16   u32   u32    64   9232      0      0   1098
+last_filt     i16    i16   u32   u32    32      0     16      0   1073
+
+worker        i16    i32   u32   u32   255  34832    128      0   1016
+filter        i16    i32   u32   u32    64   9232      0      0   1098
+last_filt     i16    i32   u32   u32    32      0     16      0   1073
+
+worker        i16    i64   u32   u32   196  34832      0      0   1016
+filter        i16    i64   u32   u32    64   9232      0      0   1098
+last_filt     i16    i64   u32   u32    32      0     16      0   1073
+
+histogram     i32      -   u32   u32    40   9232      0      0    986
+
+worker        i32     i8   u32   u32   255  34832     32      0   1016
+filter        i32     i8   u32   u32    48   9232      0      0   1098
+last_filt     i32     i8   u32   u32    32      0      0      0   1073
+
+worker        i32    i16   u32   u32   255  34832     56      0   1016
+filter        i32    i16   u32   u32    46   9232      0      0   1098
+last_filt     i32    i16   u32   u32    32      0      0      0   1073
+
+worker        i32    i32   u32   u32   254  34832      0      0   1016
+filter        i32    i32   u32   u32    46   9232      0      0   1098
+last_filt     i32    i32   u32   u32    32      0      0      0   1073
+
+worker        i32    i64   u32   u32   196  34832      0      0   1016
+filter        i32    i64   u32   u32    40   9232      0      0   1098
+last_filt     i32    i64   u32   u32    32      0      0      0   1073
+
+histogram     i64      -   u32   u32    40   9232      0      0    986
+
+worker        i64     i8   u32   u32   181  34832      0      0   1016
+filter        i64     i8   u32   u32    52   9232      0      0   1098
+last_filt     i64     i8   u32   u32    32      0      0      0   1073
+
+worker        i64    i16   u32   u32   181  34832      0      0   1016
+filter        i64    i16   u32   u32    52   9232      0      0   1098
+last_filt     i64    i16   u32   u32    32      0      0      0   1073
+
+worker        i64    i32   u32   u32   183  34832      0      0   1016
+filter        i64    i32   u32   u32    52   9232      0      0   1098
+last_filt     i64    i32   u32   u32    32      0      0      0   1073
+
+worker        i64    i64   u32   u32   186  34832      0      0   1016
+filter        i64    i64   u32   u32    52   9232      0      0   1098
+last_filt     i64    i64   u32   u32    32      0      0      0   1073
+
+(52 kernels shown)
