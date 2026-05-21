@@ -218,7 +218,7 @@ struct policy_selector
   // Size of the key type, in bytes. Used to size the multi-CTA-per-segment tuning
   int key_size = sizeof(int);
 
-  [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto operator()(::cuda::compute_capability) const
+  [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto operator()(::cuda::compute_capability cc) const
     -> batched_topk_policy
   {
     constexpr auto load_alg  = BLOCK_LOAD_WARP_TRANSPOSE;
@@ -226,9 +226,17 @@ struct policy_selector
     constexpr auto scan_alg  = BLOCK_SCAN_WARP_SCANS;
     constexpr auto epilogue  = epilogue_policy{16, load_alg, store_alg, scan_alg};
 
-    // Stand-alone multi-CTA-per-segment tuning
+    // Stand-alone multi-CTA-per-segment tuning. Mirrors the single-problem
+    // `tuning_topk.cuh::policy_selector` computation of `items_per_thread`: target 16 B per
+    // thread on Hopper+ (`max(1, ...)`, no upper cap) and clamp to `nominal_4b_items_per_thread`
+    // on older architectures. The rest of the multi-worker policy is currently cc-independent,
+    // so the cc branch lives only on this one knob and the policy literal below is shared.
     constexpr int nominal_4b_items_per_thread = 4;
-    const int multi_items_per_thread          = ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size);
+    const int multi_items_per_thread          = (cc >= ::cuda::compute_capability{9, 0})
+                                                  ? ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size)
+                                                  : ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size,
+                                                             1,
+                                                             nominal_4b_items_per_thread);
     const int multi_bits_per_pass             = detail::topk::calc_bits_per_pass(key_size);
 
     return batched_topk_policy{

@@ -447,3 +447,103 @@ C2H_TEST("DeviceBatchedTopK::{Min,Max}Keys work with large variable-size segment
 
   REQUIRE(expected_keys == keys_out_buffer);
 }
+
+// Covers the two boundary `num_large_segments` values that the worker-per-segment epilogue's
+// scan loop and the multi-CTA loop bound have to handle:
+//
+//   * 0 -> every segment is small. The epilogue scan runs over `[0, 1)` inputs; the lone
+//          iteration's `BlockLoad` reads zero valid items, `ExclusiveSum` yields
+//          `running_total == 0`, and `BlockStore` writes the lone zero to the sentinel slot
+//          `d_large_segments_tile_offsets[0]`. The multi-CTA kernels then read
+//          `total_large_tiles == 0` and exit on the grid-stride guard.
+//   * 1 -> exactly one segment is large. The epilogue scan runs over `[0, 2)` inputs; the lone
+//          iteration loads the one tile count, scans to `[0, tile_count]`, and stores both
+//          values, landing the inclusive total at `d_large_segments_tile_offsets[1]`. The
+//          multi-CTA kernels do exactly `tile_count` tiles of real work.
+//
+// The two edge cases are path-symmetric between keys-only and pairs (the worker-per-segment
+// epilogue and the multi-CTA loop bound do not care about the value channel), so we exercise
+// them only on the keys side to keep the addition minimal.
+C2H_TEST(
+  "DeviceBatchedTopK::{Min,Max}Keys handles boundary large-segment counts (mixed-path edge cases)",
+  "[keys][segmented][topk][device][multi-cta]")
+{
+  using segment_size_t  = cuda::std::int64_t;
+  using segment_index_t = cuda::std::int64_t;
+  using key_t           = cuda::std::uint32_t;
+
+  // A `static_max_segment_size` of 1M leaves `only_small_segments == false` at compile time so
+  // the multi-CTA pipeline is built; the runtime shape below pins `num_large_segments` to 0 or
+  // 1. `small_segment_size = 64` is comfortably below every `worker_per_segment_policy` tile
+  // size in `tuning_batched_topk.cuh` (the smallest is 128*2 = 256), so the small segments are
+  // always routed to the worker-per-segment kernel.
+  constexpr segment_size_t static_max_segment_size = 1024 * 1024;
+  constexpr segment_size_t static_max_k            = 32;
+  constexpr segment_size_t small_segment_size      = 64;
+  constexpr segment_index_t num_small_segments    = 8;
+
+  const auto direction     = GENERATE_COPY(cub::detail::topk::select::min, cub::detail::topk::select::max);
+  const int num_large_case = GENERATE_COPY(values({0, 1}));
+
+  // Build offsets on host then upload; `num_small_segments` small segments, optionally followed
+  // by one segment of `static_max_segment_size` items.
+  std::vector<segment_size_t> h_offsets;
+  h_offsets.reserve(num_small_segments + num_large_case + 1);
+  h_offsets.push_back(segment_size_t{0});
+  for (segment_index_t i = 0; i < num_small_segments; ++i)
+  {
+    h_offsets.push_back(h_offsets.back() + small_segment_size);
+  }
+  if (num_large_case == 1)
+  {
+    h_offsets.push_back(h_offsets.back() + static_max_segment_size);
+  }
+  c2h::device_vector<segment_size_t> segment_offsets(h_offsets.begin(), h_offsets.end());
+
+  const segment_index_t num_segments = static_cast<segment_index_t>(segment_offsets.size() - 1);
+  const segment_size_t num_items     = h_offsets.back();
+  auto segment_offsets_it            = thrust::raw_pointer_cast(segment_offsets.data());
+  auto segment_size_it               = cuda::make_transform_iterator(
+    cuda::make_counting_iterator(segment_index_t{0}), segment_size_op<segment_size_t*>{segment_offsets_it});
+
+  const segment_size_t k = GENERATE_COPY(values({segment_size_t{1}, segment_size_t{static_max_k}}));
+
+  CAPTURE(num_large_case, k, num_items, num_segments, direction);
+
+  auto compacted_output_sizes_it = cuda::make_transform_iterator(
+    cuda::make_counting_iterator(segment_index_t{0}),
+    get_output_size_op{segment_offsets.cbegin(), cuda::constant_iterator(k)});
+  c2h::device_vector<segment_size_t> compacted_offsets(num_segments + 1, thrust::no_init);
+  thrust::exclusive_scan(
+    compacted_output_sizes_it, compacted_output_sizes_it + num_segments + 1, compacted_offsets.begin());
+  const segment_size_t total_output_size = compacted_offsets.back();
+
+  c2h::device_vector<key_t> keys_in_buffer(num_items, thrust::no_init);
+  c2h::device_vector<key_t> keys_out_buffer(total_output_size, thrust::no_init);
+  c2h::gen(C2H_SEED(1), keys_in_buffer);
+  auto d_keys_in_ptr  = thrust::raw_pointer_cast(keys_in_buffer.data());
+  auto d_keys_out_ptr = thrust::raw_pointer_cast(keys_out_buffer.data());
+  auto d_keys_in =
+    cuda::make_permutation_iterator(cuda::make_counting_iterator(d_keys_in_ptr), segment_offsets.cbegin());
+  auto d_keys_out =
+    cuda::make_permutation_iterator(cuda::make_counting_iterator(d_keys_out_ptr), compacted_offsets.cbegin());
+
+  c2h::device_vector<key_t> expected_keys(keys_in_buffer);
+
+  batched_topk_keys(
+    d_keys_in,
+    d_keys_out,
+    cub::detail::batched_topk::segment_size_per_segment<decltype(segment_size_it), 1, static_max_segment_size>{
+      segment_size_it},
+    cub::detail::batched_topk::k_uniform<1, static_max_k>{k},
+    cub::detail::batched_topk::select_direction_uniform{direction},
+    cub::detail::batched_topk::num_segments_uniform<>{num_segments},
+    cub::detail::batched_topk::total_num_items_guarantee{num_items});
+
+  segmented_sort_keys(expected_keys, num_segments, segment_offsets.cbegin(), segment_offsets.cbegin() + 1, direction);
+  expected_keys = compact_to_topk_batched(expected_keys, segment_offsets, k);
+  segmented_sort_keys(
+    keys_out_buffer, num_segments, compacted_offsets.cbegin(), compacted_offsets.cbegin() + 1, direction);
+
+  REQUIRE(expected_keys == keys_out_buffer);
+}

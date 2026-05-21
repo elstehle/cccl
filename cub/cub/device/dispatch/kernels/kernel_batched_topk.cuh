@@ -17,19 +17,24 @@
 #endif // no system header
 
 #include <cub/agent/agent_batched_topk.cuh>
+#include <cub/agent/agent_topk_common.cuh>
 #include <cub/detail/segmented_params.cuh>
+#include <cub/device/dispatch/dispatch_topk_common.cuh>
 #include <cub/device/dispatch/tuning/tuning_batched_topk.cuh>
 #include <cub/util_arch.cuh>
 
 #include <cuda/__device/compute_capability.h>
+#include <cuda/std/__type_traits/conditional.h>
 
 CUB_NAMESPACE_BEGIN
 
 namespace detail::batched_topk
 {
-// Given a policy_selector and a segment-size parameter, resolves the agent type to be instantiated by the kernel.
-// Selects the smallest policy whose tile size still covers the upper bound on segment size AND whose instantiated
-// agent's shared memory usage fits within the static shared memory limit (max_smem_per_block).
+// Finds the smallest worker_per_segment policy whose tile size still covers the upper bound on
+// segment size AND whose instantiated agent's shared memory usage fits within the static shared
+// memory limit (max_smem_per_block). When such a policy exists, `found == true` and `policy` /
+// `agent_t` refer to it; otherwise `found == false` and callers must fall back to
+// `find_largest_fitting_smem_policy`. 
 template <typename PolicySelector, typename SegmentSizeParameterT, typename... AgentParamsT>
 struct find_smallest_covering_policy
 {
@@ -77,13 +82,18 @@ private:
     }
   }
 
-  static constexpr int selected_index = find_index<0>();
+  static constexpr int raw_selected_index = find_index<0>();
+  // Defaulted to 0 for the not-found case so the array accesses below stay well-formed
+  static constexpr int safe_index = raw_selected_index >= 0 ? raw_selected_index : 0;
 
 public:
-  // TODO (elstehle): extend support for variable-size segments
-  static_assert(selected_index >= 0, "No valid policy found for one-worker-per-segment approach");
+  // -1 when no covering+fitting policy exists.
+  static constexpr int selected_index = raw_selected_index;
+  static constexpr bool found         = (raw_selected_index >= 0);
+
+  // Only meaningful when `found == true`.
   static constexpr policy_t policy = {
-    active_policy.worker_per_segment_policies[selected_index], active_policy.multi_worker_per_segment_policy};
+    active_policy.worker_per_segment_policies[safe_index], active_policy.multi_worker_per_segment_policy};
 
   struct policy_getter_17 // TODO(bgruber): drop this in C++17 and pass policy directly
   {
@@ -94,6 +104,82 @@ public:
   };
   using agent_t = agent_batched_topk_worker_per_segment<policy_getter_17, AgentParamsT...>;
 };
+
+// Finds the largest worker_per_segment policy whose instantiated agent's shared memory usage
+// fits within the static shared memory limit (max_smem_per_block). Used as the fallback when the upper bound on segment
+// size exceeds every worker policy's tile size). In that case the worker treats any segment with
+// `segment_size > tile_size` as "large" at runtime and enqueues it onto the large-segment queue
+// (the multi-CTA-per-segment kernels then consume that queue). 
+template <typename PolicySelector, typename SegmentSizeParameterT, typename... AgentParamsT>
+struct find_largest_fitting_smem_policy
+{
+private:
+  struct policy_t
+  {
+    worker_policy worker_per_segment_policy;
+    multi_worker_policy multi_worker_per_segment_policy;
+  };
+  static constexpr batched_topk_policy active_policy = current_policy<PolicySelector>();
+
+  template <int Index>
+  [[nodiscard]] static constexpr int find_index()
+  {
+    if constexpr (Index >= active_policy.worker_per_segment_policies.size())
+    {
+      return -1;
+    }
+    else
+    {
+      struct policy_getter_17
+      {
+        _CCCL_HOST_DEVICE_API constexpr auto operator()() const
+        {
+          return policy_t{active_policy.worker_per_segment_policies[Index],
+                          active_policy.multi_worker_per_segment_policy};
+        }
+      };
+      using candidate_agent_t  = agent_batched_topk_worker_per_segment<policy_getter_17, AgentParamsT...>;
+      constexpr bool fits_smem = sizeof(typename candidate_agent_t::TempStorage) <= max_smem_per_block;
+      if constexpr (fits_smem)
+      {
+        // `worker_per_segment_policies` is ordered by decreasing tile size, so the first one
+        // that fits in smem is automatically the largest fitting one.
+        return Index;
+      }
+      else
+      {
+        return find_index<Index + 1>();
+      }
+    }
+  }
+
+  static constexpr int raw_selected_index = find_index<0>();
+  static constexpr int safe_index         = raw_selected_index >= 0 ? raw_selected_index : 0;
+
+public:
+  static constexpr int selected_index = raw_selected_index;
+  static constexpr bool found         = (raw_selected_index >= 0);
+
+  static constexpr policy_t policy = {
+    active_policy.worker_per_segment_policies[safe_index], active_policy.multi_worker_per_segment_policy};
+
+  struct policy_getter_17 // TODO(bgruber): drop this in C++17 and pass policy directly
+  {
+    _CCCL_HOST_DEVICE_API constexpr auto operator()() const
+    {
+      return policy;
+    }
+  };
+  using agent_t = agent_batched_topk_worker_per_segment<policy_getter_17, AgentParamsT...>;
+};
+
+// Resolves the worker_per_segment policy used by the kernel + dispatch by preferring the
+// smallest covering+fits-smem policy and falling back to the largest fits-smem policy. 
+template <typename PolicySelector, typename SegmentSizeParameterT, typename... AgentParamsT>
+using resolved_worker_per_segment_policy = ::cuda::std::conditional_t<
+  find_smallest_covering_policy<PolicySelector, SegmentSizeParameterT, AgentParamsT...>::found,
+  find_smallest_covering_policy<PolicySelector, SegmentSizeParameterT, AgentParamsT...>,
+  find_largest_fitting_smem_policy<PolicySelector, SegmentSizeParameterT, AgentParamsT...>>;
 
 // -----------------------------------------------------------------------------
 // Global Kernel Entry Point
@@ -112,7 +198,7 @@ template <typename PolicySelector,
   requires batched_topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
 __launch_bounds__(int(
-  find_smallest_covering_policy<
+  resolved_worker_per_segment_policy<
     PolicySelector,
     SegmentSizeParameterT,
     KeyInputItItT,
@@ -125,19 +211,19 @@ __launch_bounds__(int(
     NumSegmentsParameterT,
     LargeSegmentTileOffsetT>::policy.worker_per_segment_policy.threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_kernel(
-    KeyInputItItT d_key_segments_it,
-    KeyOutputItItT d_key_segments_out_it,
-    ValueInputItItT d_value_segments_it,
-    ValueOutputItItT d_value_segments_out_it,
+    _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
+    _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
+    _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
+    _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
     SegmentSizeParameterT segment_sizes,
     KParameterT k,
     SelectDirectionParameterT select_directions,
     NumSegmentsParameterT num_segments,
     batched_topk_counters<typename NumSegmentsParameterT::value_type>* d_counters,
-    typename NumSegmentsParameterT::value_type* d_large_segments_ids,
-    LargeSegmentTileOffsetT* d_large_segments_tile_offsets)
+    _CCCL_GRID_CONSTANT typename NumSegmentsParameterT::value_type* const d_large_segments_ids,
+    _CCCL_GRID_CONSTANT LargeSegmentTileOffsetT* const d_large_segments_tile_offsets)
 {
-  using agent_t = typename find_smallest_covering_policy<
+  using resolved_t = resolved_worker_per_segment_policy<
     PolicySelector,
     SegmentSizeParameterT,
     KeyInputItItT,
@@ -148,11 +234,11 @@ __launch_bounds__(int(
     KParameterT,
     SelectDirectionParameterT,
     NumSegmentsParameterT,
-    LargeSegmentTileOffsetT>::agent_t;
-
-  // Static Assertions (Constraints)
-  static_assert(agent_t::tile_size >= params::static_max_value_v<SegmentSizeParameterT>,
-                "Block size exceeds maximum segment size supported by SegmentSizeParameterT");
+    LargeSegmentTileOffsetT>;
+    
+    // Static Assertions (Constraints)
+    static_assert(resolved_t::found, "No valid policy found for one-worker-per-segment approach");
+    using agent_t = typename resolved_t::agent_t;
   static_assert(sizeof(typename agent_t::TempStorage) <= max_smem_per_block,
                 "Static shared memory per block must not exceed 48KB limit.");
 
@@ -176,6 +262,387 @@ __launch_bounds__(int(
 
   // Process segments
   agent.Process();
+}
+
+//---------------------------------------------------------------------
+// Segmented multi-CTA-per-segment top-k kernels.
+//
+// Three kernels mirror the single-problem `DeviceTopK{Histogram,Filter,LastFilter}Kernel` trio
+// in `cub/device/dispatch/dispatch_topk.cuh`. Each kernel:
+//   1. Resolves `multi_worker_per_segment_policy` from the active `batched_topk_policy`.
+//   2. Lifts that into an `AgentTopKPolicy<...>` instantiation.
+//   3. Instantiates the matching segmented agent (`agent_batched_topk_histogram`,
+//      `agent_batched_topk_filter_partition`, `agent_batched_topk_last_filter`).
+//   4. Forwards every per-launch arg to the agent's constructor and calls `agent.run(...)`.
+//
+// The `SelectDirection` template NTTP comes from the host-side `dispatch_discrete` over the
+// uniform `SelectDirectionParameterT` (plan §3.6 / §5.5); the kernels are otherwise direction-
+// agnostic.
+//---------------------------------------------------------------------
+
+namespace topk_seg_kernel_detail
+{
+// Helper: build an `AgentTopKPolicy<...>` from the multi-worker policy of a given selector.
+template <typename PolicySelector>
+struct multi_worker_agent_policy_lift
+{
+  static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
+  using type                              = detail::topk::AgentTopKPolicy<
+    mw.threads_per_block,
+    mw.items_per_thread,
+    mw.bits_per_pass,
+    mw.scan_algorithm,
+    mw.keys_tile_load_kind,
+    mw.accumulating_buffer_capacity,
+    mw.speculative_selected_buffer_capacity>;
+};
+} // namespace topk_seg_kernel_detail
+
+template <typename PolicySelector,
+          detail::topk::select SelectDirection,
+          typename KeyInputItItT,
+          typename SegmentSizeParameterT,
+          typename KParameterT,
+          typename NumSegmentsParameterT,
+          typename SegmentIdProviderT,
+          typename LargeSegmentTileOffsetT,
+          typename LargeSegmentsCountItT,
+          typename DecomposerT,
+          typename OffsetT,
+          typename OutOffsetT>
+#if _CCCL_HAS_CONCEPTS()
+  requires batched_topk_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
+__launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
+  _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_histogram_kernel(
+    _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
+    SegmentSizeParameterT segment_sizes,
+    KParameterT k_param,
+    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
+    _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
+    detail::topk::counter<
+      it_value_t<it_value_t<KeyInputItItT>>,
+      OffsetT,
+      OutOffsetT>* d_segment_counters,
+    _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
+    _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
+    _CCCL_GRID_CONSTANT const int pass,
+    _CCCL_GRID_CONSTANT const int total_bits,
+    _CCCL_GRID_CONSTANT const bool reset_histogram,
+    DecomposerT decomposer)
+{
+  // Read the per-launch bounds once per block. `large_segments_count_it` is either a raw
+  // pointer into the mixed-path `batched_topk_counters::large_segments_count` (written by the
+  // worker-per-segment kernel's atomicAdd enqueue) or a `transform_iterator` returning the
+  // host-known `num_segments_val` for the all-large path; the kernel does not need to know
+  // which. `total_large_tiles` lives in the sentinel slot of the offset table -- a
+  // `+1`-allocated entry the worker-per-segment epilogue (mixed) or the host-side scan
+  // (all-large) populates with the inclusive total of large-segment tile counts.
+  const typename NumSegmentsParameterT::value_type num_large_segments =
+    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  const LargeSegmentTileOffsetT total_large_tiles =
+    static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
+  using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
+  using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
+
+  using extract_bin_op_t = detail::topk::extract_bin_op_t<
+    key_in_t,
+    SelectDirection,
+    agent_topk_policy_t::bits_per_pass,
+    DecomposerT>;
+
+  using agent_t = agent_batched_topk_histogram<
+    agent_topk_policy_t,
+    KeyInputItItT,
+    extract_bin_op_t,
+    SegmentSizeParameterT,
+    KParameterT,
+    NumSegmentsParameterT,
+    SegmentIdProviderT,
+    LargeSegmentTileOffsetT,
+    OffsetT,
+    OutOffsetT>;
+
+  __shared__ typename agent_t::TempStorage temp_storage;
+  const extract_bin_op_t extract_bin_op{pass, total_bits, decomposer};
+
+  agent_t agent(
+    temp_storage,
+    d_key_segments_it,
+    segment_sizes,
+    k_param,
+    num_segments,
+    segment_id_provider,
+    d_large_segments_tile_offsets,
+    d_segment_counters,
+    d_segment_histograms,
+    extract_bin_op,
+    num_large_segments);
+
+  // Grid-stride loop: the dispatch sizes the grid by `MaxSmOccupancy * num_sms` capped at the
+  // host-side `total_large_tiles_upper_bound`, so a CTA may process multiple tiles per launch
+  // when there are more tiles than physical slots. Each `agent.run(global_tile_id, ...)`
+  // ends with `finalize_pass`'s `__syncthreads_or` (the last barrier inside the call), which
+  // serves as the per-iteration boundary; no extra `__syncthreads()` is needed here.
+  for (LargeSegmentTileOffsetT global_tile_id = static_cast<LargeSegmentTileOffsetT>(blockIdx.x);
+       global_tile_id < total_large_tiles;
+       global_tile_id += static_cast<LargeSegmentTileOffsetT>(gridDim.x))
+  {
+    agent.run(global_tile_id, pass, reset_histogram);
+  }
+}
+
+template <typename PolicySelector,
+          detail::topk::select SelectDirection,
+          typename KeyInputItItT,
+          typename KeyOutputItItT,
+          typename ValueInputItItT,
+          typename ValueOutputItItT,
+          typename SegmentSizeParameterT,
+          typename KParameterT,
+          typename NumSegmentsParameterT,
+          typename SegmentIdProviderT,
+          typename LargeSegmentTileOffsetT,
+          typename LargeSegmentsCountItT,
+          typename DecomposerT,
+          typename OffsetT,
+          typename OutOffsetT>
+#if _CCCL_HAS_CONCEPTS()
+  requires batched_topk_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
+__launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
+  _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_filter_kernel(
+    _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
+    _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
+    _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
+    _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
+    SegmentSizeParameterT segment_sizes,
+    KParameterT k_param,
+    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
+    _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
+    detail::topk::counter<
+      it_value_t<it_value_t<KeyInputItItT>>,
+      OffsetT,
+      OutOffsetT>* d_segment_counters,
+    _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<KeyInputItItT>>* const d_segment_in_key_buf,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<ValueInputItItT>>* const d_segment_in_val_buf,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<KeyInputItItT>>* const d_segment_out_key_buf,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<ValueInputItItT>>* const d_segment_out_val_buf,
+    _CCCL_GRID_CONSTANT const OffsetT candidate_buffer_length,
+    _CCCL_GRID_CONSTANT const OffsetT candidate_buffer_coefficient,
+    _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
+    _CCCL_GRID_CONSTANT const int pass,
+    _CCCL_GRID_CONSTANT const int total_bits,
+    _CCCL_GRID_CONSTANT const bool reset_histogram,
+    DecomposerT decomposer)
+{
+  using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
+  // See the histogram kernel for the rationale behind reading `total_large_tiles` from the
+  // sentinel slot and `large_segments_count` through an iterator.
+  const typename NumSegmentsParameterT::value_type num_large_segments =
+    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  const LargeSegmentTileOffsetT total_large_tiles =
+    static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
+  using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
+
+  static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
+  static constexpr detail::topk::block_partition_strategy buffered_part_strat = mw.buffered_partition_strategy;
+  static constexpr detail::topk::block_filter_strategy early_stop_filter_strat = mw.early_stop_filter_strategy;
+  static constexpr bool lazy_value_load   = mw.lazy_value_load;
+  static constexpr bool inlined_classify  = mw.inlined_classify;
+
+  using extract_bin_op_t = detail::topk::extract_bin_op_t<
+    key_in_t,
+    SelectDirection,
+    agent_topk_policy_t::bits_per_pass,
+    DecomposerT>;
+  using identify_candidates_op_t = detail::topk::identify_candidates_op_t<
+    key_in_t,
+    SelectDirection,
+    agent_topk_policy_t::bits_per_pass,
+    DecomposerT>;
+
+  using agent_t = agent_batched_topk_filter_partition<
+    agent_topk_policy_t,
+    KeyInputItItT,
+    KeyOutputItItT,
+    ValueInputItItT,
+    ValueOutputItItT,
+    extract_bin_op_t,
+    identify_candidates_op_t,
+    DecomposerT,
+    SegmentSizeParameterT,
+    KParameterT,
+    NumSegmentsParameterT,
+    SegmentIdProviderT,
+    LargeSegmentTileOffsetT,
+    OffsetT,
+    OutOffsetT,
+    buffered_part_strat,
+    early_stop_filter_strat,
+    lazy_value_load,
+    inlined_classify>;
+
+  __shared__ typename agent_t::TempStorage temp_storage;
+  const extract_bin_op_t extract_bin_op{pass, total_bits, decomposer};
+  // `identify_candidates_op_t` is constructed inside the agent's `run()` after the on-device
+  // binary search resolves the per-segment counter (and thus the per-segment `kth_key_bits`
+  // pointer). The agent stores `(pass, total_bits, decomposer)` plus the per-segment counter
+  // pointer to rebuild it.
+
+  agent_t agent(
+    temp_storage,
+    d_key_segments_it,
+    d_key_segments_out_it,
+    d_value_segments_it,
+    d_value_segments_out_it,
+    segment_sizes,
+    k_param,
+    num_segments,
+    segment_id_provider,
+    d_large_segments_tile_offsets,
+    d_segment_counters,
+    d_segment_histograms,
+    d_segment_in_key_buf,
+    d_segment_in_val_buf,
+    d_segment_out_key_buf,
+    d_segment_out_val_buf,
+    extract_bin_op,
+    total_bits,
+    decomposer,
+    candidate_buffer_length,
+    candidate_buffer_coefficient,
+    num_large_segments);
+
+  // Grid-stride loop -- see the histogram kernel for the rationale and the per-iteration
+  // sync boundary discussion (which carries over here verbatim).
+  for (LargeSegmentTileOffsetT global_tile_id = static_cast<LargeSegmentTileOffsetT>(blockIdx.x);
+       global_tile_id < total_large_tiles;
+       global_tile_id += static_cast<LargeSegmentTileOffsetT>(gridDim.x))
+  {
+    agent.run(global_tile_id, pass, reset_histogram);
+  }
+}
+
+template <typename PolicySelector,
+          detail::topk::select SelectDirection,
+          typename KeyInputItItT,
+          typename KeyOutputItItT,
+          typename ValueInputItItT,
+          typename ValueOutputItItT,
+          typename SegmentSizeParameterT,
+          typename KParameterT,
+          typename NumSegmentsParameterT,
+          typename SegmentIdProviderT,
+          typename LargeSegmentTileOffsetT,
+          typename LargeSegmentsCountItT,
+          typename DecomposerT,
+          typename OffsetT,
+          typename OutOffsetT>
+#if _CCCL_HAS_CONCEPTS()
+  requires batched_topk_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
+__launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
+  _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_last_filter_kernel(
+    _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
+    _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
+    _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
+    _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
+    SegmentSizeParameterT segment_sizes,
+    KParameterT k_param,
+    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
+    _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
+    detail::topk::counter<
+      it_value_t<it_value_t<KeyInputItItT>>,
+      OffsetT,
+      OutOffsetT>* d_segment_counters,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<KeyInputItItT>>* const d_segment_in_key_buf,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<ValueInputItItT>>* const d_segment_in_val_buf,
+    _CCCL_GRID_CONSTANT const OffsetT candidate_buffer_length,
+    _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
+    _CCCL_GRID_CONSTANT const int pass,
+    _CCCL_GRID_CONSTANT const int total_bits,
+    DecomposerT decomposer)
+{
+  using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
+  // See the histogram kernel for the rationale behind reading `total_large_tiles` from the
+  // sentinel slot and `large_segments_count` through an iterator.
+  const typename NumSegmentsParameterT::value_type num_large_segments =
+    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  const LargeSegmentTileOffsetT total_large_tiles =
+    static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
+  using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
+
+  static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
+  static constexpr detail::topk::block_partition_strategy part_strat = mw.last_filter_partition_strategy;
+  static constexpr bool lazy_value_load   = mw.lazy_value_load;
+  static constexpr bool inlined_classify  = mw.inlined_classify;
+
+  using identify_candidates_op_t = detail::topk::identify_candidates_op_t<
+    key_in_t,
+    SelectDirection,
+    agent_topk_policy_t::bits_per_pass,
+    DecomposerT>;
+
+  using agent_t = agent_batched_topk_last_filter<
+    agent_topk_policy_t,
+    KeyInputItItT,
+    KeyOutputItItT,
+    ValueInputItItT,
+    ValueOutputItItT,
+    identify_candidates_op_t,
+    DecomposerT,
+    SegmentSizeParameterT,
+    KParameterT,
+    NumSegmentsParameterT,
+    SegmentIdProviderT,
+    LargeSegmentTileOffsetT,
+    OffsetT,
+    OutOffsetT,
+    part_strat,
+    lazy_value_load,
+    inlined_classify>;
+
+  __shared__ typename agent_t::TempStorage temp_storage;
+
+  agent_t agent(
+    temp_storage,
+    d_key_segments_it,
+    d_key_segments_out_it,
+    d_value_segments_it,
+    d_value_segments_out_it,
+    segment_sizes,
+    k_param,
+    num_segments,
+    segment_id_provider,
+    d_large_segments_tile_offsets,
+    d_segment_counters,
+    d_segment_in_key_buf,
+    d_segment_in_val_buf,
+    pass,
+    total_bits,
+    decomposer,
+    candidate_buffer_length,
+    num_large_segments);
+
+  // Grid-stride loop. Unlike the histogram/filter kernels there's no `finalize_pass` at the end
+  // of `agent.run()` -- the last-filter pass is a simple scatter to user-provided output sinks.
+  // `partition.epilogue()` (the last call inside `agent.run()`) carries its own internal sync
+  // and the agent's per-tile body opens with a `__syncthreads()` before any smem read, which
+  // together serve as the per-iteration boundary; no extra `__syncthreads()` is needed here.
+  for (LargeSegmentTileOffsetT global_tile_id = static_cast<LargeSegmentTileOffsetT>(blockIdx.x);
+       global_tile_id < total_large_tiles;
+       global_tile_id += static_cast<LargeSegmentTileOffsetT>(gridDim.x))
+  {
+    agent.run(global_tile_id);
+  }
 }
 } // namespace detail::batched_topk
 
