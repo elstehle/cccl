@@ -27,6 +27,7 @@
 #include <cub/detail/topk/block_partition_accumulating.cuh>
 #include <cub/detail/topk/block_partition_speculative.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
+#include <cub/detail/warpspeed/make_warp_uniform.cuh>
 #include <cub/device/dispatch/dispatch_common.cuh>
 #include <cub/device/dispatch/dispatch_topk_common.cuh>
 #include <cub/device/dispatch/tuning/tuning_batched_topk.cuh>
@@ -613,10 +614,16 @@ public:
   // dispatch builds those closures with the (single) per-problem `counter_t*` already in hand.
   _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT global_tile_id, int pass, bool reset_histogram)
   {
-    // Map (global_tile_id) -> (queue_idx, local_tile_id, segment_id). All threads do the same
-    // binary search; the result is uniform across the block.
-    const LargeSegmentTileOffsetT queue_idx =
-      UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
+    // Map (global_tile_id) -> (queue_idx, local_tile_id, segment_id). All threads in the
+    // warp do the same binary search (the input is identical across lanes), so the result
+    // is warp-uniform by construction. Round-trip through `makeWarpUniform` (a warp-broadcast
+    // from lane 0) to make that uniformity *explicit* to ptxas; otherwise the compiler keeps
+    // `queue_idx` -- and everything indexed by it (per-segment counter fields, histogram and
+    // candidate-buffer base pointers, segment_id, etc.) -- in per-thread regular registers
+    // and never fires the `R2UR` promotion that the single-problem filter kernel gets for
+    // free. See the register-pressure investigation notes for the SASS evidence.
+    const LargeSegmentTileOffsetT queue_idx = detail::warpspeed::makeWarpUniform(
+      UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1);
     const LargeSegmentTileOffsetT slab_base    = d_large_segments_tile_offsets[queue_idx];
     const LargeSegmentTileOffsetT local_tile   = global_tile_id - slab_base;
     const auto segment_id                      = segment_id_provider[queue_idx];
@@ -1051,8 +1058,12 @@ public:
   // `pass`, and the segment counter pointer.
   _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT global_tile_id, int pass, bool reset_histogram)
   {
-    const LargeSegmentTileOffsetT queue_idx =
-      UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
+    // See the matching comment on `agent_batched_topk_histogram::run()` for why we round-trip
+    // the binary-search result through `makeWarpUniform`: same value across the warp,
+    // promoted into a uniform register so that `queue_idx`-derived segment pointers and
+    // counter-field loads downstream become eligible for ptxas's `R2UR` heuristic.
+    const LargeSegmentTileOffsetT queue_idx = detail::warpspeed::makeWarpUniform(
+      UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1);
     const LargeSegmentTileOffsetT slab_base = d_large_segments_tile_offsets[queue_idx];
     const LargeSegmentTileOffsetT local_tile = global_tile_id - slab_base;
     const auto segment_id = segment_id_provider[queue_idx];
@@ -1669,8 +1680,11 @@ struct agent_batched_topk_last_filter
   // so each tile's work is fully independent of the others within a segment.
   _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT global_tile_id)
   {
-    const LargeSegmentTileOffsetT queue_idx =
-      UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
+    // See the matching comment on `agent_batched_topk_histogram::run()` for the
+    // `makeWarpUniform` rationale: explicit warp-uniform hint on the binary-search result so
+    // that the segment-derived scalars and pointers it indexes flow into uniform registers.
+    const LargeSegmentTileOffsetT queue_idx = detail::warpspeed::makeWarpUniform(
+      UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1);
     const LargeSegmentTileOffsetT slab_base = d_large_segments_tile_offsets[queue_idx];
     const LargeSegmentTileOffsetT local_tile = global_tile_id - slab_base;
     const auto segment_id = segment_id_provider[queue_idx];
