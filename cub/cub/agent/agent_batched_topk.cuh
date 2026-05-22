@@ -480,6 +480,7 @@ template <typename AgentTopKPolicyT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
           typename OutOffsetT,
+          typename LargeSegmentsCountItT,
           typename FilterOpT = detail::topk::topk_pass_through_filter_op>
 struct agent_batched_topk_histogram
 {
@@ -529,10 +530,13 @@ struct agent_batched_topk_histogram
   ExtractBinOpT extract_bin_op;
   FilterOpT filter_op;
 
-  // Number of enqueued large segments (queue slots). Drives the binary search over the offset
-  // table. (`total_large_tiles` is owned by the calling kernel for the grid-stride loop bound;
-  // it is not needed by the agent.)
-  typename NumSegmentsParameterT::value_type num_large_segments;
+  // Iterator yielding the number of enqueued large segments (queue slots) when dereferenced.
+  // Stored as the iterator (a kernel parameter) rather than the dereferenced scalar so the
+  // agent matches the kernel's parameter shape one-for-one. The sentinel-slot read for
+  // `total_large_tiles` is `d_large_segments_tile_offsets[*large_segments_count_it]` and the
+  // `UpperBound` upper bound is `*large_segments_count_it` -- both deferred to use sites
+  // inside the agent body.
+  LargeSegmentsCountItT large_segments_count_it;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_histogram(
     TempStorage& ts,
@@ -545,7 +549,7 @@ struct agent_batched_topk_histogram
     counter_t* d_segment_counters,
     OffsetT* d_segment_histograms,
     ExtractBinOpT extract_bin_op,
-    typename NumSegmentsParameterT::value_type num_large_segments,
+    LargeSegmentsCountItT large_segments_count_it,
     FilterOpT filter_op = {})
       : temp_storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
@@ -558,7 +562,7 @@ struct agent_batched_topk_histogram
       , d_segment_histograms(d_segment_histograms)
       , extract_bin_op(extract_bin_op)
       , filter_op(filter_op)
-      , num_large_segments(num_large_segments)
+      , large_segments_count_it(large_segments_count_it)
   {}
 
 private:
@@ -600,7 +604,7 @@ private:
     LargeSegmentTileOffsetT queue_idx_lane0 = 0;
     if ((threadIdx.x & 31) == 0)
     {
-      queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
+      queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, *large_segments_count_it, global_tile_id) - 1;
     }
     return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
   }
@@ -633,15 +637,18 @@ public:
   // `total_bits`, `decomposer`) is absorbed into `extract_bin_op`, constructed host-side by
   // the dispatch and passed as the agent's `ExtractBinOpT` member -- the agent itself does
   // not depend on the pass index.
-  // `d_total_large_tiles` points at the sentinel slot of the per-segment tile-offset table (i.e.
-  // `&d_large_segments_tile_offsets[num_large_segments]`). Passing the pointer (rather than the
-  // value) lets the loop bound be loaded lazily at the comparison point: each iteration's load
-  // goes through the read-only path, and ptxas does not need to keep the value pinned in a
-  // per-thread register across the agent body. This is an experimental knob for the
-  // register-pressure investigation.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  run(const LargeSegmentTileOffsetT* d_total_large_tiles, int tiles_per_chunk)
+  // The agent derives `total_large_tiles` from its own members
+  // (`d_large_segments_tile_offsets[*large_segments_count_it]`) at use sites. The kernel no
+  // longer pre-resolves either `num_large_segments` or the sentinel-slot pointer; only the
+  // raw kernel parameters (the `large_segments_count_it` iterator + the tile-offsets array)
+  // flow into the agent.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void run(int tiles_per_chunk)
   {
+    // Pointer to the sentinel slot of the per-segment tile-offset table. Computed once at
+    // entry from the agent's own members so the inner-loop bound checks below can dereference
+    // a single pointer rather than re-deriving the address every iteration.
+    const LargeSegmentTileOffsetT* const d_total_large_tiles =
+      &d_large_segments_tile_offsets[*large_segments_count_it];
     // Sentinel meaning "no segment loaded yet". `active_queue_idx` is set to a real value the
     // first time this CTA touches a tile, and never reverts to the sentinel.
     constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);

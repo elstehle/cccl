@@ -341,20 +341,15 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
     ExtractBinOpT extract_bin_op)
 {
-  // Read the per-launch bounds once per block. `large_segments_count_it` is either a raw
-  // pointer into the mixed-path `batched_topk_counters::large_segments_count` (written by the
-  // worker-per-segment kernel's atomicAdd enqueue) or a `transform_iterator` returning the
-  // host-known `num_segments_val` for the all-large path; the kernel does not need to know
-  // which. `total_large_tiles` lives in the sentinel slot of the offset table -- a
-  // `+1`-allocated entry the worker-per-segment epilogue (mixed) or the host-side scan
-  // (all-large) populates with the inclusive total of large-segment tile counts.
-  const typename NumSegmentsParameterT::value_type num_large_segments =
-    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
-  // Pointer to the sentinel slot of the per-segment tile-offset table; the agent dereferences
-  // it lazily at the grid-stride loop boundary instead of materialising the value into a
-  // long-lived register at kernel entry. See the agent's `run` doc for the register-pressure
-  // motivation.
-  const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
+  // `large_segments_count_it` is either a raw pointer into the mixed-path
+  // `batched_topk_counters::large_segments_count` (written by the worker-per-segment kernel's
+  // atomicAdd enqueue) or a `transform_iterator` returning the host-known `num_segments_val`
+  // for the all-large path; the kernel does not need to know which. `total_large_tiles` lives
+  // in the sentinel slot of the offset table -- a `+1`-allocated entry the worker-per-segment
+  // epilogue (mixed) or the host-side scan (all-large) populates with the inclusive total of
+  // large-segment tile counts. The kernel no longer pre-resolves either value: only the raw
+  // parameters (the `large_segments_count_it` iterator + the tile-offsets array) flow into
+  // the agent, which dereferences them inside `run` / `resolve_queue_idx`.
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
   using agent_t = agent_batched_topk_histogram<
@@ -367,7 +362,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     SegmentIdProviderT,
     LargeSegmentTileOffsetT,
     OffsetT,
-    OutOffsetT>;
+    OutOffsetT,
+    LargeSegmentsCountItT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
@@ -382,7 +378,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     d_segment_counters,
     d_segment_histograms,
     extract_bin_op,
-    num_large_segments);
+    large_segments_count_it);
 
   // The chunk-level grid-stride loop lives inside the agent (`agent.run`) so that per-segment
   // cached state (smem histogram, segment-end bound, segment pointers / scalars) can persist
@@ -397,7 +393,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // signature are now absorbed into `extract_bin_op` (constructed by the dispatch) -- the
   // kernel itself does not need to know about the pass.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
-  agent.run(d_total_large_tiles, tiles_per_chunk);
+  agent.run(tiles_per_chunk);
 }
 
 // Per-segment epilogue kernel for the histogram pass. Runs after
