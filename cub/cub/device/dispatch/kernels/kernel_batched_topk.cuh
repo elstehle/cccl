@@ -311,7 +311,6 @@ struct histogram_tiles_per_chunk
 } // namespace topk_seg_kernel_detail
 
 template <typename PolicySelector,
-          detail::topk::select SelectDirection,
           typename KeyInputItItT,
           typename SegmentSizeParameterT,
           typename KParameterT,
@@ -319,7 +318,7 @@ template <typename PolicySelector,
           typename SegmentIdProviderT,
           typename LargeSegmentTileOffsetT,
           typename LargeSegmentsCountItT,
-          typename DecomposerT,
+          typename ExtractBinOpT,
           typename OffsetT,
           typename OutOffsetT>
 #if _CCCL_HAS_CONCEPTS()
@@ -339,10 +338,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
       OutOffsetT>* d_segment_counters,
     _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
-    _CCCL_GRID_CONSTANT const int pass,
-    _CCCL_GRID_CONSTANT const int total_bits,
-    _CCCL_GRID_CONSTANT const bool reset_histogram,
-    DecomposerT decomposer)
+    ExtractBinOpT extract_bin_op)
 {
   // Read the per-launch bounds once per block. `large_segments_count_it` is either a raw
   // pointer into the mixed-path `batched_topk_counters::large_segments_count` (written by the
@@ -355,19 +351,12 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
   const LargeSegmentTileOffsetT total_large_tiles =
     static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
-  using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
-
-  using extract_bin_op_t = detail::topk::extract_bin_op_t<
-    key_in_t,
-    SelectDirection,
-    agent_topk_policy_t::bits_per_pass,
-    DecomposerT>;
 
   using agent_t = agent_batched_topk_histogram<
     agent_topk_policy_t,
     KeyInputItItT,
-    extract_bin_op_t,
+    ExtractBinOpT,
     SegmentSizeParameterT,
     KParameterT,
     NumSegmentsParameterT,
@@ -377,7 +366,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OutOffsetT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
-  const extract_bin_op_t extract_bin_op{pass, total_bits, decomposer};
 
   agent_t agent(
     temp_storage,
@@ -400,8 +388,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   //
   // This kernel no longer runs the per-segment prefix-sum / bucket-finder epilogue; that work
   // is done by `device_segmented_topk_finalize_histogram_kernel` after this kernel completes.
-  // `reset_histogram` is consumed by the finalize kernel rather than here.
-  (void) reset_histogram;
+  // The pass index / total_bits / decomposer that drove the radix-digit extraction in the old
+  // signature are now absorbed into `extract_bin_op` (constructed by the dispatch) -- the
+  // kernel itself does not need to know about the pass.
   static constexpr int tiles_per_chunk =
     topk_seg_kernel_detail::histogram_tiles_per_chunk<PolicySelector>::value;
   const LargeSegmentTileOffsetT stride =
@@ -411,7 +400,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
        chunk_start < total_large_tiles;
        chunk_start += stride)
   {
-    agent.process_chunk(chunk_start, tiles_per_chunk, total_large_tiles, pass);
+    agent.process_chunk(chunk_start, tiles_per_chunk, total_large_tiles);
   }
 }
 

@@ -614,14 +614,15 @@ public:
   // the per-segment global slab right before the change. `total_large_tiles` is the upper bound
   // of the queue_idx-space; tiles past it are no-ops.
   //
-  // `pass` selects which radix digit the histogram bins (consumed by `extract_bin_op`).
-  //
   // The per-segment epilogue (prefix-sum + bucket-finder + counter update + optional global
   // histogram reset) lives in a separate kernel that runs after the histogram kernel; this agent
   // is intentionally write-only with respect to `d_segment_histograms` -- it never reads the
-  // global slab and never runs `finalize_pass`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_chunk(
-    LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles, int pass)
+  // global slab and never runs `finalize_pass`. The `pass` index, `total_bits`, and `decomposer`
+  // that go into the radix-digit extraction are absorbed into `extract_bin_op` (constructed
+  // host-side by the dispatch and passed as the agent's `ExtractBinOpT` member); the agent
+  // itself does not depend on the pass index.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  process_chunk(LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles)
   {
     // Per-segment state cached across tiles of the same segment within the chunk. The "no active
     // segment" sentinel is the all-ones value (`-1` for signed `LargeSegmentTileOffsetT`,

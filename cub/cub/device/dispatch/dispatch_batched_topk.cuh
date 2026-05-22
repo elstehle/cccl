@@ -870,9 +870,18 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // Kernel pointers (template instantiations) shared between the `MaxSmOccupancy` query and
       // the actual `triple_chevron::doit()` launch below. Resolving them once per direction
       // avoids re-instantiating the (long) template parameter list per pass.
+      // The histogram kernel takes `extract_bin_op` as a template+runtime parameter (the
+      // dispatch builds it host-side from `pass`, `total_bits`, `decomposer` and passes it in,
+      // matching the single-problem `DeviceTopKHistogramKernel`). The kernel does not depend on
+      // `pass`, `total_bits`, or `decomposer` directly any more -- they're absorbed into the
+      // op.
+      using extract_bin_op_t = detail::topk::extract_bin_op_t<
+        key_in_t,
+        select_dir,
+        multi_worker_per_segment_policy.bits_per_pass,
+        detail::identity_decomposer_t>;
       auto histogram_kernel_ptr = device_segmented_topk_histogram_kernel<
         PolicySelector,
-        select_dir,
         KeyInputItItT,
         SegmentSizeParameterT,
         KParameterT,
@@ -880,7 +889,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         segment_id_provider_t,
         large_segment_tile_offset_t,
         large_segments_count_it_t,
-        detail::identity_decomposer_t,
+        extract_bin_op_t,
         OffsetT,
         OutOffsetT>;
       // Per-segment epilogue for the histogram pass: runs after the histogram kernel finishes,
@@ -986,7 +995,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // per-tile `finalize_pass` cost from the histogram CTAs at the price of one extra cheap
       // device-side kernel launch per pass.
       {
-        const bool reset_histogram = num_passes != 1;
+        const bool reset_histogram          = num_passes != 1;
+        const extract_bin_op_t extract_bin_op{0, total_bits, decomposer};
         if (const auto error = CubDebug(
               THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
                 histogram_grid_size, multi_worker_threads_per_block, 0, stream)
@@ -1001,10 +1011,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                   d_seg_counters,
                   d_seg_histograms,
                   large_segments_count_it,
-                  0,
-                  total_bits,
-                  reset_histogram,
-                  decomposer)))
+                  extract_bin_op)))
         {
           return error;
         }
