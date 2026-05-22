@@ -381,28 +381,20 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     extract_bin_op,
     num_large_segments);
 
-  // Chunked grid-stride loop. Each CTA processes `tiles_per_chunk` consecutive tiles per stride;
-  // inside the chunk the agent groups tiles by segment so the smem histogram is initialised once
-  // per (chunk x segment) pair and merged into the per-segment global slab once per (chunk x
-  // segment) pair (instead of once per tile in the previous design). `tiles_per_chunk = 1`
-  // falls back to a plain one-tile-per-stride loop.
+  // The chunk-level grid-stride loop lives inside the agent (`agent.run`) so that per-segment
+  // cached state (smem histogram, segment-end bound, segment pointers / scalars) can persist
+  // across chunks. In the common case where a CTA's grid-stride run stays inside a single
+  // segment, this collapses to exactly **one** `init_histogram` at the start of the CTA's
+  // work and **one** `merge_histogram` when the CTA finishes -- matching the single-problem
+  // agent's cost model. Multi-segment workloads pay init/merge per (CTA, segment-stretch).
   //
   // This kernel no longer runs the per-segment prefix-sum / bucket-finder epilogue; that work
   // is done by `device_segmented_topk_finalize_histogram_kernel` after this kernel completes.
   // The pass index / total_bits / decomposer that drove the radix-digit extraction in the old
   // signature are now absorbed into `extract_bin_op` (constructed by the dispatch) -- the
   // kernel itself does not need to know about the pass.
-  static constexpr int tiles_per_chunk =
-    topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
-  const LargeSegmentTileOffsetT stride =
-    static_cast<LargeSegmentTileOffsetT>(gridDim.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-  for (LargeSegmentTileOffsetT chunk_start =
-         static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-       chunk_start < total_large_tiles;
-       chunk_start += stride)
-  {
-    agent.process_chunk(chunk_start, tiles_per_chunk, total_large_tiles);
-  }
+  static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
+  agent.run(total_large_tiles, tiles_per_chunk);
 }
 
 // Per-segment epilogue kernel for the histogram pass. Runs after

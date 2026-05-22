@@ -606,23 +606,26 @@ private:
   }
 
 public:
-  // Process up to `tiles_per_chunk` consecutive tiles starting at `chunk_start`. The chunk is a
-  // contiguous range in the queue_idx-space; in the common case (single large segment, chunk
-  // fully inside it) the entire chunk lies in one segment and the outer `while` below runs
-  // exactly once. Chunks that straddle segment boundaries iterate the outer loop once per
-  // segment-stretch.
+  // Drive this CTA's entire grid-strided histogram pass. The agent walks chunks of
+  // `tiles_per_chunk` consecutive tiles in queue_idx-space (chunks are `gridDim.x *
+  // tiles_per_chunk` apart in the global tile sequence) and maintains per-segment cached
+  // state *across* chunks. As long as consecutive chunks of this CTA fall in the same
+  // segment (the common case for the single-large-segment dispatch workload), the agent
+  // does **one** `init_histogram` at the start of the CTA's work, accumulates into smem
+  // across every chunk's tiles, and runs **one** `merge_histogram` into the per-segment
+  // global slab when this CTA crosses out of the segment (or when the grid-stride loop
+  // ends). For workloads with multiple segments, the init/merge pair runs once per
+  // (CTA, segment-stretch) pair, where a stretch is a contiguous run of tiles this CTA
+  // owns inside the same segment.
   //
-  // Each segment-stretch is processed in three phases, mirroring the single-problem
-  // `AgentTopKHistogram::invoke()` shape (per-tile binary search hoisted out of the inner loop):
-  //
-  //   (A) one `__syncthreads()` + `init_histogram` for the segment;
-  //   (B) a tight full-tile loop of `min(chunk-budget, remaining-full-tiles-in-segment)`
-  //       iterations -- every iteration is just `set_tile_base` + `__syncthreads()` +
-  //       `submit_load`/`complete_load` + `process_tile_full`, with no per-tile segment
-  //       resolution and no per-tile pointer math against `d_large_segments_tile_offsets`;
-  //   (C) an at-most-one trailing-partial-tile conditional, taken iff the segment-stretch
-  //       reaches the segment's partial tile *and* chunk budget remains; followed by
-  //       `merge_histogram` into the per-segment global slab.
+  // Per-segment cache (alive across the outer chunk loop):
+  //   - `active_queue_idx`        : the segment being accumulated into ("no active" sentinel = -1)
+  //   - `active_segment_end`      : the segment's half-open upper bound in queue_idx-space
+  //                                 (`slab_base + segment_tile_count`); the cheap check
+  //                                 `chunk_cursor < active_segment_end` is what decides whether
+  //                                 the cache still applies for the next chunk's tiles
+  //   - other per-segment derivations (`d_keys_in`, `slab_base`, `num_full_tiles`,
+  //     `partial_items`, `num_items`, `segment_histogram`)
   //
   // The per-segment finalize epilogue (prefix-sum + bucket-finder + counter update + optional
   // global histogram reset) is owned by `device_segmented_topk_finalize_histogram_kernel`, run
@@ -630,109 +633,142 @@ public:
   // `total_bits`, `decomposer`) is absorbed into `extract_bin_op`, constructed host-side by
   // the dispatch and passed as the agent's `ExtractBinOpT` member -- the agent itself does
   // not depend on the pass index.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_chunk(LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT total_large_tiles, int tiles_per_chunk)
   {
-    // Clamp the chunk's right edge to the queue_idx-space upper bound.
-    const LargeSegmentTileOffsetT chunk_end =
-      (chunk_start + static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk) < total_large_tiles)
-        ? chunk_start + static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk)
-        : total_large_tiles;
+    // Sentinel meaning "no segment loaded yet". `active_queue_idx` is set to a real value the
+    // first time this CTA touches a tile, and never reverts to the sentinel.
+    constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
+    LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
+    LargeSegmentTileOffsetT active_segment_end         = 0;
+    LargeSegmentTileOffsetT active_slab_base           = 0;
+    inner_key_it_t active_d_keys_in{};
+    OffsetT* active_segment_histogram                  = nullptr;
+    OffsetT active_num_items                           = 0;
+    OffsetT active_num_full_tiles                      = 0;
+    OffsetT active_partial_items                       = 0;
 
-    LargeSegmentTileOffsetT chunk_cursor = chunk_start;
-    while (chunk_cursor < chunk_end)
+    const LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
+    const LargeSegmentTileOffsetT stride       = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
+
+    for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
+         chunk_start < total_large_tiles;
+         chunk_start += stride)
     {
-      // ----- Segment resolution (hoisted out of the inner loop) -----------------------------
-      // All threads of the warp pass the same `chunk_cursor`, so the binary search through
-      // `d_large_segments_tile_offsets` is warp-uniform by construction; the lane-0 +
-      // `__shfl_sync` shape makes that uniformity explicit to ptxas.
-      const LargeSegmentTileOffsetT queue_idx = resolve_queue_idx(chunk_cursor);
-      const auto segment_id                   = segment_id_provider[queue_idx];
-      const auto d_keys_in                    = d_key_segments_it[segment_id];
-      const OffsetT num_items                 = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
-      OffsetT* const segment_histogram        = d_segment_histograms + queue_idx * num_buckets;
-      const LargeSegmentTileOffsetT slab_base = d_large_segments_tile_offsets[queue_idx];
-      const OffsetT num_full_tiles            = num_items / static_cast<OffsetT>(tile_items);
-      const OffsetT partial_items             = num_items - num_full_tiles * static_cast<OffsetT>(tile_items);
+      const LargeSegmentTileOffsetT chunk_end =
+        (chunk_start + chunk_size_v < total_large_tiles) ? chunk_start + chunk_size_v : total_large_tiles;
 
-      // Tile-space offset of this segment-stretch's first tile inside its segment, plus how
-      // much chunk budget is left to spend on this segment-stretch.
-      const OffsetT local_tile_start                   = static_cast<OffsetT>(chunk_cursor - slab_base);
-      const LargeSegmentTileOffsetT remaining_in_chunk = chunk_end - chunk_cursor;
-
-      // Number of FULL tiles of this segment that fall within the chunk budget. The hot-path
-      // loop below iterates exactly this many times. Bound is computed once and held in
-      // registers (or uniform registers, for any value derived from a uniform input) for the
-      // duration of the loop.
-      const OffsetT full_tiles_remaining_in_seg =
-        (local_tile_start < num_full_tiles) ? (num_full_tiles - local_tile_start) : OffsetT{0};
-      const OffsetT full_tiles_to_process =
-        (::cuda::std::min) (static_cast<OffsetT>(remaining_in_chunk), full_tiles_remaining_in_seg);
-
-      // The segment's trailing partial tile is claimed in this iteration iff (1) the
-      // segment-stretch reaches the partial-tile slot (i.e. the full-tile loop exits at
-      // `local_tile == num_full_tiles`), (2) the segment has a partial tile at all, and
-      // (3) the chunk has at least one tile of budget left after the full-tile loop.
-      const OffsetT next_local_tile = local_tile_start + full_tiles_to_process;
-      const bool process_partial    = (next_local_tile == num_full_tiles) && (partial_items > 0)
-                                && (full_tiles_to_process + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
-
-      // ----- (A) Init smem histogram for this segment-stretch. ------------------------------
-      __syncthreads();
-      detail::topk::init_histogram<block_threads, num_buckets>(temp_storage.histogram);
-      __syncthreads();
-
-      // `keys_source_t` captures the segment's input iterator + its smem state. Constructed
-      // once per segment-stretch (matching the single-problem agent); `set_tile_base()` inside
-      // the loop refreshes per-tile state without re-running the constructor.
-      keys_source_t keys_source{d_keys_in, temp_storage.keys_source_state};
-
-      // ----- (B) Full-tile loop -- the tight hot path. -------------------------------------
-      for (OffsetT i = 0; i < full_tiles_to_process; ++i)
+      LargeSegmentTileOffsetT chunk_cursor = chunk_start;
+      while (chunk_cursor < chunk_end)
       {
-        const OffsetT tile_base = (local_tile_start + i) * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
+        // ----- Segment-state refresh, only when the cached segment doesn't cover chunk_cursor.
+        // For consecutive chunks of the same segment (the common case in the single-segment
+        // workload that drives the multi-CTA dispatch path), this branch is taken **once** per
+        // CTA total -- right at the start of the first chunk this CTA owns. After that, the
+        // condition `chunk_cursor < active_segment_end` holds for every subsequent iteration
+        // until the CTA stops grid-striding or crosses a segment boundary.
+        if (active_queue_idx == kNoActiveSegment || chunk_cursor >= active_segment_end)
+        {
+          // Flush the previously-active segment's smem histogram into its global slab.
+          if (active_queue_idx != kNoActiveSegment)
+          {
+            __syncthreads();
+            detail::topk::merge_histogram<block_threads, num_buckets>(
+              temp_storage.histogram, active_segment_histogram);
+          }
 
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(temp_storage.keys_source_scratch);
-        h.complete_load(items);
-        process_tile_full(items);
+          // Resolve the new segment for `chunk_cursor` via lane-0 + `__shfl_sync` broadcast.
+          const LargeSegmentTileOffsetT queue_idx = resolve_queue_idx(chunk_cursor);
+          const auto segment_id                   = segment_id_provider[queue_idx];
+          active_queue_idx                        = queue_idx;
+          active_d_keys_in                        = d_key_segments_it[segment_id];
+          active_num_items                        = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
+          active_segment_histogram                = d_segment_histograms + queue_idx * num_buckets;
+          active_slab_base                        = d_large_segments_tile_offsets[queue_idx];
+          active_num_full_tiles                   = active_num_items / static_cast<OffsetT>(tile_items);
+          active_partial_items =
+            active_num_items - active_num_full_tiles * static_cast<OffsetT>(tile_items);
+          // Half-open upper bound in queue_idx-space: full tiles + 1 partial tile (if any).
+          const OffsetT seg_tile_count =
+            active_num_full_tiles + (active_partial_items > 0 ? OffsetT{1} : OffsetT{0});
+          active_segment_end = active_slab_base + static_cast<LargeSegmentTileOffsetT>(seg_tile_count);
+
+          __syncthreads();
+          detail::topk::init_histogram<block_threads, num_buckets>(temp_storage.histogram);
+          __syncthreads();
+        }
+
+        // ----- Tile-space accounting using the cached segment state. -----------------------
+        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_cursor - active_slab_base);
+        const LargeSegmentTileOffsetT remaining_in_chunk = chunk_end - chunk_cursor;
+        const OffsetT full_tiles_remaining_in_seg =
+          (local_tile_start < active_num_full_tiles) ? (active_num_full_tiles - local_tile_start) : OffsetT{0};
+        const OffsetT full_tiles_to_process =
+          (::cuda::std::min) (static_cast<OffsetT>(remaining_in_chunk), full_tiles_remaining_in_seg);
+
+        // At-most-one trailing partial tile, claimed iff the loop ends at the segment's
+        // partial-tile slot AND the segment has a partial AND chunk budget remains.
+        const OffsetT next_local_tile = local_tile_start + full_tiles_to_process;
+        const bool process_partial    = (next_local_tile == active_num_full_tiles) && (active_partial_items > 0)
+                                  && (full_tiles_to_process + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
+
+        // The keys-source view captures the segment's input iterator + its smem state. State
+        // lives in smem and persists across the segment-stretch; we construct a fresh view-
+        // object on segment-state refresh (when iterator may have changed) and reuse it across
+        // same-segment iterations.
+        keys_source_t keys_source{active_d_keys_in, temp_storage.keys_source_state};
+
+        // ----- Full-tile loop -- the tight hot path. ----------------------------------------
+        for (OffsetT i = 0; i < full_tiles_to_process; ++i)
+        {
+          const OffsetT tile_base = (local_tile_start + i) * static_cast<OffsetT>(tile_items);
+          keys_source.set_tile_base(tile_base);
+
+          __syncthreads();
+          key_in_t items[items_per_thread];
+          auto h = keys_source.submit_load(temp_storage.keys_source_scratch);
+          h.complete_load(items);
+          process_tile_full(items);
+        }
+
+        // ----- At-most-one trailing partial tile. -------------------------------------------
+        if (process_partial)
+        {
+          const OffsetT tile_base = active_num_full_tiles * static_cast<OffsetT>(tile_items);
+          keys_source.set_tile_base(tile_base);
+
+          __syncthreads();
+          key_in_t items[items_per_thread];
+          auto h = keys_source.submit_load(temp_storage.keys_source_scratch, active_partial_items);
+          h.complete_load(items);
+          const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+          const int num_thread_items =
+            (thread_offset >= active_num_items)
+              ? 0
+              : static_cast<int>(
+                  (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), active_num_items - thread_offset));
+          process_tile_partial(items, num_thread_items);
+        }
+
+        const OffsetT tiles_consumed = full_tiles_to_process + (process_partial ? OffsetT{1} : OffsetT{0});
+        // Defensive: `tiles_consumed == 0` should be unreachable -- the offset table is sized
+        // by ceil-div'ing `num_items` per segment, so `local_tile_start` is always in
+        // `[0, num_full_tiles + (partial_items > 0 ? 1 : 0))`. If an off-by-one in the offsets
+        // ever produces a stretch with no work, break rather than spin.
+        if (tiles_consumed == OffsetT{0})
+        {
+          break;
+        }
+        chunk_cursor += static_cast<LargeSegmentTileOffsetT>(tiles_consumed);
       }
+    }
 
-      // ----- (C) At-most-one trailing partial tile. -----------------------------------------
-      if (process_partial)
-      {
-        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
-
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(temp_storage.keys_source_scratch, partial_items);
-        h.complete_load(items);
-        const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
-        const int num_thread_items =
-          (thread_offset >= num_items)
-            ? 0
-            : static_cast<int>(
-                (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), num_items - thread_offset));
-        process_tile_partial(items, num_thread_items);
-      }
-
-      // ----- Merge smem histogram into this segment-stretch's global slab. ------------------
+    // Final flush: merge the last active segment-stretch's smem histogram into its global
+    // slab. Skipped only when this CTA had no work at all (empty grid-stride iterator).
+    if (active_queue_idx != kNoActiveSegment)
+    {
       __syncthreads();
-      detail::topk::merge_histogram<block_threads, num_buckets>(temp_storage.histogram, segment_histogram);
-
-      const OffsetT tiles_consumed = full_tiles_to_process + (process_partial ? OffsetT{1} : OffsetT{0});
-      // Defensive: `tiles_consumed == 0` should be unreachable -- the offset table is sized by
-      // ceil-div'ing `num_items` per segment, so `local_tile_start` is always in
-      // `[0, num_full_tiles + (partial_items > 0 ? 1 : 0))`. If an off-by-one in the offsets
-      // ever produces a stretch with no work, break rather than spin.
-      if (tiles_consumed == OffsetT{0})
-      {
-        break;
-      }
-      chunk_cursor += static_cast<LargeSegmentTileOffsetT>(tiles_consumed);
+      detail::topk::merge_histogram<block_threads, num_buckets>(
+        temp_storage.histogram, active_segment_histogram);
     }
   }
 };
