@@ -914,14 +914,19 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // Per-segment epilogue for the histogram pass: runs after the histogram kernel finishes,
       // one CTA per large segment, doing the prefix-sum + bucket-finder + counter update +
       // (optional) global histogram reset. Replaces the per-tile `finalize_pass` that used to
-      // live inside `agent_batched_topk_histogram::run`.
+      // live inside `agent_batched_topk_histogram::run`. The `KeyInputItItT` and
+      // `ExtractBinOpT` template args are *always* threaded through; when the policy enables
+      // `full_tiles_only_histogram` the kernel also loads + bins each segment's trailing
+      // partial tile into `segment_histogram` before the prefix-sum runs.
       auto finalize_histogram_kernel_ptr = device_segmented_topk_finalize_histogram_kernel<
         PolicySelector,
+        KeyInputItItT,
         SegmentSizeParameterT,
         KParameterT,
         NumSegmentsParameterT,
         segment_id_provider_t,
         large_segments_count_it_t,
+        extract_bin_op_t,
         OffsetT,
         OutOffsetT,
         key_in_t>;
@@ -1062,6 +1067,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                 finalize_histogram_grid_size, multi_worker_threads_per_block, 0, stream)
                 .doit(
                   finalize_histogram_kernel_ptr,
+                  d_key_segments_it,
                   segment_sizes,
                   k,
                   num_segments,
@@ -1069,6 +1075,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                   d_seg_counters,
                   d_seg_histograms,
                   large_segments_count_it,
+                  extract_bin_op,
                   0,
                   reset_histogram)))
         {

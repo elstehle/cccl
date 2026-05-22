@@ -309,6 +309,18 @@ struct tiles_per_chunk
 {
   static constexpr int value = current_policy<PolicySelector>().multi_worker_per_segment_policy.tiles_per_chunk;
 };
+
+// Lift `multi_worker_per_segment_policy.full_tiles_only_histogram` to a compile-time boolean.
+// When `true`, the histogram kernel skips the partial-tile path (only full tiles are loaded /
+// binned) and the finalize-histogram kernel grows a partial-tile epilogue that loads + bins
+// the trailing partial of each segment directly into the segment's global histogram before the
+// prefix-sum + bucket-finder runs.
+template <typename PolicySelector>
+struct full_tiles_only_histogram
+{
+  static constexpr bool value =
+    current_policy<PolicySelector>().multi_worker_per_segment_policy.full_tiles_only_histogram;
+};
 } // namespace topk_seg_kernel_detail
 
 template <typename PolicySelector,
@@ -353,6 +365,12 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // the agent, which dereferences them inside `run` / `resolve_queue_idx`.
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
+  // Compile-time switch for the experimental "histogram only walks full tiles" mode. When
+  // `true`, the agent drops the partial-tile path; the trailing partial of each segment is
+  // handled by `device_segmented_topk_finalize_histogram_kernel`.
+  static constexpr bool full_tiles_only =
+    topk_seg_kernel_detail::full_tiles_only_histogram<PolicySelector>::value;
+
   using agent_t = agent_batched_topk_histogram<
     agent_topk_policy_t,
     KeyInputItItT,
@@ -365,7 +383,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OffsetT,
     OutOffsetT,
     LargeSegmentsCountItT,
-    SegmentCountT>;
+    SegmentCountT,
+    full_tiles_only>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
@@ -409,11 +428,13 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
 // `__threadfence` + `__syncthreads_or` chain plus the prefix-sum scratch's smem footprint) from
 // the histogram CTAs. The trade-off is one extra cheap kernel launch per pass on this path.
 template <typename PolicySelector,
+          typename KeyInputItItT,
           typename SegmentSizeParameterT,
           typename KParameterT,
           typename NumSegmentsParameterT,
           typename SegmentIdProviderT,
           typename LargeSegmentsCountItT,
+          typename ExtractBinOpT,
           typename OffsetT,
           typename OutOffsetT,
           typename KeyInT>
@@ -422,6 +443,7 @@ template <typename PolicySelector,
 #endif // _CCCL_HAS_CONCEPTS()
 __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_finalize_histogram_kernel(
+    _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
     SegmentSizeParameterT segment_sizes,
     KParameterT k_param,
     NumSegmentsParameterT num_segments,
@@ -429,13 +451,23 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     detail::topk::counter<KeyInT, OffsetT, OutOffsetT>* d_segment_counters,
     _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
+    ExtractBinOpT extract_bin_op,
     _CCCL_GRID_CONSTANT const int pass,
     _CCCL_GRID_CONSTANT const bool reset_histogram)
 {
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
-  static constexpr int block_threads = agent_topk_policy_t::block_threads;
-  static constexpr int bits_per_pass = agent_topk_policy_t::bits_per_pass;
-  static constexpr int num_buckets   = 1 << bits_per_pass;
+  static constexpr int block_threads    = agent_topk_policy_t::block_threads;
+  static constexpr int items_per_thread = agent_topk_policy_t::items_per_thread;
+  static constexpr int bits_per_pass    = agent_topk_policy_t::bits_per_pass;
+  static constexpr int num_buckets      = 1 << bits_per_pass;
+  static constexpr int tile_items       = block_threads * items_per_thread;
+
+  // Mirrors `topk_seg_kernel_detail::full_tiles_only_histogram<PolicySelector>::value`.
+  // When `true`, the companion histogram kernel skipped the trailing partial tile of every
+  // segment; this kernel's responsibility, before running the prefix-sum + bucket-finder, is
+  // to load + bin that partial tile directly into the segment's global histogram slab.
+  static constexpr bool process_partial =
+    topk_seg_kernel_detail::full_tiles_only_histogram<PolicySelector>::value;
 
   using counter_t                   = detail::topk::counter<KeyInT, OffsetT, OutOffsetT>;
   using block_identify_kth_bucket_t = detail::topk::block_identify_kth_bucket<
@@ -463,6 +495,41 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     const OffsetT num_items    = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
     counter_t* segment_counter = d_segment_counters + queue_idx;
     OffsetT* segment_histogram = d_segment_histograms + queue_idx * num_buckets;
+
+    // Trailing-partial-tile pickup. In the experimental "histogram processes full tiles only"
+    // mode (`process_partial == true`), this CTA loads + bins the segment's trailing partial
+    // tile straight into `segment_histogram` via global atomic adds, before the prefix-sum +
+    // bucket-finder kicks in. In the default mode the histogram kernel already binned the
+    // partial; this whole branch is `if constexpr`-eliminated.
+    if constexpr (process_partial)
+    {
+      const OffsetT num_full_tiles = num_items / static_cast<OffsetT>(tile_items);
+      const OffsetT partial_items  = num_items - num_full_tiles * static_cast<OffsetT>(tile_items);
+      if (partial_items > OffsetT{0})
+      {
+        const auto inner_key_it = d_key_segments_it[segment_id];
+        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
+        // Striped per-thread load (lane t loads idx t + warp*32 etc.) is coalesced for
+        // dense per-segment input pointers and remains correct for any iterator. Each
+        // in-bounds item is binned and atomic-added to the global slab; out-of-bounds
+        // lanes contribute nothing. A single `__syncthreads()` at the end ensures the
+        // global atomics are visible to the subsequent `find_kth_bucket` (which reads
+        // through `BlockLoad` against `segment_histogram`).
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
+        {
+          const OffsetT idx = static_cast<OffsetT>(i) * static_cast<OffsetT>(block_threads)
+                            + static_cast<OffsetT>(threadIdx.x);
+          if (idx < partial_items)
+          {
+            const KeyInT key = inner_key_it[tile_base + idx];
+            const int bucket = extract_bin_op(key);
+            atomicAdd(segment_histogram + bucket, OffsetT{1});
+          }
+        }
+        __syncthreads();
+      }
+    }
 
     // Clip `k` to the segment's input size (same as the histogram agent did pre-refactor; see
     // the comment on that clip for why).

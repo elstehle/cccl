@@ -145,6 +145,23 @@ struct multi_worker_policy
   // Set to `1` to fall back to one-tile-per-grid-stride.
   int tiles_per_chunk;
 
+  // Experimental knob: split the partial-tile responsibility off of the histogram kernel.
+  //
+  //   - `false` (default, original behavior): the histogram kernel walks all tiles of the
+  //     queue (full tiles + the trailing partial tile of each segment); the
+  //     finalize-histogram kernel does only the prefix-sum + bucket-finder epilogue.
+  //   - `true`: the histogram kernel processes **only** full tiles. The trailing partial
+  //     tile of each segment (if any) is loaded + binned by the finalize-histogram kernel
+  //     (one CTA per segment) directly into that segment's global histogram, right before
+  //     the prefix-sum + bucket-finder runs.
+  //
+  // The motivation is kernel-code streamlining: with `true`, the histogram kernel has no
+  // partial-tile load path, no partial-tile bin-extract loop, and no `process_partial`
+  // predicate -- everything the compiler sees per inner iteration is a full-tile load. The
+  // partial tile becomes one extra small loop in the (already serialized at 1 CTA per
+  // segment) finalize kernel.
+  bool full_tiles_only_histogram;
+
   _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block //
@@ -160,7 +177,8 @@ struct multi_worker_policy
         && lhs.value_materialization == rhs.value_materialization //
         && lhs.lazy_value_load == rhs.lazy_value_load //
         && lhs.inlined_classify == rhs.inlined_classify //
-        && lhs.tiles_per_chunk == rhs.tiles_per_chunk;
+        && lhs.tiles_per_chunk == rhs.tiles_per_chunk //
+        && lhs.full_tiles_only_histogram == rhs.full_tiles_only_histogram;
   }
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
@@ -184,7 +202,9 @@ struct multi_worker_policy
               << ", .value_materialization = " << static_cast<int>(p.value_materialization) //
               << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") //
               << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") //
-              << ", .tiles_per_chunk = " << p.tiles_per_chunk << " }";
+              << ", .tiles_per_chunk = " << p.tiles_per_chunk //
+              << ", .full_tiles_only_histogram = " << (p.full_tiles_only_histogram ? "true" : "false") //
+              << " }";
   }
 #endif // _CCCL_HOSTED()
 };
@@ -278,7 +298,8 @@ struct policy_selector
         /*.value_materialization                =*/detail::topk::value_materialization_mode::indexed,
         /*.lazy_value_load                      =*/true,
         /*.inlined_classify                     =*/true,
-        /*.tiles_per_chunk                      =*/4}};
+        /*.tiles_per_chunk                      =*/4,
+        /*.full_tiles_only_histogram            =*/false}};
   }
 };
 

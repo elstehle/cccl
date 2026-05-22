@@ -482,6 +482,13 @@ template <typename AgentTopKPolicyT,
           typename OutOffsetT,
           typename LargeSegmentsCountItT,
           typename SegmentCountT,
+          // Experimental switch (mirrors `multi_worker_policy::full_tiles_only_histogram`).
+          // When `true`, the agent's `run()` skips the partial-tile path entirely: only full
+          // tiles flow through the inner loop, no `process_partial` predicate is computed,
+          // and `process_partial_tile_at_segment_end` is never instantiated. The trailing
+          // partial tile of each segment is the responsibility of
+          // `device_segmented_topk_finalize_histogram_kernel` in that mode.
+          bool FullTilesOnly = false,
           typename FilterOpT = detail::topk::topk_pass_through_filter_op>
 struct agent_batched_topk_histogram
 {
@@ -791,8 +798,12 @@ public:
 
         // At-most-one trailing partial tile, claimed iff the full-tile loop ends at the
         // segment's partial-tile slot AND the segment has a partial AND chunk budget remains.
+        // The cursor advance is always the same -- the partial-tile slot is "consumed"
+        // either way. In `FullTilesOnly` mode the slot is *only* stepped over; the actual
+        // partial-tile load + bin is delegated to the finalize-histogram kernel. In the
+        // default mode the partial tile is processed inline as before.
         const OffsetT next_local_tile = local_tile_start + full_tiles_to_process;
-        const bool process_partial =
+        const bool reaches_partial_slot =
           (next_local_tile == num_full_tiles) && (temp_storage.active_segment.partial_items > 0)
           && (full_tiles_to_process + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
 
@@ -806,13 +817,18 @@ public:
           process_full_tile_at(keys_source, local_tile_start + i);
         }
 
-        // Partial-tile conditional *after* the loop.
-        if (process_partial)
+        // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
+        // `if constexpr`-eliminated -- the slot is still consumed by `tiles_consumed` below
+        // so the chunk walk doesn't stall on the segment's partial-tile index.
+        if constexpr (!FullTilesOnly)
         {
-          process_partial_tile_at_segment_end(keys_source);
+          if (reaches_partial_slot)
+          {
+            process_partial_tile_at_segment_end(keys_source);
+          }
         }
 
-        const OffsetT tiles_consumed = full_tiles_to_process + (process_partial ? OffsetT{1} : OffsetT{0});
+        const OffsetT tiles_consumed = full_tiles_to_process + (reaches_partial_slot ? OffsetT{1} : OffsetT{0});
         if (tiles_consumed == OffsetT{0})
         {
           break;
