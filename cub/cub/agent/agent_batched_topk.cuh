@@ -481,6 +481,7 @@ template <typename AgentTopKPolicyT,
           typename OffsetT,
           typename OutOffsetT,
           typename LargeSegmentsCountItT,
+          typename SegmentCountT,
           typename FilterOpT = detail::topk::topk_pass_through_filter_op>
 struct agent_batched_topk_histogram
 {
@@ -604,7 +605,11 @@ private:
     LargeSegmentTileOffsetT queue_idx_lane0 = 0;
     if ((threadIdx.x & 31) == 0)
     {
-      queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, *large_segments_count_it, global_tile_id) - 1;
+      queue_idx_lane0 = UpperBound(
+                          d_large_segments_tile_offsets,
+                          static_cast<SegmentCountT>(*large_segments_count_it),
+                          global_tile_id)
+                      - 1;
     }
     return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
   }
@@ -646,9 +651,12 @@ public:
   {
     // Pointer to the sentinel slot of the per-segment tile-offset table. Computed once at
     // entry from the agent's own members so the inner-loop bound checks below can dereference
-    // a single pointer rather than re-deriving the address every iteration.
+    // a single pointer rather than re-deriving the address every iteration. The dereferenced
+    // count is type-narrowed to `SegmentCountT` (typically `uint32_t`) before indexing so
+    // ptxas sees a 32-bit offset on the pointer arithmetic even when the iterator's
+    // `value_type` is wider.
     const LargeSegmentTileOffsetT* const d_total_large_tiles =
-      &d_large_segments_tile_offsets[*large_segments_count_it];
+      &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
     // Sentinel meaning "no segment loaded yet". `active_queue_idx` is set to a real value the
     // first time this CTA touches a tile, and never reverts to the sentinel.
     constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);

@@ -321,7 +321,8 @@ template <typename PolicySelector,
           typename LargeSegmentsCountItT,
           typename ExtractBinOpT,
           typename OffsetT,
-          typename OutOffsetT>
+          typename OutOffsetT,
+          typename SegmentCountT>
 #if _CCCL_HAS_CONCEPTS()
   requires batched_topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
@@ -363,7 +364,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     LargeSegmentTileOffsetT,
     OffsetT,
     OutOffsetT,
-    LargeSegmentsCountItT>;
+    LargeSegmentsCountItT,
+    SegmentCountT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
 

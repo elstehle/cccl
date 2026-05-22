@@ -415,6 +415,24 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     || (sizeof(typename KParameterT::value_type) <= 4)
     || fits_in_uint32_v<TotalNumItemsGuaranteeT::static_max_num_items>;
   using OutOffsetT = ::cuda::std::conditional_t<out_offset_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
+
+  // SegmentCountT: count of enqueued large segments read through `large_segments_count_it`. The
+  // same "smaller of the two host-known sources" rule as OffsetT/OutOffsetT applies, but the
+  // per-grid total-items source does not bound segment counts so only two sources participate:
+  //   (1) static upper bound on `NumSegmentsParameterT` -- the user-declared compile-time max
+  //       on the number of segments;
+  //   (2) the user-declared underlying `NumSegmentsParameterT::value_type` -- if the user
+  //       picked a 32-bit type for the segment count, the runtime count cannot exceed
+  //       `UINT32_MAX` regardless of the static bound.
+  // Either source saying "fits in 32 bits" pins `uint32_t`. Used by the histogram kernel and
+  // agent to type-narrow the dereferenced count at the binary-search upper bound and the
+  // sentinel-slot index, saving register pressure when the original `value_type` is wider
+  // than 32 bits.
+  static constexpr bool segment_count_fits_u32 =
+       fits_in_uint32_v<params::static_max_value_v<NumSegmentsParameterT>>
+    || (sizeof(typename NumSegmentsParameterT::value_type) <= 4);
+  using SegmentCountT =
+    ::cuda::std::conditional_t<segment_count_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
   // Per-segment top-k counter type. The dispatch allocates an `N_slabs`-sized array of these.
   using seg_counter_t = detail::topk::counter<key_in_t, OffsetT, OutOffsetT>;
 
@@ -891,7 +909,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         large_segments_count_it_t,
         extract_bin_op_t,
         OffsetT,
-        OutOffsetT>;
+        OutOffsetT,
+        SegmentCountT>;
       // Per-segment epilogue for the histogram pass: runs after the histogram kernel finishes,
       // one CTA per large segment, doing the prefix-sum + bucket-finder + counter update +
       // (optional) global histogram reset. Replaces the per-tile `finalize_pass` that used to
