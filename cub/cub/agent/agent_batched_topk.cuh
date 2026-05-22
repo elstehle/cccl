@@ -673,11 +673,15 @@ private:
   // Combination "leave the current segment, enter the next one" used when a chunk straddles a
   // segment boundary (or when grid-striding lands the CTA on a new segment). Flushes the
   // current smem histogram, refreshes `active_segment` for `cursor`, and re-inits the smem
-  // histogram for the new segment.
+  // histogram for the new segment. The interior `__syncthreads()` brackets the smem-active-
+  // segment slot against concurrent reads (from the just-completed `merge_histogram` call,
+  // which reads `active_segment.segment_histogram` to drive its atomic adds) and the
+  // upcoming thread-0 write (`load_segment_state` inside `enter_segment`).
   _CCCL_DEVICE _CCCL_FORCEINLINE void switch_to_segment(LargeSegmentTileOffsetT cursor)
   {
     __syncthreads();
     flush_active_segment();
+    __syncthreads();
     enter_segment(cursor);
   }
 
