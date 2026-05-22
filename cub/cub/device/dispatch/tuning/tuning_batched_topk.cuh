@@ -299,7 +299,7 @@ struct policy_selector
         /*.lazy_value_load                      =*/true,
         /*.inlined_classify                     =*/true,
         /*.tiles_per_chunk                      =*/4,
-        /*.full_tiles_only_histogram            =*/false}};
+        /*.full_tiles_only_histogram            =*/true}};
   }
 };
 
