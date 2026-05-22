@@ -763,22 +763,19 @@ public:
       while (chunk_cursor < chunk_end)
       {
         // Segment-state refresh -- only when the cached segment doesn't cover `chunk_cursor`.
-        if (active_queue_idx == kNoActiveSegment || chunk_cursor >= temp_storage.active_segment.segment_end)
+        // The first refresh on this CTA's run uses `enter_segment` (no smem-histogram to
+        // flush yet); subsequent refreshes use `switch_to_segment` which flushes first.
+        if (active_queue_idx == kNoActiveSegment)
         {
-          if (active_queue_idx != kNoActiveSegment)
-          {
-            __syncthreads();
-            flush_active_segment();
-            __syncthreads();
-          }
-          load_segment_state(chunk_cursor);
-          __syncthreads();
-          detail::topk::init_histogram<block_threads, num_buckets>(temp_storage.histogram);
-          __syncthreads();
+          enter_segment(chunk_cursor);
           // Mark "have an active segment" -- the actual queue_idx value isn't read again
-          // (the agent reads everything from `temp_storage.active_segment`), but the
-          // sentinel toggle gates the flush-before-refresh branch above.
+          // (the agent reads everything from `temp_storage.active_segment`); the sentinel
+          // toggle just gates the flush-vs-no-flush refresh choice.
           active_queue_idx = LargeSegmentTileOffsetT{0};
+        }
+        else if (chunk_cursor >= temp_storage.active_segment.segment_end)
+        {
+          switch_to_segment(chunk_cursor);
         }
 
         // Tile-space bounds of this segment-stretch inside the chunk.
