@@ -681,13 +681,13 @@ private:
     enter_segment(cursor);
   }
 
-  // Process one full tile of the active segment at local index `local_tile`. Reads
-  // `d_keys_in` from the smem `active_segment` slot at construction of the per-thread
-  // `keys_source_t` view.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_full_tile_at(OffsetT local_tile)
+  // Process one full tile of the active segment at local index `local_tile`. The caller
+  // owns the long-lived `keys_source_t` (constructed once per middle-loop iteration so the
+  // underlying `BlockLoadToShared` mbarrier is initialized **once** per segment-stretch
+  // -- re-constructing it per tile would re-init the persistent mbarrier and deadlock).
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_full_tile_at(keys_source_t& keys_source, OffsetT local_tile)
   {
     const OffsetT tile_base = local_tile * static_cast<OffsetT>(tile_items);
-    keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
     keys_source.set_tile_base(tile_base);
 
     __syncthreads();
@@ -698,16 +698,16 @@ private:
   }
 
   // Process the active segment's trailing partial tile (exactly `partial_items` items spread
-  // across the block). Reads `num_full_tiles`, `partial_items`, `num_items`, and `d_keys_in`
-  // from the smem `active_segment` slot.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_tile_at_segment_end()
+  // across the block). Reads `num_full_tiles`, `partial_items`, `num_items` from the smem
+  // `active_segment` slot. Uses the caller-owned `keys_source_t` (see
+  // `process_full_tile_at`).
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_tile_at_segment_end(keys_source_t& keys_source)
   {
     const OffsetT num_full_tiles = temp_storage.active_segment.num_full_tiles;
     const OffsetT partial_items  = temp_storage.active_segment.partial_items;
     const OffsetT num_items      = temp_storage.active_segment.num_items;
 
     const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
-    keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
     keys_source.set_tile_base(tile_base);
 
     __syncthreads();
@@ -803,10 +803,17 @@ public:
         const OffsetT num_full_tiles     = temp_storage.active_segment.num_full_tiles;
         const OffsetT local_full_end     = (local_stretch_end < num_full_tiles) ? local_stretch_end : num_full_tiles;
 
+        // Construct the per-segment-stretch keys-source view. Its underlying
+        // `BlockLoadToShared` initializes a persistent mbarrier in smem, so this object is
+        // built **once per middle-loop iteration** and reused across the full-tile loop +
+        // trailing partial. (Constructing it per tile would re-init the mbarrier and
+        // deadlock the block.)
+        keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
+
         // ----- (3) Inner: tight full-tile loop. ---------------------------------------------
         for (OffsetT local_tile = local_start; local_tile < local_full_end; ++local_tile)
         {
-          process_full_tile_at(local_tile);
+          process_full_tile_at(keys_source, local_tile);
         }
 
         // ----- Partial-tile conditional *after* the loop (not a special case inside it). ---
@@ -814,7 +821,7 @@ public:
         const bool has_partial         = (temp_storage.active_segment.partial_items > 0);
         if (reaches_segment_end && has_partial)
         {
-          process_partial_tile_at_segment_end();
+          process_partial_tile_at_segment_end(keys_source);
         }
 
         cursor = stretch_end;
