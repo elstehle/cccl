@@ -132,13 +132,18 @@ struct multi_worker_policy
   bool inlined_classify;
 
   // Number of consecutive tiles a single CTA processes before grid-striding to the next chunk
-  // (`gridDim.x * histogram_tiles_per_chunk` apart). Used by the histogram-only kernel as the
-  // inner-loop count: when consecutive tiles belong to the same segment, the per-segment smem
-  // histogram is initialized once at the top of the chunk and merged into the per-segment global
-  // histogram once at the bottom, amortizing init / merge work across the chunk. A chunk that
-  // crosses a segment boundary flushes the current segment's smem histogram, re-initializes it
-  // for the next segment, and continues. Set to `1` to fall back to one-tile-per-grid-stride.
-  int histogram_tiles_per_chunk;
+  // (`gridDim.x * tiles_per_chunk` apart). Used by every multi-CTA-per-segment kernel
+  // (histogram / filter / last_filter) as the inner-loop count of the kernel's nested
+  // grid-stride loop:
+  //   - histogram / filter: when consecutive tiles belong to the same segment, the per-segment
+  //     smem histogram is initialized once at the top of the run and merged into the
+  //     per-segment global histogram once at the bottom, amortizing init / merge across the
+  //     chunk. A chunk that crosses a segment boundary flushes the current segment's smem
+  //     histogram (when applicable for the mode) and re-initializes for the new segment.
+  //   - last_filter: no histogram, but the same chunking still amortizes the per-segment state
+  //     resolution (binary search + counter / iterator dereferences) across same-segment tiles.
+  // Set to `1` to fall back to one-tile-per-grid-stride.
+  int tiles_per_chunk;
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
   {
@@ -155,7 +160,7 @@ struct multi_worker_policy
         && lhs.value_materialization == rhs.value_materialization //
         && lhs.lazy_value_load == rhs.lazy_value_load //
         && lhs.inlined_classify == rhs.inlined_classify //
-        && lhs.histogram_tiles_per_chunk == rhs.histogram_tiles_per_chunk;
+        && lhs.tiles_per_chunk == rhs.tiles_per_chunk;
   }
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
@@ -179,7 +184,7 @@ struct multi_worker_policy
               << ", .value_materialization = " << static_cast<int>(p.value_materialization) //
               << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") //
               << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") //
-              << ", .histogram_tiles_per_chunk = " << p.histogram_tiles_per_chunk << " }";
+              << ", .tiles_per_chunk = " << p.tiles_per_chunk << " }";
   }
 #endif // _CCCL_HOSTED()
 };
@@ -273,7 +278,7 @@ struct policy_selector
         /*.value_materialization                =*/detail::topk::value_materialization_mode::indexed,
         /*.lazy_value_load                      =*/true,
         /*.inlined_classify                     =*/true,
-        /*.histogram_tiles_per_chunk            =*/4}};
+        /*.tiles_per_chunk                      =*/4}};
   }
 };
 

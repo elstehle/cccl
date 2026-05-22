@@ -788,12 +788,11 @@ struct agent_batched_topk_filter_partition
   static constexpr int tile_items       = block_threads * items_per_thread;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
 
-  using block_identify_kth_bucket_t = detail::topk::block_identify_kth_bucket<
-    block_threads,
-    bits_per_pass,
-    AgentTopKPolicyT::scan_algorithm,
-    OffsetT,
-    OutOffsetT>;
+  // The filter agent no longer carries `block_identify_kth_bucket_t` (the per-segment
+  // prefix-sum + kth-bucket scan that drives the next pass's counter state). That work has
+  // been hoisted into a dedicated `device_segmented_topk_finalize_filter_kernel` that runs
+  // after the filter kernel finishes, removing the per-tile `finalize_pass` cost from this
+  // agent.
 
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
@@ -892,9 +891,7 @@ struct agent_batched_topk_filter_partition
     effective_lazy_value_load,
     InlinedClassify>;
 
-  // Same `empty_prefix_sum_t` placeholder pattern as the single-problem agent: hoist `prefix_sum`
-  // out of the per-mode arena into the outer `_TempStorage` union so it can alias with the
-  // (larger) phase-1+2 footprint.
+  // Same `empty_prefix_sum_t` placeholder pattern as the single-problem agent.
   struct empty_prefix_sum_t
   {};
 
@@ -907,6 +904,10 @@ struct agent_batched_topk_filter_partition
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
+  // The prefix-sum scratch that used to sit in this union (the `prefix_sum` arm aliased with
+  // `buffered`/`early_stop`) has been removed; the per-segment prefix-sum + kth-bucket scan
+  // now lives in `device_segmented_topk_finalize_filter_kernel`. Smem here is just the
+  // per-mode arms used during the tile body itself.
   struct _TempStorage
   {
     union arms_t
@@ -917,8 +918,6 @@ struct agent_batched_topk_filter_partition
         typename keys_source_t::TempStorage keys_source_state;
         buffered_storage_layout_t arena;
       } buffered;
-
-      typename block_identify_kth_bucket_t::TempStorage prefix_sum;
 
       struct early_stop_t
       {
@@ -1044,446 +1043,453 @@ private:
     }
   }
 
-public:
-  // `pass` selects the radix digit; `reset_histogram` is set on every non-final filter pass.
-  //
-  // `global_tile_id` is supplied by the calling kernel's grid-stride loop; see the matching
-  // comment on `agent_batched_topk_histogram::run()` for why the agent processes one tile per
-  // call and the kernel iterates.
-  //
-  // The per-segment last-block callbacks (`counter_update_fn`, `on_kth_bucket`) are built inside
-  // `run()` -- only here, after the on-device binary search, do we know the segment's
-  // `counter_t*`. The closures capture per-segment `current_len`, `early_stop`, `will_buffer`,
-  // `pass`, and the segment counter pointer.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT global_tile_id, int pass, bool reset_histogram)
+private:
+  // Per-segment derived state cached across tiles of the same segment within a chunk. Same
+  // pattern as the histogram agent's per-segment cache: re-derived only when the chunk crosses
+  // a segment boundary; held in registers across same-segment tiles.
+  struct per_segment_state_t
   {
-    // See the matching comment on `agent_batched_topk_histogram::run()`: only lane 0 runs
-    // the binary search; `__shfl_sync` then broadcasts the result to the whole warp. This
-    // makes the warp-uniformity of `queue_idx` and every value indexed by it explicit at
-    // the SASS level (uniform broadcast from a single producer) instead of relying on
-    // ptxas's heuristic to recover uniformity from 32 redundant computations.
+    bool empty;       // counter_input_length == 0 -> all tiles of this segment are no-ops
+    bool early_stop;  // current_len == current_k
+    bool will_buffer; // !early_stop && fits-in-back-buffer && cost-justified
+    bool load_from_candidates_buffer;
+
+    inner_key_it_t d_keys_in{};
+    inner_key_out_it_t d_keys_out{};
+    [[maybe_unused]] inner_value_it_t d_values_in{};
+    [[maybe_unused]] inner_value_out_it_t d_values_out{};
+
+    key_in_t* in_key_buf;
+    key_in_t* out_key_buf;
+    [[maybe_unused]] value_in_t* in_val_buf;
+    [[maybe_unused]] value_in_t* out_val_buf;
+
+    OffsetT* segment_histogram;
+    counter_t* segment_counter;
+
+    // `identify_candidates_op_t` (for some `T`) has no default ctor, so we cache the inputs to
+    // its ctor here and construct it on demand in the per-mode tile body. The ctor is cheap
+    // (a `key_prefix_storage_t*` copy + an `int` shift).
+    int pass;
+
+    OutOffsetT current_k;
+    OffsetT current_len;
+    OffsetT input_length_actual;
+    OffsetT num_full_tiles;
+    OffsetT partial_items;
+    OffsetT segment_tiles_input;
+    LargeSegmentTileOffsetT slab_base;
+  };
+
+  // Lane-0 + `__shfl_sync` `UpperBound`, same idiom as the histogram agent.
+  _CCCL_DEVICE _CCCL_FORCEINLINE LargeSegmentTileOffsetT resolve_queue_idx(LargeSegmentTileOffsetT global_tile_id)
+  {
     LargeSegmentTileOffsetT queue_idx_lane0 = 0;
     if ((threadIdx.x & 31) == 0)
     {
       queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
     }
-    const LargeSegmentTileOffsetT queue_idx  = __shfl_sync(0xffffffff, queue_idx_lane0, 0);
-    const LargeSegmentTileOffsetT slab_base  = d_large_segments_tile_offsets[queue_idx];
-    const LargeSegmentTileOffsetT local_tile = global_tile_id - slab_base;
-    const auto segment_id                    = segment_id_provider[queue_idx];
+    return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
+  }
 
-    auto d_keys_in    = d_key_segments_it[segment_id];
-    auto d_keys_out   = d_key_segments_out_it[segment_id];
-    [[maybe_unused]] auto d_values_in  = [&] {
-      if constexpr (!keys_only)
-      {
-        return d_value_segments_it[segment_id];
-      }
-      else
-      {
-        return inner_value_it_t{};
-      }
-    }();
-    [[maybe_unused]] auto d_values_out = [&] {
-      if constexpr (!keys_only)
-      {
-        return d_value_segments_out_it[segment_id];
-      }
-      else
-      {
-        return inner_value_out_it_t{};
-      }
-    }();
+  // Build the per-segment cached state for `queue_idx`. Pure function of `queue_idx` and the
+  // per-launch agent state. Same logic as the prologue of the pre-refactor `run()`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx, int pass)
+  {
+    per_segment_state_t s{};
+    s.slab_base       = d_large_segments_tile_offsets[queue_idx];
+    const auto segment_id = segment_id_provider[queue_idx];
 
-    counter_t* segment_counter = d_segment_counters + queue_idx;
-    OffsetT* segment_histogram = d_segment_histograms + queue_idx * num_buckets;
-
-    const OutOffsetT current_k             = segment_counter->k;
-    const OffsetT current_len              = segment_counter->num_candidates_out;
-    const OffsetT counter_input_length     = segment_counter->num_candidates_in;
-    const bool load_from_candidates_buffer = segment_counter->load_from_candidates_buffer;
-
-    if (counter_input_length == 0)
-    {
-      return;
-    }
-
-    // Construct the per-segment `identify_candidates_op` with the per-segment counter's
-    // `kth_key_bits` pointer. The kernel-level construction is not possible because the
-    // (queue_idx -> segment) mapping is resolved by the on-device binary search.
-    IdentifyCandidatesOpT identify_candidates_op{&segment_counter->kth_key_bits, pass, total_bits, decomposer};
-
-    const OffsetT segment_num_items   = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
-    // `counter_input_length` is the segment's input length for this pass (single-problem analog
-    // `dispatch_topk::DeviceTopKFilterKernel`'s `input_length = counter->num_candidates_in`). In
-    // the unbuffered chain it equals `segment_num_items` (set by the histogram pass's
-    // counter_update_fn); in the buffered chain it equals the count of candidates written to
-    // the candidate buffer by the previous pass (set by the previous buffered pass's
-    // counter_update_fn `num_candidates_in = current_len`). `current_len` is the previous
-    // pass's `num_candidates_out` -- used for branch selection (`early_stop` / `will_buffer`)
-    // but NOT for sizing the tile loop.
-    const OffsetT input_length_actual = counter_input_length;
-
-    const bool early_stop  = (current_len == static_cast<OffsetT>(current_k));
-    // Entry condition for the buffered chain.
-    //
-    //   (a) `current_len <= candidate_buffer_length`   -- the candidate set fits in the
-    //       per-segment back buffer slab the dispatch carved out for this segment.
-    //
-    //   (b) `current_len <= segment_num_items / candidate_buffer_coefficient` -- the candidate
-    //       set is small enough relative to the segment that the write-side cost of materializing
-    //       the back buffer pays off via the read-side savings in the next pass. The threshold is
-    //       threaded from the dispatch in lock-step with `candidate_buffer_length` (which is
-    //       sized as `static_max_seg_size / coefficient`). For small segments where
-    //       `segment_num_items / coefficient < current_len`, we keep iterating the unbuffered
-    //       chain instead. Integer-divide on `segment_num_items` is exact here -- both operands
-    //       are `OffsetT`.
-    const bool will_buffer = !early_stop && (current_len <= candidate_buffer_length)
-                          && (current_len <= segment_num_items / candidate_buffer_coefficient);
-
-    // Per-segment back-buffer slabs. The host-side global double-buffer flip determines whether
-    // `d_segment_in_*_buf` is the previous pass's candidate buffer or the original input buffer
-    // pair; the agent reads from `in_key_buf` only when the per-segment counter says so.
-    key_in_t* in_key_buf = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
-    key_in_t* out_key_buf = will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
-    value_in_t* in_val_buf = nullptr;
-    value_in_t* out_val_buf = nullptr;
+    s.d_keys_in  = d_key_segments_it[segment_id];
+    s.d_keys_out = d_key_segments_out_it[segment_id];
     if constexpr (!keys_only)
     {
-      in_val_buf  = load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-      out_val_buf = will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+      s.d_values_in  = d_value_segments_it[segment_id];
+      s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    // Number of tiles this segment processes for this pass, computed from `input_length_actual`.
-    // The per-segment tile-offset table was scanned over the (host-side) upper bound on each
-    // segment's tile count (`ceil_div(segment_size, multi_worker_tile_size)`), so on the
-    // buffered path -- where the actual input length is `current_len` and strictly smaller than
-    // `segment_num_items` -- some of the per-segment tile slots fall past `segment_tiles_input`
-    // and must be ignored. The retirement counter (`expected_block_count = segment_tiles_input`,
-    // below) is sized to the meaningful tile count, so the early-exit here keeps the elected
-    // last block on the buffered path consistent with the (now-shorter) tile slab.
-    const OffsetT segment_tiles_input =
-      static_cast<OffsetT>(::cuda::ceil_div(input_length_actual, OffsetT{tile_items}));
+    s.segment_counter   = d_segment_counters + queue_idx;
+    s.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
 
-    if (static_cast<OffsetT>(local_tile) >= segment_tiles_input)
+    s.current_k                        = s.segment_counter->k;
+    s.current_len                      = s.segment_counter->num_candidates_out;
+    const OffsetT counter_input_length = s.segment_counter->num_candidates_in;
+    s.load_from_candidates_buffer      = s.segment_counter->load_from_candidates_buffer;
+
+    s.pass = pass;
+
+    s.empty = (counter_input_length == 0);
+    if (s.empty)
     {
-      return;
+      return s;
     }
 
-    selected_reserve_op_t reserve_sel{&segment_counter->num_selected_written};
+    const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
+    s.input_length_actual           = counter_input_length;
+
+    s.early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
+    s.will_buffer = !s.early_stop && (s.current_len <= candidate_buffer_length)
+                 && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
+
+    s.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
+    s.out_key_buf = s.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
+    if constexpr (!keys_only)
+    {
+      s.in_val_buf =
+        s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+      s.out_val_buf = s.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+    }
+
+    s.num_full_tiles = s.input_length_actual / static_cast<OffsetT>(tile_items);
+    s.partial_items  = s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items);
+    s.segment_tiles_input =
+      static_cast<OffsetT>(::cuda::ceil_div(s.input_length_actual, OffsetT{tile_items}));
+    return s;
+  }
+
+  // Per-mode tile bodies. Each takes the per-segment cached state and a tile-local index, runs
+  // exactly the same code the pre-refactor `run()` ran inside its `if (early_stop) {} else if
+  // (will_buffer) {} else {}` branches, minus the surrounding init / merge / finalize_pass --
+  // those are managed by `process_chunk` (init/merge) and the finalize kernel (finalize_pass).
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  {
+    key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+
+    // The filter primitive's ctor takes the identify-selected op by non-const reference,
+    // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
+    // `int` shift) from the cached per-segment fields.
+    IdentifyCandidatesOpT identify_candidates_op{
+      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+    identify_selected_op_t identify_selected{identify_candidates_op};
+    auto value_channel_sinks = make_early_stop_value_channel_sinks(s.d_values_out);
+
+    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    key_xform_t sel_key_xform{};
+
+    early_stop_filter_t filter{
+      storage.arms.early_stop.arena.get_partition_state(),
+      reserve_sel,
+      sel_key_xform,
+      s.d_keys_out,
+      value_channel_sinks,
+      identify_selected};
+
+    if (local_tile < s.num_full_tiles)
+    {
+      const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
+      keys_source.set_tile_base(tile_base);
+
+      auto value_source = [&] {
+        if constexpr (keys_only)
+        {
+          return NullType{};
+        }
+        else
+        {
+          typename value_source_input_t::TempStorage val_state_input{};
+          typename value_source_buffer_t::TempStorage val_state_buffer{};
+          value_source_input_t val_input{s.d_values_in, val_state_input};
+          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          val_src.set_tile_base(tile_base);
+          return val_src;
+        }
+      }();
+
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
+      h.complete_load(items);
+      __syncthreads();
+      filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, value_source);
+    }
+    else if (local_tile == s.num_full_tiles && s.partial_items > 0)
+    {
+      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
+      keys_source.set_tile_base(tile_base);
+
+      auto value_source = [&] {
+        if constexpr (keys_only)
+        {
+          return NullType{};
+        }
+        else
+        {
+          typename value_source_input_t::TempStorage val_state_input{};
+          typename value_source_buffer_t::TempStorage val_state_buffer{};
+          value_source_input_t val_input{s.d_values_in, val_state_input};
+          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          val_src.set_tile_base(tile_base);
+          return val_src;
+        }
+      }();
+
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
+      h.complete_load(items);
+      __syncthreads();
+      filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, s.partial_items, value_source);
+    }
+
+    filter.epilogue();
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  {
+    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+
+    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
     key_xform_t sel_key_xform{};
     key_xform_t cand_key_xform{};
 
-    const OffsetT num_full_tiles = input_length_actual / static_cast<OffsetT>(tile_items);
-    const OffsetT partial_items  = input_length_actual - num_full_tiles * static_cast<OffsetT>(tile_items);
+    buffered_cand_key_out_t cand_key_out = s.out_key_buf;
+    [[maybe_unused]] buffered_cand_val_out_t cand_val_out = s.out_val_buf;
+    histogram_callback_op_t histogram_cb{extract_bin_op, storage.arms.buffered.histogram};
+    auto value_channel_sinks = make_buffered_value_channel_sinks(s.d_values_out, cand_val_out);
 
-    // Three mutually-exclusive sub-modes (mirrors the single-problem dispatch's host-side branch
-    // `if (early_stop || will_buffer) {...} else {...}`):
-    //   - `early_stop`            : filter-only; selected items go directly to `d_keys_out`.
-    //   - `buffered`              : partition; selected -> `d_keys_out`, candidates -> `out_key_buf`.
-    //   - `unbuffered` (else)     : histogram-only "scout" pass, with a candidate filter applied.
-    //                               No items are written; only the global histogram is updated and
-    //                               the per-segment counter (kth-key bits, num_candidates_out, k)
-    //                               is advanced via `on_kth_bucket`. This matches the single-
-    //                               problem `agent_ub_t = AgentTopKHistogram` invocation.
+    // The partition primitive's ctor takes `IdentifyCandidatesOp&` (non-const); build a
+    // local op (cheap ctor) from the cached per-segment fields.
+    IdentifyCandidatesOpT identify_candidates_op{
+      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
 
-    if (early_stop)
+    buffered_partition_t partition{
+      storage.arms.buffered.arena.get_partition_state(),
+      reserve_sel,
+      reserve_cand,
+      sel_key_xform,
+      cand_key_xform,
+      s.d_keys_out,
+      cand_key_out,
+      value_channel_sinks,
+      identify_candidates_op,
+      histogram_cb};
+
+    if (local_tile < s.num_full_tiles)
     {
-      typename key_source_input_t::TempStorage* state_a_ptr = &storage.arms.early_stop.keys_source_state.a;
-      typename key_source_buffer_t::TempStorage* state_b_ptr = &storage.arms.early_stop.keys_source_state.b;
-      key_source_input_t key_src_input{d_keys_in, *state_a_ptr};
-      key_source_buffer_t key_src_buffer{in_key_buf, *state_b_ptr};
-      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+      const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
+      keys_source.set_tile_base(tile_base);
 
-      identify_selected_op_t identify_selected{identify_candidates_op};
-      auto value_channel_sinks = make_early_stop_value_channel_sinks(d_values_out);
+      auto value_source = [&] {
+        if constexpr (keys_only)
+        {
+          return NullType{};
+        }
+        else
+        {
+          typename value_source_input_t::TempStorage val_state_input{};
+          typename value_source_buffer_t::TempStorage val_state_buffer{};
+          value_source_input_t val_input{s.d_values_in, val_state_input};
+          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          val_src.set_tile_base(tile_base);
+          return val_src;
+        }
+      }();
 
-      early_stop_filter_t filter{
-        storage.arms.early_stop.arena.get_partition_state(),
-        reserve_sel,
-        sel_key_xform,
-        d_keys_out,
-        value_channel_sinks,
-        identify_selected};
-
-      // Single tile body for early_stop.
-      if (local_tile < num_full_tiles)
-      {
-        const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
-
-        auto value_source = [&] {
-          if constexpr (keys_only)
-          {
-            return NullType{};
-          }
-          else
-          {
-            typename value_source_input_t::TempStorage val_state_input{};
-            typename value_source_buffer_t::TempStorage val_state_buffer{};
-            value_source_input_t val_input{d_values_in, val_state_input};
-            value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-            value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
-            val_src.set_tile_base(tile_base);
-            return val_src;
-          }
-        }();
-
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
-        h.complete_load(items);
-        __syncthreads();
-        filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, value_source);
-      }
-      else if (local_tile == num_full_tiles && partial_items > 0)
-      {
-        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
-
-        auto value_source = [&] {
-          if constexpr (keys_only)
-          {
-            return NullType{};
-          }
-          else
-          {
-            typename value_source_input_t::TempStorage val_state_input{};
-            typename value_source_buffer_t::TempStorage val_state_buffer{};
-            value_source_input_t val_input{d_values_in, val_state_input};
-            value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-            value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
-            val_src.set_tile_base(tile_base);
-            return val_src;
-          }
-        }();
-
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), partial_items);
-        h.complete_load(items);
-        __syncthreads();
-        filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, partial_items, value_source);
-      }
-
-      filter.epilogue();
-    }
-    else if (will_buffer)
-    {
-      key_source_input_t key_src_input{d_keys_in, storage.arms.buffered.keys_source_state.a};
-      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.buffered.keys_source_state.b};
-      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
-
-      detail::topk::init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
       __syncthreads();
+      key_in_t items[items_per_thread];
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
+      h.complete_load(items);
+      __syncthreads();
+      partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, value_source);
+    }
+    else if (local_tile == s.num_full_tiles && s.partial_items > 0)
+    {
+      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
+      keys_source.set_tile_base(tile_base);
 
-      buffered_cand_key_out_t cand_key_out = out_key_buf;
-      buffered_cand_val_out_t cand_val_out = out_val_buf;
-      candidate_reserve_op_t reserve_cand{&segment_counter->num_candidates_written};
-      histogram_callback_op_t histogram_cb{extract_bin_op, storage.arms.buffered.histogram};
-      auto value_channel_sinks = make_buffered_value_channel_sinks(d_values_out, cand_val_out);
+      auto value_source = [&] {
+        if constexpr (keys_only)
+        {
+          return NullType{};
+        }
+        else
+        {
+          typename value_source_input_t::TempStorage val_state_input{};
+          typename value_source_buffer_t::TempStorage val_state_buffer{};
+          value_source_input_t val_input{s.d_values_in, val_state_input};
+          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          val_src.set_tile_base(tile_base);
+          return val_src;
+        }
+      }();
 
-      buffered_partition_t partition{
-        storage.arms.buffered.arena.get_partition_state(),
-        reserve_sel,
-        reserve_cand,
-        sel_key_xform,
-        cand_key_xform,
-        d_keys_out,
-        cand_key_out,
-        value_channel_sinks,
-        identify_candidates_op,
-        histogram_cb};
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
+      h.complete_load(items);
+      __syncthreads();
+      partition.partition(
+        storage.arms.buffered.arena.get_partition_scratch(), items, s.partial_items, value_source);
+    }
 
-      if (local_tile < num_full_tiles)
+    partition.epilogue();
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  process_tile_unbuffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  {
+    using filter_op_t = detail::topk::topk_candidate_filter_op<IdentifyCandidatesOpT>;
+    IdentifyCandidatesOpT identify_candidates_op{
+      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+    filter_op_t filter_op{identify_candidates_op};
+
+    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/false};
+
+    if (local_tile < s.num_full_tiles)
+    {
+      const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
+      keys_source.set_tile_base(tile_base);
+
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
+      h.complete_load(items);
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < items_per_thread; ++j)
       {
-        const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
-
-        auto value_source = [&] {
-          if constexpr (keys_only)
-          {
-            return NullType{};
-          }
-          else
-          {
-            typename value_source_input_t::TempStorage val_state_input{};
-            typename value_source_buffer_t::TempStorage val_state_buffer{};
-            value_source_input_t val_input{d_values_in, val_state_input};
-            value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-            value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
-            val_src.set_tile_base(tile_base);
-            return val_src;
-          }
-        }();
-
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
-        h.complete_load(items);
-        __syncthreads();
-        partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, value_source);
+        if (filter_op(items[j]))
+        {
+          const int bucket = extract_bin_op(items[j]);
+          atomicAdd(storage.arms.buffered.histogram + bucket, OffsetT{1});
+        }
       }
-      else if (local_tile == num_full_tiles && partial_items > 0)
+    }
+    else if (local_tile == s.num_full_tiles && s.partial_items > 0)
+    {
+      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
+      keys_source.set_tile_base(tile_base);
+
+      __syncthreads();
+      key_in_t items[items_per_thread];
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
+      h.complete_load(items);
+      const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+      const int num_thread_items =
+        (thread_offset >= s.input_length_actual)
+          ? 0
+          : static_cast<int>((::cuda::std::min) (
+            static_cast<OffsetT>(items_per_thread), s.input_length_actual - thread_offset));
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int j = 0; j < items_per_thread; ++j)
       {
-        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
+        if (j < num_thread_items && filter_op(items[j]))
+        {
+          const int bucket = extract_bin_op(items[j]);
+          atomicAdd(storage.arms.buffered.histogram + bucket, OffsetT{1});
+        }
+      }
+    }
+  }
 
-        auto value_source = [&] {
-          if constexpr (keys_only)
-          {
-            return NullType{};
-          }
-          else
-          {
-            typename value_source_input_t::TempStorage val_state_input{};
-            typename value_source_buffer_t::TempStorage val_state_buffer{};
-            value_source_input_t val_input{d_values_in, val_state_input};
-            value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-            value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
-            val_src.set_tile_base(tile_base);
-            return val_src;
-          }
-        }();
+public:
+  // Process up to `tiles_per_chunk` consecutive tiles starting at `chunk_start`, grouped by
+  // segment -- the same chunk-grouping shape as the histogram agent. Each segment encountered
+  // in the chunk dispatches to one of three per-mode tile bodies (early_stop / buffered /
+  // unbuffered); the smem histogram (only used by the two non-early_stop modes) is initialised
+  // once at segment entry and merged into the per-segment global slab once at segment exit,
+  // amortising the init / merge across all same-segment tiles in the chunk.
+  //
+  // `pass` is only used to construct the per-segment `identify_candidates_op` (which captures
+  // the segment counter's `kth_key_bits` pointer); the kernel-side grid-stride loop forwards it
+  // unchanged from the dispatch.
+  //
+  // The per-segment epilogue (counter update + prefix-sum + bucket-finder + optional histogram
+  // reset) lives in `device_segmented_topk_finalize_filter_kernel` and runs after the filter
+  // kernel finishes on the same stream. This agent does not run `finalize_pass`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_chunk(
+    LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles, int pass)
+  {
+    constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
+    LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
+    per_segment_state_t state{};
 
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), partial_items);
-        h.complete_load(items);
-        __syncthreads();
-        partition.partition(
-          storage.arms.buffered.arena.get_partition_scratch(), items, partial_items, value_source);
+    // Whether the smem histogram has been initialised for the currently-active segment. Both
+    // the buffered and unbuffered modes use it; early_stop does not touch it. Tracked
+    // separately from `state.empty` so we don't flush a never-initialised histogram into
+    // global on segment changes (which would be a wasted scan-loop over the buckets).
+    bool smem_histogram_active = false;
+
+    _CCCL_PRAGMA_NOUNROLL()
+    for (int i = 0; i < tiles_per_chunk; ++i)
+    {
+      const LargeSegmentTileOffsetT global_tile_id = chunk_start + static_cast<LargeSegmentTileOffsetT>(i);
+      if (global_tile_id >= total_large_tiles)
+      {
+        break;
       }
 
-      partition.epilogue();
+      const LargeSegmentTileOffsetT queue_idx = resolve_queue_idx(global_tile_id);
 
+      if (queue_idx != active_queue_idx)
+      {
+        // Flush the previous segment's smem histogram into its global slab (if it was active).
+        if (smem_histogram_active)
+        {
+          __syncthreads();
+          detail::topk::merge_histogram<block_threads, num_buckets>(
+            storage.arms.buffered.histogram, state.segment_histogram);
+          smem_histogram_active = false;
+        }
+
+        // Refresh per-segment caches for the new segment.
+        active_queue_idx = queue_idx;
+        state            = resolve_segment_state(queue_idx, pass);
+
+        // Init smem histogram for the new segment if the mode uses it (buffered/unbuffered).
+        if (!state.empty && !state.early_stop)
+        {
+          __syncthreads();
+          detail::topk::init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
+          smem_histogram_active = true;
+        }
+        __syncthreads();
+      }
+
+      if (state.empty)
+      {
+        continue;
+      }
+      const LargeSegmentTileOffsetT local_tile = global_tile_id - state.slab_base;
+      if (static_cast<OffsetT>(local_tile) >= state.segment_tiles_input)
+      {
+        continue;
+      }
+
+      if (state.early_stop)
+      {
+        process_tile_early_stop(state, local_tile);
+      }
+      else if (state.will_buffer)
+      {
+        process_tile_buffered(state, local_tile);
+      }
+      else
+      {
+        process_tile_unbuffered(state, local_tile);
+      }
+    }
+
+    // Flush the final segment's smem histogram into its global slab.
+    if (smem_histogram_active)
+    {
       __syncthreads();
       detail::topk::merge_histogram<block_threads, num_buckets>(
-        storage.arms.buffered.histogram, segment_histogram);
+        storage.arms.buffered.histogram, state.segment_histogram);
     }
-    else
-    {
-      // Unbuffered scout pass: candidate count exceeded the per-segment candidate buffer
-      // capacity. Mirrors the single-problem `agent_ub_t = AgentTopKHistogram` invocation in
-      // the unbuffered branch -- we update only the per-segment histogram (with a candidate
-      // filter applied) and let the next pass narrow the kth_key_bits further. The unbuffered
-      // chain implies `load_from_candidates_buffer == false`, so we read directly from
-      // `d_keys_in` and never touch the candidate buffer.
-      using filter_op_t = detail::topk::topk_candidate_filter_op<IdentifyCandidatesOpT>;
-      filter_op_t filter_op{identify_candidates_op};
-
-      key_source_input_t key_src_input{d_keys_in, storage.arms.buffered.keys_source_state.a};
-      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.buffered.keys_source_state.b};
-      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/false};
-
-      detail::topk::init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
-      __syncthreads();
-
-      if (local_tile < num_full_tiles)
-      {
-        const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
-
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
-        h.complete_load(items);
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < items_per_thread; ++j)
-        {
-          if (filter_op(items[j]))
-          {
-            const int bucket = extract_bin_op(items[j]);
-            atomicAdd(storage.arms.buffered.histogram + bucket, OffsetT{1});
-          }
-        }
-      }
-      else if (local_tile == num_full_tiles && partial_items > 0)
-      {
-        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
-        keys_source.set_tile_base(tile_base);
-
-        __syncthreads();
-        key_in_t items[items_per_thread];
-        auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), partial_items);
-        h.complete_load(items);
-        const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
-        const int num_thread_items =
-          (thread_offset >= input_length_actual)
-            ? 0
-            : static_cast<int>((::cuda::std::min) (
-                static_cast<OffsetT>(items_per_thread), input_length_actual - thread_offset));
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int j = 0; j < items_per_thread; ++j)
-        {
-          if (j < num_thread_items && filter_op(items[j]))
-          {
-            const int bucket = extract_bin_op(items[j]);
-            atomicAdd(storage.arms.buffered.histogram + bucket, OffsetT{1});
-          }
-        }
-      }
-
-      __syncthreads();
-      detail::topk::merge_histogram<block_threads, num_buckets>(
-        storage.arms.buffered.histogram, segment_histogram);
-    }
-
-    // Build per-segment closures inside `run()` so they can capture the per-segment counter
-    // pointer (only knowable after the on-device binary search). These mirror the single-problem
-    // `DeviceTopKFilterKernel`'s closures verbatim, with `counter` replaced by the
-    // per-segment `segment_counter`. The unbuffered branch makes no counter changes in
-    // `counter_update_fn` -- `num_candidates_in` stays at the previous pass's
-    // `segment_num_items` and `load_from_candidates_buffer` stays `false`.
-    auto counter_update_fn = [segment_counter, current_len, early_stop, will_buffer] {
-      if (early_stop)
-      {
-        segment_counter->num_candidates_in = 0;
-      }
-      else if (will_buffer)
-      {
-        segment_counter->num_candidates_in           = current_len;
-        segment_counter->load_from_candidates_buffer = true;
-        segment_counter->num_candidates_written      = 0;
-      }
-    };
-    auto on_kth_bucket =
-      [segment_counter, pass](OutOffsetT current_k_cb, int bin_index, OffsetT num_selected, OffsetT num_candidates) {
-        segment_counter->k                  = static_cast<OutOffsetT>(current_k_cb - num_selected);
-        segment_counter->num_candidates_out = num_candidates;
-        detail::topk::set_kth_key_bits<bits_per_pass>(
-          segment_counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
-      };
-
-    // Per-segment last-block epilogue. `expected_block_count` is the number of tiles in this
-    // segment's input stream (computed above as `segment_tiles_input`). Both the buffered and
-    // unbuffered branches updated the per-segment histogram, so both must run the kth-bucket
-    // scan in the epilogue. Only the `early_stop` branch skips the histogram update and the
-    // kth-bucket scan.
-    auto epilogue_op = [this,
-                        &counter_update_fn,
-                        &on_kth_bucket,
-                        current_k,
-                        early_stop,
-                        segment_histogram,
-                        reset_histogram] {
-      if (threadIdx.x == 0)
-      {
-        counter_update_fn();
-      }
-      if (!early_stop)
-      {
-        block_identify_kth_bucket_t{storage.arms.prefix_sum}.find_kth_bucket(
-          segment_histogram, current_k, on_kth_bucket);
-        if (reset_histogram)
-        {
-          detail::topk::init_histogram<block_threads, num_buckets>(segment_histogram);
-        }
-      }
-    };
-
-    detail::topk::finalize_pass(
-      &segment_counter->finished_block_cnt, static_cast<unsigned int>(segment_tiles_input), epilogue_op);
   }
 };
 
@@ -1678,92 +1684,104 @@ struct agent_batched_topk_last_filter
       , num_large_segments(num_large_segments)
   {}
 
-  // `global_tile_id` is supplied by the calling kernel's grid-stride loop; see the matching
-  // comment on `agent_batched_topk_histogram::run()` for why the agent processes one tile per
-  // call and the kernel iterates. The last-filter pass has no histogram and no `finalize_pass`,
-  // so each tile's work is fully independent of the others within a segment.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT global_tile_id)
+private:
+  // Per-segment cached state, mirrors the filter agent's pattern. Re-derived only when the
+  // chunk crosses a segment boundary; held in registers across same-segment tiles.
+  struct per_segment_state_t
   {
-    // See the matching comment on `agent_batched_topk_histogram::run()`: only lane 0
-    // runs the binary search; `__shfl_sync` broadcasts the result to the whole warp.
+    bool empty;
+    bool load_from_candidates_buffer;
+
+    inner_key_it_t d_keys_in{};
+    inner_key_out_it_t d_keys_out{};
+    [[maybe_unused]] inner_value_it_t d_values_in{};
+    [[maybe_unused]] inner_value_out_it_t d_values_out{};
+
+    counter_t* segment_counter;
+    key_in_t* in_key_buf;
+    [[maybe_unused]] value_in_t* in_val_buf;
+
+    // `identify_candidates_op_t` has no default ctor for some `T`; cache ctor inputs and
+    // build the op on demand in `process_tile`.
+    int pass;
+
+    OutOffsetT k_total;
+    OutOffsetT num_of_kth_needed;
+    OffsetT input_length;
+    OffsetT num_full_tiles;
+    OffsetT partial_items;
+    OffsetT segment_tiles_input;
+    LargeSegmentTileOffsetT slab_base;
+  };
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE LargeSegmentTileOffsetT resolve_queue_idx(LargeSegmentTileOffsetT global_tile_id)
+  {
     LargeSegmentTileOffsetT queue_idx_lane0 = 0;
     if ((threadIdx.x & 31) == 0)
     {
       queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
     }
-    const LargeSegmentTileOffsetT queue_idx  = __shfl_sync(0xffffffff, queue_idx_lane0, 0);
-    const LargeSegmentTileOffsetT slab_base  = d_large_segments_tile_offsets[queue_idx];
-    const LargeSegmentTileOffsetT local_tile = global_tile_id - slab_base;
-    const auto segment_id                    = segment_id_provider[queue_idx];
+    return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
+  }
 
-    auto d_keys_in    = d_key_segments_it[segment_id];
-    auto d_keys_out   = d_key_segments_out_it[segment_id];
-    [[maybe_unused]] auto d_values_in = [&] {
-      if constexpr (!keys_only)
-      {
-        return d_value_segments_it[segment_id];
-      }
-      else
-      {
-        return inner_value_it_t{};
-      }
-    }();
-    [[maybe_unused]] auto d_values_out = [&] {
-      if constexpr (!keys_only)
-      {
-        return d_value_segments_out_it[segment_id];
-      }
-      else
-      {
-        return inner_value_out_it_t{};
-      }
-    }();
+  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
+  {
+    per_segment_state_t s{};
+    s.slab_base       = d_large_segments_tile_offsets[queue_idx];
+    const auto segment_id = segment_id_provider[queue_idx];
 
-    counter_t* segment_counter             = d_segment_counters + queue_idx;
-    const OffsetT input_length             = segment_counter->num_candidates_in;
-    const bool load_from_candidates_buffer = segment_counter->load_from_candidates_buffer;
-
-    if (input_length == 0)
-    {
-      return;
-    }
-
-    // Construct the per-segment `identify_candidates_op` with the per-segment counter's
-    // `kth_key_bits` pointer. Same rationale as `agent_batched_topk_filter_partition::run()`.
-    IdentifyCandidatesOpT identify_candidates_op{&segment_counter->kth_key_bits, pass, total_bits, decomposer};
-
-    // Mirrors the histogram agent's clip: when `k > segment_size`, all items in the segment are
-    // in the top-k. `reserve_cand` sizes the per-segment output reservation from `k_total`, so we
-    // must use the same clipped value here to keep the candidate reservation in lock-step with
-    // what the prior multi-CTA passes actually placed in the segment counter.
-    const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
-    const OutOffsetT k_total = (::cuda::std::min) (
-      static_cast<OutOffsetT>(k_param.get_param(segment_id)), static_cast<OutOffsetT>(segment_num_items));
-    const OutOffsetT num_of_kth_needed  = static_cast<OutOffsetT>(segment_counter->k);
-
-    key_in_t* in_key_buf = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
-    value_in_t* in_val_buf = nullptr;
+    s.d_keys_in  = d_key_segments_it[segment_id];
+    s.d_keys_out = d_key_segments_out_it[segment_id];
     if constexpr (!keys_only)
     {
-      in_val_buf = load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+      s.d_values_in  = d_value_segments_it[segment_id];
+      s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    const OffsetT segment_tiles_input =
-      static_cast<OffsetT>(::cuda::ceil_div(input_length, OffsetT{tile_items}));
-    if (static_cast<OffsetT>(local_tile) >= segment_tiles_input)
+    s.segment_counter = d_segment_counters + queue_idx;
+    s.input_length    = s.segment_counter->num_candidates_in;
+    s.load_from_candidates_buffer = s.segment_counter->load_from_candidates_buffer;
+    s.pass            = pass;
+
+    s.empty = (s.input_length == 0);
+    if (s.empty)
     {
-      return;
+      return s;
     }
 
-    key_source_input_t key_src_input{d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+    // Mirrors the histogram agent's clip: when `k > segment_size`, all items are in the top-k.
+    // `reserve_cand` is sized from `k_total`; keeping it in lock-step with the prior passes'
+    // counter writes is required for correct per-segment output reservation.
+    const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
+    s.k_total = (::cuda::std::min) (
+      static_cast<OutOffsetT>(k_param.get_param(segment_id)), static_cast<OutOffsetT>(segment_num_items));
+    s.num_of_kth_needed = static_cast<OutOffsetT>(s.segment_counter->k);
 
-    selected_reserve_op_t reserve_sel{&segment_counter->num_selected_written};
+    s.in_key_buf = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
+    if constexpr (!keys_only)
+    {
+      s.in_val_buf =
+        s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+    }
+
+    s.num_full_tiles = s.input_length / static_cast<OffsetT>(tile_items);
+    s.partial_items  = s.input_length - s.num_full_tiles * static_cast<OffsetT>(tile_items);
+    s.segment_tiles_input =
+      static_cast<OffsetT>(::cuda::ceil_div(s.input_length, OffsetT{tile_items}));
+    return s;
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  {
+    key_source_input_t key_src_input{s.d_keys_in, storage.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+
+    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{
-      &segment_counter->num_ties_written_to_back,
-      static_cast<candidate_offset_t>(k_total),
-      static_cast<candidate_offset_t>(num_of_kth_needed)};
+      &s.segment_counter->num_ties_written_to_back,
+      static_cast<candidate_offset_t>(s.k_total),
+      static_cast<candidate_offset_t>(s.num_of_kth_needed)};
     key_xform_t sel_key_xform{};
     key_xform_t cand_key_xform{};
 
@@ -1775,10 +1793,15 @@ struct agent_batched_topk_last_filter
       else
       {
         return value_channel_sinks_concrete_t{
-          d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}};
+          s.d_values_out, s.d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}};
       }
     }();
     detail::topk::topk_noop_candidate_callback_op callback_op{};
+
+    // The partition primitive's ctor takes `IdentifyCandidatesOp&` (non-const); build a
+    // local op (cheap ctor) from the cached per-segment fields.
+    IdentifyCandidatesOpT identify_candidates_op{
+      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
 
     partition_t partition{
       storage.partition_arena.get_partition_state(),
@@ -1786,16 +1809,13 @@ struct agent_batched_topk_last_filter
       reserve_cand,
       sel_key_xform,
       cand_key_xform,
-      d_keys_out,
-      d_keys_out,
+      s.d_keys_out,
+      s.d_keys_out,
       value_channel_sinks,
       identify_candidates_op,
       callback_op};
 
-    const OffsetT num_full_tiles = input_length / static_cast<OffsetT>(tile_items);
-    const OffsetT partial_items  = input_length - num_full_tiles * static_cast<OffsetT>(tile_items);
-
-    if (local_tile < num_full_tiles)
+    if (local_tile < s.num_full_tiles)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
@@ -1809,9 +1829,9 @@ struct agent_batched_topk_last_filter
         {
           typename value_source_input_t::TempStorage val_state_input{};
           typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
+          value_source_input_t val_input{s.d_values_in, val_state_input};
+          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
           val_src.set_tile_base(tile_base);
           return val_src;
         }
@@ -1824,9 +1844,9 @@ struct agent_batched_topk_last_filter
       __syncthreads();
       partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
-    else if (local_tile == num_full_tiles && partial_items > 0)
+    else if (local_tile == s.num_full_tiles && s.partial_items > 0)
     {
-      const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
+      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
       auto value_source = [&] {
@@ -1838,9 +1858,9 @@ struct agent_batched_topk_last_filter
         {
           typename value_source_input_t::TempStorage val_state_input{};
           typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
+          value_source_input_t val_input{s.d_values_in, val_state_input};
+          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
           val_src.set_tile_base(tile_base);
           return val_src;
         }
@@ -1848,13 +1868,52 @@ struct agent_batched_topk_last_filter
 
       __syncthreads();
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), partial_items);
+      auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       __syncthreads();
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, partial_items, value_source);
+      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
 
     partition.epilogue();
+  }
+
+public:
+  // Process up to `tiles_per_chunk` consecutive tiles starting at `chunk_start`, grouped by
+  // segment. Last-filter has no histogram and no `finalize_pass`, so the chunk loop is the
+  // simplest of the three multi-CTA agents: per-segment-state cache + per-tile
+  // `partition.run`. Same-segment tiles share the cached state.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  process_chunk(LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles)
+  {
+    constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
+    LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
+    per_segment_state_t state{};
+
+    _CCCL_PRAGMA_NOUNROLL()
+    for (int i = 0; i < tiles_per_chunk; ++i)
+    {
+      const LargeSegmentTileOffsetT global_tile_id = chunk_start + static_cast<LargeSegmentTileOffsetT>(i);
+      if (global_tile_id >= total_large_tiles)
+      {
+        break;
+      }
+      const LargeSegmentTileOffsetT queue_idx = resolve_queue_idx(global_tile_id);
+      if (queue_idx != active_queue_idx)
+      {
+        active_queue_idx = queue_idx;
+        state            = resolve_segment_state(queue_idx);
+      }
+      if (state.empty)
+      {
+        continue;
+      }
+      const LargeSegmentTileOffsetT local_tile = global_tile_id - state.slab_base;
+      if (static_cast<OffsetT>(local_tile) >= state.segment_tiles_input)
+      {
+        continue;
+      }
+      process_tile(state, local_tile);
+    }
   }
 };
 

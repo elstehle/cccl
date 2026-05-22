@@ -944,6 +944,20 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         detail::identity_decomposer_t,
         OffsetT,
         OutOffsetT>;
+      // Per-segment epilogue for the filter pass (passes 1..num_passes-1). Same shape as the
+      // finalize_histogram kernel: one CTA per segment, prefix-sum + bucket-finder + counter
+      // update + optional histogram reset, hoisted out of the filter agent's per-tile
+      // `finalize_pass`.
+      auto finalize_filter_kernel_ptr = device_segmented_topk_finalize_filter_kernel<
+        PolicySelector,
+        SegmentSizeParameterT,
+        KParameterT,
+        NumSegmentsParameterT,
+        segment_id_provider_t,
+        large_segments_count_it_t,
+        OffsetT,
+        OutOffsetT,
+        key_in_t>;
 
       // Max-occupancy grid sizes per kernel, capped at `total_large_tiles_upper_bound`. Each
       // multi-CTA kernel iterates the tile space via a grid-stride loop; physical CTAs whose
@@ -952,6 +966,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       int histogram_blocks_per_sm          = 0;
       int finalize_histogram_blocks_per_sm = 0;
       int filter_blocks_per_sm             = 0;
+      int finalize_filter_blocks_per_sm    = 0;
       int last_filter_blocks_per_sm        = 0;
       if (const auto error = CubDebug(
             MaxSmOccupancy(histogram_blocks_per_sm, histogram_kernel_ptr, multi_worker_threads_per_block)))
@@ -969,23 +984,31 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         return error;
       }
       if (const auto error = CubDebug(
+            MaxSmOccupancy(finalize_filter_blocks_per_sm, finalize_filter_kernel_ptr, multi_worker_threads_per_block)))
+      {
+        return error;
+      }
+      if (const auto error = CubDebug(
             MaxSmOccupancy(last_filter_blocks_per_sm, last_filter_kernel_ptr, multi_worker_threads_per_block)))
       {
         return error;
       }
       const auto histogram_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(histogram_blocks_per_sm * num_sms), total_large_tiles_upper_bound);
-      // Finalize-histogram launches one CTA per large segment; cap at the host-known
-      // segment-count upper bound (`num_segments_upper_bound`) rather than at
-      // `total_large_tiles_upper_bound`. The kernel's grid-stride loop bounds itself against the
-      // device-side `num_large_segments` (read through `large_segments_count_it`), so an
-      // over-sized cap is also safe -- this just avoids pointlessly launching CTAs we know we
-      // won't use.
+      // Finalize-histogram / finalize-filter launch one CTA per large segment; cap at the
+      // host-known segment-count upper bound (`num_segments_upper_bound`) rather than at
+      // `total_large_tiles_upper_bound`. The kernels' grid-stride loops bound themselves
+      // against the device-side `num_large_segments` (read through `large_segments_count_it`),
+      // so an over-sized cap is also safe -- this just avoids pointlessly launching CTAs we
+      // know we won't use.
       const auto finalize_histogram_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(finalize_histogram_blocks_per_sm * num_sms),
         static_cast<unsigned int>(num_segments_upper_bound));
       const auto filter_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(filter_blocks_per_sm * num_sms), total_large_tiles_upper_bound);
+      const auto finalize_filter_grid_size = (::cuda::std::min) (
+        static_cast<unsigned int>(finalize_filter_blocks_per_sm * num_sms),
+        static_cast<unsigned int>(num_segments_upper_bound));
       const auto last_filter_grid_size = (::cuda::std::min) (
         static_cast<unsigned int>(last_filter_blocks_per_sm * num_sms), total_large_tiles_upper_bound);
 
@@ -1076,6 +1099,31 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                   total_bits,
                   reset_histogram,
                   decomposer)))
+        {
+          return error;
+        }
+        // Per-segment epilogue for this filter pass: one CTA per large segment, runs the
+        // prefix-sum + bucket-finder + per-mode counter update + optional histogram reset.
+        // Replaces the per-tile `finalize_pass` that used to live inside the filter agent's
+        // `run()`. The kernel re-derives the per-segment mode (early_stop / buffered /
+        // unbuffered) from the same counter fields the filter agent saw, so no extra
+        // device-side flag is needed.
+        if (const auto error = CubDebug(
+              THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
+                finalize_filter_grid_size, multi_worker_threads_per_block, 0, stream)
+                .doit(
+                  finalize_filter_kernel_ptr,
+                  segment_sizes,
+                  k,
+                  num_segments,
+                  segment_id_provider,
+                  d_seg_counters,
+                  d_seg_histograms,
+                  large_segments_count_it,
+                  candidate_buffer_length,
+                  static_cast<OffsetT>(coefficient_for_candidate_buffer),
+                  pass,
+                  reset_histogram)))
         {
           return error;
         }
