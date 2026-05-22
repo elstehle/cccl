@@ -633,7 +633,14 @@ public:
   // `total_bits`, `decomposer`) is absorbed into `extract_bin_op`, constructed host-side by
   // the dispatch and passed as the agent's `ExtractBinOpT` member -- the agent itself does
   // not depend on the pass index.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run(LargeSegmentTileOffsetT total_large_tiles, int tiles_per_chunk)
+  // `d_total_large_tiles` points at the sentinel slot of the per-segment tile-offset table (i.e.
+  // `&d_large_segments_tile_offsets[num_large_segments]`). Passing the pointer (rather than the
+  // value) lets the loop bound be loaded lazily at the comparison point: each iteration's load
+  // goes through the read-only path, and ptxas does not need to keep the value pinned in a
+  // per-thread register across the agent body. This is an experimental knob for the
+  // register-pressure investigation.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  run(const LargeSegmentTileOffsetT* d_total_large_tiles, int tiles_per_chunk)
   {
     // Sentinel meaning "no segment loaded yet". `active_queue_idx` is set to a real value the
     // first time this CTA touches a tile, and never reverts to the sentinel.
@@ -651,11 +658,17 @@ public:
     const LargeSegmentTileOffsetT stride       = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
 
     for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
-         chunk_start < total_large_tiles;
+         chunk_start < *d_total_large_tiles;
          chunk_start += stride)
     {
+      // `total_large_tiles_local` is the value seen by this iteration -- the loop condition above
+      // already loaded it once for the bound check, and the chunk-end computation below needs the
+      // same value. Naming the load explicitly here makes ptxas's CSE within the iteration body
+      // straightforward; the upper-bound comparison uses the freshly-loaded `*d_total_large_tiles`
+      // so the loop guard is self-contained.
+      const LargeSegmentTileOffsetT total_large_tiles_local = *d_total_large_tiles;
       const LargeSegmentTileOffsetT chunk_end =
-        (chunk_start + chunk_size_v < total_large_tiles) ? chunk_start + chunk_size_v : total_large_tiles;
+        (chunk_start + chunk_size_v < total_large_tiles_local) ? chunk_start + chunk_size_v : total_large_tiles_local;
 
       LargeSegmentTileOffsetT chunk_cursor = chunk_start;
       while (chunk_cursor < chunk_end)
@@ -1450,8 +1463,13 @@ public:
   // The per-segment epilogue (counter update + prefix-sum + bucket-finder + optional histogram
   // reset) lives in `device_segmented_topk_finalize_filter_kernel` and runs after the filter
   // kernel finishes on the same stream. This agent does not run `finalize_pass`.
+  // See the matching comment on `agent_batched_topk_histogram::run` for why
+  // `d_total_large_tiles` is a pointer rather than a value.
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_chunk(
-    LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles, int pass)
+    LargeSegmentTileOffsetT chunk_start,
+    int tiles_per_chunk,
+    const LargeSegmentTileOffsetT* d_total_large_tiles,
+    int pass)
   {
     constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
     LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
@@ -1467,7 +1485,7 @@ public:
     for (int i = 0; i < tiles_per_chunk; ++i)
     {
       const LargeSegmentTileOffsetT global_tile_id = chunk_start + static_cast<LargeSegmentTileOffsetT>(i);
-      if (global_tile_id >= total_large_tiles)
+      if (global_tile_id >= *d_total_large_tiles)
       {
         break;
       }
@@ -1922,8 +1940,10 @@ public:
   // segment. Last-filter has no histogram and no `finalize_pass`, so the chunk loop is the
   // simplest of the three multi-CTA agents: per-segment-state cache + per-tile
   // `partition.run`. Same-segment tiles share the cached state.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_chunk(LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, LargeSegmentTileOffsetT total_large_tiles)
+  // See the matching comment on `agent_batched_topk_histogram::run` for why
+  // `d_total_large_tiles` is a pointer rather than a value.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_chunk(
+    LargeSegmentTileOffsetT chunk_start, int tiles_per_chunk, const LargeSegmentTileOffsetT* d_total_large_tiles)
   {
     constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
     LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
@@ -1933,7 +1953,7 @@ public:
     for (int i = 0; i < tiles_per_chunk; ++i)
     {
       const LargeSegmentTileOffsetT global_tile_id = chunk_start + static_cast<LargeSegmentTileOffsetT>(i);
-      if (global_tile_id >= total_large_tiles)
+      if (global_tile_id >= *d_total_large_tiles)
       {
         break;
       }

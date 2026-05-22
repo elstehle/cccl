@@ -350,8 +350,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // (all-large) populates with the inclusive total of large-segment tile counts.
   const typename NumSegmentsParameterT::value_type num_large_segments =
     static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
-  const LargeSegmentTileOffsetT total_large_tiles =
-    static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
+  // Pointer to the sentinel slot of the per-segment tile-offset table; the agent dereferences
+  // it lazily at the grid-stride loop boundary instead of materialising the value into a
+  // long-lived register at kernel entry. See the agent's `run` doc for the register-pressure
+  // motivation.
+  const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
   using agent_t = agent_batched_topk_histogram<
@@ -394,7 +397,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // signature are now absorbed into `extract_bin_op` (constructed by the dispatch) -- the
   // kernel itself does not need to know about the pass.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
-  agent.run(total_large_tiles, tiles_per_chunk);
+  agent.run(d_total_large_tiles, tiles_per_chunk);
 }
 
 // Per-segment epilogue kernel for the histogram pass. Runs after
@@ -553,8 +556,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // sentinel slot and `large_segments_count` through an iterator.
   const typename NumSegmentsParameterT::value_type num_large_segments =
     static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
-  const LargeSegmentTileOffsetT total_large_tiles =
-    static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
+  // Pointer to the sentinel slot of the per-segment tile-offset table; the agent dereferences
+  // it lazily at the grid-stride loop boundary instead of materialising the value into a
+  // long-lived register at kernel entry. See the agent's `run` doc for the register-pressure
+  // motivation.
+  const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
   static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
@@ -642,10 +648,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     static_cast<LargeSegmentTileOffsetT>(gridDim.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
   for (LargeSegmentTileOffsetT chunk_start =
          static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-       chunk_start < total_large_tiles;
+       chunk_start < *d_total_large_tiles;
        chunk_start += stride)
   {
-    agent.process_chunk(chunk_start, tiles_per_chunk, total_large_tiles, pass);
+    agent.process_chunk(chunk_start, tiles_per_chunk, d_total_large_tiles, pass);
   }
 }
 
@@ -826,8 +832,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // sentinel slot and `large_segments_count` through an iterator.
   const typename NumSegmentsParameterT::value_type num_large_segments =
     static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
-  const LargeSegmentTileOffsetT total_large_tiles =
-    static_cast<LargeSegmentTileOffsetT>(d_large_segments_tile_offsets[num_large_segments]);
+  // Pointer to the sentinel slot of the per-segment tile-offset table; the agent dereferences
+  // it lazily at the grid-stride loop boundary instead of materialising the value into a
+  // long-lived register at kernel entry. See the agent's `run` doc for the register-pressure
+  // motivation.
+  const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
   static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
@@ -893,10 +902,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     static_cast<LargeSegmentTileOffsetT>(gridDim.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
   for (LargeSegmentTileOffsetT chunk_start =
          static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-       chunk_start < total_large_tiles;
+       chunk_start < *d_total_large_tiles;
        chunk_start += stride)
   {
-    agent.process_chunk(chunk_start, tiles_per_chunk, total_large_tiles);
+    agent.process_chunk(chunk_start, tiles_per_chunk, d_total_large_tiles);
   }
 }
 } // namespace detail::batched_topk
