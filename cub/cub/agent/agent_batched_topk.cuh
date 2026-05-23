@@ -746,7 +746,13 @@ public:
   //
   // The partial-tile schema preserved: full tiles flow through the inner `for` loop, then a
   // conditional *after* the loop handles the at-most-one trailing partial tile.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run(int tiles_per_chunk)
+  //
+  // `TilesPerChunk` is taken as a compile-time non-type template parameter rather than as
+  // a runtime argument so ptxas can reason about the per-chunk stride and the middle while
+  // loop's bound statically. Whether that pays off in codegen is the experiment driven by
+  // this commit (see the `profile_round_*` baselines in the repo's investigation tree).
+  template <int TilesPerChunk>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void run()
   {
     const LargeSegmentTileOffsetT* const d_total_large_tiles =
       &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
@@ -756,8 +762,8 @@ public:
     constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
     LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
 
-    const LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-    const LargeSegmentTileOffsetT stride       = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
+    constexpr LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(TilesPerChunk);
+    const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
 
     for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
          chunk_start < *d_total_large_tiles;

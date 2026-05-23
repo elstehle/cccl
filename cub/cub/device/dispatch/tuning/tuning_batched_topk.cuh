@@ -298,7 +298,7 @@ struct policy_selector
         /*.value_materialization                =*/detail::topk::value_materialization_mode::indexed,
         /*.lazy_value_load                      =*/true,
         /*.inlined_classify                     =*/true,
-        /*.tiles_per_chunk                      =*/4,
+        /*.tiles_per_chunk                      =*/8,
         /*.full_tiles_only_histogram            =*/true}};
   }
 };

@@ -413,8 +413,13 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // The pass index / total_bits / decomposer that drove the radix-digit extraction in the old
   // signature are now absorbed into `extract_bin_op` (constructed by the dispatch) -- the
   // kernel itself does not need to know about the pass.
+  // `TilesPerChunk` is now lifted to a compile-time non-type template parameter on
+  // `agent.run` so the middle while-loop's `chunk_end - chunk_start` bound and the per-CTA
+  // stride/chunk_start arithmetic are known at codegen time. The runtime `int` overload that
+  // the agent previously exposed has been removed; the compile-time `tiles_per_chunk` helper
+  // remains the single source of truth.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
-  agent.run(tiles_per_chunk);
+  agent.template run<tiles_per_chunk>();
 }
 
 // Per-segment epilogue kernel for the histogram pass. Runs after
