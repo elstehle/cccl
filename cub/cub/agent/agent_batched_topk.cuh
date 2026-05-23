@@ -754,6 +754,13 @@ public:
   template <int TilesPerChunk>
   _CCCL_DEVICE _CCCL_FORCEINLINE void run()
   {
+    // The slow-path's bit-decomposition is hard-wired for power-of-two chunk sizes up to 8.
+    // For larger or non-power-of-two chunk sizes the decomposition would need extra `if`s
+    // (and we'd lose the property that exactly one tile-count branch fires per stretch).
+    static_assert(TilesPerChunk == 2 || TilesPerChunk == 4 || TilesPerChunk == 8,
+                  "agent_batched_topk_histogram::run<TilesPerChunk> requires "
+                  "TilesPerChunk to be a power of two in {2, 4, 8}.");
+
     const LargeSegmentTileOffsetT* const d_total_large_tiles =
       &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
 
@@ -772,60 +779,116 @@ public:
       const LargeSegmentTileOffsetT chunk_end =
         (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
+      // Step 1: ensure `temp_storage.active_segment` contains the segment for `chunk_start`.
+      // (Once per chunk; this is the only segment-state work the fast path needs.)
+      if (active_queue_idx == kNoActiveSegment)
+      {
+        enter_segment(chunk_start);
+        active_queue_idx = LargeSegmentTileOffsetT{0};
+      }
+      else if (chunk_start >= temp_storage.active_segment.segment_end)
+      {
+        switch_to_segment(chunk_start);
+      }
+
+      // Step 2: fast-path check -- the chunk fits entirely inside the active segment's
+      // full-tile range. When this fires, the whole chunk is exactly `TilesPerChunk` full
+      // tiles drawn from one segment; no segment-switching, no partial-tile bookkeeping,
+      // no `chunk_end` clipping. The tile loop below sees only the chunk's `local_tile_start`
+      // and a fully unrolled run of `TilesPerChunk` full-tile loads.
+      const LargeSegmentTileOffsetT slab_base    = temp_storage.active_segment.slab_base;
+      const OffsetT num_full_tiles_in_seg        = temp_storage.active_segment.num_full_tiles;
+      const LargeSegmentTileOffsetT full_tile_boundary =
+        slab_base + static_cast<LargeSegmentTileOffsetT>(num_full_tiles_in_seg);
+
+      if (chunk_start + chunk_size_v <= full_tile_boundary)
+      {
+        // ----- Fast path: TilesPerChunk full tiles, one segment, no switching. ------------
+        // Note: `chunk_start + chunk_size_v <= full_tile_boundary <= *d_total_large_tiles`,
+        // so the chunk also can't have been clipped at the end of the queue -- the implicit
+        // `chunk_end == chunk_start + chunk_size_v` is what enables the fully-unrolled loop.
+        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - slab_base);
+        keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
+
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < TilesPerChunk; ++i)
+        {
+          process_full_tile_at(keys_source, static_cast<OffsetT>(local_tile_start + i));
+        }
+        continue;
+      }
+
+      // ----- Slow path: chunk straddles a segment boundary, hits a partial-tile slot,
+      // or is clipped at the queue's tail. Walk segment-stretches; per-stretch tile work
+      // uses a power-of-two bit decomposition. Each stretch processes strictly fewer than
+      // `TilesPerChunk` full tiles (otherwise we'd have taken the fast path), so the
+      // decomposition only needs to cover the range `[0, TilesPerChunk - 1]`. The chunk
+      // walk visits at most `TilesPerChunk` segments (since each segment occupies >= 1
+      // tile slot in queue-idx space).
       LargeSegmentTileOffsetT chunk_cursor = chunk_start;
       while (chunk_cursor < chunk_end)
       {
-        // Segment-state refresh -- only when the cached segment doesn't cover `chunk_cursor`.
-        // The first refresh on this CTA's run uses `enter_segment` (no smem-histogram to
-        // flush yet); subsequent refreshes use `switch_to_segment` which flushes first.
-        if (active_queue_idx == kNoActiveSegment)
-        {
-          enter_segment(chunk_cursor);
-          // Mark "have an active segment" -- the actual queue_idx value isn't read again
-          // (the agent reads everything from `temp_storage.active_segment`); the sentinel
-          // toggle just gates the flush-vs-no-flush refresh choice.
-          active_queue_idx = LargeSegmentTileOffsetT{0};
-        }
-        else if (chunk_cursor >= temp_storage.active_segment.segment_end)
+        if (chunk_cursor >= temp_storage.active_segment.segment_end)
         {
           switch_to_segment(chunk_cursor);
         }
 
-        // Tile-space bounds of this segment-stretch inside the chunk.
-        const LargeSegmentTileOffsetT segment_end = temp_storage.active_segment.segment_end;
-        const LargeSegmentTileOffsetT slab_base   = temp_storage.active_segment.slab_base;
-        const OffsetT local_tile_start            = static_cast<OffsetT>(chunk_cursor - slab_base);
+        const LargeSegmentTileOffsetT seg_slab_base  = temp_storage.active_segment.slab_base;
+        const OffsetT seg_num_full                   = temp_storage.active_segment.num_full_tiles;
+        const OffsetT local_tile_start               = static_cast<OffsetT>(chunk_cursor - seg_slab_base);
         const LargeSegmentTileOffsetT remaining_in_chunk = chunk_end - chunk_cursor;
-        const OffsetT num_full_tiles              = temp_storage.active_segment.num_full_tiles;
         const OffsetT full_tiles_remaining_in_seg =
-          (local_tile_start < num_full_tiles) ? (num_full_tiles - local_tile_start) : OffsetT{0};
-        const OffsetT full_tiles_to_process =
+          (local_tile_start < seg_num_full) ? (seg_num_full - local_tile_start) : OffsetT{0};
+        const OffsetT full_tiles_in_stretch =
           (::cuda::std::min) (static_cast<OffsetT>(remaining_in_chunk), full_tiles_remaining_in_seg);
 
-        // At-most-one trailing partial tile, claimed iff the full-tile loop ends at the
-        // segment's partial-tile slot AND the segment has a partial AND chunk budget remains.
-        // The cursor advance is always the same -- the partial-tile slot is "consumed"
-        // either way. In `FullTilesOnly` mode the slot is *only* stepped over; the actual
-        // partial-tile load + bin is delegated to the finalize-histogram kernel. In the
-        // default mode the partial tile is processed inline as before.
-        const OffsetT next_local_tile = local_tile_start + full_tiles_to_process;
-        const bool reaches_partial_slot =
-          (next_local_tile == num_full_tiles) && (temp_storage.active_segment.partial_items > 0)
-          && (full_tiles_to_process + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
-
-        // Construct the per-segment-stretch keys-source view once -- reused across the full-
-        // tile loop and the trailing partial.
+        // Power-of-two bit-decomposition of `full_tiles_in_stretch ∈ [0, TilesPerChunk-1]`.
+        // Each `if` covers one bit of the count and is the only branch in this stretch's
+        // tile path; the inner `for` is statically sized so it unrolls cleanly.
         keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
-
-        // Inner: full-tile loop.
-        for (OffsetT i = 0; i < full_tiles_to_process; ++i)
+        OffsetT remaining_full_tiles = full_tiles_in_stretch;
+        OffsetT local                = local_tile_start;
+        if constexpr (TilesPerChunk >= 8)
         {
-          process_full_tile_at(keys_source, local_tile_start + i);
+          if (remaining_full_tiles >= OffsetT{4})
+          {
+            _CCCL_PRAGMA_UNROLL_FULL()
+            for (int i = 0; i < 4; ++i)
+            {
+              process_full_tile_at(keys_source, static_cast<OffsetT>(local + i));
+            }
+            local += OffsetT{4};
+            remaining_full_tiles -= OffsetT{4};
+          }
+        }
+        if constexpr (TilesPerChunk >= 4)
+        {
+          if (remaining_full_tiles >= OffsetT{2})
+          {
+            _CCCL_PRAGMA_UNROLL_FULL()
+            for (int i = 0; i < 2; ++i)
+            {
+              process_full_tile_at(keys_source, static_cast<OffsetT>(local + i));
+            }
+            local += OffsetT{2};
+            remaining_full_tiles -= OffsetT{2};
+          }
+        }
+        // The `>= 1` branch is always present (TilesPerChunk >= 2). The trailing
+        // decrement / `local` bump are dead at this point and intentionally omitted.
+        if (remaining_full_tiles >= OffsetT{1})
+        {
+          process_full_tile_at(keys_source, static_cast<OffsetT>(local));
         }
 
-        // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
-        // `if constexpr`-eliminated -- the slot is still consumed by `tiles_consumed` below
-        // so the chunk walk doesn't stall on the segment's partial-tile index.
+        // Partial-tile slot bookkeeping. In `FullTilesOnly` mode the partial-tile load + bin
+        // is owned by the finalize-histogram kernel, so the call site is `if constexpr`-
+        // eliminated; the slot is still "consumed" by `tiles_consumed` below so the chunk
+        // walk doesn't stall on the segment's partial-tile index.
+        const OffsetT next_local_tile = local_tile_start + full_tiles_in_stretch;
+        const bool reaches_partial_slot =
+          (next_local_tile == seg_num_full) && (temp_storage.active_segment.partial_items > 0)
+          && (full_tiles_in_stretch + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
         if constexpr (!FullTilesOnly)
         {
           if (reaches_partial_slot)
@@ -834,7 +897,7 @@ public:
           }
         }
 
-        const OffsetT tiles_consumed = full_tiles_to_process + (reaches_partial_slot ? OffsetT{1} : OffsetT{0});
+        const OffsetT tiles_consumed = full_tiles_in_stretch + (reaches_partial_slot ? OffsetT{1} : OffsetT{0});
         if (tiles_consumed == OffsetT{0})
         {
           break;
