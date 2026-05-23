@@ -764,29 +764,34 @@ public:
     const LargeSegmentTileOffsetT* const d_total_large_tiles =
       &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
 
-    // Sentinel meaning "no segment loaded yet"; flips to the segment's queue_idx the first
-    // time this CTA touches a tile and never reverts.
-    constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
-    LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
-
     constexpr LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(TilesPerChunk);
     const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
+    const LargeSegmentTileOffsetT first_chunk_start =
+      static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
 
-    for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
-         chunk_start < *d_total_large_tiles;
+    // CTA whose first chunk lands past the queue's last tile has no work to do.
+    if (first_chunk_start >= *d_total_large_tiles)
+    {
+      return;
+    }
+
+    // First segment-state load is hoisted out of the outer loop. After this `enter_segment`
+    // call, `temp_storage.active_segment` is valid for `first_chunk_start`, and every
+    // subsequent iteration only needs the cheaper `switch_to_segment` check on a segment-
+    // boundary crossing.
+    enter_segment(first_chunk_start);
+
+    for (LargeSegmentTileOffsetT chunk_start = first_chunk_start; chunk_start < *d_total_large_tiles;
          chunk_start += stride)
     {
       const LargeSegmentTileOffsetT chunk_end =
         (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
-      // Step 1: ensure `temp_storage.active_segment` contains the segment for `chunk_start`.
-      // (Once per chunk; this is the only segment-state work the fast path needs.)
-      if (active_queue_idx == kNoActiveSegment)
-      {
-        enter_segment(chunk_start);
-        active_queue_idx = LargeSegmentTileOffsetT{0};
-      }
-      else if (chunk_start >= temp_storage.active_segment.segment_end)
+      // Segment-state refresh -- only when the cached segment no longer covers `chunk_start`.
+      // On the very first iteration `chunk_start == first_chunk_start` is by construction
+      // inside the segment we just loaded above, so this branch is taken at most once per
+      // CTA, when grid-striding crosses a segment boundary.
+      if (chunk_start >= temp_storage.active_segment.segment_end)
       {
         switch_to_segment(chunk_start);
       }
@@ -907,12 +912,10 @@ public:
     }
 
     // Final flush: merge the last active segment-stretch's smem histogram into its global
-    // slab. Skipped only when this CTA had no work at all.
-    if (active_queue_idx != kNoActiveSegment)
-    {
-      __syncthreads();
-      flush_active_segment();
-    }
+    // slab. Unconditional -- the early-return above already filtered out CTAs with no work,
+    // so by the time we reach this point we've entered at least one segment.
+    __syncthreads();
+    flush_active_segment();
   }
 };
 
