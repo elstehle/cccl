@@ -1117,6 +1117,19 @@ struct agent_batched_topk_filter_partition
   static constexpr int tile_items       = block_threads * items_per_thread;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
 
+  // Mirrors the histogram agent's constexpr -- see the docstring on
+  // `agent_batched_topk_histogram::tile_load_kind_uses_smem`. For DIRECT / VECTORIZE the
+  // `BlockLoad` runs as per-thread `LDG.E.{,2,4}` straight into registers without touching
+  // the shared scratch, so the pre-`submit_load` `__syncthreads()` is dead work. The
+  // post-`complete_load` sync is *kept* in every mode because `keys_source_scratch` and
+  // `partition_scratch` alias through the smem union in
+  // `partition_storage_layout_for_t` -- without that sync, the next tile's `partition`
+  // could clobber the bytes the just-completed load still owned (in the smem-using case)
+  // or that the previous tile's `partition` still owned (in either case).
+  static constexpr bool tile_load_kind_uses_smem =
+    AgentTopKPolicyT::keys_tile_load_kind != detail::topk::tile_load_kind::block_load_direct
+    && AgentTopKPolicyT::keys_tile_load_kind != detail::topk::tile_load_kind::block_load_vectorize;
+
   // The filter agent no longer carries `block_identify_kth_bucket_t` (the per-segment
   // prefix-sum + kth-bucket scan that drives the next pass's counter state). That work has
   // been hoisted into a dedicated `device_segmented_topk_finalize_filter_kernel` that runs
@@ -1529,7 +1542,10 @@ private:
         }
       }();
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
       h.complete_load(items);
@@ -1558,7 +1574,10 @@ private:
         }
       }();
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
@@ -1625,7 +1644,10 @@ private:
         }
       }();
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
@@ -1654,7 +1676,10 @@ private:
         }
       }();
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
@@ -1683,7 +1708,10 @@ private:
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
@@ -1702,7 +1730,10 @@ private:
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
@@ -1869,6 +1900,15 @@ struct agent_batched_topk_last_filter
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
   static constexpr int tile_items       = block_threads * items_per_thread;
   static constexpr bool keys_only       = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
+
+  // Mirrors the histogram / filter agents' constexpr -- DIRECT / VECTORIZE `BlockLoad`
+  // doesn't touch the shared scratch, so the pre-`submit_load` `__syncthreads()` is dead
+  // work for those algos. The post-`complete_load` sync stays in (it serializes
+  // consecutive `partition` calls through the smem union that aliases
+  // `keys_source_scratch` with `partition_scratch`).
+  static constexpr bool tile_load_kind_uses_smem =
+    AgentTopKPolicyT::keys_tile_load_kind != detail::topk::tile_load_kind::block_load_direct
+    && AgentTopKPolicyT::keys_tile_load_kind != detail::topk::tile_load_kind::block_load_vectorize;
 
   static constexpr bool effective_lazy_value_load = LazyValueLoad && !keys_only;
 
@@ -2171,7 +2211,10 @@ private:
         }
       }();
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
@@ -2200,7 +2243,10 @@ private:
         }
       }();
 
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem)
+      {
+        __syncthreads();
+      }
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
