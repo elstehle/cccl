@@ -968,17 +968,26 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         detail::identity_decomposer_t,
         OffsetT,
         OutOffsetT>;
-      // Per-segment epilogue for the filter pass (passes 1..num_passes-1). Same shape as the
-      // finalize_histogram kernel: one CTA per segment, prefix-sum + bucket-finder + counter
-      // update + optional histogram reset, hoisted out of the filter agent's per-tile
-      // `finalize_pass`.
+      // Per-segment epilogue for the filter pass (passes 1..num_passes-1). One CTA per
+      // segment: per-mode trailing-partial-tile processing (when the policy enables
+      // `full_tiles_only_filter`), prefix-sum + bucket-finder, counter update, and the
+      // optional histogram reset. The trailing-partial work is dispatched into the same
+      // `agent_batched_topk_filter_partition` the filter kernel uses, so the kernel takes
+      // the full agent template / kernel argument list.
       auto finalize_filter_kernel_ptr = device_segmented_topk_finalize_filter_kernel<
         PolicySelector,
+        select_dir,
+        KeyInputItItT,
+        KeyOutputItItT,
+        effective_value_input_it_it_t,
+        effective_value_output_it_it_t,
         SegmentSizeParameterT,
         KParameterT,
         NumSegmentsParameterT,
         segment_id_provider_t,
+        large_segment_tile_offset_t,
         large_segments_count_it_t,
+        detail::identity_decomposer_t,
         OffsetT,
         OutOffsetT,
         key_in_t>;
@@ -1129,26 +1138,44 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
           return error;
         }
         // Per-segment epilogue for this filter pass: one CTA per large segment, runs the
-        // prefix-sum + bucket-finder + per-mode counter update + optional histogram reset.
-        // Replaces the per-tile `finalize_pass` that used to live inside the filter agent's
-        // `run()`. The kernel re-derives the per-segment mode (early_stop / buffered /
-        // unbuffered) from the same counter fields the filter agent saw, so no extra
-        // device-side flag is needed.
+        // per-mode trailing-partial-tile work (when the policy enables
+        // `full_tiles_only_filter`), then the prefix-sum + bucket-finder + per-mode counter
+        // update + optional histogram reset. Replaces the per-tile `finalize_pass` that used
+        // to live inside the filter agent's `run()`. The kernel re-derives the per-segment
+        // mode (early_stop / buffered / unbuffered) from the same counter fields the filter
+        // agent saw, so no extra device-side flag is needed.
+        //
+        // Takes the full filter-agent argument list (iterators, candidate buffers,
+        // extract-bin op inputs) so it can instantiate the agent and call
+        // `agent.process_partial_for_segment(queue_idx, pass)`. When
+        // `full_tiles_only_filter == false` the agent body is `if constexpr`-eliminated;
+        // the args are still passed but unused.
         if (const auto error = CubDebug(
               THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
                 finalize_filter_grid_size, multi_worker_threads_per_block, 0, stream)
                 .doit(
                   finalize_filter_kernel_ptr,
+                  d_key_segments_it,
+                  d_key_segments_out_it,
+                  effective_d_value_segments_it,
+                  effective_d_value_segments_out_it,
                   segment_sizes,
                   k,
                   num_segments,
                   segment_id_provider,
+                  static_cast<const large_segment_tile_offset_t*>(d_large_segments_tile_offsets),
                   d_seg_counters,
                   d_seg_histograms,
+                  key_bufs.Current(),
+                  val_bufs.Current(),
+                  key_bufs.Alternate(),
+                  val_bufs.Alternate(),
                   large_segments_count_it,
                   candidate_buffer_length,
                   static_cast<OffsetT>(coefficient_for_candidate_buffer),
                   pass,
+                  total_bits,
+                  decomposer,
                   reset_histogram)))
         {
           return error;

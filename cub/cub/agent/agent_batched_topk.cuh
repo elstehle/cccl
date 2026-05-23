@@ -1098,7 +1098,14 @@ template <typename AgentTopKPolicyT,
           detail::topk::block_filter_strategy EarlyStopFilterStrat =
             detail::topk::block_filter_strategy::atomics,
           bool LazyValueLoad   = false,
-          bool InlinedClassify = false>
+          bool InlinedClassify = false,
+          // Experimental switch (mirrors `multi_worker_policy::full_tiles_only_filter`).
+          // When `true`, the agent's `run()` skips the slow-path partial-tile
+          // `dispatch_tile<false>` call; the partial tile of each segment is processed
+          // by `device_segmented_topk_finalize_filter_kernel` via
+          // `agent.process_partial_for_segment(queue_idx, pass)` before its prefix-sum +
+          // bucket-finder runs.
+          bool FullTilesOnly   = false>
 struct agent_batched_topk_filter_partition
 {
   using inner_key_it_t   = it_value_t<KeyInputItItT>;
@@ -1977,14 +1984,20 @@ public:
           dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local));
         }
 
-        // Partial-tile conditional *after* the loop.
-        const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
-        const bool reaches_partial_slot =
-          (next_local == state.num_full_tiles) && (state.partial_items > 0)
-          && (local_stretch_end > state.num_full_tiles);
-        if (reaches_partial_slot)
+        // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
+        // `if constexpr`-eliminated -- the trailing-partial tile is owned by
+        // `device_segmented_topk_finalize_filter_kernel`, which invokes
+        // `process_partial_for_segment` per segment after this kernel completes.
+        if constexpr (!FullTilesOnly)
         {
-          dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+          const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
+          const bool reaches_partial_slot =
+            (next_local == state.num_full_tiles) && (state.partial_items > 0)
+            && (local_stretch_end > state.num_full_tiles);
+          if (reaches_partial_slot)
+          {
+            dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+          }
         }
 
         chunk_cursor = stretch_end;
@@ -1997,6 +2010,49 @@ public:
     // `merge_segment_histogram` decides whether to actually merge.
     __syncthreads();
     merge_segment_histogram(state);
+  }
+
+  // Process the trailing partial tile of `queue_idx`'s segment for the current pass, using
+  // whatever per-mode tile body the segment's runtime state selects. Invoked by
+  // `device_segmented_topk_finalize_filter_kernel` (one CTA per segment in its grid-stride)
+  // when the policy's `full_tiles_only_filter` knob is on -- in that mode the filter
+  // kernel's `run()` skips the slow-path `dispatch_tile<false>` call entirely, so each
+  // segment's partial-tile contribution must be re-injected here before the prefix-sum +
+  // bucket-finder runs.
+  //
+  // Smem-histogram handshake (for buffered / unbuffered modes only):
+  //   - Caller `__syncthreads()` before entry (so prior smem state is settled).
+  //   - This method `init_segment_histogram(state)`s the smem hist, processes the partial
+  //     via `dispatch_tile<false>` (which atomicAdds into the smem hist), then
+  //     `merge_segment_histogram(state)`s it into the per-segment global slab.
+  //   - Caller `__syncthreads()` after -- the smem buffer is now ready for the
+  //     prefix-sum scratch.
+  //
+  // early_stop mode: no smem-histogram touched (the partition primitive only writes the
+  // selected channel); the per-mode `process_tile_early_stop<false>` body runs as-is.
+  //
+  // Empty segments and segments with no partial (`partial_items == 0`) are no-ops.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx, int pass)
+  {
+    per_segment_state_t state = resolve_segment_state(queue_idx, pass);
+    if (state.empty || state.partial_items == 0)
+    {
+      return;
+    }
+
+    if (segment_uses_smem_histogram(state))
+    {
+      init_segment_histogram(state);
+      __syncthreads();
+    }
+
+    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+
+    if (segment_uses_smem_histogram(state))
+    {
+      __syncthreads();
+      merge_segment_histogram(state);
+    }
   }
 };
 

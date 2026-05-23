@@ -162,6 +162,15 @@ struct multi_worker_policy
   // segment) finalize kernel.
   bool full_tiles_only_histogram;
 
+  // Same idea as `full_tiles_only_histogram`, but for the filter kernels. When `true`,
+  // `agent_batched_topk_filter_partition::run()` skips its slow-path `dispatch_tile<false>`
+  // call -- the trailing partial tile of each segment is processed by
+  // `device_segmented_topk_finalize_filter_kernel` (one CTA per segment) via
+  // `agent_batched_topk_filter_partition::process_partial_for_segment`, before the
+  // finalize kernel's prefix-sum + bucket-finder runs. Each of the three filter modes
+  // (early_stop / buffered / unbuffered) handles its own partial inside that method.
+  bool full_tiles_only_filter;
+
   _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block //
@@ -178,7 +187,8 @@ struct multi_worker_policy
         && lhs.lazy_value_load == rhs.lazy_value_load //
         && lhs.inlined_classify == rhs.inlined_classify //
         && lhs.tiles_per_chunk == rhs.tiles_per_chunk //
-        && lhs.full_tiles_only_histogram == rhs.full_tiles_only_histogram;
+        && lhs.full_tiles_only_histogram == rhs.full_tiles_only_histogram //
+        && lhs.full_tiles_only_filter == rhs.full_tiles_only_filter;
   }
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
@@ -204,6 +214,7 @@ struct multi_worker_policy
               << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") //
               << ", .tiles_per_chunk = " << p.tiles_per_chunk //
               << ", .full_tiles_only_histogram = " << (p.full_tiles_only_histogram ? "true" : "false") //
+              << ", .full_tiles_only_filter = " << (p.full_tiles_only_filter ? "true" : "false") //
               << " }";
   }
 #endif // _CCCL_HOSTED()
@@ -299,7 +310,8 @@ struct policy_selector
         /*.lazy_value_load                      =*/true,
         /*.inlined_classify                     =*/true,
         /*.tiles_per_chunk                      =*/8,
-        /*.full_tiles_only_histogram            =*/true}};
+        /*.full_tiles_only_histogram            =*/true,
+        /*.full_tiles_only_filter               =*/false}};
   }
 };
 
