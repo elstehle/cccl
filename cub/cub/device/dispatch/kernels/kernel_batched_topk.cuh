@@ -703,26 +703,18 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     candidate_buffer_coefficient,
     num_large_segments);
 
-  // Chunked grid-stride loop, same pattern as the histogram kernel: each CTA processes
-  // `tiles_per_chunk` consecutive tiles per stride; inside the chunk the agent groups
-  // same-segment tiles to amortise per-segment-state resolution and (in the buffered /
-  // unbuffered modes) `init_histogram` + `merge_histogram` across the chunk.
+  // Grid-stride loop now lives inside `agent.run<TilesPerChunk>(pass)` -- same shape the
+  // histogram / last_filter agents use. The kernel materialises the policy's
+  // `tiles_per_chunk` knob and hands off.
   //
   // The per-segment epilogue (counter update + prefix-sum + bucket-finder + optional global
   // histogram reset) is done by `device_segmented_topk_finalize_filter_kernel`, which the
-  // dispatch launches on the same stream right after this kernel; `reset_histogram` flows to
-  // that kernel rather than this one.
+  // dispatch launches on the same stream right after this kernel; `reset_histogram` flows
+  // to that kernel rather than this one.
   (void) reset_histogram;
+  (void) d_total_large_tiles;
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
-  const LargeSegmentTileOffsetT stride =
-    static_cast<LargeSegmentTileOffsetT>(gridDim.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-  for (LargeSegmentTileOffsetT chunk_start =
-         static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-       chunk_start < *d_total_large_tiles;
-       chunk_start += stride)
-  {
-    agent.process_chunk(chunk_start, tiles_per_chunk, d_total_large_tiles, pass);
-  }
+  agent.template run<tiles_per_chunk>(pass);
 }
 
 // Per-segment epilogue kernel for the filter pass. Runs after
