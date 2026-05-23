@@ -898,15 +898,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     DecomposerT decomposer)
 {
   using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
-  // See the histogram kernel for the rationale behind reading `total_large_tiles` from the
-  // sentinel slot and `large_segments_count` through an iterator.
+  // Materialise the queue-shape `num_large_segments` so the agent can hold it as a member
+  // (the agent re-derives `d_total_large_tiles` from `d_large_segments_tile_offsets +
+  // num_large_segments` itself on entry to `run`).
   const typename NumSegmentsParameterT::value_type num_large_segments =
     static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
-  // Pointer to the sentinel slot of the per-segment tile-offset table; the agent dereferences
-  // it lazily at the grid-stride loop boundary instead of materialising the value into a
-  // long-lived register at kernel entry. See the agent's `run` doc for the register-pressure
-  // motivation.
-  const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
   static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
@@ -962,21 +958,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     candidate_buffer_length,
     num_large_segments);
 
-  // Chunked grid-stride loop, same pattern as the histogram / filter kernels: each CTA
-  // processes `tiles_per_chunk` consecutive tiles per stride, with the agent caching
-  // per-segment state across same-segment tiles. The last-filter pass has no histogram and no
-  // per-segment epilogue, so the chunk loop is just per-segment-state cache + per-tile
-  // `partition.run`.
+  // Grid-stride loop now lives inside `agent.run<TilesPerChunk>()` -- same shape the
+  // histogram agent uses. The kernel materialises the policy's `tiles_per_chunk` knob and
+  // hands off.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
-  const LargeSegmentTileOffsetT stride =
-    static_cast<LargeSegmentTileOffsetT>(gridDim.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-  for (LargeSegmentTileOffsetT chunk_start =
-         static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * static_cast<LargeSegmentTileOffsetT>(tiles_per_chunk);
-       chunk_start < *d_total_large_tiles;
-       chunk_start += stride)
-  {
-    agent.process_chunk(chunk_start, tiles_per_chunk, d_total_large_tiles);
-  }
+  agent.template run<tiles_per_chunk>();
 }
 } // namespace detail::batched_topk
 
