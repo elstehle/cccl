@@ -1922,12 +1922,21 @@ public:
         (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
       // Segment refresh -- only when the cached segment no longer covers `chunk_start`.
+      //
+      // Sync schedule (4 syncs around the smem-resident `active_segment`):
+      //   * pre-merge sync: settle prior tile writes (atomic-adds into the smem hist).
+      //   * post-merge sync: separate `merge`'s smem reads (predicate fields + global
+      //     hist ptr pulled out of `storage.active_segment`) from thread 0's upcoming
+      //     overwrite of those same smem fields in `load_segment_state`. Without this
+      //     sync, the PTX shared-memory weak ordering lets thread N observe the new
+      //     fields mid-merge.
+      //   * post-load sync: publish thread 0's new state to every thread and separate
+      //     `merge`'s smem-hist reads from `init_segment_histogram`'s smem-hist writes.
+      //   * post-init sync: publish the hist zero-init for the per-tile atomic-adds.
       if (chunk_start >= state.queue_segment_end)
       {
         __syncthreads();
         merge_segment_histogram();
-        // Sync between merge (smem-hist reads) and the in-place load that overwrites
-        // the active-segment smem fields.
         __syncthreads();
         load_segment_state(resolve_queue_idx(chunk_start), pass);
         __syncthreads();
@@ -1953,7 +1962,8 @@ public:
       LargeSegmentTileOffsetT chunk_cursor = chunk_start;
       while (chunk_cursor < chunk_end)
       {
-        // Segment refresh inside the stretch walk.
+        // Segment refresh inside the stretch walk. Same 4-sync schedule as the
+        // outer-loop refresh above.
         if (chunk_cursor >= state.queue_segment_end)
         {
           __syncthreads();
