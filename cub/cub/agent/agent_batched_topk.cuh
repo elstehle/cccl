@@ -632,16 +632,14 @@ private:
   // Thread 0 resolves the segment containing `cursor` and publishes the result to smem. Other
   // threads only need to participate in the surrounding `__syncthreads()`. The caller is
   // responsible for the publish barrier after this returns.
-  //
-  // `num_large_segments` is the value of `*large_segments_count_it` cached into a register
-  // by `run()` so we don't re-dereference the iterator on every segment boundary.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  load_segment_state(LargeSegmentTileOffsetT cursor, SegmentCountT num_large_segments)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void load_segment_state(LargeSegmentTileOffsetT cursor)
   {
     if (threadIdx.x == 0)
     {
       const LargeSegmentTileOffsetT queue_idx =
-        UpperBound(d_large_segments_tile_offsets, num_large_segments, cursor) - 1;
+        UpperBound(
+          d_large_segments_tile_offsets, static_cast<SegmentCountT>(*large_segments_count_it), cursor)
+        - 1;
       const auto segment_id                = segment_id_provider[queue_idx];
       const OffsetT num_items              = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
       const OffsetT num_full_tiles         = num_items / static_cast<OffsetT>(tile_items);
@@ -671,10 +669,9 @@ private:
   // Bring up a freshly-resolved segment-stretch: thread 0 writes the new `active_segment`,
   // then everyone zeros the smem histogram. The two `__syncthreads()` bracket the smem
   // writes against the reads/writes that surround them.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  enter_segment(LargeSegmentTileOffsetT cursor, SegmentCountT num_large_segments)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void enter_segment(LargeSegmentTileOffsetT cursor)
   {
-    load_segment_state(cursor, num_large_segments);
+    load_segment_state(cursor);
     __syncthreads();
     detail::topk::init_histogram<block_threads, num_buckets>(temp_storage.histogram);
     __syncthreads();
@@ -687,13 +684,12 @@ private:
   // segment slot against concurrent reads (from the just-completed `merge_histogram` call,
   // which reads `active_segment.segment_histogram` to drive its atomic adds) and the
   // upcoming thread-0 write (`load_segment_state` inside `enter_segment`).
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  switch_to_segment(LargeSegmentTileOffsetT cursor, SegmentCountT num_large_segments)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void switch_to_segment(LargeSegmentTileOffsetT cursor)
   {
     __syncthreads();
     flush_active_segment();
     __syncthreads();
-    enter_segment(cursor, num_large_segments);
+    enter_segment(cursor);
   }
 
   // Process one full tile of the active segment at local index `local_tile`. The caller
@@ -758,14 +754,8 @@ public:
   template <int TilesPerChunk>
   _CCCL_DEVICE _CCCL_FORCEINLINE void run()
   {
-    // Read both queue-shape values from global memory exactly once and let the compiler
-    // keep them in registers for the rest of the run. The previous shape held a
-    // `d_total_large_tiles` *pointer* and dereferenced it on every iteration of the
-    // grid-stride loop (loop guard + chunk_end); `*large_segments_count_it` was
-    // re-dereferenced on each segment-state refresh. With both values cached as locals,
-    // every subsequent use site is register-resident.
-    const SegmentCountT num_large_segments      = static_cast<SegmentCountT>(*large_segments_count_it);
-    const LargeSegmentTileOffsetT total_large_tiles = d_large_segments_tile_offsets[num_large_segments];
+    const LargeSegmentTileOffsetT* const d_total_large_tiles =
+      &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
 
     // Sentinel meaning "no segment loaded yet"; flips to the segment's queue_idx the first
     // time this CTA touches a tile and never reverts.
@@ -776,11 +766,11 @@ public:
     const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
 
     for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
-         chunk_start < total_large_tiles;
+         chunk_start < *d_total_large_tiles;
          chunk_start += stride)
     {
       const LargeSegmentTileOffsetT chunk_end =
-        (chunk_start + chunk_size_v < total_large_tiles) ? chunk_start + chunk_size_v : total_large_tiles;
+        (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
       LargeSegmentTileOffsetT chunk_cursor = chunk_start;
       while (chunk_cursor < chunk_end)
@@ -790,7 +780,7 @@ public:
         // flush yet); subsequent refreshes use `switch_to_segment` which flushes first.
         if (active_queue_idx == kNoActiveSegment)
         {
-          enter_segment(chunk_cursor, num_large_segments);
+          enter_segment(chunk_cursor);
           // Mark "have an active segment" -- the actual queue_idx value isn't read again
           // (the agent reads everything from `temp_storage.active_segment`); the sentinel
           // toggle just gates the flush-vs-no-flush refresh choice.
@@ -798,7 +788,7 @@ public:
         }
         else if (chunk_cursor >= temp_storage.active_segment.segment_end)
         {
-          switch_to_segment(chunk_cursor, num_large_segments);
+          switch_to_segment(chunk_cursor);
         }
 
         // Tile-space bounds of this segment-stretch inside the chunk.
