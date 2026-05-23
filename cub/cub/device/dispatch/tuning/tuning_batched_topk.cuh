@@ -311,7 +311,7 @@ struct policy_selector
         /*.inlined_classify                     =*/true,
         /*.tiles_per_chunk                      =*/8,
         /*.full_tiles_only_histogram            =*/true,
-        /*.full_tiles_only_filter               =*/false}};
+        /*.full_tiles_only_filter               =*/true}};
   }
 };
 
