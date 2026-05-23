@@ -692,6 +692,21 @@ private:
     enter_segment(cursor);
   }
 
+  // `BlockLoad` algorithms that drive their inter-thread transfer through the
+  // `keys_source_scratch` smem region (TRANSPOSE / WARP_TRANSPOSE / WARP_TRANSPOSE_TIMESLICED)
+  // and the async-to-shared TMA path stage data in shared memory. For those, two consecutive
+  // tile loads need a `__syncthreads()` between them so the next tile's writes don't clobber
+  // the previous tile's reads. The DIRECT and VECTORIZE algorithms, by contrast, issue
+  // per-thread `LDG.E.{,2,4}` straight into the destination registers and never touch the
+  // shared scratch; the inter-tile barrier is dead work for those configurations. The
+  // intra-tile atomicAdds into the smem histogram are independent across tiles and don't
+  // need fencing either way -- atomics are program-ordered per thread and the histogram
+  // bucket addresses are data-dependent (different keys -> different buckets in the common
+  // case), so an early-arriving thread can start its next tile's LDG without waiting.
+  static constexpr bool tile_load_kind_uses_smem =
+    AgentTopKPolicyT::keys_tile_load_kind != detail::topk::tile_load_kind::block_load_direct
+    && AgentTopKPolicyT::keys_tile_load_kind != detail::topk::tile_load_kind::block_load_vectorize;
+
   // Process one full tile of the active segment at local index `local_tile`. The caller
   // owns the long-lived `keys_source_t` (constructed once per middle-loop iteration so the
   // underlying `BlockLoadToShared` mbarrier is initialized **once** per segment-stretch
@@ -701,7 +716,10 @@ private:
     const OffsetT tile_base = local_tile * static_cast<OffsetT>(tile_items);
     keys_source.set_tile_base(tile_base);
 
-    __syncthreads();
+    if constexpr (tile_load_kind_uses_smem)
+    {
+      __syncthreads();
+    }
     key_in_t items[items_per_thread];
     auto h = keys_source.submit_load(temp_storage.keys_source_scratch);
     h.complete_load(items);
@@ -721,7 +739,10 @@ private:
     const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
     keys_source.set_tile_base(tile_base);
 
-    __syncthreads();
+    if constexpr (tile_load_kind_uses_smem)
+    {
+      __syncthreads();
+    }
     key_in_t items[items_per_thread];
     auto h = keys_source.submit_load(temp_storage.keys_source_scratch, partial_items);
     h.complete_load(items);
