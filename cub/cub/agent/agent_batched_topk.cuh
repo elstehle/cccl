@@ -917,6 +917,128 @@ public:
     __syncthreads();
     flush_active_segment();
   }
+
+  // Sentinel-based, monolithic alternative to `run()` (kept around as `run2` so a future
+  // policy / kernel can opt into it when a workload shows the fast/slow-path split's
+  // register cost outweighing its throughput gains -- I16 took +11 R going from the
+  // monolithic shape to the split, while floats / wide ints saved 4 -- 8 us per histogram
+  // pass at 2^28 elements; see `profile_round_11_*` / `profile_round_13_*` /
+  // `profile_round_14_*` for the side-by-side data).
+  //
+  // Structurally identical to the round-11 / round-12 (post-revert) `run()`:
+  //   - single while-loop over `chunk_cursor`, no fast/slow peel;
+  //   - `active_queue_idx == kNoActiveSegment` sentinel gates the first-time
+  //     `enter_segment` inside the loop body (no hoist, no pre-loop early return);
+  //   - per-stretch full tiles flow through one straight `for (i = 0;
+  //     i < full_tiles_to_process; ++i)` (no power-of-two bit decomposition).
+  //
+  // Blast radius: zero outside this function -- every name referenced
+  // (`d_large_segments_tile_offsets`, `*large_segments_count_it`, the
+  // `temp_storage.active_segment.*` fields, the `enter_segment` /
+  // `switch_to_segment` / `flush_active_segment` / `process_full_tile_at` /
+  // `process_partial_tile_at_segment_end` helpers, the `keys_source_t` alias) is
+  // already a member of `agent_batched_topk_histogram`. Because this method is a
+  // member of a class template it is only instantiated when called, so leaving it
+  // sitting here uncalled costs nothing in the default build.
+  template <int TilesPerChunk>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void run2()
+  {
+    const LargeSegmentTileOffsetT* const d_total_large_tiles =
+      &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
+
+    // Sentinel meaning "no segment loaded yet"; flips to the segment's queue_idx the first
+    // time this CTA touches a tile and never reverts.
+    constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
+    LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
+
+    constexpr LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(TilesPerChunk);
+    const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
+
+    for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
+         chunk_start < *d_total_large_tiles;
+         chunk_start += stride)
+    {
+      const LargeSegmentTileOffsetT chunk_end =
+        (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
+
+      LargeSegmentTileOffsetT chunk_cursor = chunk_start;
+      while (chunk_cursor < chunk_end)
+      {
+        // Segment-state refresh -- only when the cached segment doesn't cover `chunk_cursor`.
+        // The first refresh on this CTA's run uses `enter_segment` (no smem-histogram to
+        // flush yet); subsequent refreshes use `switch_to_segment` which flushes first.
+        if (active_queue_idx == kNoActiveSegment)
+        {
+          enter_segment(chunk_cursor);
+          // Mark "have an active segment" -- the actual queue_idx value isn't read again
+          // (the agent reads everything from `temp_storage.active_segment`); the sentinel
+          // toggle just gates the flush-vs-no-flush refresh choice.
+          active_queue_idx = LargeSegmentTileOffsetT{0};
+        }
+        else if (chunk_cursor >= temp_storage.active_segment.segment_end)
+        {
+          switch_to_segment(chunk_cursor);
+        }
+
+        // Tile-space bounds of this segment-stretch inside the chunk.
+        const LargeSegmentTileOffsetT slab_base   = temp_storage.active_segment.slab_base;
+        const OffsetT local_tile_start            = static_cast<OffsetT>(chunk_cursor - slab_base);
+        const LargeSegmentTileOffsetT remaining_in_chunk = chunk_end - chunk_cursor;
+        const OffsetT num_full_tiles              = temp_storage.active_segment.num_full_tiles;
+        const OffsetT full_tiles_remaining_in_seg =
+          (local_tile_start < num_full_tiles) ? (num_full_tiles - local_tile_start) : OffsetT{0};
+        const OffsetT full_tiles_to_process =
+          (::cuda::std::min) (static_cast<OffsetT>(remaining_in_chunk), full_tiles_remaining_in_seg);
+
+        // At-most-one trailing partial tile, claimed iff the full-tile loop ends at the
+        // segment's partial-tile slot AND the segment has a partial AND chunk budget remains.
+        // The cursor advance is always the same -- the partial-tile slot is "consumed"
+        // either way. In `FullTilesOnly` mode the slot is *only* stepped over; the actual
+        // partial-tile load + bin is delegated to the finalize-histogram kernel. In the
+        // default mode the partial tile is processed inline as before.
+        const OffsetT next_local_tile = local_tile_start + full_tiles_to_process;
+        const bool reaches_partial_slot =
+          (next_local_tile == num_full_tiles) && (temp_storage.active_segment.partial_items > 0)
+          && (full_tiles_to_process + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
+
+        // Construct the per-segment-stretch keys-source view once -- reused across the full-
+        // tile loop and the trailing partial.
+        keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
+
+        // Inner: full-tile loop.
+        for (OffsetT i = 0; i < full_tiles_to_process; ++i)
+        {
+          process_full_tile_at(keys_source, local_tile_start + i);
+        }
+
+        // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
+        // `if constexpr`-eliminated -- the slot is still consumed by `tiles_consumed` below
+        // so the chunk walk doesn't stall on the segment's partial-tile index.
+        if constexpr (!FullTilesOnly)
+        {
+          if (reaches_partial_slot)
+          {
+            process_partial_tile_at_segment_end(keys_source);
+          }
+        }
+
+        const OffsetT tiles_consumed = full_tiles_to_process + (reaches_partial_slot ? OffsetT{1} : OffsetT{0});
+        if (tiles_consumed == OffsetT{0})
+        {
+          break;
+        }
+        chunk_cursor += static_cast<LargeSegmentTileOffsetT>(tiles_consumed);
+      }
+    }
+
+    // Final flush: merge the last active segment-stretch's smem histogram into its global
+    // slab. Skipped only when this CTA had no work at all.
+    if (active_queue_idx != kNoActiveSegment)
+    {
+      __syncthreads();
+      flush_active_segment();
+    }
+  }
 };
 
 //---------------------------------------------------------------------
