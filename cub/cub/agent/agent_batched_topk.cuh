@@ -1513,13 +1513,29 @@ private:
   // partial-vs-full branch. Callers must guarantee:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
-  template <bool IsFullTile>
+  // `PickB` template parameter replaces the runtime `load_from_candidates_buffer`
+  // flag that previously routed through `multi_source_data_source`. Each tile body
+  // now constructs only ONE source (input *or* buffer) so only one of
+  // `s.d_keys_in` / `s.in_key_buf` (and, for pairs, `s.d_values_in` / `s.in_val_buf`)
+  // is alive in the per-tile body. The caller in `dispatch_tile<IsFullTile, PickB>`
+  // selects which template instantiation to invoke based on the warp-uniform
+  // `load_from_cb_u`. Goal: drop the 2 R / thread (keys-only) or 4 R / thread (pairs)
+  // that `multi_source_data_source` held for the unused side.
+  template <bool IsFullTile, bool PickB>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    using keys_source_kind_t = ::cuda::std::conditional_t<PickB, key_source_buffer_t, key_source_input_t>;
+    auto keys_source = [&]() -> keys_source_kind_t {
+      if constexpr (PickB)
+      {
+        return key_source_buffer_t{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
+      }
+      else
+      {
+        return key_source_input_t{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
+      }
+    }();
 
     // The filter primitive's ctor takes the identify-selected op by non-const reference,
     // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
@@ -1540,34 +1556,62 @@ private:
       value_channel_sinks,
       identify_selected};
 
+    // Helper: build the (single-source) value source for the active `PickB`. Pairs only;
+    // returns `NullType` for keys_only.
+    auto make_value_source = [&](OffsetT tile_base) {
+      if constexpr (keys_only)
+      {
+        (void) tile_base;
+        return NullType{};
+      }
+      else
+      {
+        using value_source_kind_t = ::cuda::std::conditional_t<PickB, value_source_buffer_t, value_source_input_t>;
+        value_source_kind_t val_src = [&]() -> value_source_kind_t {
+          if constexpr (PickB)
+          {
+            typename value_source_buffer_t::TempStorage val_state_buffer{};
+            return value_source_buffer_t{s.in_val_buf, val_state_buffer};
+          }
+          else
+          {
+            typename value_source_input_t::TempStorage val_state_input{};
+            return value_source_input_t{s.d_values_in, val_state_input};
+          }
+        }();
+        val_src.set_tile_base(tile_base);
+        return val_src;
+      }
+    };
+
+    // Helper: pick the matching scratch sub-slot from the union-typed
+    // `keys_source_t::ScratchStorage` (which is `union { A::ScratchStorage a;
+    // B::ScratchStorage b; }`). The unused slot just aliases.
+    auto& full_scratch_ref = storage.arms.early_stop.arena.get_keys_source_scratch();
+    auto& scratch_ref      = [&]() -> auto& {
+      if constexpr (PickB)
+      {
+        return full_scratch_ref.b;
+      }
+      else
+      {
+        return full_scratch_ref.a;
+      }
+    }();
+
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(tile_base);
 
       if constexpr (tile_load_kind_uses_smem)
       {
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
+      auto h = keys_source.submit_load(scratch_ref);
       h.complete_load(items);
       __syncthreads();
       filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, value_source);
@@ -1577,29 +1621,14 @@ private:
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(tile_base);
 
       if constexpr (tile_load_kind_uses_smem)
       {
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
+      auto h = keys_source.submit_load(scratch_ref, s.partial_items);
       h.complete_load(items);
       __syncthreads();
       filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, s.partial_items, value_source);
@@ -1608,14 +1637,22 @@ private:
     filter.epilogue();
   }
 
-  // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
-  template <bool IsFullTile>
+  // See the `process_tile_early_stop` doc for the `IsFullTile` / `PickB` contract.
+  template <bool IsFullTile, bool PickB>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    using keys_source_kind_t = ::cuda::std::conditional_t<PickB, key_source_buffer_t, key_source_input_t>;
+    auto keys_source = [&]() -> keys_source_kind_t {
+      if constexpr (PickB)
+      {
+        return key_source_buffer_t{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
+      }
+      else
+      {
+        return key_source_input_t{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
+      }
+    }();
 
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
@@ -1644,34 +1681,58 @@ private:
       identify_candidates_op,
       histogram_cb};
 
+    // Single-source value channel: same `PickB` split as the keys channel.
+    auto make_value_source = [&](OffsetT tile_base) {
+      if constexpr (keys_only)
+      {
+        (void) tile_base;
+        return NullType{};
+      }
+      else
+      {
+        using value_source_kind_t = ::cuda::std::conditional_t<PickB, value_source_buffer_t, value_source_input_t>;
+        value_source_kind_t val_src = [&]() -> value_source_kind_t {
+          if constexpr (PickB)
+          {
+            typename value_source_buffer_t::TempStorage val_state_buffer{};
+            return value_source_buffer_t{s.in_val_buf, val_state_buffer};
+          }
+          else
+          {
+            typename value_source_input_t::TempStorage val_state_input{};
+            return value_source_input_t{s.d_values_in, val_state_input};
+          }
+        }();
+        val_src.set_tile_base(tile_base);
+        return val_src;
+      }
+    };
+
+    auto& full_scratch_ref = storage.arms.buffered.arena.get_keys_source_scratch();
+    auto& scratch_ref      = [&]() -> auto& {
+      if constexpr (PickB)
+      {
+        return full_scratch_ref.b;
+      }
+      else
+      {
+        return full_scratch_ref.a;
+      }
+    }();
+
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(tile_base);
 
       if constexpr (tile_load_kind_uses_smem)
       {
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
+      auto h = keys_source.submit_load(scratch_ref);
       h.complete_load(items);
       __syncthreads();
       partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, value_source);
@@ -1681,29 +1742,14 @@ private:
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(tile_base);
 
       if constexpr (tile_load_kind_uses_smem)
       {
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
+      auto h = keys_source.submit_load(scratch_ref, s.partial_items);
       h.complete_load(items);
       __syncthreads();
       partition.partition(
@@ -1713,7 +1759,11 @@ private:
     partition.epilogue();
   }
 
-  // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
+  // Unbuffered: histogram-only pass. The candidate buffer carry-over from the
+  // previous pass is not needed because the partition primitive uses
+  // `topk_candidate_filter_op` to test against the current-pass kth-key prefix and
+  // we only count hits into the smem histogram. So no `PickB` switch; the
+  // key source is always the input iterator.
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_unbuffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
@@ -1723,9 +1773,7 @@ private:
       &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
     filter_op_t filter_op{identify_candidates_op};
 
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/false};
+    key_source_input_t keys_source{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
 
     if constexpr (IsFullTile)
     {
@@ -1737,7 +1785,7 @@ private:
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch().a);
       h.complete_load(items);
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int j = 0; j < items_per_thread; ++j)
@@ -1759,7 +1807,7 @@ private:
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch().a, s.partial_items);
       h.complete_load(items);
       const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
       const int num_thread_items =
@@ -1779,20 +1827,46 @@ private:
     }
   }
 
-  // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` is what
-  // separates the three tile bodies; the agent reads them on every call but their value is
-  // fixed for the whole segment-stretch the caller is processing, so within a single
-  // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
+  // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` /
+  // `s.load_from_candidates_buffer` are all set per-segment and constant for the
+  // whole chunk-stretch the caller is processing, so within a single unrolled /
+  // bit-decomposed run ptxas should hoist these branches above the tile loop.
+  //
+  // The runtime branch on `s.load_from_candidates_buffer` selects between
+  // `process_tile_*<IsFullTile, PickB=true>` (read from `s.in_key_buf` /
+  // `s.in_val_buf`) and `process_tile_*<IsFullTile, PickB=false>` (read from
+  // `s.d_keys_in` / `s.d_values_in`). Each instantiation only constructs one
+  // single-source `tile_data_source_t`, so only one of the two source pointers
+  // is live in the per-tile body -- replacing the prior `multi_source_data_source`
+  // pattern that held both alive simultaneously and saved 2 R / thread for
+  // keys-only (4 R / thread for pairs).
+  //
+  // `process_tile_unbuffered` is histogram-only and doesn't read the candidate
+  // buffer; it's hard-wired to `PickB=false` (no template arg).
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
     if (s.early_stop)
     {
-      process_tile_early_stop<IsFullTile>(s, local_tile);
+      if (s.load_from_candidates_buffer)
+      {
+        process_tile_early_stop<IsFullTile, /*PickB=*/true>(s, local_tile);
+      }
+      else
+      {
+        process_tile_early_stop<IsFullTile, /*PickB=*/false>(s, local_tile);
+      }
     }
     else if (s.will_buffer)
     {
-      process_tile_buffered<IsFullTile>(s, local_tile);
+      if (s.load_from_candidates_buffer)
+      {
+        process_tile_buffered<IsFullTile, /*PickB=*/true>(s, local_tile);
+      }
+      else
+      {
+        process_tile_buffered<IsFullTile, /*PickB=*/false>(s, local_tile);
+      }
     }
     else
     {
