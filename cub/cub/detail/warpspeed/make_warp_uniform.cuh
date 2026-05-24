@@ -12,9 +12,7 @@
 #  pragma system_header
 #endif // no system header
 
-#include <cuda/std/bit>
 #include <cuda/std/cstdint>
-#include <cuda/std/type_traits>
 
 CUB_NAMESPACE_BEGIN
 
@@ -55,56 +53,6 @@ namespace detail::warpspeed
 [[nodiscard]] _CCCL_DEVICE_API inline ::cuda::std::int64_t makeWarpUniform(::cuda::std::int64_t x)
 {
   return static_cast<::cuda::std::int64_t>(makeWarpUniform(static_cast<::cuda::std::uint64_t>(x)));
-}
-
-// Pointer overload: round-trip through the 64-bit integer broadcast so any
-// pointer-typed warp-uniform value (per-segment metadata pointer, dereferenced
-// iterator value when the iterator is a raw pointer, etc.) becomes eligible
-// for ptxas's R2UR promotion downstream.
-template <typename _Tp>
-[[nodiscard]] _CCCL_DEVICE_API inline _Tp* makeWarpUniform(_Tp* p)
-{
-  const auto bits = ::cuda::std::bit_cast<::cuda::std::uint64_t>(p);
-  return ::cuda::std::bit_cast<_Tp*>(makeWarpUniform(bits));
-}
-
-// Bool overload: route through the 32-bit integer broadcast so warp-uniform
-// predicates feed UISETP downstream rather than per-thread predicates.
-[[nodiscard]] _CCCL_DEVICE_API inline bool makeWarpUniform(bool b)
-{
-  return makeWarpUniform(static_cast<::cuda::std::uint32_t>(b)) != 0u;
-}
-
-// Generic overload for trivially-copyable types of size 1/2/4/8 bytes that
-// don't match any of the specific overloads above (e.g. small enums, simple
-// 1-pointer iterator structs). bit_casts through the appropriate integer
-// broadcast.
-template <typename _Tp,
-          ::cuda::std::enable_if_t<::cuda::std::is_trivially_copyable_v<_Tp> && !::cuda::std::is_pointer_v<_Tp>
-                                     && !::cuda::std::is_integral_v<_Tp> && !::cuda::std::is_same_v<_Tp, bool>
-                                     && (sizeof(_Tp) == 1 || sizeof(_Tp) == 2 || sizeof(_Tp) == 4
-                                         || sizeof(_Tp) == 8),
-                                   int> = 0>
-[[nodiscard]] _CCCL_DEVICE_API inline _Tp makeWarpUniform(_Tp value)
-{
-  if constexpr (sizeof(_Tp) == 8)
-  {
-    ::cuda::std::uint64_t bits{};
-    __builtin_memcpy(&bits, &value, sizeof(_Tp));
-    bits = makeWarpUniform(bits);
-    _Tp out{};
-    __builtin_memcpy(&out, &bits, sizeof(_Tp));
-    return out;
-  }
-  else
-  {
-    ::cuda::std::uint32_t bits{};
-    __builtin_memcpy(&bits, &value, sizeof(_Tp));
-    bits = makeWarpUniform(bits);
-    _Tp out{};
-    __builtin_memcpy(&out, &bits, sizeof(_Tp));
-    return out;
-  }
 }
 } // namespace detail::warpspeed
 
