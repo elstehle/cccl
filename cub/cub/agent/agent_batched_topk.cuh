@@ -1827,46 +1827,27 @@ private:
     }
   }
 
-  // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` /
-  // `s.load_from_candidates_buffer` are all set per-segment and constant for the
-  // whole chunk-stretch the caller is processing, so within a single unrolled /
-  // bit-decomposed run ptxas should hoist these branches above the tile loop.
+  // Per-mode tile dispatcher. `PickB` is the compile-time hoisted version of the
+  // per-segment runtime flag `load_from_candidates_buffer`; the caller in `run()`
+  // computes the bool once per chunk-stretch and instantiates `dispatch_tile`
+  // accordingly so the per-tile body only constructs one single-source
+  // `tile_data_source_t` (saving the ~2 R / 4 R that the prior
+  // `multi_source_data_source` held for the unused side).
   //
-  // The runtime branch on `s.load_from_candidates_buffer` selects between
-  // `process_tile_*<IsFullTile, PickB=true>` (read from `s.in_key_buf` /
-  // `s.in_val_buf`) and `process_tile_*<IsFullTile, PickB=false>` (read from
-  // `s.d_keys_in` / `s.d_values_in`). Each instantiation only constructs one
-  // single-source `tile_data_source_t`, so only one of the two source pointers
-  // is live in the per-tile body -- replacing the prior `multi_source_data_source`
-  // pattern that held both alive simultaneously and saved 2 R / thread for
-  // keys-only (4 R / thread for pairs).
-  //
-  // `process_tile_unbuffered` is histogram-only and doesn't read the candidate
-  // buffer; it's hard-wired to `PickB=false` (no template arg).
-  template <bool IsFullTile>
+  // `s.early_stop` / `s.will_buffer` are also constant for the segment-stretch the
+  // caller is processing; ptxas hoists those mode branches above the unrolled tile
+  // loop. `process_tile_unbuffered` ignores `PickB` -- it's histogram-only and
+  // always reads from the input iterator.
+  template <bool IsFullTile, bool PickB>
   _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
     if (s.early_stop)
     {
-      if (s.load_from_candidates_buffer)
-      {
-        process_tile_early_stop<IsFullTile, /*PickB=*/true>(s, local_tile);
-      }
-      else
-      {
-        process_tile_early_stop<IsFullTile, /*PickB=*/false>(s, local_tile);
-      }
+      process_tile_early_stop<IsFullTile, PickB>(s, local_tile);
     }
     else if (s.will_buffer)
     {
-      if (s.load_from_candidates_buffer)
-      {
-        process_tile_buffered<IsFullTile, /*PickB=*/true>(s, local_tile);
-      }
-      else
-      {
-        process_tile_buffered<IsFullTile, /*PickB=*/false>(s, local_tile);
-      }
+      process_tile_buffered<IsFullTile, PickB>(s, local_tile);
     }
     else
     {
@@ -1972,15 +1953,30 @@ public:
       }
 
       // Fast path: non-empty segment, chunk lands entirely in full-tile slots.
+      // `pick_b` is uniform per-segment; hoist the branch on it outside the unrolled
+      // tile loop so each tile body sees a compile-time `PickB` and only constructs
+      // one single-source `tile_data_source_t` (instead of the old `multi_source`
+      // pair).
       const LargeSegmentTileOffsetT full_tile_boundary =
         state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles);
       if (!state.empty && chunk_start + chunk_size_v <= full_tile_boundary)
       {
         const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - state.slab_base);
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int i = 0; i < TilesPerChunk; ++i)
+        if (state.load_from_candidates_buffer)
         {
-          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
+          _CCCL_PRAGMA_UNROLL_FULL()
+          for (int i = 0; i < TilesPerChunk; ++i)
+          {
+            dispatch_tile<true, /*PickB=*/true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
+          }
+        }
+        else
+        {
+          _CCCL_PRAGMA_UNROLL_FULL()
+          for (int i = 0; i < TilesPerChunk; ++i)
+          {
+            dispatch_tile<true, /*PickB=*/false>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
+          }
         }
         continue;
       }
@@ -2024,54 +2020,68 @@ public:
         const OffsetT full_tiles_in_stretch =
           (local_full_end > local_tile_start) ? (local_full_end - local_tile_start) : OffsetT{0};
 
-        // Power-of-two bit decomposition of `full_tiles_in_stretch in [0, TilesPerChunk-1]`.
-        OffsetT remaining = full_tiles_in_stretch;
-        OffsetT local     = local_tile_start;
-        if constexpr (TilesPerChunk >= 8)
-        {
-          if (remaining >= OffsetT{4})
+        // Stretch body factored out so the `load_from_candidates_buffer` branch can
+        // wrap the whole bit-decomposed walk + the trailing-partial dispatch, keeping
+        // each per-tile body mono-`PickB`.
+        auto run_stretch = [&](auto pickb_ic) {
+          constexpr bool PickB = decltype(pickb_ic)::value;
+          OffsetT remaining    = full_tiles_in_stretch;
+          OffsetT local        = local_tile_start;
+          if constexpr (TilesPerChunk >= 8)
           {
-            _CCCL_PRAGMA_UNROLL_FULL()
-            for (int i = 0; i < 4; ++i)
+            if (remaining >= OffsetT{4})
             {
-              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
+              _CCCL_PRAGMA_UNROLL_FULL()
+              for (int i = 0; i < 4; ++i)
+              {
+                dispatch_tile<true, PickB>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
+              }
+              local += OffsetT{4};
+              remaining -= OffsetT{4};
             }
-            local += OffsetT{4};
-            remaining -= OffsetT{4};
           }
-        }
-        if constexpr (TilesPerChunk >= 4)
-        {
-          if (remaining >= OffsetT{2})
+          if constexpr (TilesPerChunk >= 4)
           {
-            _CCCL_PRAGMA_UNROLL_FULL()
-            for (int i = 0; i < 2; ++i)
+            if (remaining >= OffsetT{2})
             {
-              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
+              _CCCL_PRAGMA_UNROLL_FULL()
+              for (int i = 0; i < 2; ++i)
+              {
+                dispatch_tile<true, PickB>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
+              }
+              local += OffsetT{2};
+              remaining -= OffsetT{2};
             }
-            local += OffsetT{2};
-            remaining -= OffsetT{2};
           }
-        }
-        if (remaining >= OffsetT{1})
-        {
-          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local));
-        }
+          if (remaining >= OffsetT{1})
+          {
+            dispatch_tile<true, PickB>(state, static_cast<LargeSegmentTileOffsetT>(local));
+          }
 
-        // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
-        // `if constexpr`-eliminated -- the trailing-partial tile is owned by
-        // `device_segmented_topk_finalize_filter_kernel`, which invokes
-        // `process_partial_for_segment` per segment after this kernel completes.
-        if constexpr (!FullTilesOnly)
-        {
-          const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
-          const bool reaches_partial_slot =
-            (next_local == state.num_full_tiles) && (state.partial_items > 0)
-            && (local_stretch_end > state.num_full_tiles);
-          if (reaches_partial_slot)
+          // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
+          // `if constexpr`-eliminated -- the trailing-partial tile is owned by
+          // `device_segmented_topk_finalize_filter_kernel`, which invokes
+          // `process_partial_for_segment` per segment after this kernel completes.
+          if constexpr (!FullTilesOnly)
           {
-            dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+            const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
+            const bool reaches_partial_slot =
+              (next_local == state.num_full_tiles) && (state.partial_items > 0)
+              && (local_stretch_end > state.num_full_tiles);
+            if (reaches_partial_slot)
+            {
+              dispatch_tile<false, PickB>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+            }
           }
+        };
+
+        if (state.load_from_candidates_buffer)
+        {
+          run_stretch(::cuda::std::true_type{});
+        }
+        else
+        {
+          run_stretch(::cuda::std::false_type{});
         }
 
         chunk_cursor = stretch_end;
@@ -2120,7 +2130,14 @@ public:
       __syncthreads();
     }
 
-    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+    if (state.load_from_candidates_buffer)
+    {
+      dispatch_tile<false, /*PickB=*/true>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+    }
+    else
+    {
+      dispatch_tile<false, /*PickB=*/false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+    }
 
     if (segment_uses_smem_histogram(state))
     {
