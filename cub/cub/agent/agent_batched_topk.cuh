@@ -1451,56 +1451,71 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx, int pass)
   {
     per_segment_state_t s{};
-    s.slab_base         = d_large_segments_tile_offsets[queue_idx];
+    s.slab_base = ::cub::detail::warpspeed::makeWarpUniform(d_large_segments_tile_offsets[queue_idx]);
     // The offset table is sized `num_large_segments + 1` (sentinel at the end stores
     // `total_large_tiles`), so the next-slot read is in-bounds for every valid `queue_idx`.
-    s.queue_segment_end = d_large_segments_tile_offsets[queue_idx + 1];
-    const auto segment_id = segment_id_provider[queue_idx];
+    s.queue_segment_end = ::cub::detail::warpspeed::makeWarpUniform(d_large_segments_tile_offsets[queue_idx + 1]);
+    // Make `segment_id` warp-uniform so the iterator-array dereferences below feed UR
+    // (the iterator value type for the bench is a raw pointer, which `makeWarpUniform`'s
+    // pointer overload routes through CREDUX).
+    const auto segment_id =
+      ::cub::detail::warpspeed::makeWarpUniform(static_cast<::cuda::std::uint32_t>(segment_id_provider[queue_idx]));
 
-    s.d_keys_in  = d_key_segments_it[segment_id];
-    s.d_keys_out = d_key_segments_out_it[segment_id];
+    // Wrap each per-segment pointer / iterator / scalar in `makeWarpUniform` so ptxas
+    // promotes the downstream consumer registers from R to UR (where applicable).
+    // Rationale documented in `topk_register_pressure_investigation/profile_round_22_methodological/README.md`:
+    // SP filter uses ~12 UR + 25 R live at peak; batched uses ~7 UR + 33 R, with the
+    // 8 R gap exactly the four per-segment 64-bit pointers (counter / hist / keys-in / keys-out).
+    s.d_keys_in  = ::cub::detail::warpspeed::makeWarpUniform(d_key_segments_it[segment_id]);
+    s.d_keys_out = ::cub::detail::warpspeed::makeWarpUniform(d_key_segments_out_it[segment_id]);
     if constexpr (!keys_only)
     {
-      s.d_values_in  = d_value_segments_it[segment_id];
-      s.d_values_out = d_value_segments_out_it[segment_id];
+      s.d_values_in  = ::cub::detail::warpspeed::makeWarpUniform(d_value_segments_it[segment_id]);
+      s.d_values_out = ::cub::detail::warpspeed::makeWarpUniform(d_value_segments_out_it[segment_id]);
     }
 
-    s.segment_counter   = d_segment_counters + queue_idx;
-    s.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
+    s.segment_counter   = ::cub::detail::warpspeed::makeWarpUniform(d_segment_counters + queue_idx);
+    s.segment_histogram = ::cub::detail::warpspeed::makeWarpUniform(d_segment_histograms + queue_idx * num_buckets);
 
-    s.current_k                        = s.segment_counter->k;
-    s.current_len                      = s.segment_counter->num_candidates_out;
-    const OffsetT counter_input_length = s.segment_counter->num_candidates_in;
-    s.load_from_candidates_buffer      = s.segment_counter->load_from_candidates_buffer;
+    s.current_k                        = ::cub::detail::warpspeed::makeWarpUniform(s.segment_counter->k);
+    s.current_len                      = ::cub::detail::warpspeed::makeWarpUniform(s.segment_counter->num_candidates_out);
+    const OffsetT counter_input_length = ::cub::detail::warpspeed::makeWarpUniform(s.segment_counter->num_candidates_in);
+    s.load_from_candidates_buffer =
+      ::cub::detail::warpspeed::makeWarpUniform(s.segment_counter->load_from_candidates_buffer);
 
     s.pass = pass;
 
-    s.empty = (counter_input_length == 0);
+    s.empty = ::cub::detail::warpspeed::makeWarpUniform(counter_input_length == 0);
     if (s.empty)
     {
       return s;
     }
 
-    const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
-    s.input_length_actual           = counter_input_length;
+    const OffsetT segment_num_items =
+      ::cub::detail::warpspeed::makeWarpUniform(static_cast<OffsetT>(segment_sizes.get_param(segment_id)));
+    s.input_length_actual = counter_input_length;
 
-    s.early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
-    s.will_buffer = !s.early_stop && (s.current_len <= candidate_buffer_length)
-                 && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
+    s.early_stop  = ::cub::detail::warpspeed::makeWarpUniform(s.current_len == static_cast<OffsetT>(s.current_k));
+    s.will_buffer = ::cub::detail::warpspeed::makeWarpUniform(
+      !s.early_stop && (s.current_len <= candidate_buffer_length)
+      && (s.current_len <= segment_num_items / candidate_buffer_coefficient));
 
-    s.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
-    s.out_key_buf = s.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
+    s.in_key_buf  = ::cub::detail::warpspeed::makeWarpUniform(d_segment_in_key_buf + queue_idx * candidate_buffer_length);
+    s.out_key_buf = ::cub::detail::warpspeed::makeWarpUniform(
+      s.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr);
     if constexpr (!keys_only)
     {
-      s.in_val_buf =
-        s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-      s.out_val_buf = s.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+      s.in_val_buf = ::cub::detail::warpspeed::makeWarpUniform(
+        s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr);
+      s.out_val_buf = ::cub::detail::warpspeed::makeWarpUniform(
+        s.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr);
     }
 
-    s.num_full_tiles = s.input_length_actual / static_cast<OffsetT>(tile_items);
-    s.partial_items  = s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items);
-    s.segment_tiles_input =
-      static_cast<OffsetT>(::cuda::ceil_div(s.input_length_actual, OffsetT{tile_items}));
+    s.num_full_tiles = ::cub::detail::warpspeed::makeWarpUniform(s.input_length_actual / static_cast<OffsetT>(tile_items));
+    s.partial_items  = ::cub::detail::warpspeed::makeWarpUniform(
+      s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items));
+    s.segment_tiles_input = ::cub::detail::warpspeed::makeWarpUniform(
+      static_cast<OffsetT>(::cuda::ceil_div(s.input_length_actual, OffsetT{tile_items})));
     return s;
   }
 
