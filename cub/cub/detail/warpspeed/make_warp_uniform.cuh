@@ -12,6 +12,7 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cuda/std/bit>
 #include <cuda/std/cstdint>
 
 CUB_NAMESPACE_BEGIN
@@ -53,6 +54,16 @@ namespace detail::warpspeed
 [[nodiscard]] _CCCL_DEVICE_API inline ::cuda::std::int64_t makeWarpUniform(::cuda::std::int64_t x)
 {
   return static_cast<::cuda::std::int64_t>(makeWarpUniform(static_cast<::cuda::std::uint64_t>(x)));
+}
+
+// Pointer overload: round-trip through the 64-bit broadcast so any pointer
+// (per-segment counter, histogram, buffer base, dereferenced raw-pointer
+// iterator) becomes eligible for ptxas's R2UR promotion downstream.
+template <typename _Tp>
+[[nodiscard]] _CCCL_DEVICE_API inline _Tp* makeWarpUniform(_Tp* p)
+{
+  const auto bits = ::cuda::std::bit_cast<::cuda::std::uint64_t>(p);
+  return ::cuda::std::bit_cast<_Tp*>(makeWarpUniform(bits));
 }
 } // namespace detail::warpspeed
 

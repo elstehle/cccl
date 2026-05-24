@@ -1465,7 +1465,12 @@ private:
       s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    s.segment_counter   = d_segment_counters + queue_idx;
+    // Targeted UR-promotion experiment: only the most-used per-tile pointer
+    // (segment_counter, hit on every atomic-add + IdentifyCandidatesOpT ctor).
+    // If this single wrap alone drops REG, ptxas's R2UR is propagating the
+    // uniform-ness through the struct field store; if not, struct-field
+    // storage is breaking the chain and we need a structural refactor.
+    s.segment_counter   = ::cub::detail::warpspeed::makeWarpUniform(d_segment_counters + queue_idx);
     s.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
 
     s.current_k                        = s.segment_counter->k;
