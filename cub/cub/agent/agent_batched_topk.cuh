@@ -1253,19 +1253,17 @@ struct agent_batched_topk_filter_partition
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
-  // Per-segment hot fields. Hybrid residency:
-  //   * Per-thread *registers* once a thread receives a copy from `load_segment_state`
-  //     (which broadcasts via smem and returns by value). These are the fields read
-  //     inside the per-tile bodies (`process_tile_{early_stop,buffered,unbuffered}`),
-  //     so keeping them register-resident keeps R19's per-tile codegen.
-  //   * Transiently in smem (the `active_segment_t::hot_broadcast` slot) during the
-  //     thread-0 -> all-threads handoff.
+  // Per-segment hot fields. Lives in per-thread *registers* -- every thread computes
+  // its own copy inside `load_segment_state` (warp-uniform global reads of the
+  // segment_id / segments_it / counter arrays), so the per-tile bodies
+  // (`process_tile_{early_stop,buffered,unbuffered}`) get R19-style register-resident
+  // field accesses without any smem round-trip.
   //
   // Cold fields (read only in `run()` ~once per chunk + by the refresh handshake) live
   // exclusively in smem (`active_segment_t::{slab_base, queue_segment_end,
   // segment_tiles_input}`). Keeping them out of every-thread register pressure is the
-  // R20 wisdom that this hybrid keeps -- the regression in R20 was from also putting
-  // the *hot* fields in smem.
+  // R20 wisdom that this hybrid keeps -- R20's regression came from also putting the
+  // *hot* fields in smem.
   //
   // Note on `pass`: cached here so `process_tile_*` and `process_partial_for_segment`
   // don't need a separate `int pass` parameter; threaded through `hot.pass`.
@@ -1303,19 +1301,15 @@ struct agent_batched_topk_filter_partition
     OffsetT partial_items;
   };
 
-  // Smem-resident per-segment cache.
-  //   * `slab_base`, `queue_segment_end`, `segment_tiles_input` are the cold fields --
-  //     only `run()` reads them, ~once per chunk; never touched by `process_tile_*`.
-  //   * `hot_broadcast` is the thread-0 -> all-threads handoff slot for the HOT fields
-  //     (see `per_segment_state_t` doc above). Written by thread 0 inside
-  //     `load_segment_state`; all threads then copy it into per-thread `hot` registers
-  //     and that copy is the canonical source for the per-tile bodies.
+  // Smem-resident per-segment cold cache. Only `run()` reads these fields, ~once per
+  // chunk; never touched by `process_tile_*`. The HOT fields (everything else) live
+  // in per-thread registers via `per_segment_state_t`, computed by every thread inside
+  // `load_segment_state` and not stored in smem at all.
   struct active_segment_t
   {
     OffsetT segment_tiles_input;
     LargeSegmentTileOffsetT slab_base;
     LargeSegmentTileOffsetT queue_segment_end;
-    per_segment_state_t hot_broadcast;
   };
 
   // The prefix-sum scratch that used to sit in this union (the `prefix_sum` arm aliased with
@@ -1471,93 +1465,92 @@ private:
     return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
   }
 
-  // Resolve `queue_idx`'s per-segment state, publish the cold fields to
-  // `storage.active_segment`, and broadcast the hot fields to every thread (via the
-  // `hot_broadcast` smem slot, returned by value).
+  // Resolve `queue_idx`'s per-segment state. All threads compute the hot fields into
+  // per-thread registers (R19 pattern -- relies on warp-uniform L1 caching of the
+  // segment_id_provider / counter / segments_it reads). Only thread 0 publishes the
+  // cold fields into `storage.active_segment`.
   //
-  // Thread 0 does all the work; the other threads only participate in (a) the internal
-  // `__syncthreads()` and (b) the broadcast read from `hot_broadcast`. The function
-  // returns the hot state by value so the caller can keep it in per-thread registers
-  // for the entire chunk of `process_tile_*` invocations.
+  // Rationale: an earlier implementation had thread 0 compute everything (cold + hot)
+  // into a local struct, broadcast through smem, and return the hot slot by value. The
+  // broadcast-return pattern forced thread 0 to keep both the computed struct AND the
+  // read-back broadcast alive simultaneously, which regressed register pressure by
+  // 8-24 R across every key type vs. R19. The all-threads-compute pattern keeps the
+  // hot footprint per-thread the same as R19 (minus the cold fields) and avoids the
+  // smem round-trip entirely for the hot fields.
   //
   // The caller does NOT need a post-call `__syncthreads()` -- the internal one already
-  // publishes both the cold writes and the hot broadcast. The caller IS still
-  // responsible for the pre-call sync that settles any merge / tile-body smem writes
-  // from the previous segment.
+  // publishes the cold writes. The caller IS still responsible for the pre-call sync
+  // that settles any merge / tile-body smem writes from the previous segment.
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t
   load_segment_state(LargeSegmentTileOffsetT queue_idx, int pass)
   {
-    if (threadIdx.x == 0)
+    // The offset table is sized `num_large_segments + 1` (sentinel at the end stores
+    // `total_large_tiles`), so the next-slot read is in-bounds for every valid
+    // `queue_idx`. Both reads are warp-uniform (same address from every thread).
+    const LargeSegmentTileOffsetT slab_base         = d_large_segments_tile_offsets[queue_idx];
+    const LargeSegmentTileOffsetT queue_segment_end = d_large_segments_tile_offsets[queue_idx + 1];
+    const auto segment_id                           = segment_id_provider[queue_idx];
+
+    per_segment_state_t hot{};
+    hot.d_keys_in  = d_key_segments_it[segment_id];
+    hot.d_keys_out = d_key_segments_out_it[segment_id];
+    if constexpr (!keys_only)
     {
-      active_segment_t s;
-      s.slab_base = d_large_segments_tile_offsets[queue_idx];
-      // The offset table is sized `num_large_segments + 1` (sentinel at the end stores
-      // `total_large_tiles`), so the next-slot read is in-bounds for every valid
-      // `queue_idx`.
-      s.queue_segment_end = d_large_segments_tile_offsets[queue_idx + 1];
+      hot.d_values_in  = d_value_segments_it[segment_id];
+      hot.d_values_out = d_value_segments_out_it[segment_id];
+    }
 
-      const auto segment_id = segment_id_provider[queue_idx];
+    hot.segment_counter   = d_segment_counters + queue_idx;
+    hot.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
+    hot.pass              = pass;
 
-      per_segment_state_t hot{};
-      hot.d_keys_in  = d_key_segments_it[segment_id];
-      hot.d_keys_out = d_key_segments_out_it[segment_id];
+    // `current_k` / `current_len` are computational scratch -- only used here to
+    // decide the per-segment mode -- so they stay as locals rather than members of
+    // `per_segment_state_t`. Saves a few register slots per thread.
+    const OutOffsetT current_k         = hot.segment_counter->k;
+    const OffsetT current_len          = hot.segment_counter->num_candidates_out;
+    const OffsetT counter_input_length = hot.segment_counter->num_candidates_in;
+    hot.load_from_candidates_buffer    = hot.segment_counter->load_from_candidates_buffer;
+
+    hot.empty            = (counter_input_length == 0);
+    OffsetT seg_tiles_in = OffsetT{0};
+
+    if (!hot.empty)
+    {
+      const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
+      hot.input_length_actual         = counter_input_length;
+
+      hot.early_stop  = (current_len == static_cast<OffsetT>(current_k));
+      hot.will_buffer = !hot.early_stop && (current_len <= candidate_buffer_length)
+                     && (current_len <= segment_num_items / candidate_buffer_coefficient);
+
+      hot.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
+      hot.out_key_buf = hot.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
       if constexpr (!keys_only)
       {
-        hot.d_values_in  = d_value_segments_it[segment_id];
-        hot.d_values_out = d_value_segments_out_it[segment_id];
+        hot.in_val_buf =
+          hot.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+        hot.out_val_buf = hot.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
       }
 
-      hot.segment_counter   = d_segment_counters + queue_idx;
-      hot.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
-      hot.pass              = pass;
+      hot.num_full_tiles = hot.input_length_actual / static_cast<OffsetT>(tile_items);
+      hot.partial_items  = hot.input_length_actual - hot.num_full_tiles * static_cast<OffsetT>(tile_items);
+      seg_tiles_in       = static_cast<OffsetT>(::cuda::ceil_div(hot.input_length_actual, OffsetT{tile_items}));
+    }
 
-      // `current_k` / `current_len` are computational scratch -- only used below to
-      // decide the per-segment mode -- so they stay as locals rather than members of
-      // `per_segment_state_t`. Saves a few register slots per thread.
-      const OutOffsetT current_k         = hot.segment_counter->k;
-      const OffsetT current_len          = hot.segment_counter->num_candidates_out;
-      const OffsetT counter_input_length = hot.segment_counter->num_candidates_in;
-      hot.load_from_candidates_buffer    = hot.segment_counter->load_from_candidates_buffer;
-
-      hot.empty = (counter_input_length == 0);
-
-      if (!hot.empty)
-      {
-        const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
-        hot.input_length_actual         = counter_input_length;
-
-        hot.early_stop  = (current_len == static_cast<OffsetT>(current_k));
-        hot.will_buffer = !hot.early_stop && (current_len <= candidate_buffer_length)
-                       && (current_len <= segment_num_items / candidate_buffer_coefficient);
-
-        hot.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
-        hot.out_key_buf = hot.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
-        if constexpr (!keys_only)
-        {
-          hot.in_val_buf =
-            hot.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-          hot.out_val_buf =
-            hot.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-        }
-
-        hot.num_full_tiles = hot.input_length_actual / static_cast<OffsetT>(tile_items);
-        hot.partial_items  = hot.input_length_actual - hot.num_full_tiles * static_cast<OffsetT>(tile_items);
-        s.segment_tiles_input =
-          static_cast<OffsetT>(::cuda::ceil_div(hot.input_length_actual, OffsetT{tile_items}));
-      }
-
-      s.hot_broadcast        = hot;
-      storage.active_segment = s;
+    // Cold fields go straight to smem (thread 0 only); per-field stores so the
+    // compiler doesn't need to materialize an `active_segment_t` struct in thread 0's
+    // registers.
+    if (threadIdx.x == 0)
+    {
+      storage.active_segment.slab_base           = slab_base;
+      storage.active_segment.queue_segment_end   = queue_segment_end;
+      storage.active_segment.segment_tiles_input = seg_tiles_in;
     }
 
     __syncthreads();
 
-    // Broadcast: every thread copies the freshly-published hot fields into its own
-    // per-thread register state. Returning the struct by value triggers per-field smem
-    // loads at the call-site assignment (`hot = load_segment_state(...)`), so each hot
-    // field becomes one warp-uniform smem load amortized over the whole chunk that
-    // follows.
-    return storage.active_segment.hot_broadcast;
+    return hot;
   }
 
   // Per-mode tile bodies. Each takes the per-segment cached state and a tile-local index, runs
