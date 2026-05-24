@@ -75,36 +75,36 @@ template <typename _Tp>
   return makeWarpUniform(static_cast<::cuda::std::uint32_t>(b)) != 0u;
 }
 
-// Generic overload for trivially-copyable types that don't match any of the
-// specific overloads above (e.g. small enums, iterator wrappers like
-// `cuda::transform_output_iterator`, `cuda::constant_iterator`).
-//
-// Decomposes the value into a sequence of 32-bit chunks, broadcasts each
-// chunk through the 32-bit `makeWarpUniform` (CREDUX on sm_90+), and
-// reconstructs. Works for any size as long as `_Tp` is trivially copyable
-// (and we round the byte count up to a multiple of 4 with zero-padding for
-// the broadcast -- the padding bytes never get written back to the result).
-//
-// Requires `_Tp` to be default-constructible so we can build the output
-// before `memcpy`-ing the broadcast bits into it. Trivially-default-ctible
-// is the standard for trivially-copyable types we care about (iterators,
-// PODs, small functor structs).
+// Generic overload for trivially-copyable types of size 1/2/4/8 bytes that
+// don't match any of the specific overloads above (e.g. small enums, simple
+// 1-pointer iterator structs). bit_casts through the appropriate integer
+// broadcast.
 template <typename _Tp,
           ::cuda::std::enable_if_t<::cuda::std::is_trivially_copyable_v<_Tp> && !::cuda::std::is_pointer_v<_Tp>
-                                     && !::cuda::std::is_integral_v<_Tp> && !::cuda::std::is_same_v<_Tp, bool>,
+                                     && !::cuda::std::is_integral_v<_Tp> && !::cuda::std::is_same_v<_Tp, bool>
+                                     && (sizeof(_Tp) == 1 || sizeof(_Tp) == 2 || sizeof(_Tp) == 4
+                                         || sizeof(_Tp) == 8),
                                    int> = 0>
 [[nodiscard]] _CCCL_DEVICE_API inline _Tp makeWarpUniform(_Tp value)
 {
-  constexpr ::cuda::std::size_t kNumChunks = (sizeof(_Tp) + 3u) / 4u;
-  ::cuda::std::uint32_t chunks[kNumChunks]{};
-  __builtin_memcpy(chunks, &value, sizeof(_Tp));
-  for (::cuda::std::size_t i = 0; i < kNumChunks; ++i)
+  if constexpr (sizeof(_Tp) == 8)
   {
-    chunks[i] = makeWarpUniform(chunks[i]);
+    ::cuda::std::uint64_t bits{};
+    __builtin_memcpy(&bits, &value, sizeof(_Tp));
+    bits = makeWarpUniform(bits);
+    _Tp out{};
+    __builtin_memcpy(&out, &bits, sizeof(_Tp));
+    return out;
   }
-  _Tp out{};
-  __builtin_memcpy(&out, chunks, sizeof(_Tp));
-  return out;
+  else
+  {
+    ::cuda::std::uint32_t bits{};
+    __builtin_memcpy(&bits, &value, sizeof(_Tp));
+    bits = makeWarpUniform(bits);
+    _Tp out{};
+    __builtin_memcpy(&out, &bits, sizeof(_Tp));
+    return out;
+  }
 }
 } // namespace detail::warpspeed
 
