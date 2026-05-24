@@ -1902,14 +1902,17 @@ public:
       return;
     }
 
-    // EXPERIMENT R23 v2: only wrap the per-segment scalars that are READ IN THE
-    // PER-TILE BODIES (`process_tile_*` / `dispatch_tile`). Scalars only consumed
-    // in run() itself are left as `state.<field>` reads -- the cost of an extra
-    // CREDUX per refresh isn't worth a few in-run() compares.
+    // EXPERIMENT R23: extract per-segment warp-uniform *non-pointer* scalars into
+    // function-local handles, wrap each through `makeWarpUniform` (CREDUX on sm_90+)
+    // so ptxas's R2UR heuristic can keep them in UR for the whole chunk-stretch.
+    // Pointers stay in R (hardware constraint on LDG/STG/ATOM addressing modes).
+    // See `topk_register_pressure_investigation/profile_round_22_methodological/`
+    // for the analysis that motivates this.
     using ::cub::detail::warpspeed::makeWarpUniform;
 
     // Hoist first segment-state load + smem-hist init out of the loop.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_chunk_start), pass);
+    bool empty_u              = makeWarpUniform(state.empty);
     bool early_stop_u         = makeWarpUniform(state.early_stop);
     bool will_buffer_u        = makeWarpUniform(state.will_buffer);
     bool load_from_cb_u       = makeWarpUniform(state.load_from_candidates_buffer);
@@ -1917,6 +1920,9 @@ public:
     OffsetT num_full_u        = makeWarpUniform(state.num_full_tiles);
     OffsetT partial_u         = makeWarpUniform(state.partial_items);
     OffsetT input_len_u       = makeWarpUniform(state.input_length_actual);
+    OffsetT seg_tiles_u       = makeWarpUniform(state.segment_tiles_input);
+    LargeSegmentTileOffsetT slab_base_u   = makeWarpUniform(state.slab_base);
+    LargeSegmentTileOffsetT queue_end_u   = makeWarpUniform(state.queue_segment_end);
     __syncthreads();
     init_segment_histogram(state);
     __syncthreads();
@@ -1928,11 +1934,12 @@ public:
         (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
       // Segment refresh -- only when the cached segment no longer covers `chunk_start`.
-      if (chunk_start >= state.queue_segment_end)
+      if (chunk_start >= queue_end_u)
       {
         __syncthreads();
         merge_segment_histogram(state);
         state          = resolve_segment_state(resolve_queue_idx(chunk_start), pass);
+        empty_u        = makeWarpUniform(state.empty);
         early_stop_u   = makeWarpUniform(state.early_stop);
         will_buffer_u  = makeWarpUniform(state.will_buffer);
         load_from_cb_u = makeWarpUniform(state.load_from_candidates_buffer);
@@ -1940,6 +1947,9 @@ public:
         num_full_u     = makeWarpUniform(state.num_full_tiles);
         partial_u      = makeWarpUniform(state.partial_items);
         input_len_u    = makeWarpUniform(state.input_length_actual);
+        seg_tiles_u    = makeWarpUniform(state.segment_tiles_input);
+        slab_base_u    = makeWarpUniform(state.slab_base);
+        queue_end_u    = makeWarpUniform(state.queue_segment_end);
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
@@ -1947,10 +1957,10 @@ public:
 
       // Fast path: non-empty segment, chunk lands entirely in full-tile slots.
       const LargeSegmentTileOffsetT full_tile_boundary =
-        state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles);
-      if (!state.empty && chunk_start + chunk_size_v <= full_tile_boundary)
+        slab_base_u + static_cast<LargeSegmentTileOffsetT>(num_full_u);
+      if (!empty_u && chunk_start + chunk_size_v <= full_tile_boundary)
       {
-        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - state.slab_base);
+        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - slab_base_u);
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int i = 0; i < TilesPerChunk; ++i)
         {
@@ -1973,11 +1983,12 @@ public:
       while (chunk_cursor < chunk_end)
       {
         // Segment refresh inside the stretch walk.
-        if (chunk_cursor >= state.queue_segment_end)
+        if (chunk_cursor >= queue_end_u)
         {
           __syncthreads();
           merge_segment_histogram(state);
           state          = resolve_segment_state(resolve_queue_idx(chunk_cursor), pass);
+          empty_u        = makeWarpUniform(state.empty);
           early_stop_u   = makeWarpUniform(state.early_stop);
           will_buffer_u  = makeWarpUniform(state.will_buffer);
           load_from_cb_u = makeWarpUniform(state.load_from_candidates_buffer);
@@ -1985,6 +1996,9 @@ public:
           num_full_u     = makeWarpUniform(state.num_full_tiles);
           partial_u      = makeWarpUniform(state.partial_items);
           input_len_u    = makeWarpUniform(state.input_length_actual);
+          seg_tiles_u    = makeWarpUniform(state.segment_tiles_input);
+          slab_base_u    = makeWarpUniform(state.slab_base);
+          queue_end_u    = makeWarpUniform(state.queue_segment_end);
           __syncthreads();
           init_segment_histogram(state);
           __syncthreads();
@@ -1992,11 +2006,10 @@ public:
 
         // Skip empty / wasted-tail in one step.
         const LargeSegmentTileOffsetT data_end_tile =
-          state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.segment_tiles_input);
-        if (state.empty || chunk_cursor >= data_end_tile)
+          slab_base_u + static_cast<LargeSegmentTileOffsetT>(seg_tiles_u);
+        if (empty_u || chunk_cursor >= data_end_tile)
         {
-          const LargeSegmentTileOffsetT skip_to =
-            (chunk_end < state.queue_segment_end) ? chunk_end : state.queue_segment_end;
+          const LargeSegmentTileOffsetT skip_to = (chunk_end < queue_end_u) ? chunk_end : queue_end_u;
           if (skip_to <= chunk_cursor)
           {
             break; // defensive
@@ -2007,10 +2020,9 @@ public:
 
         const LargeSegmentTileOffsetT stretch_end =
           (chunk_end < data_end_tile) ? chunk_end : data_end_tile;
-        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - state.slab_base);
-        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - state.slab_base);
-        const OffsetT local_full_end =
-          (local_stretch_end < state.num_full_tiles) ? local_stretch_end : state.num_full_tiles;
+        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - slab_base_u);
+        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - slab_base_u);
+        const OffsetT local_full_end    = (local_stretch_end < num_full_u) ? local_stretch_end : num_full_u;
         const OffsetT full_tiles_in_stretch =
           (local_full_end > local_tile_start) ? (local_full_end - local_tile_start) : OffsetT{0};
 
@@ -2083,8 +2095,7 @@ public:
         {
           const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
           const bool reaches_partial_slot =
-            (next_local == state.num_full_tiles) && (state.partial_items > 0)
-            && (local_stretch_end > state.num_full_tiles);
+            (next_local == num_full_u) && (partial_u > 0) && (local_stretch_end > num_full_u);
           if (reaches_partial_slot)
           {
             dispatch_tile<false>(
@@ -2096,7 +2107,7 @@ public:
               num_full_u,
               partial_u,
               input_len_u,
-              static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+              static_cast<LargeSegmentTileOffsetT>(num_full_u));
           }
         }
 
