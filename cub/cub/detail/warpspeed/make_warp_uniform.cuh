@@ -12,6 +12,7 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cuda/std/bit>
 #include <cuda/std/cstdint>
 
 CUB_NAMESPACE_BEGIN
@@ -53,6 +54,21 @@ namespace detail::warpspeed
 [[nodiscard]] _CCCL_DEVICE_API inline ::cuda::std::int64_t makeWarpUniform(::cuda::std::int64_t x)
 {
   return static_cast<::cuda::std::int64_t>(makeWarpUniform(static_cast<::cuda::std::uint64_t>(x)));
+}
+
+// Pointer overload: round-trip through the 64-bit broadcast.
+template <typename _Tp>
+[[nodiscard]] _CCCL_DEVICE_API inline _Tp* makeWarpUniform(_Tp* p)
+{
+  const auto bits = ::cuda::std::bit_cast<::cuda::std::uint64_t>(p);
+  return ::cuda::std::bit_cast<_Tp*>(makeWarpUniform(bits));
+}
+
+// Bool overload: route through the 32-bit broadcast so warp-uniform predicates
+// feed UISETP downstream rather than per-thread predicates.
+[[nodiscard]] _CCCL_DEVICE_API inline bool makeWarpUniform(bool b)
+{
+  return makeWarpUniform(static_cast<::cuda::std::uint32_t>(b)) != 0u;
 }
 } // namespace detail::warpspeed
 

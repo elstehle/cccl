@@ -1513,19 +1513,30 @@ private:
   // partial-vs-full branch. Callers must guarantee:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
+  // `*_u` parameters (load_from_cb_u, pass_u, num_full_u, partial_u, input_len_u) are
+  // function-local copies of the per-segment scalars wrapped through
+  // `cub::detail::warpspeed::makeWarpUniform` in `run()`. They take the place of the
+  // corresponding `s.<field>` reads so ptxas can keep them in UR for the per-tile
+  // body. See the methodological note in
+  // `topk_register_pressure_investigation/profile_round_22_methodological/README.md`.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_early_stop(
+    const per_segment_state_t& s,
+    bool load_from_cb_u,
+    int pass_u,
+    OffsetT num_full_u,
+    OffsetT partial_u,
+    OffsetT /*input_len_u*/,
+    LargeSegmentTileOffsetT local_tile)
   {
     key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
     key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_cb_u};
 
     // The filter primitive's ctor takes the identify-selected op by non-const reference,
     // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
     // `int` shift) from the cached per-segment fields.
-    IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+    IdentifyCandidatesOpT identify_candidates_op{&s.segment_counter->kth_key_bits, pass_u, total_bits, decomposer};
     identify_selected_op_t identify_selected{identify_candidates_op};
     auto value_channel_sinks = make_early_stop_value_channel_sinks(s.d_values_out);
 
@@ -1556,7 +1567,7 @@ private:
           typename value_source_buffer_t::TempStorage val_state_buffer{};
           value_source_input_t val_input{s.d_values_in, val_state_input};
           value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_cb_u};
           val_src.set_tile_base(tile_base);
           return val_src;
         }
@@ -1574,7 +1585,7 @@ private:
     }
     else
     {
-      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
+      const OffsetT tile_base = num_full_u * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
       auto value_source = [&] {
@@ -1588,7 +1599,7 @@ private:
           typename value_source_buffer_t::TempStorage val_state_buffer{};
           value_source_input_t val_input{s.d_values_in, val_state_input};
           value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_cb_u};
           val_src.set_tile_base(tile_base);
           return val_src;
         }
@@ -1599,10 +1610,10 @@ private:
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
+      auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), partial_u);
       h.complete_load(items);
       __syncthreads();
-      filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, s.partial_items, value_source);
+      filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, partial_u, value_source);
     }
 
     filter.epilogue();
@@ -1610,12 +1621,18 @@ private:
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_buffered(
+    const per_segment_state_t& s,
+    bool load_from_cb_u,
+    int pass_u,
+    OffsetT num_full_u,
+    OffsetT partial_u,
+    OffsetT /*input_len_u*/,
+    LargeSegmentTileOffsetT local_tile)
   {
     key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
     key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_cb_u};
 
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
@@ -1629,8 +1646,7 @@ private:
 
     // The partition primitive's ctor takes `IdentifyCandidatesOp&` (non-const); build a
     // local op (cheap ctor) from the cached per-segment fields.
-    IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+    IdentifyCandidatesOpT identify_candidates_op{&s.segment_counter->kth_key_bits, pass_u, total_bits, decomposer};
 
     buffered_partition_t partition{
       storage.arms.buffered.arena.get_partition_state(),
@@ -1660,7 +1676,7 @@ private:
           typename value_source_buffer_t::TempStorage val_state_buffer{};
           value_source_input_t val_input{s.d_values_in, val_state_input};
           value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_cb_u};
           val_src.set_tile_base(tile_base);
           return val_src;
         }
@@ -1678,7 +1694,7 @@ private:
     }
     else
     {
-      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
+      const OffsetT tile_base = num_full_u * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
       auto value_source = [&] {
@@ -1692,7 +1708,7 @@ private:
           typename value_source_buffer_t::TempStorage val_state_buffer{};
           value_source_input_t val_input{s.d_values_in, val_state_input};
           value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+          value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_cb_u};
           val_src.set_tile_base(tile_base);
           return val_src;
         }
@@ -1703,11 +1719,10 @@ private:
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), partial_u);
       h.complete_load(items);
       __syncthreads();
-      partition.partition(
-        storage.arms.buffered.arena.get_partition_scratch(), items, s.partial_items, value_source);
+      partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, partial_u, value_source);
     }
 
     partition.epilogue();
@@ -1715,12 +1730,17 @@ private:
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_unbuffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_unbuffered(
+    const per_segment_state_t& s,
+    bool /*load_from_cb_u*/,
+    int pass_u,
+    OffsetT num_full_u,
+    OffsetT partial_u,
+    OffsetT input_len_u,
+    LargeSegmentTileOffsetT local_tile)
   {
     using filter_op_t = detail::topk::topk_candidate_filter_op<IdentifyCandidatesOpT>;
-    IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+    IdentifyCandidatesOpT identify_candidates_op{&s.segment_counter->kth_key_bits, pass_u, total_bits, decomposer};
     filter_op_t filter_op{identify_candidates_op};
 
     key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
@@ -1751,7 +1771,7 @@ private:
     }
     else
     {
-      const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
+      const OffsetT tile_base = num_full_u * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
       if constexpr (tile_load_kind_uses_smem)
@@ -1759,14 +1779,14 @@ private:
         __syncthreads();
       }
       key_in_t items[items_per_thread];
-      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
+      auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), partial_u);
       h.complete_load(items);
       const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
       const int num_thread_items =
-        (thread_offset >= s.input_length_actual)
+        (thread_offset >= input_len_u)
           ? 0
-          : static_cast<int>((::cuda::std::min) (
-            static_cast<OffsetT>(items_per_thread), s.input_length_actual - thread_offset));
+          : static_cast<int>(
+              (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), input_len_u - thread_offset));
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int j = 0; j < items_per_thread; ++j)
       {
@@ -1779,24 +1799,32 @@ private:
     }
   }
 
-  // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` is what
-  // separates the three tile bodies; the agent reads them on every call but their value is
-  // fixed for the whole segment-stretch the caller is processing, so within a single
-  // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
+  // Per-mode tile dispatcher. Branches on the *uniform* `early_stop_u` /
+  // `will_buffer_u` arguments (function-locals fed by `makeWarpUniform`) so ptxas
+  // emits `UISETP` / `UP` predicates and the mode branch is a uniform branch.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(
+    const per_segment_state_t& s,
+    bool early_stop_u,
+    bool will_buffer_u,
+    bool load_from_cb_u,
+    int pass_u,
+    OffsetT num_full_u,
+    OffsetT partial_u,
+    OffsetT input_len_u,
+    LargeSegmentTileOffsetT local_tile)
   {
-    if (s.early_stop)
+    if (early_stop_u)
     {
-      process_tile_early_stop<IsFullTile>(s, local_tile);
+      process_tile_early_stop<IsFullTile>(s, load_from_cb_u, pass_u, num_full_u, partial_u, input_len_u, local_tile);
     }
-    else if (s.will_buffer)
+    else if (will_buffer_u)
     {
-      process_tile_buffered<IsFullTile>(s, local_tile);
+      process_tile_buffered<IsFullTile>(s, load_from_cb_u, pass_u, num_full_u, partial_u, input_len_u, local_tile);
     }
     else
     {
-      process_tile_unbuffered<IsFullTile>(s, local_tile);
+      process_tile_unbuffered<IsFullTile>(s, load_from_cb_u, pass_u, num_full_u, partial_u, input_len_u, local_tile);
     }
   }
 
@@ -1874,8 +1902,27 @@ public:
       return;
     }
 
+    // EXPERIMENT R23: extract per-segment warp-uniform *non-pointer* scalars into
+    // function-local handles, wrap each through `makeWarpUniform` (CREDUX on sm_90+)
+    // so ptxas's R2UR heuristic can keep them in UR for the whole chunk-stretch.
+    // Pointers stay in R (hardware constraint on LDG/STG/ATOM addressing modes).
+    // See `topk_register_pressure_investigation/profile_round_22_methodological/`
+    // for the analysis that motivates this.
+    using ::cub::detail::warpspeed::makeWarpUniform;
+
     // Hoist first segment-state load + smem-hist init out of the loop.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_chunk_start), pass);
+    bool empty_u              = makeWarpUniform(state.empty);
+    bool early_stop_u         = makeWarpUniform(state.early_stop);
+    bool will_buffer_u        = makeWarpUniform(state.will_buffer);
+    bool load_from_cb_u       = makeWarpUniform(state.load_from_candidates_buffer);
+    int pass_u                = makeWarpUniform(state.pass);
+    OffsetT num_full_u        = makeWarpUniform(state.num_full_tiles);
+    OffsetT partial_u         = makeWarpUniform(state.partial_items);
+    OffsetT input_len_u       = makeWarpUniform(state.input_length_actual);
+    OffsetT seg_tiles_u       = makeWarpUniform(state.segment_tiles_input);
+    LargeSegmentTileOffsetT slab_base_u   = makeWarpUniform(state.slab_base);
+    LargeSegmentTileOffsetT queue_end_u   = makeWarpUniform(state.queue_segment_end);
     __syncthreads();
     init_segment_histogram(state);
     __syncthreads();
@@ -1887,11 +1934,22 @@ public:
         (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
       // Segment refresh -- only when the cached segment no longer covers `chunk_start`.
-      if (chunk_start >= state.queue_segment_end)
+      if (chunk_start >= queue_end_u)
       {
         __syncthreads();
         merge_segment_histogram(state);
-        state = resolve_segment_state(resolve_queue_idx(chunk_start), pass);
+        state          = resolve_segment_state(resolve_queue_idx(chunk_start), pass);
+        empty_u        = makeWarpUniform(state.empty);
+        early_stop_u   = makeWarpUniform(state.early_stop);
+        will_buffer_u  = makeWarpUniform(state.will_buffer);
+        load_from_cb_u = makeWarpUniform(state.load_from_candidates_buffer);
+        pass_u         = makeWarpUniform(state.pass);
+        num_full_u     = makeWarpUniform(state.num_full_tiles);
+        partial_u      = makeWarpUniform(state.partial_items);
+        input_len_u    = makeWarpUniform(state.input_length_actual);
+        seg_tiles_u    = makeWarpUniform(state.segment_tiles_input);
+        slab_base_u    = makeWarpUniform(state.slab_base);
+        queue_end_u    = makeWarpUniform(state.queue_segment_end);
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
@@ -1899,14 +1957,23 @@ public:
 
       // Fast path: non-empty segment, chunk lands entirely in full-tile slots.
       const LargeSegmentTileOffsetT full_tile_boundary =
-        state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles);
-      if (!state.empty && chunk_start + chunk_size_v <= full_tile_boundary)
+        slab_base_u + static_cast<LargeSegmentTileOffsetT>(num_full_u);
+      if (!empty_u && chunk_start + chunk_size_v <= full_tile_boundary)
       {
-        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - state.slab_base);
+        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - slab_base_u);
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int i = 0; i < TilesPerChunk; ++i)
         {
-          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
+          dispatch_tile<true>(
+            state,
+            early_stop_u,
+            will_buffer_u,
+            load_from_cb_u,
+            pass_u,
+            num_full_u,
+            partial_u,
+            input_len_u,
+            static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
         }
         continue;
       }
@@ -1916,11 +1983,22 @@ public:
       while (chunk_cursor < chunk_end)
       {
         // Segment refresh inside the stretch walk.
-        if (chunk_cursor >= state.queue_segment_end)
+        if (chunk_cursor >= queue_end_u)
         {
           __syncthreads();
           merge_segment_histogram(state);
-          state = resolve_segment_state(resolve_queue_idx(chunk_cursor), pass);
+          state          = resolve_segment_state(resolve_queue_idx(chunk_cursor), pass);
+          empty_u        = makeWarpUniform(state.empty);
+          early_stop_u   = makeWarpUniform(state.early_stop);
+          will_buffer_u  = makeWarpUniform(state.will_buffer);
+          load_from_cb_u = makeWarpUniform(state.load_from_candidates_buffer);
+          pass_u         = makeWarpUniform(state.pass);
+          num_full_u     = makeWarpUniform(state.num_full_tiles);
+          partial_u      = makeWarpUniform(state.partial_items);
+          input_len_u    = makeWarpUniform(state.input_length_actual);
+          seg_tiles_u    = makeWarpUniform(state.segment_tiles_input);
+          slab_base_u    = makeWarpUniform(state.slab_base);
+          queue_end_u    = makeWarpUniform(state.queue_segment_end);
           __syncthreads();
           init_segment_histogram(state);
           __syncthreads();
@@ -1928,11 +2006,10 @@ public:
 
         // Skip empty / wasted-tail in one step.
         const LargeSegmentTileOffsetT data_end_tile =
-          state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.segment_tiles_input);
-        if (state.empty || chunk_cursor >= data_end_tile)
+          slab_base_u + static_cast<LargeSegmentTileOffsetT>(seg_tiles_u);
+        if (empty_u || chunk_cursor >= data_end_tile)
         {
-          const LargeSegmentTileOffsetT skip_to =
-            (chunk_end < state.queue_segment_end) ? chunk_end : state.queue_segment_end;
+          const LargeSegmentTileOffsetT skip_to = (chunk_end < queue_end_u) ? chunk_end : queue_end_u;
           if (skip_to <= chunk_cursor)
           {
             break; // defensive
@@ -1943,10 +2020,9 @@ public:
 
         const LargeSegmentTileOffsetT stretch_end =
           (chunk_end < data_end_tile) ? chunk_end : data_end_tile;
-        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - state.slab_base);
-        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - state.slab_base);
-        const OffsetT local_full_end =
-          (local_stretch_end < state.num_full_tiles) ? local_stretch_end : state.num_full_tiles;
+        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - slab_base_u);
+        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - slab_base_u);
+        const OffsetT local_full_end    = (local_stretch_end < num_full_u) ? local_stretch_end : num_full_u;
         const OffsetT full_tiles_in_stretch =
           (local_full_end > local_tile_start) ? (local_full_end - local_tile_start) : OffsetT{0};
 
@@ -1960,7 +2036,16 @@ public:
             _CCCL_PRAGMA_UNROLL_FULL()
             for (int i = 0; i < 4; ++i)
             {
-              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
+              dispatch_tile<true>(
+                state,
+                early_stop_u,
+                will_buffer_u,
+                load_from_cb_u,
+                pass_u,
+                num_full_u,
+                partial_u,
+                input_len_u,
+                static_cast<LargeSegmentTileOffsetT>(local + i));
             }
             local += OffsetT{4};
             remaining -= OffsetT{4};
@@ -1973,7 +2058,16 @@ public:
             _CCCL_PRAGMA_UNROLL_FULL()
             for (int i = 0; i < 2; ++i)
             {
-              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
+              dispatch_tile<true>(
+                state,
+                early_stop_u,
+                will_buffer_u,
+                load_from_cb_u,
+                pass_u,
+                num_full_u,
+                partial_u,
+                input_len_u,
+                static_cast<LargeSegmentTileOffsetT>(local + i));
             }
             local += OffsetT{2};
             remaining -= OffsetT{2};
@@ -1981,7 +2075,16 @@ public:
         }
         if (remaining >= OffsetT{1})
         {
-          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local));
+          dispatch_tile<true>(
+            state,
+            early_stop_u,
+            will_buffer_u,
+            load_from_cb_u,
+            pass_u,
+            num_full_u,
+            partial_u,
+            input_len_u,
+            static_cast<LargeSegmentTileOffsetT>(local));
         }
 
         // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
@@ -1992,11 +2095,19 @@ public:
         {
           const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
           const bool reaches_partial_slot =
-            (next_local == state.num_full_tiles) && (state.partial_items > 0)
-            && (local_stretch_end > state.num_full_tiles);
+            (next_local == num_full_u) && (partial_u > 0) && (local_stretch_end > num_full_u);
           if (reaches_partial_slot)
           {
-            dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+            dispatch_tile<false>(
+              state,
+              early_stop_u,
+              will_buffer_u,
+              load_from_cb_u,
+              pass_u,
+              num_full_u,
+              partial_u,
+              input_len_u,
+              static_cast<LargeSegmentTileOffsetT>(num_full_u));
           }
         }
 
@@ -2034,11 +2145,21 @@ public:
   // Empty segments and segments with no partial (`partial_items == 0`) are no-ops.
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx, int pass)
   {
+    using ::cub::detail::warpspeed::makeWarpUniform;
+
     per_segment_state_t state = resolve_segment_state(queue_idx, pass);
     if (state.empty || state.partial_items == 0)
     {
       return;
     }
+
+    const bool early_stop_u   = makeWarpUniform(state.early_stop);
+    const bool will_buffer_u  = makeWarpUniform(state.will_buffer);
+    const bool load_from_cb_u = makeWarpUniform(state.load_from_candidates_buffer);
+    const int pass_u          = makeWarpUniform(state.pass);
+    const OffsetT num_full_u  = makeWarpUniform(state.num_full_tiles);
+    const OffsetT partial_u   = makeWarpUniform(state.partial_items);
+    const OffsetT input_len_u = makeWarpUniform(state.input_length_actual);
 
     if (segment_uses_smem_histogram(state))
     {
@@ -2046,7 +2167,16 @@ public:
       __syncthreads();
     }
 
-    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+    dispatch_tile<false>(
+      state,
+      early_stop_u,
+      will_buffer_u,
+      load_from_cb_u,
+      pass_u,
+      num_full_u,
+      partial_u,
+      input_len_u,
+      static_cast<LargeSegmentTileOffsetT>(num_full_u));
 
     if (segment_uses_smem_histogram(state))
     {
