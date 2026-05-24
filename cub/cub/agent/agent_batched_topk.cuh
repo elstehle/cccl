@@ -1253,69 +1253,10 @@ struct agent_batched_topk_filter_partition
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
-  // Per-segment hot fields. Lives in per-thread *registers* -- every thread computes
-  // its own copy inside `load_segment_state` (warp-uniform global reads of the
-  // segment_id / segments_it / counter arrays), so the per-tile bodies
-  // (`process_tile_{early_stop,buffered,unbuffered}`) get R19-style register-resident
-  // field accesses without any smem round-trip.
-  //
-  // Cold fields (read only in `run()` ~once per chunk + by the refresh handshake) live
-  // exclusively in smem (`active_segment_t::{slab_base, queue_segment_end,
-  // segment_tiles_input}`). Keeping them out of every-thread register pressure is the
-  // R20 wisdom that this hybrid keeps -- R20's regression came from also putting the
-  // *hot* fields in smem.
-  //
-  // Note on `pass`: cached here so `process_tile_*` and `process_partial_for_segment`
-  // don't need a separate `int pass` parameter; threaded through `hot.pass`.
-  //
-  // Note on `empty` / `early_stop` / `segment_histogram` being HOT despite only being
-  // read by the refresh helpers (`init_segment_histogram` /
-  // `merge_segment_histogram` / `segment_uses_smem_histogram`): putting them in HOT
-  // means those helpers do no smem-state reads, which eliminates the
-  // refresh-handshake race that forced R20's post-merge sync. Result is a 3-sync
-  // refresh handshake (matching R19) rather than R20's 4-sync.
-  struct per_segment_state_t
-  {
-    bool empty;       // counter_input_length == 0 -> all tiles of this segment are no-ops
-    bool early_stop;  // current_len == current_k
-    bool will_buffer; // !early_stop && fits-in-back-buffer && cost-justified
-    bool load_from_candidates_buffer;
-
-    inner_key_it_t d_keys_in{};
-    inner_key_out_it_t d_keys_out{};
-    [[maybe_unused]] inner_value_it_t d_values_in{};
-    [[maybe_unused]] inner_value_out_it_t d_values_out{};
-
-    key_in_t* in_key_buf;
-    key_in_t* out_key_buf;
-    [[maybe_unused]] value_in_t* in_val_buf;
-    [[maybe_unused]] value_in_t* out_val_buf;
-
-    OffsetT* segment_histogram;
-    counter_t* segment_counter;
-
-    int pass;
-
-    OffsetT input_length_actual;
-    OffsetT num_full_tiles;
-    OffsetT partial_items;
-  };
-
-  // Smem-resident per-segment cold cache. Only `run()` reads these fields, ~once per
-  // chunk; never touched by `process_tile_*`. The HOT fields (everything else) live
-  // in per-thread registers via `per_segment_state_t`, computed by every thread inside
-  // `load_segment_state` and not stored in smem at all.
-  struct active_segment_t
-  {
-    OffsetT segment_tiles_input;
-    LargeSegmentTileOffsetT slab_base;
-    LargeSegmentTileOffsetT queue_segment_end;
-  };
-
   // The prefix-sum scratch that used to sit in this union (the `prefix_sum` arm aliased with
   // `buffered`/`early_stop`) has been removed; the per-segment prefix-sum + kth-bucket scan
-  // now lives in `device_segmented_topk_finalize_filter_kernel`. Smem here is the per-mode
-  // arms used during the tile body itself + the smem-resident `active_segment` cache.
+  // now lives in `device_segmented_topk_finalize_filter_kernel`. Smem here is just the
+  // per-mode arms used during the tile body itself.
   struct _TempStorage
   {
     union arms_t
@@ -1336,8 +1277,6 @@ struct agent_batched_topk_filter_partition
       _CCCL_HOST_DEVICE arms_t() {}
       _CCCL_HOST_DEVICE ~arms_t() {}
     } arms;
-
-    active_segment_t active_segment;
   };
 
   struct TempStorage : Uninitialized<_TempStorage>
@@ -1454,6 +1393,48 @@ private:
   }
 
 private:
+  // Per-segment derived state cached across tiles of the same segment within a chunk. Same
+  // pattern as the histogram agent's per-segment cache: re-derived only when the chunk crosses
+  // a segment boundary; held in registers across same-segment tiles.
+  struct per_segment_state_t
+  {
+    bool empty;       // counter_input_length == 0 -> all tiles of this segment are no-ops
+    bool early_stop;  // current_len == current_k
+    bool will_buffer; // !early_stop && fits-in-back-buffer && cost-justified
+    bool load_from_candidates_buffer;
+
+    inner_key_it_t d_keys_in{};
+    inner_key_out_it_t d_keys_out{};
+    [[maybe_unused]] inner_value_it_t d_values_in{};
+    [[maybe_unused]] inner_value_out_it_t d_values_out{};
+
+    key_in_t* in_key_buf;
+    key_in_t* out_key_buf;
+    [[maybe_unused]] value_in_t* in_val_buf;
+    [[maybe_unused]] value_in_t* out_val_buf;
+
+    OffsetT* segment_histogram;
+    counter_t* segment_counter;
+
+    // `identify_candidates_op_t` (for some `T`) has no default ctor, so we cache the inputs to
+    // its ctor here and construct it on demand in the per-mode tile body. The ctor is cheap
+    // (a `key_prefix_storage_t*` copy + an `int` shift).
+    int pass;
+
+    OutOffsetT current_k;
+    OffsetT current_len;
+    OffsetT input_length_actual;
+    OffsetT num_full_tiles;
+    OffsetT partial_items;
+    OffsetT segment_tiles_input;
+    LargeSegmentTileOffsetT slab_base;
+    // Width of the segment in queue-tile-space, read from
+    // `d_large_segments_tile_offsets[queue_idx + 1]`. Sized at segment-enqueue time from the
+    // original segment size, so independent of which pass we're in. See the matching
+    // `last_filter` doc for the slow-path cursor-jump motivation.
+    LargeSegmentTileOffsetT queue_segment_end;
+  };
+
   // Lane-0 + `__shfl_sync` `UpperBound`, same idiom as the histogram agent.
   _CCCL_DEVICE _CCCL_FORCEINLINE LargeSegmentTileOffsetT resolve_queue_idx(LargeSegmentTileOffsetT global_tile_id)
   {
@@ -1465,92 +1446,62 @@ private:
     return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
   }
 
-  // Resolve `queue_idx`'s per-segment state. All threads compute the hot fields into
-  // per-thread registers (R19 pattern -- relies on warp-uniform L1 caching of the
-  // segment_id_provider / counter / segments_it reads). Only thread 0 publishes the
-  // cold fields into `storage.active_segment`.
-  //
-  // Rationale: an earlier implementation had thread 0 compute everything (cold + hot)
-  // into a local struct, broadcast through smem, and return the hot slot by value. The
-  // broadcast-return pattern forced thread 0 to keep both the computed struct AND the
-  // read-back broadcast alive simultaneously, which regressed register pressure by
-  // 8-24 R across every key type vs. R19. The all-threads-compute pattern keeps the
-  // hot footprint per-thread the same as R19 (minus the cold fields) and avoids the
-  // smem round-trip entirely for the hot fields.
-  //
-  // The caller does NOT need a post-call `__syncthreads()` -- the internal one already
-  // publishes the cold writes. The caller IS still responsible for the pre-call sync
-  // that settles any merge / tile-body smem writes from the previous segment.
-  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t
-  load_segment_state(LargeSegmentTileOffsetT queue_idx, int pass)
+  // Build the per-segment cached state for `queue_idx`. Pure function of `queue_idx` and the
+  // per-launch agent state. Same logic as the prologue of the pre-refactor `run()`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx, int pass)
   {
+    per_segment_state_t s{};
+    s.slab_base         = d_large_segments_tile_offsets[queue_idx];
     // The offset table is sized `num_large_segments + 1` (sentinel at the end stores
-    // `total_large_tiles`), so the next-slot read is in-bounds for every valid
-    // `queue_idx`. Both reads are warp-uniform (same address from every thread).
-    const LargeSegmentTileOffsetT slab_base         = d_large_segments_tile_offsets[queue_idx];
-    const LargeSegmentTileOffsetT queue_segment_end = d_large_segments_tile_offsets[queue_idx + 1];
-    const auto segment_id                           = segment_id_provider[queue_idx];
+    // `total_large_tiles`), so the next-slot read is in-bounds for every valid `queue_idx`.
+    s.queue_segment_end = d_large_segments_tile_offsets[queue_idx + 1];
+    const auto segment_id = segment_id_provider[queue_idx];
 
-    per_segment_state_t hot{};
-    hot.d_keys_in  = d_key_segments_it[segment_id];
-    hot.d_keys_out = d_key_segments_out_it[segment_id];
+    s.d_keys_in  = d_key_segments_it[segment_id];
+    s.d_keys_out = d_key_segments_out_it[segment_id];
     if constexpr (!keys_only)
     {
-      hot.d_values_in  = d_value_segments_it[segment_id];
-      hot.d_values_out = d_value_segments_out_it[segment_id];
+      s.d_values_in  = d_value_segments_it[segment_id];
+      s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    hot.segment_counter   = d_segment_counters + queue_idx;
-    hot.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
-    hot.pass              = pass;
+    s.segment_counter   = d_segment_counters + queue_idx;
+    s.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
 
-    // `current_k` / `current_len` are computational scratch -- only used here to
-    // decide the per-segment mode -- so they stay as locals rather than members of
-    // `per_segment_state_t`. Saves a few register slots per thread.
-    const OutOffsetT current_k         = hot.segment_counter->k;
-    const OffsetT current_len          = hot.segment_counter->num_candidates_out;
-    const OffsetT counter_input_length = hot.segment_counter->num_candidates_in;
-    hot.load_from_candidates_buffer    = hot.segment_counter->load_from_candidates_buffer;
+    s.current_k                        = s.segment_counter->k;
+    s.current_len                      = s.segment_counter->num_candidates_out;
+    const OffsetT counter_input_length = s.segment_counter->num_candidates_in;
+    s.load_from_candidates_buffer      = s.segment_counter->load_from_candidates_buffer;
 
-    hot.empty            = (counter_input_length == 0);
-    OffsetT seg_tiles_in = OffsetT{0};
+    s.pass = pass;
 
-    if (!hot.empty)
+    s.empty = (counter_input_length == 0);
+    if (s.empty)
     {
-      const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
-      hot.input_length_actual         = counter_input_length;
-
-      hot.early_stop  = (current_len == static_cast<OffsetT>(current_k));
-      hot.will_buffer = !hot.early_stop && (current_len <= candidate_buffer_length)
-                     && (current_len <= segment_num_items / candidate_buffer_coefficient);
-
-      hot.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
-      hot.out_key_buf = hot.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
-      if constexpr (!keys_only)
-      {
-        hot.in_val_buf =
-          hot.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-        hot.out_val_buf = hot.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-      }
-
-      hot.num_full_tiles = hot.input_length_actual / static_cast<OffsetT>(tile_items);
-      hot.partial_items  = hot.input_length_actual - hot.num_full_tiles * static_cast<OffsetT>(tile_items);
-      seg_tiles_in       = static_cast<OffsetT>(::cuda::ceil_div(hot.input_length_actual, OffsetT{tile_items}));
+      return s;
     }
 
-    // Cold fields go straight to smem (thread 0 only); per-field stores so the
-    // compiler doesn't need to materialize an `active_segment_t` struct in thread 0's
-    // registers.
-    if (threadIdx.x == 0)
+    const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
+    s.input_length_actual           = counter_input_length;
+
+    s.early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
+    s.will_buffer = !s.early_stop && (s.current_len <= candidate_buffer_length)
+                 && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
+
+    s.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
+    s.out_key_buf = s.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
+    if constexpr (!keys_only)
     {
-      storage.active_segment.slab_base           = slab_base;
-      storage.active_segment.queue_segment_end   = queue_segment_end;
-      storage.active_segment.segment_tiles_input = seg_tiles_in;
+      s.in_val_buf =
+        s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+      s.out_val_buf = s.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
     }
 
-    __syncthreads();
-
-    return hot;
+    s.num_full_tiles = s.input_length_actual / static_cast<OffsetT>(tile_items);
+    s.partial_items  = s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items);
+    s.segment_tiles_input =
+      static_cast<OffsetT>(::cuda::ceil_div(s.input_length_actual, OffsetT{tile_items}));
+    return s;
   }
 
   // Per-mode tile bodies. Each takes the per-segment cached state and a tile-local index, runs
@@ -1828,13 +1779,12 @@ private:
     }
   }
 
-  // Per-mode tile dispatcher. Reads `s.early_stop` / `s.will_buffer` from per-thread
-  // registers (hot fields). Within a single unrolled / bit-decomposed run() body
-  // ptxas hoists the mode branch above the tile loop and the helpers themselves
-  // become straight-line.
+  // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` is what
+  // separates the three tile bodies; the agent reads them on every call but their value is
+  // fixed for the whole segment-stretch the caller is processing, so within a single
+  // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
     if (s.early_stop)
     {
@@ -1850,19 +1800,16 @@ private:
     }
   }
 
-  // Whether the currently-loaded segment's mode uses the smem histogram. The two
-  // non-early_stop modes (buffered / unbuffered) both accumulate into
-  // `storage.arms.buffered.histogram`; early_stop touches none of it. Empty segments
-  // don't touch it either. Reads from the per-thread register state (no smem-state
-  // race against `load_segment_state` -- that's the optimization that lets the
-  // refresh handshake collapse from R20's 4 syncs to 3).
+  // Whether the segment's mode uses the smem histogram. The two non-early_stop modes
+  // (buffered / unbuffered) both accumulate into `storage.arms.buffered.histogram`;
+  // early_stop touches none of it. Empty segments don't touch it either.
   _CCCL_DEVICE _CCCL_FORCEINLINE static bool segment_uses_smem_histogram(const per_segment_state_t& s)
   {
     return !s.empty && !s.early_stop;
   }
 
-  // Init the smem histogram for the currently-loaded segment iff its mode uses it.
-  // Caller must `__syncthreads()` after to publish the writes.
+  // Init the smem histogram for the given segment iff its mode uses it. Caller must
+  // `__syncthreads()` after to publish the writes.
   _CCCL_DEVICE _CCCL_FORCEINLINE void init_segment_histogram(const per_segment_state_t& s)
   {
     if (segment_uses_smem_histogram(s))
@@ -1871,14 +1818,15 @@ private:
     }
   }
 
-  // Merge the smem histogram into the currently-loaded segment's global slab iff its
-  // mode used it. Caller must `__syncthreads()` beforehand so all atomic-adds from the
-  // segment's tile loop are visible.
+  // Merge the smem histogram into the segment's global slab iff its mode used it. Caller
+  // must `__syncthreads()` beforehand so all atomic-adds from the segment's tile loop are
+  // visible.
   _CCCL_DEVICE _CCCL_FORCEINLINE void merge_segment_histogram(const per_segment_state_t& s)
   {
     if (segment_uses_smem_histogram(s))
     {
-      detail::topk::merge_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram, s.segment_histogram);
+      detail::topk::merge_histogram<block_threads, num_buckets>(
+        storage.arms.buffered.histogram, s.segment_histogram);
     }
   }
 
@@ -1887,7 +1835,7 @@ public:
   // last_filter agents' `run<TilesPerChunk>()` shape:
   //
   //   * Early-return for CTAs whose first chunk lands past the queue.
-  //   * One `load_segment_state(first_chunk_start)` hoisted before the outer loop,
+  //   * One `resolve_segment_state(first_chunk_start)` hoisted before the outer loop,
   //     with the smem histogram initialised inline (only when the segment's mode uses it).
   //   * Per chunk:
   //       - Refresh `state` if `chunk_start` crossed past `queue_segment_end` -- this is the
@@ -1926,15 +1874,11 @@ public:
       return;
     }
 
-    // Hoist first segment-state load + smem-hist init out of the loop. `load_segment_state`
-    // returns the hot fields by value (broadcast through smem); `hot` lives in per-thread
-    // registers for the rest of this kernel. Cold fields stay in `storage.active_segment`
-    // and we read them through the `cold` alias below.
-    per_segment_state_t hot = load_segment_state(resolve_queue_idx(first_chunk_start), pass);
-    init_segment_histogram(hot);
+    // Hoist first segment-state load + smem-hist init out of the loop.
+    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_chunk_start), pass);
     __syncthreads();
-
-    const auto& cold = storage.active_segment;
+    init_segment_histogram(state);
+    __syncthreads();
 
     for (LargeSegmentTileOffsetT chunk_start = first_chunk_start; chunk_start < *d_total_large_tiles;
          chunk_start += stride)
@@ -1943,33 +1887,26 @@ public:
         (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
 
       // Segment refresh -- only when the cached segment no longer covers `chunk_start`.
-      //
-      // Sync schedule (3 syncs around the refresh, matching R19):
-      //   * pre-merge sync: settle prior tile writes (atomic-adds into the smem hist).
-      //   * `load_segment_state`'s internal sync: publish thread 0's new cold + hot
-      //     writes; doubles as the merge-vs-init separator (`merge` reads only
-      //     register-resident hot fields, so there's nothing to race against thread 0's
-      //     `storage.active_segment` overwrite).
-      //   * post-init sync: publish the hist zero-init for the per-tile atomic-adds.
-      if (chunk_start >= cold.queue_segment_end)
+      if (chunk_start >= state.queue_segment_end)
       {
         __syncthreads();
-        merge_segment_histogram(hot);
-        hot = load_segment_state(resolve_queue_idx(chunk_start), pass);
-        init_segment_histogram(hot);
+        merge_segment_histogram(state);
+        state = resolve_segment_state(resolve_queue_idx(chunk_start), pass);
+        __syncthreads();
+        init_segment_histogram(state);
         __syncthreads();
       }
 
       // Fast path: non-empty segment, chunk lands entirely in full-tile slots.
       const LargeSegmentTileOffsetT full_tile_boundary =
-        cold.slab_base + static_cast<LargeSegmentTileOffsetT>(hot.num_full_tiles);
-      if (!hot.empty && chunk_start + chunk_size_v <= full_tile_boundary)
+        state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles);
+      if (!state.empty && chunk_start + chunk_size_v <= full_tile_boundary)
       {
-        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - cold.slab_base);
+        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - state.slab_base);
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int i = 0; i < TilesPerChunk; ++i)
         {
-          dispatch_tile<true>(hot, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
+          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
         }
         continue;
       }
@@ -1978,24 +1915,24 @@ public:
       LargeSegmentTileOffsetT chunk_cursor = chunk_start;
       while (chunk_cursor < chunk_end)
       {
-        // Segment refresh inside the stretch walk. Same 3-sync schedule as the
-        // outer-loop refresh above.
-        if (chunk_cursor >= cold.queue_segment_end)
+        // Segment refresh inside the stretch walk.
+        if (chunk_cursor >= state.queue_segment_end)
         {
           __syncthreads();
-          merge_segment_histogram(hot);
-          hot = load_segment_state(resolve_queue_idx(chunk_cursor), pass);
-          init_segment_histogram(hot);
+          merge_segment_histogram(state);
+          state = resolve_segment_state(resolve_queue_idx(chunk_cursor), pass);
+          __syncthreads();
+          init_segment_histogram(state);
           __syncthreads();
         }
 
         // Skip empty / wasted-tail in one step.
         const LargeSegmentTileOffsetT data_end_tile =
-          cold.slab_base + static_cast<LargeSegmentTileOffsetT>(cold.segment_tiles_input);
-        if (hot.empty || chunk_cursor >= data_end_tile)
+          state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.segment_tiles_input);
+        if (state.empty || chunk_cursor >= data_end_tile)
         {
           const LargeSegmentTileOffsetT skip_to =
-            (chunk_end < cold.queue_segment_end) ? chunk_end : cold.queue_segment_end;
+            (chunk_end < state.queue_segment_end) ? chunk_end : state.queue_segment_end;
           if (skip_to <= chunk_cursor)
           {
             break; // defensive
@@ -2006,10 +1943,10 @@ public:
 
         const LargeSegmentTileOffsetT stretch_end =
           (chunk_end < data_end_tile) ? chunk_end : data_end_tile;
-        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - cold.slab_base);
-        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - cold.slab_base);
+        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - state.slab_base);
+        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - state.slab_base);
         const OffsetT local_full_end =
-          (local_stretch_end < hot.num_full_tiles) ? local_stretch_end : hot.num_full_tiles;
+          (local_stretch_end < state.num_full_tiles) ? local_stretch_end : state.num_full_tiles;
         const OffsetT full_tiles_in_stretch =
           (local_full_end > local_tile_start) ? (local_full_end - local_tile_start) : OffsetT{0};
 
@@ -2023,7 +1960,7 @@ public:
             _CCCL_PRAGMA_UNROLL_FULL()
             for (int i = 0; i < 4; ++i)
             {
-              dispatch_tile<true>(hot, static_cast<LargeSegmentTileOffsetT>(local + i));
+              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
             }
             local += OffsetT{4};
             remaining -= OffsetT{4};
@@ -2036,7 +1973,7 @@ public:
             _CCCL_PRAGMA_UNROLL_FULL()
             for (int i = 0; i < 2; ++i)
             {
-              dispatch_tile<true>(hot, static_cast<LargeSegmentTileOffsetT>(local + i));
+              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
             }
             local += OffsetT{2};
             remaining -= OffsetT{2};
@@ -2044,7 +1981,7 @@ public:
         }
         if (remaining >= OffsetT{1})
         {
-          dispatch_tile<true>(hot, static_cast<LargeSegmentTileOffsetT>(local));
+          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local));
         }
 
         // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
@@ -2055,11 +1992,11 @@ public:
         {
           const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
           const bool reaches_partial_slot =
-            (next_local == hot.num_full_tiles) && (hot.partial_items > 0)
-            && (local_stretch_end > hot.num_full_tiles);
+            (next_local == state.num_full_tiles) && (state.partial_items > 0)
+            && (local_stretch_end > state.num_full_tiles);
           if (reaches_partial_slot)
           {
-            dispatch_tile<false>(hot, static_cast<LargeSegmentTileOffsetT>(hot.num_full_tiles));
+            dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
           }
         }
 
@@ -2072,7 +2009,7 @@ public:
     // (the early-return filtered out CTAs with no work); the predicate inside
     // `merge_segment_histogram` decides whether to actually merge.
     __syncthreads();
-    merge_segment_histogram(hot);
+    merge_segment_histogram(state);
   }
 
   // Process the trailing partial tile of `queue_idx`'s segment for the current pass, using
@@ -2085,9 +2022,9 @@ public:
   //
   // Smem-histogram handshake (for buffered / unbuffered modes only):
   //   - Caller `__syncthreads()` before entry (so prior smem state is settled).
-  //   - This method `init_segment_histogram(hot)`s the smem hist, processes the partial
-  //     via `dispatch_tile<false>(hot, ...)` (which atomicAdds into the smem hist),
-  //     then `merge_segment_histogram(hot)`s it into the per-segment global slab.
+  //   - This method `init_segment_histogram(state)`s the smem hist, processes the partial
+  //     via `dispatch_tile<false>` (which atomicAdds into the smem hist), then
+  //     `merge_segment_histogram(state)`s it into the per-segment global slab.
   //   - Caller `__syncthreads()` after -- the smem buffer is now ready for the
   //     prefix-sum scratch.
   //
@@ -2097,24 +2034,24 @@ public:
   // Empty segments and segments with no partial (`partial_items == 0`) are no-ops.
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx, int pass)
   {
-    per_segment_state_t hot = load_segment_state(queue_idx, pass);
-    if (hot.empty || hot.partial_items == 0)
+    per_segment_state_t state = resolve_segment_state(queue_idx, pass);
+    if (state.empty || state.partial_items == 0)
     {
       return;
     }
 
-    if (segment_uses_smem_histogram(hot))
+    if (segment_uses_smem_histogram(state))
     {
-      init_segment_histogram(hot);
+      init_segment_histogram(state);
       __syncthreads();
     }
 
-    dispatch_tile<false>(hot, static_cast<LargeSegmentTileOffsetT>(hot.num_full_tiles));
+    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
 
-    if (segment_uses_smem_histogram(hot))
+    if (segment_uses_smem_histogram(state))
     {
       __syncthreads();
-      merge_segment_histogram(hot);
+      merge_segment_histogram(state);
     }
   }
 };
