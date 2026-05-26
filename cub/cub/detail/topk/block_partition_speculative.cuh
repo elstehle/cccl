@@ -215,13 +215,13 @@ public:
   // COLLECTIVE ctor.
   _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_speculative(
     TempStorage& storage,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
+    SelectedReserveOp reserve_selected,
+    CandidateReserveOp reserve_candidate,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
-    IdentifyCandidatesOp& identify_candidates_op,
-    CandidateCallbackOp& candidate_callback_op)
+    ValueChannelSinksT value_channel_sinks,
+    IdentifyCandidatesOp identify_candidates_op,
+    CandidateCallbackOp candidate_callback_op)
       : temp_storage(storage.Alias())
       , reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
@@ -743,13 +743,13 @@ private:
   // Member state.
   // ---------------------------------------------------------------
   _TempStorage& temp_storage;
-  SelectedReserveOp& reserve_sel;
-  CandidateReserveOp& reserve_cand;
+  SelectedReserveOp reserve_sel;
+  CandidateReserveOp reserve_cand;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
-  ValueChannelSinksT& sinks;
-  IdentifyCandidatesOp& identify_op;
-  CandidateCallbackOp& callback_op;
+  ValueChannelSinksT sinks;
+  IdentifyCandidatesOp identify_op;
+  CandidateCallbackOp callback_op;
 };
 
 //---------------------------------------------------------------------

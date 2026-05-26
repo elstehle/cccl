@@ -182,9 +182,9 @@ public:
   // COLLECTIVE ctor.
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_speculative(
     TempStorage& storage,
-    SelectedReserveOp& reserve_selected,
+    SelectedReserveOp reserve_selected,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
+    ValueChannelSinksT value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : temp_storage(storage.Alias())
       , reserve_sel(reserve_selected)
@@ -519,9 +519,9 @@ private:
   // Member state.
   // ---------------------------------------------------------------
   _TempStorage& temp_storage;
-  SelectedReserveOp& reserve_sel;
+  SelectedReserveOp reserve_sel;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksT& sinks;
+  ValueChannelSinksT sinks;
   IdentifySelectedOp& identify_op;
 };
 

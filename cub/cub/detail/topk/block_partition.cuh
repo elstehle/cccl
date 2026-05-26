@@ -445,13 +445,13 @@ public:
   // parity with the accumulating sister class.
   _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_atomics(
     TempStorage& /*storage*/,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
+    SelectedReserveOp reserve_selected,
+    CandidateReserveOp reserve_candidate,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
-    IdentifyCandidatesOp& identify_candidates_op,
-    CandidateCallbackOp& candidate_callback_op)
+    ValueChannelSinksT value_channel_sinks,
+    IdentifyCandidatesOp identify_candidates_op,
+    CandidateCallbackOp candidate_callback_op)
       : reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
       
@@ -707,13 +707,13 @@ private:
   }
 
   // Captured at ctor; used by every partition() call.
-  SelectedReserveOp& reserve_sel;
-  CandidateReserveOp& reserve_cand;
+  SelectedReserveOp reserve_sel;
+  CandidateReserveOp reserve_cand;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
-  ValueChannelSinksT& sinks;
-  IdentifyCandidatesOp& identify_op;
-  CandidateCallbackOp& callback_op;
+  ValueChannelSinksT sinks;
+  IdentifyCandidatesOp identify_op;
+  CandidateCallbackOp callback_op;
 
   // Per-thread monotonic flag for the candidate stream. Only consulted when
   // `CandidateReserveOp::may_grant_less` is true (otherwise the reserve op
@@ -823,13 +823,13 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_staged(
     TempStorage& /*storage*/,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
+    SelectedReserveOp reserve_selected,
+    CandidateReserveOp reserve_candidate,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
-    IdentifyCandidatesOp& identify_candidates_op,
-    CandidateCallbackOp& candidate_callback_op)
+    ValueChannelSinksT value_channel_sinks,
+    IdentifyCandidatesOp identify_candidates_op,
+    CandidateCallbackOp candidate_callback_op)
       : reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
       
@@ -1038,13 +1038,13 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel;
-  CandidateReserveOp& reserve_cand;
+  SelectedReserveOp reserve_sel;
+  CandidateReserveOp reserve_cand;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
-  ValueChannelSinksT& sinks;
-  IdentifyCandidatesOp& identify_op;
-  CandidateCallbackOp& callback_op;
+  ValueChannelSinksT sinks;
+  IdentifyCandidatesOp identify_op;
+  CandidateCallbackOp callback_op;
 };
 
 //---------------------------------------------------------------------
@@ -1131,13 +1131,13 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_shared_mem(
     TempStorage& /*storage*/,
-    SelectedReserveOp& reserve_selected,
-    CandidateReserveOp& reserve_candidate,
+    SelectedReserveOp reserve_selected,
+    CandidateReserveOp reserve_candidate,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
-    IdentifyCandidatesOp& identify_candidates_op,
-    CandidateCallbackOp& candidate_callback_op)
+    ValueChannelSinksT value_channel_sinks,
+    IdentifyCandidatesOp identify_candidates_op,
+    CandidateCallbackOp candidate_callback_op)
       : reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
       
@@ -1329,13 +1329,13 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel;
-  CandidateReserveOp& reserve_cand;
+  SelectedReserveOp reserve_sel;
+  CandidateReserveOp reserve_cand;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
-  ValueChannelSinksT& sinks;
-  IdentifyCandidatesOp& identify_op;
-  CandidateCallbackOp& callback_op;
+  ValueChannelSinksT sinks;
+  IdentifyCandidatesOp identify_op;
+  CandidateCallbackOp callback_op;
 };
 } // namespace detail::topk
 

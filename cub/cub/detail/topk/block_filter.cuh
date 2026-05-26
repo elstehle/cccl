@@ -217,9 +217,9 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_atomics(
     TempStorage& /*storage*/,
-    SelectedReserveOp& reserve_selected,
+    SelectedReserveOp reserve_selected,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
+    ValueChannelSinksT value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
       
@@ -357,9 +357,9 @@ private:
   }
 
   // Captured at ctor; used by every partition() call.
-  SelectedReserveOp& reserve_sel;
+  SelectedReserveOp reserve_sel;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksT& sinks;
+  ValueChannelSinksT sinks;
   IdentifySelectedOp& identify_op;
 };
 
@@ -435,9 +435,9 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_staged(
     TempStorage& /*storage*/,
-    SelectedReserveOp& reserve_selected,
+    SelectedReserveOp reserve_selected,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
+    ValueChannelSinksT value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
       
@@ -597,9 +597,9 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel;
+  SelectedReserveOp reserve_sel;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksT& sinks;
+  ValueChannelSinksT sinks;
   IdentifySelectedOp& identify_op;
 };
 
@@ -679,9 +679,9 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_shared_mem(
     TempStorage& /*storage*/,
-    SelectedReserveOp& reserve_selected,
+    SelectedReserveOp reserve_selected,
     SelectedKeyOutIt selected_keys_out,
-    ValueChannelSinksT& value_channel_sinks,
+    ValueChannelSinksT value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
       
@@ -827,9 +827,9 @@ private:
     }
   }
 
-  SelectedReserveOp& reserve_sel;
+  SelectedReserveOp reserve_sel;
   SelectedKeyOutIt sel_iter;
-  ValueChannelSinksT& sinks;
+  ValueChannelSinksT sinks;
   IdentifySelectedOp& identify_op;
 };
 } // namespace detail::topk
