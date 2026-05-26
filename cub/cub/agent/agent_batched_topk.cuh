@@ -2282,17 +2282,21 @@ private:
     return s;
   }
 
-  // Templated on `IsFullTile` so the fast / slow-full path can skip the runtime
-  // partial-vs-full branch. Callers must guarantee:
-  //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
-  //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
-  template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  // Build the keys-source for the current segment. Lives across all tiles of this segment.
+  _CCCL_DEVICE _CCCL_FORCEINLINE keys_source_t make_keys_source_for_segment(const per_segment_state_t& s)
   {
     key_source_input_t key_src_input{s.d_keys_in, storage.keys_source_state.a};
     key_source_buffer_t key_src_buffer{s.in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    return keys_source_t{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+  }
 
+  // Build the partition object for the current segment. Lives across all tiles of this segment so
+  // its per-thread `cand_reserve_open` flag (the back-grow-cap exit hint that drops per-item
+  // atomics after the first observed grant=0) persists, just like `agent_topk_last_filter::run`
+  // already does in the single-problem dispatch. Called fresh at every segment-boundary crossing
+  // in `run()`.
+  _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
+  {
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{
       &s.segment_counter->num_ties_written_to_back,
@@ -2311,12 +2315,13 @@ private:
     }();
     detail::topk::topk_noop_candidate_callback_op callback_op{};
 
-    // The partition primitive's ctor takes `IdentifyCandidatesOp&` (non-const); build a
-    // local op (cheap ctor) from the cached per-segment fields.
+    // The identify-candidates op carries the segment's `kth_key_bits` (value, after the
+    // value-holding sibling lands), and the partition holds it by value too, so the partition
+    // ctor copy is what binds it to this segment's state.
     IdentifyCandidatesOpT identify_candidates_op{
       &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
 
-    partition_t partition{
+    return partition_t{
       storage.partition_arena.get_partition_state(),
       reserve_sel,
       reserve_cand,
@@ -2325,7 +2330,26 @@ private:
       value_channel_sinks,
       identify_candidates_op,
       callback_op};
+  }
 
+  // Templated on `IsFullTile` so the fast / slow-full path can skip the runtime
+  // partial-vs-full branch. Callers must guarantee:
+  //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
+  //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
+  //
+  // `partition` and `keys_source` are owned by the caller (`run()`) and reused across all tiles
+  // of the same segment. The per-thread `cand_reserve_open` flag inside `partition` therefore
+  // persists across calls, so once any thread observes a grant=0 from the back-grow-capped
+  // candidate reserve the subsequent tiles dispatch through the cheaper
+  // `HasCandidateStream=false` classifier specialisation that drops the per-item atomic
+  // entirely (see `block_partition.cuh` doc on `cand_reserve_open`).
+  template <bool IsFullTile>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(
+    const per_segment_state_t& s,
+    partition_t& partition,
+    keys_source_t& keys_source,
+    LargeSegmentTileOffsetT local_tile)
+  {
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
@@ -2390,8 +2414,6 @@ private:
       __syncthreads();
       partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
-
-    partition.epilogue();
   }
 
 public:
@@ -2404,14 +2426,22 @@ public:
   // Shape:
   //   * Early-return for CTAs whose first tile lands past the queue.
   //   * One `resolve_segment_state(blockIdx.x)` up front.
+  //   * Construct one `partition_t` per segment, *outside* the tile loop, so its per-thread
+  //     `cand_reserve_open` flag survives across tiles of the same segment. This is the
+  //     mechanism that drops the per-item candidate-reserve atomic on subsequent tiles once
+  //     the back-grow cap is hit (see `block_partition.cuh` doc). Without this, every tile
+  //     of an entropy=0 (all-equal-keys) workload re-fires the per-item atomic, costing 30x
+  //     vs main on `KeyT=int, Elements=2^24, Entropy=0.000`.
   //   * Per tile:
   //       - Refresh `state` when we cross a segment boundary
-  //         (`tile_id >= state.queue_segment_end`).
+  //         (`tile_id >= state.queue_segment_end`). The refresh flushes the previous
+  //         segment's partition via `partition.epilogue()` (no-op on the atomics strategy,
+  //         a real flush on the accumulating sister classes), and rebuilds the partition
+  //         + keys_source for the new segment, resetting `cand_reserve_open` to `true`.
   //       - Skip empty segments / wasted-tail tiles past data end.
   //       - Dispatch `process_tile<true>` for full tiles or
   //         `process_tile<false>` for the at-most-one trailing partial.
-  //
-  // No histogram, no flush -- last-filter has no per-segment epilogue.
+  //   * Final `partition.epilogue()` after the loop terminates the last active segment.
   //
   // `TilesPerChunk` is kept on the template signature for ABI/source
   // compatibility with the filter / histogram agents but is unused inside
@@ -2435,15 +2465,24 @@ public:
       return;
     }
 
-    // Hoist first segment-state resolve out of the loop.
+    // Hoist first segment-state resolve + the partition / keys-source construction out of the
+    // loop. Both `partition` and `keys_source` live across tiles of the same segment so
+    // per-thread cross-tile state (notably `cand_reserve_open`) is preserved.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile));
+    partition_t partition     = make_partition_for_segment(state);
+    keys_source_t keys_source = make_keys_source_for_segment(state);
 
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
-      // Segment refresh -- only when the cached segment no longer covers `tile_id`.
+      // Segment refresh -- only when the cached segment no longer covers `tile_id`. Flush the
+      // previous segment's partition (terminal accumulation flush; no-op on atomics) and
+      // rebuild for the new segment so `cand_reserve_open` resets to `true`.
       if (tile_id >= state.queue_segment_end)
       {
-        state = resolve_segment_state(resolve_queue_idx(tile_id));
+        partition.epilogue();
+        state       = resolve_segment_state(resolve_queue_idx(tile_id));
+        partition   = make_partition_for_segment(state);
+        keys_source = make_keys_source_for_segment(state);
       }
 
       if (state.empty)
@@ -2454,14 +2493,18 @@ public:
       const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
       if (local_tile < state.num_full_tiles)
       {
-        process_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile));
+        process_tile<true>(state, partition, keys_source, static_cast<LargeSegmentTileOffsetT>(local_tile));
       }
       else if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
       {
-        process_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+        process_tile<false>(
+          state, partition, keys_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
       }
       // else: wasted-tail tile beyond segment data; skip implicitly via the grid-stride loop.
     }
+
+    // Final flush of the last active segment.
+    partition.epilogue();
   }
 };
 
