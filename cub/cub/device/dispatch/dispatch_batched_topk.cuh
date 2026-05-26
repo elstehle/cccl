@@ -38,6 +38,7 @@
 #include <cuda/__iterator/transform_iterator.h>
 #include <cuda/__iterator/transform_output_iterator.h>
 #include <cuda/std/__algorithm/max.h>
+#include <cuda/std/array>
 #include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__functional/operations.h>
 #include <cuda/std/__type_traits/conditional.h>
@@ -936,22 +937,51 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // `ValueInputItItT` / `ValueOutputItItT`; in indexed mode they rewire the value channel
       // to flow `OffsetT` indices through the candidate buffer and a `topk_index_gather_op` at
       // the user-output boundary.
-      auto filter_kernel_ptr = device_segmented_topk_filter_kernel<
-        PolicySelector,
-        select_dir,
-        KeyInputItItT,
-        KeyOutputItItT,
-        effective_value_input_it_it_t,
-        effective_value_output_it_it_t,
-        SegmentSizeParameterT,
-        KParameterT,
-        NumSegmentsParameterT,
-        segment_id_provider_t,
-        large_segment_tile_offset_t,
-        large_segments_count_it_t,
-        detail::identity_decomposer_t,
-        OffsetT,
-        OutOffsetT>;
+      // Per-pass kernel-pointer table. The filter kernel runs for passes 1..num_passes-1; the
+      // largest `num_passes` we ever instantiate is 8 (1-byte radix on a 64-bit key would top out
+      // at 8 passes; in practice it's <= 6 for the keys we support), so eight specialisations
+      // cover everything. The dispatch loop indexes this table at runtime with the per-pass `pass`
+      // integer. Templating the kernel on the `Pass` value lets ptxas constant-fold the
+      // `extract_bin_op` / `identify_candidates_op` per-pass scalars (`start_bit`, `mask`) into
+      // immediates.
+      constexpr int max_filter_passes = 8;
+
+#define CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(Pass)                                                                  \
+  (&device_segmented_topk_filter_kernel<PolicySelector,                                                              \
+                                        select_dir,                                                                  \
+                                        KeyInputItItT,                                                               \
+                                        KeyOutputItItT,                                                              \
+                                        effective_value_input_it_it_t,                                               \
+                                        effective_value_output_it_it_t,                                              \
+                                        SegmentSizeParameterT,                                                       \
+                                        KParameterT,                                                                 \
+                                        NumSegmentsParameterT,                                                       \
+                                        segment_id_provider_t,                                                       \
+                                        large_segment_tile_offset_t,                                                 \
+                                        large_segments_count_it_t,                                                   \
+                                        detail::identity_decomposer_t,                                               \
+                                        OffsetT,                                                                     \
+                                        OutOffsetT,                                                                  \
+                                        (Pass)>)
+
+      using filter_kernel_ptr_t = decltype(CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(1));
+      const ::cuda::std::array<filter_kernel_ptr_t, max_filter_passes> filter_kernel_ptrs = {
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(0),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(1),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(2),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(3),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(4),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(5),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(6),
+        CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS(7),
+      };
+
+#undef CUB_DETAIL_TOPK_FILTER_KERNEL_AT_PASS
+
+      // Pass=1 is the first runtime value the launch loop ever uses, and every
+      // Pass-specialisation shares the same launch_bounds, so any element of the table is a valid
+      // proxy for occupancy / MaxSmOccupancy queries.
+      auto filter_kernel_ptr = filter_kernel_ptrs[1];
       auto last_filter_kernel_ptr = device_segmented_topk_last_filter_kernel<
         PolicySelector,
         select_dir,
@@ -1111,7 +1141,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
               THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
                 filter_grid_size, multi_worker_threads_per_block, 0, stream)
                 .doit(
-                  filter_kernel_ptr,
+                  // Select the per-pass specialisation of the filter kernel.
+                  filter_kernel_ptrs[pass],
                   d_key_segments_it,
                   d_key_segments_out_it,
                   effective_d_value_segments_it,

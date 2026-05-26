@@ -78,6 +78,26 @@ template <typename T, int BitsPerPass>
   return (1 << num_bits) - 1;
 }
 
+// ----------------------------------------------------------------------------
+// Static-pass sibling ops (`*_static_t`).
+//
+// The dynamic variants (`extract_bin_op_t`, `identify_candidates_op_t`) below
+// store `pass` / `start_bit` / `mask` as runtime members initialised by their
+// ctors from the kernel-arg `pass`. The static siblings take `Pass` as a
+// template parameter so that all of those per-pass scalars become `constexpr`,
+// and the ops carry zero per-pass runtime state. For `identify_candidates_op`
+// the only surviving runtime member is the segment-dependent
+// `kth_key_bits` pointer; for `extract_bin_op` the structures are stateless.
+//
+// Selecting a sibling at dispatch time turns each filter-pass launch into a
+// kernel instantiation specialised on `Pass`, which lets ptxas constant-fold
+// `start_bit` / `mask` into shift/mask immediates (or BFE) and drops a few
+// persistent registers on the agent's hot path.
+//
+// The ctor of each sibling accepts the same arguments as the dynamic version
+// so that existing call sites in `agent_batched_topk` work as a drop-in.
+// ----------------------------------------------------------------------------
+
 // Get the bin ID from the value of element
 template <typename T,
           select SelectDirection,
@@ -85,6 +105,14 @@ template <typename T,
           typename DecomposerT,
           bool CanTwiddle = detail::radix::can_twiddle<T>>
 struct extract_bin_op_t;
+
+template <typename T,
+          select SelectDirection,
+          int BitsPerPass,
+          int Pass,
+          typename DecomposerT,
+          bool CanTwiddle = detail::radix::can_twiddle<T>>
+struct extract_bin_op_static_t;
 
 template <typename T, select SelectDirection, int BitsPerPass, typename DecomposerT>
 struct extract_bin_op_t<T, SelectDirection, BitsPerPass, DecomposerT, true>
@@ -142,6 +170,33 @@ struct extract_bin_op_t<T, SelectDirection, BitsPerPass, DecomposerT, false>
   }
 };
 
+// Static-pass sibling of `extract_bin_op_t<..., true>`. `start_bit` and
+// `mask` are derived from the compile-time `Pass` template parameter; the
+// struct has no per-pass runtime state. Drop-in for the dynamic ctor.
+template <typename T, select SelectDirection, int BitsPerPass, int Pass, typename DecomposerT>
+struct extract_bin_op_static_t<T, SelectDirection, BitsPerPass, Pass, DecomposerT, true>
+{
+  static constexpr bool is_descending = SelectDirection != select::min;
+  using bit_ordered_type              = typename Traits<T>::UnsignedBits;
+  static constexpr int start_bit      = calc_start_bit<T, BitsPerPass>(Pass);
+  static constexpr unsigned int mask  = calc_mask<T, BitsPerPass>(Pass);
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE
+  extract_bin_op_static_t(int /*pass*/ = 0, int /*total_bits*/ = 0, DecomposerT /*decomposer*/ = {})
+  {}
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int operator()(T key) const
+  {
+    auto bits = reinterpret_cast<typename Traits<T>::UnsignedBits&>(key);
+    bits      = Traits<T>::TwiddleIn(bits);
+    if constexpr (SelectDirection != select::min)
+    {
+      bits = ~bits;
+    }
+    return static_cast<int>((bits >> start_bit) & mask);
+  }
+};
+
 // Check if the input element is still a candidate for the target pass.
 template <typename T,
           select SelectDirection,
@@ -149,6 +204,22 @@ template <typename T,
           typename DecomposerT,
           bool CanTwiddle = detail::radix::can_twiddle<T>>
 struct identify_candidates_op_t;
+
+template <typename T,
+          select SelectDirection,
+          int BitsPerPass,
+          int Pass,
+          typename DecomposerT,
+          bool CanTwiddle = detail::radix::can_twiddle<T>>
+struct identify_candidates_op_static_t;
+
+template <typename T,
+          select SelectDirection,
+          int BitsPerPass,
+          int Pass,
+          typename DecomposerT,
+          bool CanTwiddle = detail::radix::can_twiddle<T>>
+struct identify_candidates_op_static_value_t;
 
 template <typename T, select SelectDirection, int BitsPerPass, typename DecomposerT>
 struct identify_candidates_op_t<T, SelectDirection, BitsPerPass, DecomposerT, true>
@@ -180,6 +251,73 @@ struct identify_candidates_op_t<T, SelectDirection, BitsPerPass, DecomposerT, tr
          : (bits == *kth_key_bits)
            ? candidate_class::candidate
            : candidate_class::rejected;
+  }
+};
+
+// Static-pass sibling of `identify_candidates_op_t<..., true>`. `start_bit`
+// is derived from the compile-time `Pass` template parameter and the
+// high-bit-mask used in `(bits >> start_bit) << start_bit` becomes a
+// `constexpr` immediate. `kth_key_bits` stays as a runtime pointer (per
+// segment per pass). Drop-in ctor for `identify_candidates_op_t`.
+template <typename T, select SelectDirection, int BitsPerPass, int Pass, typename DecomposerT>
+struct identify_candidates_op_static_t<T, SelectDirection, BitsPerPass, Pass, DecomposerT, true>
+{
+  using unsigned_bits_t          = typename Traits<T>::UnsignedBits;
+  using key_prefix_t             = key_prefix_storage_t<T>;
+  static constexpr int start_bit = calc_start_bit<T, BitsPerPass>(Pass - 1);
+
+  unsigned_bits_t* kth_key_bits;
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE identify_candidates_op_static_t(
+    key_prefix_t* kth_key_bits, int /*pass*/ = 0, int /*total_bits*/ = 0, DecomposerT /*decomposer*/ = {})
+      : kth_key_bits(&kth_key_bits->bits)
+  {}
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE candidate_class operator()(T key) const
+  {
+    auto bits = reinterpret_cast<unsigned_bits_t&>(key);
+    bits      = Traits<T>::TwiddleIn(bits);
+    if constexpr (SelectDirection != select::min)
+    {
+      bits = ~bits;
+    }
+    bits = (bits >> start_bit) << start_bit;
+    return (bits < *kth_key_bits) ? candidate_class::selected
+         : (bits == *kth_key_bits) ? candidate_class::candidate
+                                   : candidate_class::rejected;
+  }
+};
+
+// Value-holding sibling of `identify_candidates_op_static_t<..., true>`.
+// Carries the dereferenced `kth_key_bits` *value* (loaded once at kernel
+// entry from the per-segment counter) rather than the pointer to it, so the
+// per-item `operator()` does not hit the LSU. Comes at the cost of one extra
+// persistent register (the value).
+template <typename T, select SelectDirection, int BitsPerPass, int Pass, typename DecomposerT>
+struct identify_candidates_op_static_value_t<T, SelectDirection, BitsPerPass, Pass, DecomposerT, true>
+{
+  using unsigned_bits_t          = typename Traits<T>::UnsignedBits;
+  static constexpr int start_bit = calc_start_bit<T, BitsPerPass>(Pass - 1);
+
+  unsigned_bits_t kth_key_value;
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE
+  identify_candidates_op_static_value_t(unsigned_bits_t kth_key_value)
+      : kth_key_value(kth_key_value)
+  {}
+
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE candidate_class operator()(T key) const
+  {
+    auto bits = reinterpret_cast<unsigned_bits_t&>(key);
+    bits      = Traits<T>::TwiddleIn(bits);
+    if constexpr (SelectDirection != select::min)
+    {
+      bits = ~bits;
+    }
+    bits = (bits >> start_bit) << start_bit;
+    return (bits < kth_key_value) ? candidate_class::selected
+         : (bits == kth_key_value) ? candidate_class::candidate
+                                   : candidate_class::rejected;
   }
 };
 

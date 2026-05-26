@@ -600,7 +600,8 @@ template <typename PolicySelector,
           typename LargeSegmentsCountItT,
           typename DecomposerT,
           typename OffsetT,
-          typename OutOffsetT>
+          typename OutOffsetT,
+          int Pass>
 #if _CCCL_HAS_CONCEPTS()
   requires batched_topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
@@ -658,15 +659,21 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr bool full_tiles_only_filter =
     topk_seg_kernel_detail::full_tiles_only_filter<PolicySelector>::value;
 
-  using extract_bin_op_t = detail::topk::extract_bin_op_t<
+  // Static-pass siblings: `Pass` is a kernel template parameter so the dispatcher
+  // launches one specialisation per filter-pass value. `start_bit` / `mask` are
+  // `constexpr` inside the ops; the structures carry no per-pass runtime state.
+  // See `dispatch_topk_common.cuh` for the dynamic-vs-static op contract.
+  using extract_bin_op_t = detail::topk::extract_bin_op_static_t<
     key_in_t,
     SelectDirection,
     agent_topk_policy_t::bits_per_pass,
+    Pass,
     DecomposerT>;
-  using identify_candidates_op_t = detail::topk::identify_candidates_op_t<
+  using identify_candidates_op_t = detail::topk::identify_candidates_op_static_t<
     key_in_t,
     SelectDirection,
     agent_topk_policy_t::bits_per_pass,
+    Pass,
     DecomposerT>;
 
   using agent_t = agent_batched_topk_filter_partition<
