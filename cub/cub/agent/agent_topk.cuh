@@ -23,6 +23,28 @@
 
 #include <cuda/__cmath/ceil_div.h>
 
+// Opt-in per-pass / per-segment debug printf for the single-problem TopK agent. Enabled
+// by `-DCUB_DETAIL_TOPK_DEBUG_PRINTF=1`. One thread per kernel launch
+// (`blockIdx.x == 0 && threadIdx.x == 0`) prints a single line summarising the per-pass
+// counter state read by the agent body. Mirrors the batched-agent debug-printf so the
+// two pipelines can be compared apples-to-apples.
+#ifndef CUB_DETAIL_TOPK_DEBUG_PRINTF
+#  define CUB_DETAIL_TOPK_DEBUG_PRINTF 0
+#endif
+
+#if CUB_DETAIL_TOPK_DEBUG_PRINTF
+#  define CUB_DETAIL_TOPK_DPRINTF(...)                                      \
+    do                                                                      \
+    {                                                                       \
+      if (blockIdx.x == 0 && threadIdx.x == 0)                              \
+      {                                                                     \
+        ::printf(__VA_ARGS__);                                              \
+      }                                                                     \
+    } while (false)
+#else
+#  define CUB_DETAIL_TOPK_DPRINTF(...) ((void) 0)
+#endif
+
 CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
@@ -617,6 +639,20 @@ struct AgentTopK
         const unsigned int bucket = static_cast<unsigned int>(bin_idx);
         // Update the "splitter" key by adding the radix digit of the k-th item bin of this pass
         set_kth_key_bits<key_in_t, bits_per_pass>(counter->kth_key_bits, pass, bucket);
+
+#if CUB_DETAIL_TOPK_DEBUG_PRINTF
+        if (blockIdx.x == 0)
+        {
+          ::printf(
+            "[topk choose_bucket pass=%d] kth_bucket=%u prev=%lld cur=%lld -> counter.k=%lld counter.len=%lld\n",
+            pass,
+            bucket,
+            static_cast<long long>(prev),
+            static_cast<long long>(cur),
+            static_cast<long long>(counter->k),
+            static_cast<long long>(counter->len));
+        }
+#endif
       }
     };
 
@@ -688,6 +724,22 @@ struct AgentTopK
     const OffsetT current_len           = load_from_original_input ? num_items : counter->previous_len;
     in_idx_buf = load_from_original_input ? nullptr : in_idx_buf; // ? out_idx_buf : in_idx_buf;
 
+    CUB_DETAIL_TOPK_DPRINTF(
+      "[topk last_filter pass=%d grid=%d] num_items=%lld buffer_length=%lld load_from_orig=%d "
+      "current_len=%lld counter.len=%lld counter.previous_len=%lld counter.k=%lld counter.out_cnt=%lld "
+      "counter.out_back_cnt=%lld\n",
+      pass,
+      static_cast<int>(gridDim.x),
+      static_cast<long long>(num_items),
+      static_cast<long long>(buffer_length),
+      static_cast<int>(load_from_original_input),
+      static_cast<long long>(current_len),
+      static_cast<long long>(counter->len),
+      static_cast<long long>(counter->previous_len),
+      static_cast<long long>(counter->k),
+      static_cast<long long>(counter->out_cnt),
+      static_cast<long long>(counter->out_back_cnt));
+
     if (current_len == 0)
     {
       return;
@@ -753,6 +805,22 @@ struct AgentTopK
     const OffsetT current_len  = counter->len;
     OffsetT previous_len       = counter->previous_len;
 
+    CUB_DETAIL_TOPK_DPRINTF(
+      "[topk filter_hist pass=%d grid=%d] num_items=%lld buffer_length=%lld "
+      "current_k=%lld current_len=%lld previous_len=%lld is_last_pass=%d counter.out_cnt=%lld "
+      "counter.out_back_cnt=%lld counter.filter_cnt=%lld\n",
+      pass,
+      static_cast<int>(gridDim.x),
+      static_cast<long long>(num_items),
+      static_cast<long long>(buffer_length),
+      static_cast<long long>(current_k),
+      static_cast<long long>(current_len),
+      static_cast<long long>(previous_len),
+      static_cast<int>(is_last_pass),
+      static_cast<long long>(counter->out_cnt),
+      static_cast<long long>(counter->out_back_cnt),
+      static_cast<long long>(counter->filter_cnt));
+
     // If current_len is 0, it means all the candidates have been found in previous passes.
     if (current_len == 0)
     {
@@ -806,6 +874,12 @@ struct AgentTopK
   _CCCL_DEVICE _CCCL_FORCEINLINE void invoke_histogram_only(
     Counter<key_in_t, OffsetT, OutOffsetT>* counter, OffsetT* histogram, int pass, bool is_last_pass)
   {
+    CUB_DETAIL_TOPK_DPRINTF("[topk histogram pass=%d grid=%d] num_items=%lld buffer_length=%lld is_last_pass=%d\n",
+                            pass,
+                            static_cast<int>(gridDim.x),
+                            static_cast<long long>(num_items),
+                            static_cast<long long>(buffer_length),
+                            static_cast<int>(is_last_pass));
     // Initialize shared memory histogram
     init_histograms(temp_storage.histogram);
     __syncthreads();
