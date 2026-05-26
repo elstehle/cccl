@@ -2422,32 +2422,27 @@ private:
   }
 
 public:
-  // Drive this CTA's entire grid-strided last-filter pass. Mirrors the histogram agent's
-  // `run<TilesPerChunk>()` shape:
+  // Drive this CTA's entire grid-strided last-filter pass.
   //
-  //   * Early-return for CTAs whose first chunk lands past the queue.
-  //   * One `resolve_segment_state` up front (the kernel no longer pre-fires the segment
-  //     for tile 0; that work moves here so the inner loop can drop the sentinel).
-  //   * For each chunk in the grid-stride:
-  //       - Refresh the cached `state` when `chunk_start` crosses past the current
-  //         segment's queue window.
-  //       - **Fast path**: chunk lies fully inside one segment's full-tile range, segment
-  //         is non-empty. Body is a fully-unrolled `TilesPerChunk`-iteration loop of
-  //         `process_tile<true>` (no partial-vs-full branch, no per-tile bookkeeping).
-  //       - **Slow path**: chunk crosses a segment boundary, lands on a partial-tile slot,
-  //         visits an empty / wasted-slot tail, or is clipped at the queue tail. Walk
-  //         segment-stretches; each stretch's full-tile run uses a power-of-two bit
-  //         decomposition; the at-most-one trailing partial is a conditional *after*
-  //         the loop.
+  // Flat shape: one tile per grid-stride iteration, stride = `gridDim.x`.
+  // Mirrors the filter agent's flat-walk rewrite -- same motivation
+  // (drop the chunk-walk machinery's persistent registers).
   //
-  // No histogram, no `flush_active_segment` -- last-filter has no per-segment epilogue.
+  // Shape:
+  //   * Early-return for CTAs whose first tile lands past the queue.
+  //   * One `resolve_segment_state(blockIdx.x)` up front.
+  //   * Per tile:
+  //       - Refresh `state` when we cross a segment boundary
+  //         (`tile_id >= state.queue_segment_end`).
+  //       - Skip empty segments / wasted-tail tiles past data end.
+  //       - Dispatch `process_tile<true>` for full tiles or
+  //         `process_tile<false>` for the at-most-one trailing partial.
   //
-  // The slow path's `state.queue_segment_end` advance is the new bit (vs. histogram):
-  // last-filter must skip past tail "wasted" queue slots (segments where
-  // `segment_tiles_input < (queue_segment_end - slab_base)`, including fully-empty
-  // segments where `segment_tiles_input == 0`), since those slots were sized at
-  // enqueue-time from the original segment size, not from the per-pass surviving
-  // candidate count.
+  // No histogram, no flush -- last-filter has no per-segment epilogue.
+  //
+  // `TilesPerChunk` is kept on the template signature for ABI/source
+  // compatibility with the filter / histogram agents but is unused inside
+  // the body; the static_assert preserves the policy contract.
   template <int TilesPerChunk>
   _CCCL_DEVICE _CCCL_FORCEINLINE void run()
   {
@@ -2457,127 +2452,42 @@ public:
 
     const LargeSegmentTileOffsetT* const d_total_large_tiles =
       &d_large_segments_tile_offsets[num_large_segments];
+    const LargeSegmentTileOffsetT total = *d_total_large_tiles;
 
-    constexpr LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(TilesPerChunk);
-    const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
-    const LargeSegmentTileOffsetT first_chunk_start =
-      static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
+    const LargeSegmentTileOffsetT first_tile = static_cast<LargeSegmentTileOffsetT>(blockIdx.x);
+    const LargeSegmentTileOffsetT stride     = static_cast<LargeSegmentTileOffsetT>(gridDim.x);
 
-    if (first_chunk_start >= *d_total_large_tiles)
+    if (first_tile >= total)
     {
       return;
     }
 
-    // Hoist first segment-state load out of the loop.
-    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_chunk_start));
+    // Hoist first segment-state resolve out of the loop.
+    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile));
 
-    for (LargeSegmentTileOffsetT chunk_start = first_chunk_start; chunk_start < *d_total_large_tiles;
-         chunk_start += stride)
+    for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
-      const LargeSegmentTileOffsetT chunk_end =
-        (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
-
-      // Segment refresh -- only when the cached segment no longer covers `chunk_start`.
-      if (chunk_start >= state.queue_segment_end)
+      // Segment refresh -- only when the cached segment no longer covers `tile_id`.
+      if (tile_id >= state.queue_segment_end)
       {
-        state = resolve_segment_state(resolve_queue_idx(chunk_start));
+        state = resolve_segment_state(resolve_queue_idx(tile_id));
       }
 
-      // Fast path: non-empty segment, chunk lands entirely in full-tile slots.
-      const LargeSegmentTileOffsetT full_tile_boundary =
-        state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles);
-      if (!state.empty && chunk_start + chunk_size_v <= full_tile_boundary)
+      if (state.empty)
       {
-        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - state.slab_base);
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int i = 0; i < TilesPerChunk; ++i)
-        {
-          process_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
-        }
         continue;
       }
 
-      // Slow path.
-      LargeSegmentTileOffsetT chunk_cursor = chunk_start;
-      while (chunk_cursor < chunk_end)
+      const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
+      if (local_tile < state.num_full_tiles)
       {
-        // Segment refresh.
-        if (chunk_cursor >= state.queue_segment_end)
-        {
-          state = resolve_segment_state(resolve_queue_idx(chunk_cursor));
-        }
-
-        // Skip empty segments and post-data wasted tails in one step.
-        const LargeSegmentTileOffsetT data_end_tile =
-          state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.segment_tiles_input);
-        if (state.empty || chunk_cursor >= data_end_tile)
-        {
-          const LargeSegmentTileOffsetT skip_to =
-            (chunk_end < state.queue_segment_end) ? chunk_end : state.queue_segment_end;
-          if (skip_to <= chunk_cursor)
-          {
-            break; // defensive -- shouldn't happen if the offset table is well-formed
-          }
-          chunk_cursor = skip_to;
-          continue;
-        }
-
-        // Segment-stretch bounds within this chunk.
-        const LargeSegmentTileOffsetT stretch_end =
-          (chunk_end < data_end_tile) ? chunk_end : data_end_tile;
-        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - state.slab_base);
-        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - state.slab_base);
-        const OffsetT local_full_end =
-          (local_stretch_end < state.num_full_tiles) ? local_stretch_end : state.num_full_tiles;
-        const OffsetT full_tiles_in_stretch =
-          (local_full_end > local_tile_start) ? (local_full_end - local_tile_start) : OffsetT{0};
-
-        // Power-of-two bit decomposition of `full_tiles_in_stretch in [0, TilesPerChunk-1]`.
-        OffsetT remaining = full_tiles_in_stretch;
-        OffsetT local     = local_tile_start;
-        if constexpr (TilesPerChunk >= 8)
-        {
-          if (remaining >= OffsetT{4})
-          {
-            _CCCL_PRAGMA_UNROLL_FULL()
-            for (int i = 0; i < 4; ++i)
-            {
-              process_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
-            }
-            local += OffsetT{4};
-            remaining -= OffsetT{4};
-          }
-        }
-        if constexpr (TilesPerChunk >= 4)
-        {
-          if (remaining >= OffsetT{2})
-          {
-            _CCCL_PRAGMA_UNROLL_FULL()
-            for (int i = 0; i < 2; ++i)
-            {
-              process_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
-            }
-            local += OffsetT{2};
-            remaining -= OffsetT{2};
-          }
-        }
-        if (remaining >= OffsetT{1})
-        {
-          process_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local));
-        }
-
-        // Partial-tile conditional *after* the loop. Same predicate triple as histogram.
-        const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
-        const bool reaches_partial_slot =
-          (next_local == state.num_full_tiles) && (state.partial_items > 0)
-          && (local_stretch_end > state.num_full_tiles);
-        if (reaches_partial_slot)
-        {
-          process_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
-        }
-
-        chunk_cursor = stretch_end;
+        process_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile));
       }
+      else if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
+      {
+        process_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+      }
+      // else: wasted-tail tile beyond segment data; skip implicitly via the grid-stride loop.
     }
   }
 };
