@@ -368,14 +368,12 @@ struct agent_topk_filter_partition
   // Buffered-mode sinks: 2-stream `value_channel_sinks_t` (selected + candidate).
   // `NullType` for keys-only; the block primitive captures the reference but
   // never reads through it under `keys_only`.
-  using buffered_value_channel_sinks_concrete_t =
-    value_channel_sinks_t<val_out_t, buffered_cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
+  using buffered_value_channel_sinks_concrete_t = value_channel_sinks_t<val_out_t, buffered_cand_val_out_t>;
   using buffered_value_channel_sinks_t =
     ::cuda::std::conditional_t<keys_only, NullType, buffered_value_channel_sinks_concrete_t>;
 
   // Early-stop sinks: 1-stream `value_channel_sinks_filter_t` (selected only).
-  using early_stop_value_channel_sinks_concrete_t =
-    value_channel_sinks_filter_t<val_out_t, ::cuda::std::identity>;
+  using early_stop_value_channel_sinks_concrete_t = value_channel_sinks_filter_t<val_out_t>;
   using early_stop_value_channel_sinks_t =
     ::cuda::std::conditional_t<keys_only, NullType, early_stop_value_channel_sinks_concrete_t>;
 
@@ -399,7 +397,6 @@ struct agent_topk_filter_partition
   using candidate_reserve_op_t = atomic_reserve_range_op<candidate_offset_t>;
 
   // Key-output transforms are always identity for top-k.
-  using key_xform_t = ::cuda::std::identity;
 
   // Callback / classify-hook types for the two modes.
   using histogram_callback_op_t = topk_histogram_callback_op<ExtractBinOpT, OffsetT>;
@@ -420,8 +417,6 @@ struct agent_topk_filter_partition
     candidate_offset_t,
     selected_reserve_op_t,
     candidate_reserve_op_t,
-    key_xform_t,
-    key_xform_t,
     KeyOutputIteratorT,
     buffered_cand_key_out_t,
     IdentifyCandidatesOpT,
@@ -441,7 +436,6 @@ struct agent_topk_filter_partition
     key_in_t,
     selected_offset_t,
     selected_reserve_op_t,
-    key_xform_t,
     KeyOutputIteratorT,
     identify_selected_op_t,
     early_stop_value_channel_sinks_t,
@@ -595,8 +589,7 @@ private:
     }
     else
     {
-      return buffered_value_channel_sinks_concrete_t{
-        d_values_out, cand_val_out, ::cuda::std::identity{}, ::cuda::std::identity{}};
+      return buffered_value_channel_sinks_concrete_t{d_values_out, cand_val_out};
     }
   }
 
@@ -608,7 +601,7 @@ private:
     }
     else
     {
-      return early_stop_value_channel_sinks_concrete_t{d_values_out, ::cuda::std::identity{}};
+      return early_stop_value_channel_sinks_concrete_t{d_values_out};
     }
   }
 
@@ -713,8 +706,6 @@ public:
   {
     // Mode-shared stack-locals.
     selected_reserve_op_t reserve_sel{p_num_selected_written};
-    key_xform_t sel_key_xform{};
-    key_xform_t cand_key_xform{};
 
     if (mode == sink_mode::early_stop)
     {
@@ -734,7 +725,6 @@ public:
       early_stop_filter_t filter{
         storage.arms.early_stop.arena.get_partition_state(),
         reserve_sel,
-        sel_key_xform,
         d_keys_out,
         value_channel_sinks,
         identify_selected};
@@ -762,8 +752,6 @@ public:
         storage.arms.buffered.arena.get_partition_state(),
         reserve_sel,
         reserve_cand,
-        sel_key_xform,
-        cand_key_xform,
         d_keys_out,
         cand_key_out,
         value_channel_sinks,
@@ -873,8 +861,7 @@ struct agent_topk_last_filter
 
   // Sinks-bundle: concrete `value_channel_sinks_t` for values-mode, `NullType`
   // placeholder for keys-only.
-  using value_channel_sinks_concrete_t =
-    value_channel_sinks_t<val_out_t, cand_val_out_t, ::cuda::std::identity, ::cuda::std::identity>;
+  using value_channel_sinks_concrete_t = value_channel_sinks_t<val_out_t, cand_val_out_t>;
   using value_channel_sinks_or_null_t =
     ::cuda::std::conditional_t<keys_only, NullType, value_channel_sinks_concrete_t>;
 
@@ -891,7 +878,6 @@ struct agent_topk_last_filter
   using selected_reserve_op_t  = atomic_reserve_range_op<selected_offset_t>;
   using candidate_reserve_op_t = back_grow_capped_reserve_op<candidate_offset_t>;
 
-  using key_xform_t = ::cuda::std::identity;
 
   using partition_t = strategy_to_partition_class_t<
     PartStrat,
@@ -904,8 +890,6 @@ struct agent_topk_last_filter
     candidate_offset_t,
     selected_reserve_op_t,
     candidate_reserve_op_t,
-    key_xform_t,
-    key_xform_t,
     KeyOutputIteratorT,
     KeyOutputIteratorT,
     IdentifyCandidatesOpT,
@@ -988,8 +972,7 @@ private:
     else
     {
       // last_filter sends both selected and candidate values to `d_values_out`.
-      return value_channel_sinks_concrete_t{
-        d_values_out, d_values_out, ::cuda::std::identity{}, ::cuda::std::identity{}};
+      return value_channel_sinks_concrete_t{d_values_out, d_values_out};
     }
   }
 
@@ -1044,8 +1027,6 @@ public:
       p_num_ties_written_to_back,
       static_cast<candidate_offset_t>(k_total),
       static_cast<candidate_offset_t>(num_of_kth_needed)};
-    key_xform_t sel_key_xform{};
-    key_xform_t cand_key_xform{};
     auto value_channel_sinks = make_value_channel_sinks();
     topk_noop_candidate_callback_op callback_op{};
 
@@ -1053,8 +1034,6 @@ public:
       storage.partition_arena.get_partition_state(),
       reserve_sel,
       reserve_cand,
-      sel_key_xform,
-      cand_key_xform,
       d_keys_out,
       d_keys_out,
       value_channel_sinks,

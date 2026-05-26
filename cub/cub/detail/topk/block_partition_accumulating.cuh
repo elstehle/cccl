@@ -13,7 +13,7 @@
 //! (`block_filter_accumulating.cuh`).
 //!
 //! Shares `BlockPartition`'s "safe-both" interface: same ctor shape
-//! `(TempStorage&, reserve_sel, reserve_cand, sel_xform, cand_xform, sel_it, cand_it,
+//! `(TempStorage&, reserve_sel, reserve_cand, sel_it, cand_it,
 //! value_channel_sinks, identify_candidates_op, candidate_callback_op)`, same
 //! per-call `partition(scratch, keys, [num_items,] value_sources)`, and an argless
 //! `epilogue()`. Sinks + classify hooks are captured at ctor so the consistency
@@ -89,8 +89,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -175,8 +173,6 @@ public:
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelSinksT& value_channel_sinks,
@@ -185,8 +181,8 @@ public:
       : temp_storage(storage.Alias())
       , reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
-      , sel_xform(selected_key_transform)
-      , cand_xform(candidate_key_transform)
+      
+      
       , sel_iter(selected_keys_out)
       , cand_iter(candidate_keys_out)
       , sinks(value_channel_sinks)
@@ -340,10 +336,10 @@ private:
         }
         if (granted)
         {
-          sel_iter[r.first] = sel_xform(keys[j]);
+          sel_iter[r.first] = keys[j];
           if constexpr (!keys_only)
           {
-            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = get_value(j);
           }
         }
         positions[j] = -1;
@@ -492,7 +488,7 @@ private:
       const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
       if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
       {
-        cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
+        cand_iter[base + static_cast<CandidateOffsetT>(i)] = temp_storage.keys[i];
       }
     }
     if constexpr (trailing_count != 0)
@@ -501,7 +497,7 @@ private:
       if (static_cast<int>(threadIdx.x) < trailing_count
           && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
       {
-        cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
+        cand_iter[base + static_cast<CandidateOffsetT>(i)] = temp_storage.keys[i];
       }
     }
 
@@ -515,7 +511,7 @@ private:
         if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
         {
           sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-            sinks.candidate_value_transform(temp_storage.values[i]);
+            temp_storage.values[i];
         }
       }
       if constexpr (trailing_count != 0)
@@ -525,7 +521,7 @@ private:
             && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
         {
           sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-            sinks.candidate_value_transform(temp_storage.values[i]);
+            temp_storage.values[i];
         }
       }
     }
@@ -549,14 +545,14 @@ private:
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
     {
-      cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.keys[i]);
+      cand_iter[base + static_cast<CandidateOffsetT>(i)] = temp_storage.keys[i];
     }
     if constexpr (!keys_only)
     {
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
         sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-          sinks.candidate_value_transform(temp_storage.values[i]);
+          temp_storage.values[i];
       }
     }
   }
@@ -567,8 +563,6 @@ private:
   _TempStorage& temp_storage;
   SelectedReserveOp& reserve_sel;
   CandidateReserveOp& reserve_cand;
-  SelectedKeyOutTransformOp& sel_xform;
-  CandidateKeyOutTransformOp& cand_xform;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
   ValueChannelSinksT& sinks;
@@ -620,8 +614,6 @@ template <block_partition_strategy Strategy,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -643,8 +635,6 @@ private:
     CandidateOffsetT,
     SelectedReserveOp,
     CandidateReserveOp,
-    SelectedKeyOutTransformOp,
-    CandidateKeyOutTransformOp,
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
@@ -662,8 +652,6 @@ private:
     CandidateOffsetT,
     SelectedReserveOp,
     CandidateReserveOp,
-    SelectedKeyOutTransformOp,
-    CandidateKeyOutTransformOp,
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
@@ -682,8 +670,6 @@ private:
     CandidateOffsetT,
     SelectedReserveOp,
     CandidateReserveOp,
-    SelectedKeyOutTransformOp,
-    CandidateKeyOutTransformOp,
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
@@ -709,8 +695,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -731,8 +715,6 @@ struct strategy_to_partition_class<
   CandidateOffsetT,
   SelectedReserveOp,
   CandidateReserveOp,
-  SelectedKeyOutTransformOp,
-  CandidateKeyOutTransformOp,
   SelectedKeyOutIt,
   CandidateKeyOutIt,
   IdentifyCandidatesOp,
@@ -760,8 +742,6 @@ struct strategy_to_partition_class<
     CandidateOffsetT,
     SelectedReserveOp,
     CandidateReserveOp,
-    SelectedKeyOutTransformOp,
-    CandidateKeyOutTransformOp,
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     IdentifyCandidatesOp,
@@ -781,8 +761,6 @@ template <block_partition_strategy Strategy,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -803,8 +781,6 @@ using strategy_to_partition_class_t = typename strategy_to_partition_class<
   CandidateOffsetT,
   SelectedReserveOp,
   CandidateReserveOp,
-  SelectedKeyOutTransformOp,
-  CandidateKeyOutTransformOp,
   SelectedKeyOutIt,
   CandidateKeyOutIt,
   IdentifyCandidatesOp,

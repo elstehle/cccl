@@ -73,7 +73,7 @@ __global__ void filter_kernel(
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
   // Single-stream sink-side bundle.
-  using value_sinks_t = topk::value_channel_sinks_filter_t<int*, ::cuda::std::identity>;
+  using value_sinks_t = topk::value_channel_sinks_filter_t<int*>;
   using value_channel_sinks_or_null_t =
     ::cuda::std::conditional_t<KeysOnly, cub::NullType, value_sinks_t>;
   using value_t_t =
@@ -137,7 +137,7 @@ __global__ void filter_kernel(
     }
     else
     {
-      return value_sinks_t{d_sel_vals, ::cuda::std::identity{}};
+      return value_sinks_t{d_sel_vals};
     }
   };
   auto sinks = make_sinks();

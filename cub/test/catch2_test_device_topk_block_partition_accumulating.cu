@@ -96,7 +96,7 @@ __global__ void acc_partition_kernel(
 
   using value_ds_t = topk::direct_data_source<const int*, BlockThreads, ItemsPerThread>;
 
-  using value_sinks_t = topk::value_channel_sinks_t<int*, int*, ::cuda::std::identity, ::cuda::std::identity>;
+  using value_sinks_t = topk::value_channel_sinks_t<int*, int*>;
   using value_channel_sinks_or_null_t =
     ::cuda::std::conditional_t<KeysOnly, cub::NullType, value_sinks_t>;
   using value_t_t =
@@ -138,7 +138,7 @@ __global__ void acc_partition_kernel(
     }
     else
     {
-      return value_sinks_t{d_sel_vals, d_cand_vals, ::cuda::std::identity{}, ::cuda::std::identity{}};
+      return value_sinks_t{d_sel_vals, d_cand_vals};
     }
   };
   auto sinks = make_sinks();

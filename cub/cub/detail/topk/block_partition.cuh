@@ -124,25 +124,25 @@ enum class block_partition_strategy
 //---------------------------------------------------------------------
 // Per-channel value-sink bundle (captured at ctor; lifetime = class instance).
 //
-// The single `value_channel_t` struct used previously bundled the per-tile
-// `data_source` with the persistent sink-side state (iterators + transforms).
-// The "safe-both" interface splits that bundle along the lifetime boundary:
-// this struct holds only the four sink-side members. The matching per-channel
-// `ValueT` and `ValueDataSourceScratchT` (needed for sizing smem in the Staged /
-// SharedMem strategies) come from the agent-supplied template parameters of
-// the partition class -- not from any iterator's `value_type`, which can be
-// `void` for output iterators.
+// Holds the two sink-side output iterators. The class previously also carried
+// per-channel value transforms (selected_value_transform /
+// candidate_value_transform), but every instantiation in the topk pipeline
+// used `cuda::std::identity` for those, so the transforms were dropped: writes
+// now go directly into the output iterators. If a non-identity transform is
+// ever wanted again the right place to put it is inside the iterator itself
+// (`cuda::transform_output_iterator`), which is already how the indexed-value
+// gather path threads a non-trivial transform end-to-end.
+//
+// The matching per-channel `ValueT` and `ValueDataSourceScratchT` (needed for
+// sizing smem in the Staged / SharedMem strategies) come from the
+// agent-supplied template parameters of the partition class -- not from any
+// iterator's `value_type`, which can be `void` for output iterators.
 //---------------------------------------------------------------------
-template <typename SelectedValuesOutIt,
-          typename CandidateValuesOutIt,
-          typename SelectedValueTransform,
-          typename CandidateValueTransform>
+template <typename SelectedValuesOutIt, typename CandidateValuesOutIt>
 struct value_channel_sinks_t
 {
   SelectedValuesOutIt selected_values_out;
   CandidateValuesOutIt candidate_values_out;
-  SelectedValueTransform selected_value_transform;
-  CandidateValueTransform candidate_value_transform;
 };
 
 //---------------------------------------------------------------------
@@ -413,8 +413,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -449,8 +447,6 @@ public:
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelSinksT& value_channel_sinks,
@@ -458,8 +454,8 @@ public:
     CandidateCallbackOp& candidate_callback_op)
       : reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
-      , sel_xform(selected_key_transform)
-      , cand_xform(candidate_key_transform)
+      
+      
       , sel_iter(selected_keys_out)
       , cand_iter(candidate_keys_out)
       , sinks(value_channel_sinks)
@@ -671,10 +667,10 @@ private:
         }
         if (granted)
         {
-          sel_iter[r.first] = sel_xform(keys[j]);
+          sel_iter[r.first] = keys[j];
           if constexpr (!keys_only)
           {
-            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = get_value(j);
           }
         }
       }
@@ -691,10 +687,10 @@ private:
           }
           if (granted)
           {
-            cand_iter[r.first] = cand_xform(keys[j]);
+            cand_iter[r.first] = keys[j];
             if constexpr (!keys_only)
             {
-              sinks.candidate_values_out[r.first] = sinks.candidate_value_transform(get_value(j));
+              sinks.candidate_values_out[r.first] = get_value(j);
             }
           }
         }
@@ -713,8 +709,6 @@ private:
   // Captured at ctor; used by every partition() call.
   SelectedReserveOp& reserve_sel;
   CandidateReserveOp& reserve_cand;
-  SelectedKeyOutTransformOp& sel_xform;
-  CandidateKeyOutTransformOp& cand_xform;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
   ValueChannelSinksT& sinks;
@@ -772,8 +766,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -833,8 +825,6 @@ public:
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelSinksT& value_channel_sinks,
@@ -842,8 +832,8 @@ public:
     CandidateCallbackOp& candidate_callback_op)
       : reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
-      , sel_xform(selected_key_transform)
-      , cand_xform(candidate_key_transform)
+      
+      
       , sel_iter(selected_keys_out)
       , cand_iter(candidate_keys_out)
       , sinks(value_channel_sinks)
@@ -930,12 +920,12 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = buffer.phase.keys[i];
     }
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
     {
       cand_iter[cand_base + static_cast<CandidateOffsetT>(i)] =
-        cand_xform(buffer.phase.keys[tile_items - candidate_cnt + i]);
+        buffer.phase.keys[tile_items - candidate_cnt + i];
     }
 
     // Value phase. The load + scatter is sequential in time (sub-brokered through
@@ -995,12 +985,12 @@ private:
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
       {
         sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-          sinks.selected_value_transform(vphase.values[i]);
+          vphase.values[i];
       }
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
       {
         sinks.candidate_values_out[cand_base + static_cast<CandidateOffsetT>(i)] =
-          sinks.candidate_value_transform(vphase.values[tile_items - candidate_cnt + i]);
+          vphase.values[tile_items - candidate_cnt + i];
       }
     }
     __syncthreads();
@@ -1050,8 +1040,6 @@ private:
 
   SelectedReserveOp& reserve_sel;
   CandidateReserveOp& reserve_cand;
-  SelectedKeyOutTransformOp& sel_xform;
-  CandidateKeyOutTransformOp& cand_xform;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
   ValueChannelSinksT& sinks;
@@ -1084,8 +1072,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -1147,8 +1133,6 @@ public:
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelSinksT& value_channel_sinks,
@@ -1156,8 +1140,8 @@ public:
     CandidateCallbackOp& candidate_callback_op)
       : reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
-      , sel_xform(selected_key_transform)
-      , cand_xform(candidate_key_transform)
+      
+      
       , sel_iter(selected_keys_out)
       , cand_iter(candidate_keys_out)
       , sinks(value_channel_sinks)
@@ -1266,12 +1250,12 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.kv.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = buffer.phase.kv.keys[i];
     }
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
     {
       cand_iter[cand_base + static_cast<CandidateOffsetT>(i)] =
-        cand_xform(buffer.phase.kv.keys[tile_items - candidate_cnt + i]);
+        buffer.phase.kv.keys[tile_items - candidate_cnt + i];
     }
 
     if constexpr (!keys_only)
@@ -1279,12 +1263,12 @@ private:
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
       {
         sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-          sinks.selected_value_transform(buffer.phase.kv.values[i]);
+          buffer.phase.kv.values[i];
       }
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(cand_to_write); i += BlockThreads)
       {
         sinks.candidate_values_out[cand_base + static_cast<CandidateOffsetT>(i)] =
-          sinks.candidate_value_transform(buffer.phase.kv.values[tile_items - candidate_cnt + i]);
+          buffer.phase.kv.values[tile_items - candidate_cnt + i];
       }
     }
     __syncthreads();
@@ -1347,8 +1331,6 @@ private:
 
   SelectedReserveOp& reserve_sel;
   CandidateReserveOp& reserve_cand;
-  SelectedKeyOutTransformOp& sel_xform;
-  CandidateKeyOutTransformOp& cand_xform;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
   ValueChannelSinksT& sinks;

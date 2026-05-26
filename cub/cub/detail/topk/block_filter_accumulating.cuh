@@ -72,7 +72,6 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT = CUB_NS_QUALIFIER::NullType,
@@ -135,13 +134,12 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_accumulating(
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
-    SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : temp_storage(storage.Alias())
       , reserve_sel(reserve_selected)
-      , sel_xform(selected_key_transform)
+      
       , sel_iter(selected_keys_out)
       , sinks(value_channel_sinks)
       , identify_op(identify_selected_op)
@@ -362,7 +360,7 @@ private:
       const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
       if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
       {
-        sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
+        sel_iter[base + static_cast<SelectedOffsetT>(i)] = temp_storage.keys[i];
       }
     }
     if constexpr (trailing_count != 0)
@@ -371,7 +369,7 @@ private:
       if (static_cast<int>(threadIdx.x) < trailing_count
           && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
       {
-        sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
+        sel_iter[base + static_cast<SelectedOffsetT>(i)] = temp_storage.keys[i];
       }
     }
 
@@ -384,7 +382,7 @@ private:
         if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
         {
           sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-            sinks.selected_value_transform(temp_storage.values[i]);
+            temp_storage.values[i];
         }
       }
       if constexpr (trailing_count != 0)
@@ -394,7 +392,7 @@ private:
             && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
         {
           sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-            sinks.selected_value_transform(temp_storage.values[i]);
+            temp_storage.values[i];
         }
       }
     }
@@ -417,14 +415,14 @@ private:
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
     {
-      sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.keys[i]);
+      sel_iter[base + static_cast<SelectedOffsetT>(i)] = temp_storage.keys[i];
     }
     if constexpr (!keys_only)
     {
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
         sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-          sinks.selected_value_transform(temp_storage.values[i]);
+          temp_storage.values[i];
       }
     }
   }
@@ -434,7 +432,6 @@ private:
   // ---------------------------------------------------------------
   _TempStorage& temp_storage;
   SelectedReserveOp& reserve_sel;
-  SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
   ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
@@ -465,7 +462,6 @@ template <block_filter_strategy Strategy,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT,
@@ -483,7 +479,6 @@ private:
     KeyT,
     SelectedOffsetT,
     SelectedReserveOp,
-    SelectedKeyOutTransformOp,
     SelectedKeyOutIt,
     IdentifySelectedOp,
     ValueChannelSinksT,
@@ -497,7 +492,6 @@ private:
     KeyT,
     SelectedOffsetT,
     SelectedReserveOp,
-    SelectedKeyOutTransformOp,
     SelectedKeyOutIt,
     IdentifySelectedOp,
     ValueChannelSinksT,
@@ -512,7 +506,6 @@ private:
     KeyT,
     SelectedOffsetT,
     SelectedReserveOp,
-    SelectedKeyOutTransformOp,
     SelectedKeyOutIt,
     IdentifySelectedOp,
     ValueChannelSinksT,
@@ -533,7 +526,6 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT,
@@ -549,7 +541,6 @@ struct strategy_to_filter_class<
   KeyT,
   SelectedOffsetT,
   SelectedReserveOp,
-  SelectedKeyOutTransformOp,
   SelectedKeyOutIt,
   IdentifySelectedOp,
   ValueChannelSinksT,
@@ -570,7 +561,6 @@ struct strategy_to_filter_class<
     KeyT,
     SelectedOffsetT,
     SelectedReserveOp,
-    SelectedKeyOutTransformOp,
     SelectedKeyOutIt,
     IdentifySelectedOp,
     ValueChannelSinksT,
@@ -585,7 +575,6 @@ template <block_filter_strategy Strategy,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT,
@@ -601,7 +590,6 @@ using strategy_to_filter_class_t = typename strategy_to_filter_class<
   KeyT,
   SelectedOffsetT,
   SelectedReserveOp,
-  SelectedKeyOutTransformOp,
   SelectedKeyOutIt,
   IdentifySelectedOp,
   ValueChannelSinksT,

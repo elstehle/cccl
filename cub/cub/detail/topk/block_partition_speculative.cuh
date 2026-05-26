@@ -120,8 +120,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -219,8 +217,6 @@ public:
     TempStorage& storage,
     SelectedReserveOp& reserve_selected,
     CandidateReserveOp& reserve_candidate,
-    SelectedKeyOutTransformOp& selected_key_transform,
-    CandidateKeyOutTransformOp& candidate_key_transform,
     SelectedKeyOutIt selected_keys_out,
     CandidateKeyOutIt candidate_keys_out,
     ValueChannelSinksT& value_channel_sinks,
@@ -229,8 +225,8 @@ public:
       : temp_storage(storage.Alias())
       , reserve_sel(reserve_selected)
       , reserve_cand(reserve_candidate)
-      , sel_xform(selected_key_transform)
-      , cand_xform(candidate_key_transform)
+      
+      
       , sel_iter(selected_keys_out)
       , cand_iter(candidate_keys_out)
       , sinks(value_channel_sinks)
@@ -489,10 +485,10 @@ private:
         }
         if (granted)
         {
-          sel_iter[r.first] = sel_xform(keys[j]);
+          sel_iter[r.first] = keys[j];
           if constexpr (!keys_only)
           {
-            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = get_value(j);
           }
         }
       }
@@ -512,10 +508,10 @@ private:
         }
         if (granted)
         {
-          cand_iter[r.first] = cand_xform(keys[j]);
+          cand_iter[r.first] = keys[j];
           if constexpr (!keys_only)
           {
-            sinks.candidate_values_out[r.first] = sinks.candidate_value_transform(get_value(j));
+            sinks.candidate_values_out[r.first] = get_value(j);
           }
         }
       }
@@ -584,7 +580,7 @@ private:
       const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
       if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
       {
-        cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.cand.keys[i]);
+        cand_iter[base + static_cast<CandidateOffsetT>(i)] = temp_storage.cand.keys[i];
       }
     }
     if constexpr (trailing_count != 0)
@@ -593,7 +589,7 @@ private:
       if (static_cast<int>(threadIdx.x) < trailing_count
           && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
       {
-        cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.cand.keys[i]);
+        cand_iter[base + static_cast<CandidateOffsetT>(i)] = temp_storage.cand.keys[i];
       }
     }
 
@@ -606,7 +602,7 @@ private:
         if (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write)
         {
           sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-            sinks.candidate_value_transform(temp_storage.cand.values[i]);
+            temp_storage.cand.values[i];
         }
       }
       if constexpr (trailing_count != 0)
@@ -616,7 +612,7 @@ private:
             && (!CandidateReserveOp::may_grant_less || static_cast<CandidateOffsetT>(i) < to_write))
         {
           sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-            sinks.candidate_value_transform(temp_storage.cand.values[i]);
+            temp_storage.cand.values[i];
         }
       }
     }
@@ -638,14 +634,14 @@ private:
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
     {
-      cand_iter[base + static_cast<CandidateOffsetT>(i)] = cand_xform(temp_storage.cand.keys[i]);
+      cand_iter[base + static_cast<CandidateOffsetT>(i)] = temp_storage.cand.keys[i];
     }
     if constexpr (!keys_only)
     {
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
         sinks.candidate_values_out[base + static_cast<CandidateOffsetT>(i)] =
-          sinks.candidate_value_transform(temp_storage.cand.values[i]);
+          temp_storage.cand.values[i];
       }
     }
   }
@@ -676,7 +672,7 @@ private:
       const int i = w * BlockThreads + static_cast<int>(threadIdx.x);
       if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
       {
-        sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.sel.keys[i]);
+        sel_iter[base + static_cast<SelectedOffsetT>(i)] = temp_storage.sel.keys[i];
       }
     }
     if constexpr (trailing_count != 0)
@@ -685,7 +681,7 @@ private:
       if (static_cast<int>(threadIdx.x) < trailing_count
           && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
       {
-        sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.sel.keys[i]);
+        sel_iter[base + static_cast<SelectedOffsetT>(i)] = temp_storage.sel.keys[i];
       }
     }
 
@@ -698,7 +694,7 @@ private:
         if (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write)
         {
           sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-            sinks.selected_value_transform(temp_storage.sel.values[i]);
+            temp_storage.sel.values[i];
         }
       }
       if constexpr (trailing_count != 0)
@@ -708,7 +704,7 @@ private:
             && (!SelectedReserveOp::may_grant_less || static_cast<SelectedOffsetT>(i) < to_write))
         {
           sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-            sinks.selected_value_transform(temp_storage.sel.values[i]);
+            temp_storage.sel.values[i];
         }
       }
     }
@@ -731,14 +727,14 @@ private:
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
     {
-      sel_iter[base + static_cast<SelectedOffsetT>(i)] = sel_xform(temp_storage.sel.keys[i]);
+      sel_iter[base + static_cast<SelectedOffsetT>(i)] = temp_storage.sel.keys[i];
     }
     if constexpr (!keys_only)
     {
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(to_write); i += BlockThreads)
       {
         sinks.selected_values_out[base + static_cast<SelectedOffsetT>(i)] =
-          sinks.selected_value_transform(temp_storage.sel.values[i]);
+          temp_storage.sel.values[i];
       }
     }
   }
@@ -749,8 +745,6 @@ private:
   _TempStorage& temp_storage;
   SelectedReserveOp& reserve_sel;
   CandidateReserveOp& reserve_cand;
-  SelectedKeyOutTransformOp& sel_xform;
-  CandidateKeyOutTransformOp& cand_xform;
   SelectedKeyOutIt sel_iter;
   CandidateKeyOutIt cand_iter;
   ValueChannelSinksT& sinks;
@@ -776,8 +770,6 @@ template <int BlockThreads,
           typename CandidateOffsetT,
           typename SelectedReserveOp,
           typename CandidateReserveOp,
-          typename SelectedKeyOutTransformOp,
-          typename CandidateKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename CandidateKeyOutIt,
           typename IdentifyCandidatesOp,
@@ -798,8 +790,6 @@ struct strategy_to_partition_class<
   CandidateOffsetT,
   SelectedReserveOp,
   CandidateReserveOp,
-  SelectedKeyOutTransformOp,
-  CandidateKeyOutTransformOp,
   SelectedKeyOutIt,
   CandidateKeyOutIt,
   IdentifyCandidatesOp,
@@ -820,8 +810,6 @@ struct strategy_to_partition_class<
     CandidateOffsetT,
     SelectedReserveOp,
     CandidateReserveOp,
-    SelectedKeyOutTransformOp,
-    CandidateKeyOutTransformOp,
     SelectedKeyOutIt,
     CandidateKeyOutIt,
     IdentifyCandidatesOp,

@@ -86,14 +86,15 @@ enum class block_filter_strategy
 
 //---------------------------------------------------------------------
 // Per-channel value-sink bundle for the single-stream filter primitives.
-// Sibling of `value_channel_sinks_t` in `block_partition.cuh`, but holding only
-// the selected-stream iter + transform (the filter has no candidate stream).
+// Sibling of `value_channel_sinks_t` in `block_partition.cuh`, but holding
+// only the selected-stream output iterator. See the note on the partition
+// sibling for the rationale behind dropping the previous identity-only
+// `selected_value_transform`.
 //---------------------------------------------------------------------
-template <typename SelectedValuesOutIt, typename SelectedValueTransform>
+template <typename SelectedValuesOutIt>
 struct value_channel_sinks_filter_t
 {
   SelectedValuesOutIt selected_values_out;
-  SelectedValueTransform selected_value_transform;
 };
 
 //---------------------------------------------------------------------
@@ -193,7 +194,6 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT      = CUB_NS_QUALIFIER::NullType,
@@ -218,12 +218,11 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_atomics(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
-    SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
-      , sel_xform(selected_key_transform)
+      
       , sel_iter(selected_keys_out)
       , sinks(value_channel_sinks)
       , identify_op(identify_selected_op)
@@ -347,10 +346,10 @@ private:
         }
         if (granted)
         {
-          sel_iter[r.first] = sel_xform(keys[j]);
+          sel_iter[r.first] = keys[j];
           if constexpr (!keys_only)
           {
-            sinks.selected_values_out[r.first] = sinks.selected_value_transform(get_value(j));
+            sinks.selected_values_out[r.first] = get_value(j);
           }
         }
       }
@@ -359,7 +358,6 @@ private:
 
   // Captured at ctor; used by every partition() call.
   SelectedReserveOp& reserve_sel;
-  SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
   ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
@@ -386,7 +384,6 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT      = CUB_NS_QUALIFIER::NullType,
@@ -439,12 +436,11 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_staged(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
-    SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
-      , sel_xform(selected_key_transform)
+      
       , sel_iter(selected_keys_out)
       , sinks(value_channel_sinks)
       , identify_op(identify_selected_op)
@@ -514,7 +510,7 @@ private:
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = buffer.phase.keys[i];
     }
 
     if constexpr (!keys_only)
@@ -571,7 +567,7 @@ private:
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
       {
         sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-          sinks.selected_value_transform(vphase.values[i]);
+          vphase.values[i];
       }
     }
     __syncthreads();
@@ -602,7 +598,6 @@ private:
   }
 
   SelectedReserveOp& reserve_sel;
-  SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
   ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
@@ -628,7 +623,6 @@ template <int BlockThreads,
           typename KeyT,
           typename SelectedOffsetT,
           typename SelectedReserveOp,
-          typename SelectedKeyOutTransformOp,
           typename SelectedKeyOutIt,
           typename IdentifySelectedOp,
           typename ValueChannelSinksT      = CUB_NS_QUALIFIER::NullType,
@@ -686,12 +680,11 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_shared_mem(
     TempStorage& /*storage*/,
     SelectedReserveOp& reserve_selected,
-    SelectedKeyOutTransformOp& selected_key_transform,
     SelectedKeyOutIt selected_keys_out,
     ValueChannelSinksT& value_channel_sinks,
     IdentifySelectedOp& identify_selected_op)
       : reserve_sel(reserve_selected)
-      , sel_xform(selected_key_transform)
+      
       , sel_iter(selected_keys_out)
       , sinks(value_channel_sinks)
       , identify_op(identify_selected_op)
@@ -783,7 +776,7 @@ private:
 
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = sel_xform(buffer.phase.kv.keys[i]);
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = buffer.phase.kv.keys[i];
     }
 
     if constexpr (!keys_only)
@@ -791,7 +784,7 @@ private:
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
       {
         sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-          sinks.selected_value_transform(buffer.phase.kv.values[i]);
+          buffer.phase.kv.values[i];
       }
     }
     __syncthreads();
@@ -835,7 +828,6 @@ private:
   }
 
   SelectedReserveOp& reserve_sel;
-  SelectedKeyOutTransformOp& sel_xform;
   SelectedKeyOutIt sel_iter;
   ValueChannelSinksT& sinks;
   IdentifySelectedOp& identify_op;
