@@ -1831,29 +1831,58 @@ private:
   }
 
 public:
-  // Drive this CTA's entire grid-strided filter pass. Mirrors the histogram /
-  // last_filter agents' `run<TilesPerChunk>()` shape:
+  // Drive this CTA's entire grid-strided filter pass.
   //
-  //   * Early-return for CTAs whose first chunk lands past the queue.
-  //   * One `resolve_segment_state(first_chunk_start)` hoisted before the outer loop,
-  //     with the smem histogram initialised inline (only when the segment's mode uses it).
-  //   * Per chunk:
-  //       - Refresh `state` if `chunk_start` crossed past `queue_segment_end` -- this is the
-  //         flush-old-hist / resolve-new / init-new-hist handshake that the old
-  //         `process_chunk` ran inside its per-tile loop.
-  //       - **Fast path**: chunk lies fully inside one non-empty segment's full-tile range.
-  //         A fully-unrolled `TilesPerChunk`-iteration loop calls `dispatch_tile<true>`
-  //         (mode dispatch is loop-invariant per segment; ptxas hoists the mode branch
-  //         above the unrolled body).
-  //       - **Slow path**: chunk crosses a segment boundary, lands on a partial-tile slot,
-  //         visits an empty / wasted-slot tail, or is clipped at the queue tail. Per-stretch
-  //         power-of-two bit decomposition for the full tiles, followed by an at-most-one
-  //         trailing-partial conditional.
-  //   * Final flush of the last segment's smem histogram (no-op for early_stop / empty).
+  // Design choice: this is a *flat* grid-stride loop -- one tile per
+  // iteration, stride = `gridDim.x`. The earlier chunked variant kept
+  // `TilesPerChunk` (4-8) tiles per CTA iteration and split into a
+  // fully-unrolled "fast path" (chunk fits inside a segment's full tiles)
+  // plus a power-of-two bit-decomposition "slow path" (chunk crosses a
+  // segment boundary or hits a partial-tile slot). The fast-path
+  // unrolling was preserved chunk-level instruction-level parallelism;
+  // the slow path was a tail handler.
   //
-  // The per-segment epilogue (counter update + prefix-sum + bucket-finder + optional
-  // histogram reset) still lives in `device_segmented_topk_finalize_filter_kernel` and runs
-  // on the same stream after this kernel.
+  // Why the flat shape now:
+  //
+  //   * Register pressure. SASS liveness analysis on the int8/int8 filter
+  //     kernel (`topk_perf_tracking/reports/int8_int8_per_segment_state_breakdown.md`)
+  //     showed ~7-10 *additional* persistent registers tied up just by
+  //     the chunk-walk machinery (`chunk_start` / `chunk_end` /
+  //     `local_tile_start` / `local_stretch_end` / `local_full_end` /
+  //     `full_tiles_in_stretch`, plus the bit-decomposition `remaining`
+  //     / `local`). All of those are CTA-uniform yet land in per-thread
+  //     general registers because the compiler can't UR-promote them
+  //     through the chunk-walk dataflow. Removing the chunk concept makes
+  //     them disappear.
+  //   * Loss of chunk-level ILP is small on Blackwell. The intra-tile
+  //     `BlockLoad -> classify -> write` is already deeply unrolled
+  //     (`items_per_thread`); occupancy from `__launch_bounds__` gives
+  //     the warp scheduler enough work to hide tile-to-tile latency.
+  //
+  // Shape:
+  //   * Early-return for CTAs whose first tile lands past the queue.
+  //   * One `resolve_segment_state(blockIdx.x)` hoisted before the loop,
+  //     with the smem histogram initialised inline.
+  //   * Per tile:
+  //       - Refresh `state` if we crossed a segment boundary
+  //         (`tile_id >= state.queue_segment_end`) -- the
+  //         flush-old-hist / resolve-new / init-new-hist handshake.
+  //       - Skip empty segments and wasted-tail / past-data tiles.
+  //       - Dispatch a single `dispatch_tile<true>` (full tile) or, when
+  //         the policy lets the filter kernel handle partials, a
+  //         `dispatch_tile<false>` on the tile right after the last full
+  //         one.
+  //   * Final flush of the last segment's smem histogram (no-op for
+  //     early_stop / empty / never-entered).
+  //
+  // The per-segment epilogue (counter update + prefix-sum + bucket-finder
+  // + optional histogram reset) still lives in
+  // `device_segmented_topk_finalize_filter_kernel` and runs on the same
+  // stream after this kernel.
+  //
+  // `TilesPerChunk` is kept on the template signature for ABI/source
+  // compatibility with the histogram / last_filter agents but is unused
+  // inside the body; the static_assert preserves the policy contract.
   template <int TilesPerChunk>
   _CCCL_DEVICE _CCCL_FORCEINLINE void run(int pass)
   {
@@ -1863,151 +1892,64 @@ public:
 
     const LargeSegmentTileOffsetT* const d_total_large_tiles =
       &d_large_segments_tile_offsets[num_large_segments];
+    const LargeSegmentTileOffsetT total = *d_total_large_tiles;
 
-    constexpr LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(TilesPerChunk);
-    const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
-    const LargeSegmentTileOffsetT first_chunk_start =
-      static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
+    const LargeSegmentTileOffsetT first_tile = static_cast<LargeSegmentTileOffsetT>(blockIdx.x);
+    const LargeSegmentTileOffsetT stride     = static_cast<LargeSegmentTileOffsetT>(gridDim.x);
 
-    if (first_chunk_start >= *d_total_large_tiles)
+    if (first_tile >= total)
     {
       return;
     }
 
-    // Hoist first segment-state load + smem-hist init out of the loop.
-    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_chunk_start), pass);
+    // Hoist first segment-state resolve + smem-hist init.
+    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile), pass);
     __syncthreads();
     init_segment_histogram(state);
     __syncthreads();
 
-    for (LargeSegmentTileOffsetT chunk_start = first_chunk_start; chunk_start < *d_total_large_tiles;
-         chunk_start += stride)
+    for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
-      const LargeSegmentTileOffsetT chunk_end =
-        (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
-
-      // Segment refresh -- only when the cached segment no longer covers `chunk_start`.
-      if (chunk_start >= state.queue_segment_end)
+      // Segment refresh -- only when the cached segment no longer covers `tile_id`.
+      if (tile_id >= state.queue_segment_end)
       {
         __syncthreads();
         merge_segment_histogram(state);
-        state = resolve_segment_state(resolve_queue_idx(chunk_start), pass);
+        state = resolve_segment_state(resolve_queue_idx(tile_id), pass);
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
       }
 
-      // Fast path: non-empty segment, chunk lands entirely in full-tile slots.
-      const LargeSegmentTileOffsetT full_tile_boundary =
-        state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles);
-      if (!state.empty && chunk_start + chunk_size_v <= full_tile_boundary)
+      if (state.empty)
       {
-        const OffsetT local_tile_start = static_cast<OffsetT>(chunk_start - state.slab_base);
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int i = 0; i < TilesPerChunk; ++i)
-        {
-          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile_start + i));
-        }
         continue;
       }
 
-      // Slow path.
-      LargeSegmentTileOffsetT chunk_cursor = chunk_start;
-      while (chunk_cursor < chunk_end)
+      const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
+      if (local_tile < state.num_full_tiles)
       {
-        // Segment refresh inside the stretch walk.
-        if (chunk_cursor >= state.queue_segment_end)
+        dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile));
+      }
+      else if constexpr (!FullTilesOnly)
+      {
+        // local_tile >= num_full_tiles: this is either the trailing partial slot
+        // (if `partial_items > 0`) or a wasted-tail slot past the segment's data
+        // end. Only the former drives a `dispatch_tile<false>` call; the latter
+        // falls through and the grid-stride loop skips it. In `FullTilesOnly`
+        // mode this whole branch is `if constexpr`-eliminated -- the partial
+        // tile is owned by `device_segmented_topk_finalize_filter_kernel`.
+        if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
         {
-          __syncthreads();
-          merge_segment_histogram(state);
-          state = resolve_segment_state(resolve_queue_idx(chunk_cursor), pass);
-          __syncthreads();
-          init_segment_histogram(state);
-          __syncthreads();
+          dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
         }
-
-        // Skip empty / wasted-tail in one step.
-        const LargeSegmentTileOffsetT data_end_tile =
-          state.slab_base + static_cast<LargeSegmentTileOffsetT>(state.segment_tiles_input);
-        if (state.empty || chunk_cursor >= data_end_tile)
-        {
-          const LargeSegmentTileOffsetT skip_to =
-            (chunk_end < state.queue_segment_end) ? chunk_end : state.queue_segment_end;
-          if (skip_to <= chunk_cursor)
-          {
-            break; // defensive
-          }
-          chunk_cursor = skip_to;
-          continue;
-        }
-
-        const LargeSegmentTileOffsetT stretch_end =
-          (chunk_end < data_end_tile) ? chunk_end : data_end_tile;
-        const OffsetT local_tile_start  = static_cast<OffsetT>(chunk_cursor - state.slab_base);
-        const OffsetT local_stretch_end = static_cast<OffsetT>(stretch_end - state.slab_base);
-        const OffsetT local_full_end =
-          (local_stretch_end < state.num_full_tiles) ? local_stretch_end : state.num_full_tiles;
-        const OffsetT full_tiles_in_stretch =
-          (local_full_end > local_tile_start) ? (local_full_end - local_tile_start) : OffsetT{0};
-
-        // Power-of-two bit decomposition of `full_tiles_in_stretch in [0, TilesPerChunk-1]`.
-        OffsetT remaining = full_tiles_in_stretch;
-        OffsetT local     = local_tile_start;
-        if constexpr (TilesPerChunk >= 8)
-        {
-          if (remaining >= OffsetT{4})
-          {
-            _CCCL_PRAGMA_UNROLL_FULL()
-            for (int i = 0; i < 4; ++i)
-            {
-              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
-            }
-            local += OffsetT{4};
-            remaining -= OffsetT{4};
-          }
-        }
-        if constexpr (TilesPerChunk >= 4)
-        {
-          if (remaining >= OffsetT{2})
-          {
-            _CCCL_PRAGMA_UNROLL_FULL()
-            for (int i = 0; i < 2; ++i)
-            {
-              dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local + i));
-            }
-            local += OffsetT{2};
-            remaining -= OffsetT{2};
-          }
-        }
-        if (remaining >= OffsetT{1})
-        {
-          dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local));
-        }
-
-        // Partial-tile conditional *after* the loop. In `FullTilesOnly` mode the call is
-        // `if constexpr`-eliminated -- the trailing-partial tile is owned by
-        // `device_segmented_topk_finalize_filter_kernel`, which invokes
-        // `process_partial_for_segment` per segment after this kernel completes.
-        if constexpr (!FullTilesOnly)
-        {
-          const OffsetT next_local = local_tile_start + full_tiles_in_stretch;
-          const bool reaches_partial_slot =
-            (next_local == state.num_full_tiles) && (state.partial_items > 0)
-            && (local_stretch_end > state.num_full_tiles);
-          if (reaches_partial_slot)
-          {
-            dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
-          }
-        }
-
-        chunk_cursor = stretch_end;
       }
     }
 
     // Final flush: merge the last active segment's smem histogram (no-op for
-    // early_stop / empty). Unconditional in the sense that we always reach this point
-    // (the early-return filtered out CTAs with no work); the predicate inside
-    // `merge_segment_histogram` decides whether to actually merge.
+    // early_stop / empty). Always reached -- the early-return filtered out CTAs with
+    // no work; the predicate inside `merge_segment_histogram` decides whether to
+    // actually merge.
     __syncthreads();
     merge_segment_histogram(state);
   }
