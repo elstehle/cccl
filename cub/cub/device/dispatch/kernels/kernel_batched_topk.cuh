@@ -662,6 +662,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // Static-pass siblings: `Pass` is a kernel template parameter so the dispatcher
   // launches one specialisation per filter-pass value. `start_bit` / `mask` are
   // `constexpr` inside the ops; the structures carry no per-pass runtime state.
+  // For `identify_candidates_op` we pick the value-holding variant
+  // (`*_static_value_t`) so the dereference of `kth_key_bits` happens once at
+  // op construction (per tile body) instead of once per item in `operator()`.
   // See `dispatch_topk_common.cuh` for the dynamic-vs-static op contract.
   using extract_bin_op_t = detail::topk::extract_bin_op_static_t<
     key_in_t,
@@ -669,7 +672,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     agent_topk_policy_t::bits_per_pass,
     Pass,
     DecomposerT>;
-  using identify_candidates_op_t = detail::topk::identify_candidates_op_static_t<
+  using identify_candidates_op_t = detail::topk::identify_candidates_op_static_value_t<
     key_in_t,
     SelectDirection,
     agent_topk_policy_t::bits_per_pass,

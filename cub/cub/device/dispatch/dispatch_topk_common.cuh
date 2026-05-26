@@ -262,9 +262,10 @@ struct identify_candidates_op_t<T, SelectDirection, BitsPerPass, DecomposerT, tr
 template <typename T, select SelectDirection, int BitsPerPass, int Pass, typename DecomposerT>
 struct identify_candidates_op_static_t<T, SelectDirection, BitsPerPass, Pass, DecomposerT, true>
 {
-  using unsigned_bits_t          = typename Traits<T>::UnsignedBits;
-  using key_prefix_t             = key_prefix_storage_t<T>;
-  static constexpr int start_bit = calc_start_bit<T, BitsPerPass>(Pass - 1);
+  using unsigned_bits_t              = typename Traits<T>::UnsignedBits;
+  using key_prefix_t                 = key_prefix_storage_t<T>;
+  static constexpr int start_bit     = calc_start_bit<T, BitsPerPass>(Pass - 1);
+  static constexpr bool holds_value  = false;
 
   unsigned_bits_t* kth_key_bits;
 
@@ -289,21 +290,29 @@ struct identify_candidates_op_static_t<T, SelectDirection, BitsPerPass, Pass, De
 };
 
 // Value-holding sibling of `identify_candidates_op_static_t<..., true>`.
-// Carries the dereferenced `kth_key_bits` *value* (loaded once at kernel
-// entry from the per-segment counter) rather than the pointer to it, so the
-// per-item `operator()` does not hit the LSU. Comes at the cost of one extra
-// persistent register (the value).
+// Carries the dereferenced `kth_key_bits` *value* (loaded once at op
+// construction time from the per-segment counter) rather than the pointer
+// to it, so the per-item `operator()` does not hit the LSU. Comes at the
+// cost of one extra persistent register (the value) and a slightly heavier
+// ctor (one global load instead of just a pointer copy).
 template <typename T, select SelectDirection, int BitsPerPass, int Pass, typename DecomposerT>
 struct identify_candidates_op_static_value_t<T, SelectDirection, BitsPerPass, Pass, DecomposerT, true>
 {
-  using unsigned_bits_t          = typename Traits<T>::UnsignedBits;
-  static constexpr int start_bit = calc_start_bit<T, BitsPerPass>(Pass - 1);
+  using unsigned_bits_t              = typename Traits<T>::UnsignedBits;
+  using key_prefix_t                 = key_prefix_storage_t<T>;
+  static constexpr int start_bit     = calc_start_bit<T, BitsPerPass>(Pass - 1);
+  static constexpr bool holds_value  = true;
 
   unsigned_bits_t kth_key_value;
 
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE
-  identify_candidates_op_static_value_t(unsigned_bits_t kth_key_value)
-      : kth_key_value(kth_key_value)
+  // Construct from the per-segment counter's `kth_key_bits` field. Reads
+  // the value at ctor time so subsequent `operator()` calls do not hit
+  // the LSU. Drop-in for the pointer-based ctor signature except that
+  // pass / total_bits / decomposer are unused (they were only needed to
+  // derive `start_bit`, which is now compile-time).
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE identify_candidates_op_static_value_t(
+    key_prefix_t* kth_key_bits, int /*pass*/ = 0, int /*total_bits*/ = 0, DecomposerT /*decomposer*/ = {})
+      : kth_key_value(kth_key_bits->bits)
   {}
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE candidate_class operator()(T key) const
