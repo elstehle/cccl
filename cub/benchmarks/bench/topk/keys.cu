@@ -97,7 +97,12 @@ void topk_keys(nvbench::state& state, nvbench::type_list<KeyT, OffsetT, OutOffse
     static_cast<::cuda::std::int64_t>(elements)};
   cub::detail::batched_topk::k_uniform<1, max_selected_elements> k_param{
     static_cast<::cuda::std::int64_t>(selected_elements)};
-  cub::detail::batched_topk::select_direction_static<cub::detail::topk::select::max> direction_param{};
+  // NOTE: explicit ctor value is required -- `uniform_discrete_param`'s default ctor leaves
+  // `value` uninitialized, even when the template only allows a single option. Without this
+  // the dispatch runtime-reads garbage and silently picks `select::min`. See
+  // `cub/cub/detail/segmented_params.cuh::uniform_discrete_param`.
+  cub::detail::batched_topk::select_direction_static<cub::detail::topk::select::max> direction_param{
+    cub::detail::topk::select::max};
   cub::detail::batched_topk::num_segments_uniform<1, max_num_segments> num_segments_param{
     ::cuda::std::int64_t{1}};
   cub::detail::batched_topk::total_num_items_guarantee<1, max_elements> total_items_param{
