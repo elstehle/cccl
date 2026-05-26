@@ -36,6 +36,30 @@
 
 #include <cuda/__cmath/ceil_div.h>
 
+// Opt-in per-pass / per-segment debug printf for batched TopK. Enabled by adding
+//   -DCUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF=1
+// to the compile command (e.g. via -DCMAKE_CUDA_FLAGS). When enabled, exactly one
+// thread per kernel launch (`blockIdx.x == 0 && threadIdx.x == 0`) prints a single
+// line summarising the per-segment state resolved at the top of each agent `run()`.
+// The intent is to expose pass-to-pass shrinking of the candidate set, the
+// load-from-candidates-buffer state, and the per-pass num_selected_written counter.
+#ifndef CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF
+#  define CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF 0
+#endif
+
+#if CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF
+#  define CUB_DETAIL_BATCHED_TOPK_DPRINTF(...)                              \
+    do                                                                      \
+    {                                                                       \
+      if (blockIdx.x == 0 && threadIdx.x == 0)                              \
+      {                                                                     \
+        ::printf(__VA_ARGS__);                                              \
+      }                                                                     \
+    } while (false)
+#else
+#  define CUB_DETAIL_BATCHED_TOPK_DPRINTF(...) ((void) 0)
+#endif
+
 CUB_NAMESPACE_BEGIN
 
 namespace detail::batched_topk
@@ -1495,6 +1519,47 @@ private:
     return s;
   }
 
+  // Debug-only: print a one-line summary of the per-segment state resolved at the top of
+  // `run()` (and each segment-boundary refresh). Compiled out when
+  // `CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF == 0`. Only block 0 / thread 0 prints, so for the
+  // single-segment benchmark we get exactly one line per kernel launch.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  debug_print_state(const char* stage, int pass, LargeSegmentTileOffsetT queue_idx, const per_segment_state_t& s) const
+  {
+#if CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF
+    if (blockIdx.x == 0 && threadIdx.x == 0)
+    {
+      ::printf("[batched_topk %s pass=%d seg=%lld grid=%d tile_items=%d] "
+               "empty=%d early_stop=%d will_buffer=%d load_from_cand=%d "
+               "k=%lld in_len=%lld curr_len=%lld num_sel_wr=%lld num_ties_back=%lld "
+               "num_full_tiles=%lld partial=%lld slab_base=%lld queue_end=%lld\n",
+               stage,
+               pass,
+               static_cast<long long>(queue_idx),
+               static_cast<int>(gridDim.x),
+               static_cast<int>(tile_items),
+               static_cast<int>(s.empty),
+               static_cast<int>(s.early_stop),
+               static_cast<int>(s.will_buffer),
+               static_cast<int>(s.load_from_candidates_buffer),
+               static_cast<long long>(s.current_k),
+               static_cast<long long>(s.input_length_actual),
+               static_cast<long long>(s.current_len),
+               static_cast<long long>(s.empty ? 0 : s.segment_counter->num_selected_written),
+               static_cast<long long>(s.empty ? 0 : s.segment_counter->num_ties_written_to_back),
+               static_cast<long long>(s.num_full_tiles),
+               static_cast<long long>(s.partial_items),
+               static_cast<long long>(s.slab_base),
+               static_cast<long long>(s.queue_segment_end));
+    }
+#else
+    (void) stage;
+    (void) pass;
+    (void) queue_idx;
+    (void) s;
+#endif
+  }
+
   // Per-mode tile bodies. Each takes the per-segment cached state and a tile-local index, runs
   // exactly the same code the pre-refactor `run()` ran inside its `if (early_stop) {} else if
   // (will_buffer) {} else {}` branches, minus the surrounding init / merge / finalize_pass --
@@ -1888,7 +1953,9 @@ public:
     }
 
     // Hoist first segment-state resolve + smem-hist init.
-    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile), pass);
+    const LargeSegmentTileOffsetT first_queue_idx = resolve_queue_idx(first_tile);
+    per_segment_state_t state                     = resolve_segment_state(first_queue_idx, pass);
+    debug_print_state("filter_run_first", pass, first_queue_idx, state);
     __syncthreads();
     init_segment_histogram(state);
     __syncthreads();
@@ -1900,7 +1967,9 @@ public:
       {
         __syncthreads();
         merge_segment_histogram(state);
-        state = resolve_segment_state(resolve_queue_idx(tile_id), pass);
+        const LargeSegmentTileOffsetT next_queue_idx = resolve_queue_idx(tile_id);
+        state                                        = resolve_segment_state(next_queue_idx, pass);
+        debug_print_state("filter_run_refresh", pass, next_queue_idx, state);
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
@@ -1962,6 +2031,7 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx, int pass)
   {
     per_segment_state_t state = resolve_segment_state(queue_idx, pass);
+    debug_print_state("filter_partial", pass, queue_idx, state);
     if (state.empty || state.partial_items == 0)
     {
       return;
@@ -2231,6 +2301,45 @@ private:
     return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
   }
 
+  // Debug-only: print a one-line summary of the per-segment state resolved at the top of
+  // `run()` (and each segment-boundary refresh) for `last_filter`. Compiled out when
+  // `CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF == 0`. Only block 0 / thread 0 prints, so for the
+  // single-segment benchmark we get exactly one line per kernel launch.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  debug_print_state(const char* stage, LargeSegmentTileOffsetT queue_idx, const per_segment_state_t& s) const
+  {
+#if CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF
+    if (blockIdx.x == 0 && threadIdx.x == 0)
+    {
+      ::printf("[batched_topk %s pass=%d seg=%lld grid=%d tile_items=%d] "
+               "empty=%d load_from_cand=%d "
+               "k_total=%lld num_of_kth_needed=%lld in_len=%lld "
+               "num_sel_wr=%lld num_ties_back=%lld "
+               "num_full_tiles=%lld partial=%lld slab_base=%lld queue_end=%lld\n",
+               stage,
+               static_cast<int>(s.pass),
+               static_cast<long long>(queue_idx),
+               static_cast<int>(gridDim.x),
+               static_cast<int>(tile_items),
+               static_cast<int>(s.empty),
+               static_cast<int>(s.load_from_candidates_buffer),
+               static_cast<long long>(s.k_total),
+               static_cast<long long>(s.num_of_kth_needed),
+               static_cast<long long>(s.input_length),
+               static_cast<long long>(s.empty ? 0 : s.segment_counter->num_selected_written),
+               static_cast<long long>(s.empty ? 0 : s.segment_counter->num_ties_written_to_back),
+               static_cast<long long>(s.num_full_tiles),
+               static_cast<long long>(s.partial_items),
+               static_cast<long long>(s.slab_base),
+               static_cast<long long>(s.queue_segment_end));
+    }
+#else
+    (void) stage;
+    (void) queue_idx;
+    (void) s;
+#endif
+  }
+
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
   {
     per_segment_state_t s{};
@@ -2468,7 +2577,9 @@ public:
     // Hoist first segment-state resolve + the partition / keys-source construction out of the
     // loop. Both `partition` and `keys_source` live across tiles of the same segment so
     // per-thread cross-tile state (notably `cand_reserve_open`) is preserved.
-    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile));
+    const LargeSegmentTileOffsetT first_queue_idx = resolve_queue_idx(first_tile);
+    per_segment_state_t state                     = resolve_segment_state(first_queue_idx);
+    debug_print_state("last_filter_run_first", first_queue_idx, state);
     partition_t partition     = make_partition_for_segment(state);
     keys_source_t keys_source = make_keys_source_for_segment(state);
 
@@ -2480,7 +2591,9 @@ public:
       if (tile_id >= state.queue_segment_end)
       {
         partition.epilogue();
-        state       = resolve_segment_state(resolve_queue_idx(tile_id));
+        const LargeSegmentTileOffsetT next_queue_idx = resolve_queue_idx(tile_id);
+        state                                        = resolve_segment_state(next_queue_idx);
+        debug_print_state("last_filter_run_refresh", next_queue_idx, state);
         partition   = make_partition_for_segment(state);
         keys_source = make_keys_source_for_segment(state);
       }
