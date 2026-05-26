@@ -1889,6 +1889,27 @@ public:
 
     // Hoist first segment-state resolve + smem-hist init.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile), pass);
+    // Fast path: if the first segment this CTA sees is empty AND its grid-stride run
+    // never crosses into another segment, there is no work to do anywhere -- skip the
+    // whole tile-loop body (which would otherwise burn O(total/stride) iterations
+    // each doing a `continue;`, plus the no-op smem-histogram init / merge handshakes).
+    //
+    // The CTA's last tile is `first_tile + stride * floor((total - first_tile - 1) / stride)`.
+    // If that's still inside `state.queue_segment_end`, we never cross a segment boundary.
+    // This catches the common single-segment-per-dispatch case where one (universal-)
+    // early-stop pass leaves `num_candidates_in == 0`; without this exit, the filter /
+    // last-filter kernels would still spend ~20-30 us per launch in pure overhead.
+    if (state.empty)
+    {
+      // `total > first_tile` is guaranteed by the early-return above; `stride > 0`
+      // because grid is non-empty.
+      const LargeSegmentTileOffsetT last_tile_for_cta =
+        first_tile + stride * static_cast<LargeSegmentTileOffsetT>((total - first_tile - 1) / stride);
+      if (last_tile_for_cta < state.queue_segment_end)
+      {
+        return;
+      }
+    }
     __syncthreads();
     init_segment_histogram(state);
     __syncthreads();
@@ -2469,6 +2490,20 @@ public:
     // loop. Both `partition` and `keys_source` live across tiles of the same segment so
     // per-thread cross-tile state (notably `cand_reserve_open`) is preserved.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile));
+    // Fast-empty-exit -- same motivation as `agent_batched_topk_filter_partition::run`.
+    // When a prior pass set `num_candidates_in = 0` universally, every CTA sees an empty
+    // segment and would otherwise spend O(total/stride) iterations doing `continue;` plus
+    // constructing an unused partition. Bail out when this CTA's whole grid-stride run is
+    // inside the same empty segment.
+    if (state.empty)
+    {
+      const LargeSegmentTileOffsetT last_tile_for_cta =
+        first_tile + stride * static_cast<LargeSegmentTileOffsetT>((total - first_tile - 1) / stride);
+      if (last_tile_for_cta < state.queue_segment_end)
+      {
+        return;
+      }
+    }
     partition_t partition     = make_partition_for_segment(state);
     keys_source_t keys_source = make_keys_source_for_segment(state);
 
