@@ -561,6 +561,18 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
         segment_counter->num_candidates_out = num_candidates;
         detail::topk::set_kth_key_bits<bits_per_pass>(
           segment_counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
+#if CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF
+        ::printf(
+          "[batched_topk hist_finalize pass=%d] kth_bucket=%d current_k=%lld num_selected=%lld num_candidates=%lld -> "
+          "counter.k=%lld counter.num_candidates_out=%lld\n",
+          pass,
+          bin_index,
+          static_cast<long long>(current_k),
+          static_cast<long long>(num_selected),
+          static_cast<long long>(num_candidates),
+          static_cast<long long>(segment_counter->k),
+          static_cast<long long>(segment_counter->num_candidates_out));
+#endif
       };
 
     if (threadIdx.x == 0)
@@ -961,6 +973,18 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
           segment_counter->num_candidates_out = num_candidates;
           detail::topk::set_kth_key_bits<bits_per_pass>(
             segment_counter->kth_key_bits, pass, static_cast<unsigned int>(bin_index));
+#if CUB_DETAIL_BATCHED_TOPK_DEBUG_PRINTF
+          ::printf(
+            "[batched_topk filter_finalize pass=%d] kth_bucket=%d current_k=%lld num_selected=%lld "
+            "num_candidates=%lld -> counter.k=%lld counter.num_candidates_out=%lld\n",
+            pass,
+            bin_index,
+            static_cast<long long>(k_cb),
+            static_cast<long long>(num_selected),
+            static_cast<long long>(num_candidates),
+            static_cast<long long>(segment_counter->k),
+            static_cast<long long>(segment_counter->num_candidates_out));
+#endif
         };
 
       __syncthreads();
