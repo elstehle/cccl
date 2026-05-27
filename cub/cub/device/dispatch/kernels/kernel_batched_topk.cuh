@@ -215,11 +215,15 @@ __launch_bounds__(int(
     _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
     _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
     _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
-    SegmentSizeParameterT segment_sizes,
-    KParameterT k,
-    SelectDirectionParameterT select_directions,
-    NumSegmentsParameterT num_segments,
-    batched_topk_counters<typename NumSegmentsParameterT::value_type>* d_counters,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k,
+    _CCCL_GRID_CONSTANT const SelectDirectionParameterT select_directions,
+    _CCCL_GRID_CONSTANT const NumSegmentsParameterT num_segments,
+    // `_CCCL_GRID_CONSTANT` annotates the *pointer* as grid-invariant. The pointee
+    // (`large_segments_count` + `retirement_count`) is atomically mutated by this kernel,
+    // but the base pointer itself is set once on the host. See the
+    // `device_segmented_topk_histogram_kernel` doc for the broader rationale.
+    _CCCL_GRID_CONSTANT batched_topk_counters<typename NumSegmentsParameterT::value_type>* const d_counters,
     _CCCL_GRID_CONSTANT typename NumSegmentsParameterT::value_type* const d_large_segments_ids,
     _CCCL_GRID_CONSTANT LargeSegmentTileOffsetT* const d_large_segments_tile_offsets)
 {
@@ -352,9 +356,9 @@ template <typename PolicySelector,
 __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_histogram_kernel(
     _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
-    SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k_param,
+    _CCCL_GRID_CONSTANT const NumSegmentsParameterT num_segments,
     _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
     _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
     // `_CCCL_GRID_CONSTANT` annotates the *pointer* as grid-invariant. The pointee (the
@@ -371,7 +375,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
       OutOffsetT>* const d_segment_counters,
     _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
-    ExtractBinOpT extract_bin_op)
+    _CCCL_GRID_CONSTANT const ExtractBinOpT extract_bin_op)
 {
   // `large_segments_count_it` is either a raw pointer into the mixed-path
   // `batched_topk_counters::large_segments_count` (written by the worker-per-segment kernel's
@@ -468,16 +472,16 @@ template <typename PolicySelector,
 __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
   _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_finalize_histogram_kernel(
     _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
-    SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k_param,
+    _CCCL_GRID_CONSTANT const NumSegmentsParameterT num_segments,
     _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
     // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
     // (not the pointee) grid-constant.
     _CCCL_GRID_CONSTANT detail::topk::counter<KeyInT, OffsetT, OutOffsetT>* const d_segment_counters,
     _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
-    ExtractBinOpT extract_bin_op,
+    _CCCL_GRID_CONSTANT const ExtractBinOpT extract_bin_op,
     _CCCL_GRID_CONSTANT const int pass,
     _CCCL_GRID_CONSTANT const bool reset_histogram)
 {
@@ -620,9 +624,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
     _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
     _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
-    SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k_param,
+    _CCCL_GRID_CONSTANT const NumSegmentsParameterT num_segments,
     _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
     _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
     // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
@@ -642,7 +646,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const int pass,
     _CCCL_GRID_CONSTANT const int total_bits,
     _CCCL_GRID_CONSTANT const bool reset_histogram,
-    DecomposerT decomposer)
+    _CCCL_GRID_CONSTANT const DecomposerT decomposer)
 {
   using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
   // See the histogram kernel for the rationale behind reading `total_large_tiles` from the
@@ -782,9 +786,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
     _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
     _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
-    SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k_param,
+    _CCCL_GRID_CONSTANT const NumSegmentsParameterT num_segments,
     _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
     _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
     // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
@@ -1017,9 +1021,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
     _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
     _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
-    SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k_param,
+    _CCCL_GRID_CONSTANT const NumSegmentsParameterT num_segments,
     _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
     _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
     // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
@@ -1034,7 +1038,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
     _CCCL_GRID_CONSTANT const int pass,
     _CCCL_GRID_CONSTANT const int total_bits,
-    DecomposerT decomposer)
+    _CCCL_GRID_CONSTANT const DecomposerT decomposer)
 {
   using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
   // Materialise the queue-shape `num_large_segments` so the agent can hold it as a member
