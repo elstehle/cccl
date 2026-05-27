@@ -1434,7 +1434,14 @@ private:
     {
       queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
     }
-    return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
+    // Broadcast lane-0's result to all lanes, then route the (warp-uniform) value through
+    // `makeWarpUniform`. On Blackwell+ this lowers to CREDUX (`__reduce_min_sync`), whose result
+    // ptxas's `R2UR` heuristic recognises as warp-uniform; the result of `SHFL.IDX` alone is NOT
+    // recognised. Downstream uses of `queue_idx` (notably the `atomicAdd` on
+    // `&segment_counter->num_ties_written_to_back` inside `back_grow_capped_reserve_op`) then
+    // become eligible for the warp-aggregated-atomic optimisation: VOTEU.ANY + POPC + one
+    // ATOM per warp instead of one ATOM per lane. See `cub/detail/warpspeed/make_warp_uniform.cuh`.
+    return detail::warpspeed::makeWarpUniform(__shfl_sync(0xffffffff, queue_idx_lane0, 0));
   }
 
   // Build the per-segment cached state for `queue_idx`. Pure function of `queue_idx` and the
@@ -2249,7 +2256,11 @@ private:
     {
       queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
     }
-    return __shfl_sync(0xffffffff, queue_idx_lane0, 0);
+    // See the matching docstring on `agent_batched_topk_filter_partition::resolve_queue_idx`.
+    // Routing the broadcast result through `makeWarpUniform` is what restores warp-aggregated
+    // atomics on the `&segment_counter->num_ties_written_to_back` pointer used by the
+    // `back_grow_capped_reserve_op` inside `partition.partition()`.
+    return detail::warpspeed::makeWarpUniform(__shfl_sync(0xffffffff, queue_idx_lane0, 0));
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
