@@ -35,7 +35,6 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/__cmath/ceil_div.h>
-#include <cuda/std/limits>
 
 CUB_NAMESPACE_BEGIN
 
@@ -65,39 +64,6 @@ struct batched_topk_counters
   alignas(128) unsigned retirement_count;
 };
 
-// -------------------------------------------------------------------------
-// Helper: narrow `NumSegmentsParameterT::value_type` to `uint32_t` whenever the user's
-// static / runtime upper bound makes it provably safe. Same schema as `OffsetT` and
-// `OutOffsetT` in `dispatch_batched_topk.cuh`, factored out here so every callsite that
-// needs a narrowed segment-count type (the worker_per_segment agent, the multi-CTA
-// kernels, the dispatch) can share the single source of truth.
-//
-// Sources:
-//   (1) `params::static_max_value_v<NumSegmentsParameterT>` -- the user-declared compile-
-//       time max on the number of segments.
-//   (2) `sizeof(typename NumSegmentsParameterT::value_type)` -- the user's declared
-//       runtime type. A 32-bit user type can never carry a value > UINT32_MAX regardless
-//       of the static bound.
-// Either source admitting 32-bit pins `uint32_t`; otherwise fall back to
-// `unsigned long long`.
-template <typename NumSegmentsParameterT>
-struct narrow_num_segments
-{
-  template <auto Value>
-  static constexpr bool fits_u32 =
-    static_cast<unsigned long long>(Value)
-    <= static_cast<unsigned long long>(::cuda::std::numeric_limits<::cuda::std::uint32_t>::max());
-
-  static constexpr bool fits =
-       fits_u32<params::static_max_value_v<NumSegmentsParameterT>>
-    || (sizeof(typename NumSegmentsParameterT::value_type) <= 4);
-
-  using type = ::cuda::std::conditional_t<fits, ::cuda::std::uint32_t, unsigned long long>;
-};
-
-template <typename NumSegmentsParameterT>
-using narrow_num_segments_t = typename narrow_num_segments<NumSegmentsParameterT>::type;
-
 template <typename PolicyGetter, // TODO(bgruber): pass worker_policy as NTTP in C++20
           typename KeyInputItItT,
           typename KeyOutputItItT,
@@ -121,12 +87,7 @@ struct agent_batched_topk_worker_per_segment
   using value_t = it_value_t<value_it_t>;
 
   using segment_size_val_t = typename SegmentSizeParameterT::value_type;
-  // Narrowed device-side segment-count type. See the docstring on `narrow_num_segments_t`
-  // above for the schema (mirrors `OffsetT` / `OutOffsetT` in `dispatch_batched_topk.cuh`).
-  // Replaces the old direct alias `typename NumSegmentsParameterT::value_type`, which carried
-  // the user's wider declared type (often int64) into the device counter struct, the segment-id
-  // buffer, and per-thread cached fields in this agent.
-  using num_segments_val_t = narrow_num_segments_t<NumSegmentsParameterT>;
+  using num_segments_val_t = typename NumSegmentsParameterT::value_type;
   using counters_t         = batched_topk_counters<num_segments_val_t>;
 
   static constexpr auto policy                 = PolicyGetter{}();
@@ -1132,11 +1093,6 @@ template <typename AgentTopKPolicyT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
           typename OutOffsetT,
-          // Narrowed segment-count type (often `uint32_t`). Used for the cached `num_large_segments`
-          // field and the binary-search call that resolves a tile id to a queue index. Threaded in
-          // by the kernel rather than re-derived from `NumSegmentsParameterT` so the dispatch can
-          // pick the type with full host-side knowledge of the static + runtime upper bounds.
-          typename SegmentCountT,
           detail::topk::block_partition_strategy BufferedPartStrat =
             detail::topk::block_partition_strategy::atomics,
           detail::topk::block_filter_strategy EarlyStopFilterStrat =
@@ -1348,9 +1304,7 @@ struct agent_batched_topk_filter_partition
   // the per-segment buffer-sizing assumption and the runtime gating heuristic stay consistent.
   OffsetT candidate_buffer_coefficient;
   // (See `agent_batched_topk_histogram` for the rationale behind dropping `total_large_tiles`.)
-  // Stored in the dispatch-narrowed `SegmentCountT` so we don't pay register slots for the
-  // user's wider `NumSegmentsParameterT::value_type` (often int64) when 32 bits is enough.
-  SegmentCountT num_large_segments;
+  typename NumSegmentsParameterT::value_type num_large_segments;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_filter_partition(
     TempStorage& ts,
@@ -1374,7 +1328,7 @@ struct agent_batched_topk_filter_partition
     DecomposerT decomposer,
     OffsetT candidate_buffer_length,
     OffsetT candidate_buffer_coefficient,
-    SegmentCountT num_large_segments)
+    typename NumSegmentsParameterT::value_type num_large_segments)
       : storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , d_key_segments_out_it(d_key_segments_out_it)
@@ -2073,10 +2027,6 @@ template <typename AgentTopKPolicyT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
           typename OutOffsetT,
-          // Narrowed segment-count type (often `uint32_t`). Used for the cached `num_large_segments`
-          // field and the binary-search call that resolves a tile id to a queue index. See the
-          // matching docstring on `agent_batched_topk_filter_partition`.
-          typename SegmentCountT,
           detail::topk::block_partition_strategy PartStrat =
             detail::topk::block_partition_strategy::atomics,
           bool LazyValueLoad   = false,
@@ -2206,9 +2156,7 @@ struct agent_batched_topk_last_filter
   DecomposerT decomposer;
   OffsetT candidate_buffer_length;
   // (See `agent_batched_topk_histogram` for the rationale behind dropping `total_large_tiles`.)
-  // Stored in the dispatch-narrowed `SegmentCountT` to avoid carrying the user's wider
-  // `NumSegmentsParameterT::value_type` in registers across the grid-stride tile loop.
-  SegmentCountT num_large_segments;
+  typename NumSegmentsParameterT::value_type num_large_segments;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_last_filter(
     TempStorage& ts,
@@ -2228,7 +2176,7 @@ struct agent_batched_topk_last_filter
     int total_bits,
     DecomposerT decomposer,
     OffsetT candidate_buffer_length,
-    SegmentCountT num_large_segments)
+    typename NumSegmentsParameterT::value_type num_large_segments)
       : storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , d_key_segments_out_it(d_key_segments_out_it)

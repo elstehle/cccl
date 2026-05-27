@@ -366,17 +366,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   using value_in_t      = it_value_t<it_value_t<ValueInputItItT>>;
   static constexpr bool keys_only = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
 
-  // `num_segments_val_t`: device-side type used to count / index segments throughout the
-  // dispatch and the multi-CTA agents. Narrowed using the same schema as `OffsetT` /
-  // `OutOffsetT` below: pick `uint32_t` if either source ((1) the parameter's static upper
-  // bound or (2) the user's declared `value_type`) admits 32-bit indexing, else fall back to
-  // `unsigned long long`. Keeping this narrow saves register pressure in the agents that
-  // hold a `num_large_segments` field across the full grid-stride loop, and shrinks the
-  // segment-id buffer + the on-device counters struct when the workload genuinely fits.
-  // Sourced from the shared helper `detail::batched_topk::narrow_num_segments_t` so the same
-  // type is derived in the worker-per-segment agent (`agent_batched_topk.cuh`) and the
-  // multi-CTA kernels (`kernel_batched_topk.cuh`) without re-implementing the rule.
-  using num_segments_val_t         = detail::batched_topk::narrow_num_segments_t<NumSegmentsParameterT>;
+  using num_segments_val_t         = typename NumSegmentsParameterT::value_type;
   using counters_t                 = batched_topk_counters<num_segments_val_t>;
   using segment_size_scan_offset_t = detail::choose_offset_t<num_segments_val_t>;
   using segment_size_scan_input_op_t =
@@ -426,6 +416,23 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     || fits_in_uint32_v<TotalNumItemsGuaranteeT::static_max_num_items>;
   using OutOffsetT = ::cuda::std::conditional_t<out_offset_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
 
+  // SegmentCountT: count of enqueued large segments read through `large_segments_count_it`. The
+  // same "smaller of the two host-known sources" rule as OffsetT/OutOffsetT applies, but the
+  // per-grid total-items source does not bound segment counts so only two sources participate:
+  //   (1) static upper bound on `NumSegmentsParameterT` -- the user-declared compile-time max
+  //       on the number of segments;
+  //   (2) the user-declared underlying `NumSegmentsParameterT::value_type` -- if the user
+  //       picked a 32-bit type for the segment count, the runtime count cannot exceed
+  //       `UINT32_MAX` regardless of the static bound.
+  // Either source saying "fits in 32 bits" pins `uint32_t`. Used by the histogram kernel and
+  // agent to type-narrow the dereferenced count at the binary-search upper bound and the
+  // sentinel-slot index, saving register pressure when the original `value_type` is wider
+  // than 32 bits.
+  static constexpr bool segment_count_fits_u32 =
+       fits_in_uint32_v<params::static_max_value_v<NumSegmentsParameterT>>
+    || (sizeof(typename NumSegmentsParameterT::value_type) <= 4);
+  using SegmentCountT =
+    ::cuda::std::conditional_t<segment_count_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
   // Per-segment top-k counter type. The dispatch allocates an `N_slabs`-sized array of these.
   using seg_counter_t = detail::topk::counter<key_in_t, OffsetT, OutOffsetT>;
 
@@ -652,8 +659,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                 KParameterT,
                 SelectDirectionParameterT,
                 NumSegmentsParameterT,
-                large_segment_tile_offset_t,
-                num_segments_val_t>,
+                large_segment_tile_offset_t>,
               d_key_segments_it,
               d_key_segments_out_it,
               d_value_segments_it,
@@ -904,7 +910,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         extract_bin_op_t,
         OffsetT,
         OutOffsetT,
-        num_segments_val_t>;
+        SegmentCountT>;
       // Per-segment epilogue for the histogram pass: runs after the histogram kernel finishes,
       // one CTA per large segment, doing the prefix-sum + bucket-finder + counter update +
       // (optional) global histogram reset. Replaces the per-tile `finalize_pass` that used to
@@ -923,8 +929,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         extract_bin_op_t,
         OffsetT,
         OutOffsetT,
-        key_in_t,
-        num_segments_val_t>;
+        key_in_t>;
       // The filter and last-filter kernels read/write the per-segment candidate buffer through
       // the value-channel iterators, so we instantiate them on the *effective* iterator types
       // (see `effective_d_value_segments_*` above). In materialized mode these are aliases for
@@ -946,8 +951,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         large_segments_count_it_t,
         detail::identity_decomposer_t,
         OffsetT,
-        OutOffsetT,
-        num_segments_val_t>;
+        OutOffsetT>;
       auto last_filter_kernel_ptr = device_segmented_topk_last_filter_kernel<
         PolicySelector,
         select_dir,
@@ -963,8 +967,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         large_segments_count_it_t,
         detail::identity_decomposer_t,
         OffsetT,
-        OutOffsetT,
-        num_segments_val_t>;
+        OutOffsetT>;
       // Per-segment epilogue for the filter pass (passes 1..num_passes-1). One CTA per
       // segment: per-mode trailing-partial-tile processing (when the policy enables
       // `full_tiles_only_filter`), prefix-sum + bucket-finder, counter update, and the
@@ -987,8 +990,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         detail::identity_decomposer_t,
         OffsetT,
         OutOffsetT,
-        key_in_t,
-        num_segments_val_t>;
+        key_in_t>;
 
       // Max-occupancy grid sizes per kernel, capped at `total_large_tiles_upper_bound`. Each
       // multi-CTA kernel iterates the tile space via a grid-stride loop; physical CTAs whose
