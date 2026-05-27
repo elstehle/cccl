@@ -1451,7 +1451,9 @@ private:
     [[maybe_unused]] value_in_t* out_val_buf;
 
     OffsetT* segment_histogram;
-    counter_t* segment_counter;
+    // `segment_counter` is deliberately NOT a member here -- it is threaded through call sites
+    // as a separate top-level local in `run()`. See the matching note on
+    // `agent_batched_topk_last_filter::per_segment_state_t` for the R2UR rationale.
 
     // `identify_candidates_op_t` (for some `T`) has no default ctor, so we cache the inputs to
     // its ctor here and construct it on demand in the per-mode tile body. The ctor is cheap
@@ -1492,7 +1494,13 @@ private:
 
   // Build the per-segment cached state for `queue_idx`. Pure function of `queue_idx` and the
   // per-launch agent state. Same logic as the prologue of the pre-refactor `run()`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx, int pass)
+  //
+  // `segment_counter` is returned via the `out_segment_counter` out-parameter so that callers
+  // (`run()` / `process_partial_for_segment`) can hold it as a plain top-level local, *not*
+  // a member of `per_segment_state_t`. See the matching note on
+  // `agent_batched_topk_last_filter::resolve_segment_state` for the R2UR rationale.
+  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t
+  resolve_segment_state(LargeSegmentTileOffsetT queue_idx, int pass, counter_t*& out_segment_counter)
   {
     per_segment_state_t s{};
     s.slab_base         = d_large_segments_tile_offsets[queue_idx];
@@ -1509,19 +1517,20 @@ private:
       s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    s.segment_counter   = d_segment_counters + queue_idx;
-    s.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
+    counter_t* segment_counter = d_segment_counters + queue_idx;
+    s.segment_histogram        = d_segment_histograms + queue_idx * num_buckets;
 
-    s.current_k                        = s.segment_counter->k;
-    s.current_len                      = s.segment_counter->num_candidates_out;
-    const OffsetT counter_input_length = s.segment_counter->num_candidates_in;
-    s.load_from_candidates_buffer      = s.segment_counter->load_from_candidates_buffer;
+    s.current_k                        = segment_counter->k;
+    s.current_len                      = segment_counter->num_candidates_out;
+    const OffsetT counter_input_length = segment_counter->num_candidates_in;
+    s.load_from_candidates_buffer      = segment_counter->load_from_candidates_buffer;
 
     s.pass = pass;
 
     s.empty = (counter_input_length == 0);
     if (s.empty)
     {
+      out_segment_counter = segment_counter;
       return s;
     }
 
@@ -1545,6 +1554,7 @@ private:
     s.partial_items  = s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items);
     s.segment_tiles_input =
       static_cast<OffsetT>(::cuda::ceil_div(s.input_length_actual, OffsetT{tile_items}));
+    out_segment_counter = segment_counter;
     return s;
   }
 
@@ -1557,9 +1567,13 @@ private:
   // partial-vs-full branch. Callers must guarantee:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
+  //
+  // `segment_counter` is threaded as a separate top-level parameter rather than living inside
+  // `s` so its warp-uniform value remains visible to ptxas's R2UR pass at the atomic sites
+  // below. See `resolve_segment_state` for the full rationale.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_early_stop(
+    const per_segment_state_t& s, counter_t* segment_counter, LargeSegmentTileOffsetT local_tile)
   {
     key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
     key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
@@ -1569,11 +1583,11 @@ private:
     // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
     // `int` shift) from the cached per-segment fields.
     IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+      &segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
     identify_selected_op_t identify_selected{identify_candidates_op};
     auto value_channel_sinks = make_early_stop_value_channel_sinks(s.d_values_out);
 
-    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    selected_reserve_op_t reserve_sel{&segment_counter->num_selected_written};
 
     early_stop_filter_t filter{
       storage.arms.early_stop.arena.get_partition_state(),
@@ -1652,15 +1666,15 @@ private:
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_buffered(
+    const per_segment_state_t& s, counter_t* segment_counter, LargeSegmentTileOffsetT local_tile)
   {
     key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
     key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
 
-    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
-    candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
+    selected_reserve_op_t reserve_sel{&segment_counter->num_selected_written};
+    candidate_reserve_op_t reserve_cand{&segment_counter->num_candidates_written};
 
     buffered_cand_key_out_t cand_key_out = s.out_key_buf;
     [[maybe_unused]] buffered_cand_val_out_t cand_val_out = s.out_val_buf;
@@ -1670,7 +1684,7 @@ private:
     // The partition primitive's ctor takes `IdentifyCandidatesOp&` (non-const); build a
     // local op (cheap ctor) from the cached per-segment fields.
     IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+      &segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
 
     buffered_partition_t partition{
       storage.arms.buffered.arena.get_partition_state(),
@@ -1753,12 +1767,12 @@ private:
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_unbuffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_unbuffered(
+    const per_segment_state_t& s, counter_t* segment_counter, LargeSegmentTileOffsetT local_tile)
   {
     using filter_op_t = detail::topk::topk_candidate_filter_op<IdentifyCandidatesOpT>;
     IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+      &segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
     filter_op_t filter_op{identify_candidates_op};
 
     key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
@@ -1822,19 +1836,20 @@ private:
   // fixed for the whole segment-stretch the caller is processing, so within a single
   // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  dispatch_tile(const per_segment_state_t& s, counter_t* segment_counter, LargeSegmentTileOffsetT local_tile)
   {
     if (s.early_stop)
     {
-      process_tile_early_stop<IsFullTile>(s, local_tile);
+      process_tile_early_stop<IsFullTile>(s, segment_counter, local_tile);
     }
     else if (s.will_buffer)
     {
-      process_tile_buffered<IsFullTile>(s, local_tile);
+      process_tile_buffered<IsFullTile>(s, segment_counter, local_tile);
     }
     else
     {
-      process_tile_unbuffered<IsFullTile>(s, local_tile);
+      process_tile_unbuffered<IsFullTile>(s, segment_counter, local_tile);
     }
   }
 
@@ -1941,7 +1956,13 @@ public:
     }
 
     // Hoist first segment-state resolve + smem-hist init.
-    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile), pass);
+    //
+    // `segment_counter` is kept as a plain top-level local (not a struct field of `state`)
+    // so ptxas's R2UR pass tracks it as warp-uniform across the tile loop -- which is
+    // what restores warp-aggregated-atomic lowering on the `&segment_counter->{...}`
+    // atomic sites inside the per-mode `process_tile_*` bodies. See `resolve_segment_state`.
+    counter_t* segment_counter = nullptr;
+    per_segment_state_t state  = resolve_segment_state(resolve_queue_idx(first_tile), pass, segment_counter);
     // Fast path: if the first segment this CTA sees is empty AND its grid-stride run
     // never crosses into another segment, there is no work to do anywhere -- skip the
     // whole tile-loop body (which would otherwise burn O(total/stride) iterations
@@ -1974,7 +1995,7 @@ public:
       {
         __syncthreads();
         merge_segment_histogram(state);
-        state = resolve_segment_state(resolve_queue_idx(tile_id), pass);
+        state = resolve_segment_state(resolve_queue_idx(tile_id), pass, segment_counter);
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
@@ -1988,7 +2009,7 @@ public:
       const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
       if (local_tile < state.num_full_tiles)
       {
-        dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile));
+        dispatch_tile<true>(state, segment_counter, static_cast<LargeSegmentTileOffsetT>(local_tile));
       }
       else if constexpr (!FullTilesOnly)
       {
@@ -2000,7 +2021,7 @@ public:
         // tile is owned by `device_segmented_topk_finalize_filter_kernel`.
         if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
         {
-          dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+          dispatch_tile<false>(state, segment_counter, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
         }
       }
     }
@@ -2035,7 +2056,8 @@ public:
   // Empty segments and segments with no partial (`partial_items == 0`) are no-ops.
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx, int pass)
   {
-    per_segment_state_t state = resolve_segment_state(queue_idx, pass);
+    counter_t* segment_counter = nullptr;
+    per_segment_state_t state  = resolve_segment_state(queue_idx, pass, segment_counter);
     if (state.empty || state.partial_items == 0)
     {
       return;
@@ -2047,7 +2069,7 @@ public:
       __syncthreads();
     }
 
-    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+    dispatch_tile<false>(state, segment_counter, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
 
     if (segment_uses_smem_histogram(state))
     {
@@ -2283,7 +2305,8 @@ private:
     [[maybe_unused]] inner_value_it_t d_values_in{};
     [[maybe_unused]] inner_value_out_it_t d_values_out{};
 
-    counter_t* segment_counter;
+    // `segment_counter` is deliberately NOT a member here -- it is threaded through call sites
+    // as a separate top-level local in `run()`. See `resolve_segment_state` below.
     key_in_t* in_key_buf;
     [[maybe_unused]] value_in_t* in_val_buf;
 
@@ -2315,7 +2338,19 @@ private:
     return detail::warpspeed::makeWarpUniform(__shfl_sync(0xffffffff, queue_idx_lane0, 0));
   }
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
+  // Resolves the per-segment state AND lifts `segment_counter` out of the aggregate. The pointer
+  // is returned via the `out_segment_counter` out-parameter so that callers (`run()`) can hold
+  // it as a plain top-level local, *not* a member of `per_segment_state_t`.
+  //
+  // Why: when `segment_counter` was a struct field, ptxas's R2UR (register-to-uniform-register)
+  // pass lost warp-uniformity tracking once the narrowed `SegmentCountT` template parameter
+  // changed register allocation pressure, which in turn disabled NVCC's warp-aggregated-atomic
+  // lowering on the `&segment_counter->{num_selected_written, num_ties_written_to_back,
+  // kth_key_bits}` atomic sites (see the narrowing commit's experiment notes). Lifting it out
+  // as a stand-alone local pointer keeps the value's data-flow simple enough for the R2UR pass
+  // to recognise it as warp-uniform throughout the tile loop.
+  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t
+  resolve_segment_state(LargeSegmentTileOffsetT queue_idx, counter_t*& out_segment_counter)
   {
     per_segment_state_t s{};
     s.slab_base         = d_large_segments_tile_offsets[queue_idx];
@@ -2333,14 +2368,15 @@ private:
       s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    s.segment_counter = d_segment_counters + queue_idx;
-    s.input_length    = s.segment_counter->num_candidates_in;
-    s.load_from_candidates_buffer = s.segment_counter->load_from_candidates_buffer;
-    s.pass            = pass;
+    counter_t* segment_counter    = d_segment_counters + queue_idx;
+    s.input_length                = segment_counter->num_candidates_in;
+    s.load_from_candidates_buffer = segment_counter->load_from_candidates_buffer;
+    s.pass                        = pass;
 
     s.empty = (s.input_length == 0);
     if (s.empty)
     {
+      out_segment_counter = segment_counter;
       return s;
     }
 
@@ -2350,7 +2386,7 @@ private:
     const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
     s.k_total = (::cuda::std::min) (
       static_cast<OutOffsetT>(k_param.get_param(segment_id)), static_cast<OutOffsetT>(segment_num_items));
-    s.num_of_kth_needed = static_cast<OutOffsetT>(s.segment_counter->k);
+    s.num_of_kth_needed = static_cast<OutOffsetT>(segment_counter->k);
 
     s.in_key_buf = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
     if constexpr (!keys_only)
@@ -2363,6 +2399,7 @@ private:
     s.partial_items  = s.input_length - s.num_full_tiles * static_cast<OffsetT>(tile_items);
     s.segment_tiles_input =
       static_cast<OffsetT>(::cuda::ceil_div(s.input_length, OffsetT{tile_items}));
+    out_segment_counter = segment_counter;
     return s;
   }
 
@@ -2379,11 +2416,12 @@ private:
   // atomics after the first observed grant=0) persists, just like `agent_topk_last_filter::run`
   // already does in the single-problem dispatch. Called fresh at every segment-boundary crossing
   // in `run()`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
+  _CCCL_DEVICE _CCCL_FORCEINLINE partition_t
+  make_partition_for_segment(const per_segment_state_t& s, counter_t* segment_counter)
   {
-    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    selected_reserve_op_t reserve_sel{&segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{
-      &s.segment_counter->num_ties_written_to_back,
+      &segment_counter->num_ties_written_to_back,
       static_cast<candidate_offset_t>(s.k_total),
       static_cast<candidate_offset_t>(s.num_of_kth_needed)};
 
@@ -2403,7 +2441,7 @@ private:
     // value-holding sibling lands), and the partition holds it by value too, so the partition
     // ctor copy is what binds it to this segment's state.
     IdentifyCandidatesOpT identify_candidates_op{
-      &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
+      &segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
 
     return partition_t{
       storage.partition_arena.get_partition_state(),
@@ -2552,7 +2590,12 @@ public:
     // Hoist first segment-state resolve + the partition / keys-source construction out of the
     // loop. Both `partition` and `keys_source` live across tiles of the same segment so
     // per-thread cross-tile state (notably `cand_reserve_open`) is preserved.
-    per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile));
+    //
+    // `segment_counter` is deliberately kept as a plain top-level local (not a struct field
+    // of `state`) so ptxas's R2UR pass tracks it as warp-uniform end-to-end. See
+    // `resolve_segment_state`'s comment for the motivation.
+    counter_t* segment_counter = nullptr;
+    per_segment_state_t state  = resolve_segment_state(resolve_queue_idx(first_tile), segment_counter);
     // Fast-empty-exit -- same motivation as `agent_batched_topk_filter_partition::run`.
     // When a prior pass set `num_candidates_in = 0` universally, every CTA sees an empty
     // segment and would otherwise spend O(total/stride) iterations doing `continue;` plus
@@ -2567,7 +2610,7 @@ public:
         return;
       }
     }
-    partition_t partition     = make_partition_for_segment(state);
+    partition_t partition     = make_partition_for_segment(state, segment_counter);
     keys_source_t keys_source = make_keys_source_for_segment(state);
 
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
@@ -2578,8 +2621,8 @@ public:
       if (tile_id >= state.queue_segment_end)
       {
         partition.epilogue();
-        state       = resolve_segment_state(resolve_queue_idx(tile_id));
-        partition   = make_partition_for_segment(state);
+        state       = resolve_segment_state(resolve_queue_idx(tile_id), segment_counter);
+        partition   = make_partition_for_segment(state, segment_counter);
         keys_source = make_keys_source_for_segment(state);
       }
 
