@@ -82,13 +82,15 @@ C2H_TEST("topk atomic_reserve_range_op returns (prev, n)", "[block][topk][founda
   REQUIRE(d_counter[0] == 9u);
 }
 
-C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwards", "[block][topk][foundation]")
+C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases forwards", "[block][topk][foundation]")
 {
-  // Cap at 7 items, back_anchor at 100. Three requests of 4, 4, 4:
-  //   req 0: prev=0, writable=7,  granted=min(4,7)=4, base=100-0-4=96.
-  //   req 1: prev=4, writable=3,  granted=min(4,3)=3, base=100-4-3=93.
-  //   req 2: prev=8, writable=0,  granted=0,          base=100-8-0=92.
+  // Cap at 7 items, region_start at 93 (== back_anchor 100 - cap 7). Three requests of
+  // 4, 4, 4:
+  //   req 0: prev=0, granted=min(4, 7-0)=4, base=region_start+0=93.
+  //   req 1: prev=4, granted=min(4, 7-4)=3, base=region_start+4=97.
+  //   req 2: prev=8 (>= cap), granted=0,    base=region_start+8=101.  // unused
   // Counter is bumped by the unclamped n on every call, so the final value is 4+4+4=12.
+  // Items fill [93, 96) then [97, 99) -- the forward stack across the back region.
   std::vector<unsigned> req = {4u, 4u, 4u};
   thrust::device_vector<unsigned> d_req(req.begin(), req.end());
   thrust::device_vector<unsigned> d_counter(1, 0);
@@ -96,7 +98,7 @@ C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwa
   thrust::device_vector<unsigned> d_grants(req.size(), 0);
 
   tds::back_grow_capped_reserve_op<unsigned> op{
-    thrust::raw_pointer_cast(d_counter.data()), /*back_anchor=*/100u, /*cap=*/7u};
+    thrust::raw_pointer_cast(d_counter.data()), /*region_start=*/93u, /*cap=*/7u};
 
   run_reserve_kernel<<<1, 32>>>(
     op,
@@ -109,7 +111,7 @@ C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwa
 
   std::vector<unsigned> bases(d_bases.begin(), d_bases.end());
   std::vector<unsigned> grants(d_grants.begin(), d_grants.end());
-  REQUIRE(bases == std::vector<unsigned>{96u, 93u, 92u});
+  REQUIRE(bases == std::vector<unsigned>{93u, 97u, 101u});
   REQUIRE(grants == std::vector<unsigned>{4u, 3u, 0u});
   REQUIRE(d_counter[0] == 12u);
 }
@@ -117,7 +119,7 @@ C2H_TEST("topk back_grow_capped_reserve_op clamps grants and stacks bases backwa
 C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block][topk][foundation]")
 {
   {
-    // cap=0: every grant is 0; bases follow `back_anchor - prev` (with `prev` growing
+    // cap=0: every grant is 0; bases follow `region_start + prev` (with `prev` growing
     // on every call by the unclamped n). Bases don't matter when granted=0 (nothing is
     // written), but we lock the formula so accidental sign / arithmetic changes get
     // caught.
@@ -128,7 +130,7 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block
     thrust::device_vector<unsigned> d_grants(req.size(), 99);
 
     tds::back_grow_capped_reserve_op<unsigned> op{
-      thrust::raw_pointer_cast(d_counter.data()), /*back_anchor=*/50u, /*cap=*/0u};
+      thrust::raw_pointer_cast(d_counter.data()), /*region_start=*/50u, /*cap=*/0u};
     run_reserve_kernel<<<1, 32>>>(
       op,
       thrust::raw_pointer_cast(d_req.data()),
@@ -140,14 +142,15 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block
 
     std::vector<unsigned> bases(d_bases.begin(), d_bases.end());
     std::vector<unsigned> grants(d_grants.begin(), d_grants.end());
-    // base[i] = back_anchor - prev_i - granted_i = 50 - prev_i - 0.
-    REQUIRE(bases == std::vector<unsigned>{50u, 49u, 47u});
+    // base[i] = region_start + prev_i = 50 + prev_i.
+    REQUIRE(bases == std::vector<unsigned>{50u, 51u, 53u});
     REQUIRE(grants == std::vector<unsigned>{0u, 0u, 0u});
     REQUIRE(d_counter[0] == 6u);
   }
 
   {
-    // exact-fit: cap == sum-of-requests, every grant equals its request.
+    // exact-fit: cap == sum-of-requests, every grant equals its request. region_start =
+    // back_anchor 100 - cap 10 = 90. Bases stack forward: 90, 92, 95.
     std::vector<unsigned> req = {2u, 3u, 5u};
     thrust::device_vector<unsigned> d_req(req.begin(), req.end());
     thrust::device_vector<unsigned> d_counter(1, 0);
@@ -155,7 +158,7 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block
     thrust::device_vector<unsigned> d_grants(req.size(), 0);
 
     tds::back_grow_capped_reserve_op<unsigned> op{
-      thrust::raw_pointer_cast(d_counter.data()), /*back_anchor=*/100u, /*cap=*/10u};
+      thrust::raw_pointer_cast(d_counter.data()), /*region_start=*/90u, /*cap=*/10u};
     run_reserve_kernel<<<1, 32>>>(
       op,
       thrust::raw_pointer_cast(d_req.data()),
@@ -167,7 +170,7 @@ C2H_TEST("topk back_grow_capped_reserve_op handles cap=0 and exact-fit", "[block
 
     std::vector<unsigned> bases(d_bases.begin(), d_bases.end());
     std::vector<unsigned> grants(d_grants.begin(), d_grants.end());
-    REQUIRE(bases == std::vector<unsigned>{98u, 95u, 90u});
+    REQUIRE(bases == std::vector<unsigned>{90u, 92u, 95u});
     REQUIRE(grants == std::vector<unsigned>{2u, 3u, 5u});
   }
 }

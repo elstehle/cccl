@@ -115,19 +115,30 @@ struct back_grow_capped_reserve_op
   static constexpr bool may_grant_less = true;
 
   OffsetT* counter;
-  OffsetT back_anchor;
+  // Index of the first slot of the back region (= `back_anchor - cap` precomputed by the
+  // caller). Storing the region start instead of the anchor lets the operator()'s base
+  // computation collapse from two subtracts (`back_anchor - prev - granted`) to one add
+  // (`region_start + prev`); see the doc on `operator()` below.
+  OffsetT region_start;
   OffsetT cap;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE ::cuda::std::pair<OffsetT, OffsetT> operator()(OffsetT n) const
   {
     // Advance the global counter by the unclamped n (so subsequent blocks compute the
-    // right `prev`) and locally clamp to writable items. `base` is the per-block
-    // forward write base such that the union of all blocks fills [back_anchor - cap,
-    // back_anchor) with no gaps.
-    const OffsetT prev     = static_cast<OffsetT>(atomicAdd(counter, n));
-    const OffsetT writable = (cap > prev) ? static_cast<OffsetT>(cap - prev) : OffsetT{0};
-    const OffsetT granted  = (n < writable) ? n : writable;
-    const OffsetT base     = static_cast<OffsetT>(back_anchor - prev - granted);
+    // right `prev`) and locally clamp to writable items. `base` is the per-block forward
+    // write index such that the union of all blocks fills `[region_start, region_start +
+    // cap)` with no gaps. Items appear in claim order: the first claim's `granted_0`
+    // items land at `[region_start, region_start + granted_0)`, the next at
+    // `[region_start + granted_0, region_start + granted_0 + granted_1)`, etc.
+    //
+    // The previous formulation stored `back_anchor` (the END of the back region) and
+    // returned `base = back_anchor - prev - granted`, which laid items out in
+    // *reverse* claim order. Top-k cares only about set membership of the back region,
+    // not in-region order, so the forward layout is semantically equivalent and saves
+    // one subtract per call.
+    const OffsetT prev    = static_cast<OffsetT>(atomicAdd(counter, n));
+    const OffsetT granted = (cap > prev) ? ((n < cap - prev) ? n : static_cast<OffsetT>(cap - prev)) : OffsetT{0};
+    const OffsetT base    = static_cast<OffsetT>(region_start + prev);
     return {base, granted};
   }
 };

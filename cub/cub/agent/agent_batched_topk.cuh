@@ -2330,9 +2330,12 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
   {
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
+    // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
+    // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
     candidate_reserve_op_t reserve_cand{
       &s.segment_counter->num_ties_written_to_back,
-      static_cast<candidate_offset_t>(s.k_total),
+      static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
       static_cast<candidate_offset_t>(s.num_of_kth_needed)};
 
     auto value_channel_sinks = [&] {

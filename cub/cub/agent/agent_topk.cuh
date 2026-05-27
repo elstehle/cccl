@@ -1022,10 +1022,14 @@ public:
 
     // Build the reserve ops + sinks once, before the tile loop. The partition object
     // captures these references and consults them at every flush.
+    //
+    // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
+    // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
+    // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
     selected_reserve_op_t reserve_sel{p_num_selected_written};
     candidate_reserve_op_t reserve_cand{
       p_num_ties_written_to_back,
-      static_cast<candidate_offset_t>(k_total),
+      static_cast<candidate_offset_t>(k_total - num_of_kth_needed),
       static_cast<candidate_offset_t>(num_of_kth_needed)};
     auto value_channel_sinks = make_value_channel_sinks();
     topk_noop_candidate_callback_op callback_op{};

@@ -197,12 +197,14 @@ __global__ void partition_kernel(
   counting_callback_op callback_op{d_callback_count};
   xform_t key_transform{};
 
-  // Build mode-dependent reserve ops.
+  // Build mode-dependent reserve ops. The back-grow-capped variant takes
+  // `region_start = back_anchor - cap` (the index of the first slot of the back region)
+  // so its `base` math collapses to `region_start + prev`. See `back_grow_capped_reserve_op`.
   sel_reserve_op_t reserve_sel{d_sel_counter};
   cand_reserve_op_t reserve_cand = [&]() -> cand_reserve_op_t {
     if constexpr (BackGrowCapped)
     {
-      return cand_reserve_op_t{d_cand_counter, back_anchor, cap};
+      return cand_reserve_op_t{d_cand_counter, back_anchor - cap, cap};
     }
     else
     {
@@ -463,18 +465,28 @@ void run_back_grow_capped_partition_test(
   std::sort(expected_selected_keys.begin(), expected_selected_keys.end());
   REQUIRE(got_sel_keys == expected_selected_keys);
 
-  const unsigned int cand_written = std::min<unsigned int>(d_cand_cnt[0], cap);
-  std::vector<int> got_cand_keys(host_combined.end() - cand_written, host_combined.end());
+  // New (`region_start + prev`) convention: the back region spans
+  // `[back_anchor - cap, back_anchor)` and is filled forward in claim order. Items land
+  // in `[back_region_start, back_region_start + cand_written)`; the trailing
+  // `cap - cand_written` slots remain at the sentinel.
+  const unsigned int back_region_start = back_anchor - cap;
+  const unsigned int cand_written      = std::min<unsigned int>(d_cand_cnt[0], cap);
+  std::vector<int> got_cand_keys(
+    host_combined.begin() + back_region_start, host_combined.begin() + back_region_start + cand_written);
   std::sort(got_cand_keys.begin(), got_cand_keys.end());
   std::sort(eligible_candidate_keys.begin(), eligible_candidate_keys.end());
   REQUIRE(got_cand_keys.size() == cand_written);
   REQUIRE(std::includes(
     eligible_candidate_keys.begin(), eligible_candidate_keys.end(), got_cand_keys.begin(), got_cand_keys.end()));
 
-  // Slots between the front (selected) region and the back (candidate) region must
-  // remain at their sentinel value -- back-write must not bleed past the cap.
-  const unsigned int back_start = back_anchor - cand_written;
-  for (unsigned int i = d_sel_cnt[0]; i < back_start; ++i)
+  // Slots outside the [front-selected + back-written] regions must remain sentinel:
+  //   - gap between selected and back-region start.
+  //   - the unfilled tail of the back region (cap - cand_written slots).
+  for (unsigned int i = d_sel_cnt[0]; i < back_region_start; ++i)
+  {
+    REQUIRE(host_combined[i] == sentinel);
+  }
+  for (unsigned int i = back_region_start + cand_written; i < back_anchor; ++i)
   {
     REQUIRE(host_combined[i] == sentinel);
   }
