@@ -44,6 +44,7 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/__fwd/iterator.h>
+#include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__type_traits/integral_constant.h>
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/__type_traits/remove_cv.h>
@@ -143,8 +144,14 @@ struct back_grow_capped_reserve_op
     // *reverse* claim order. Top-k cares only about set membership of the back region,
     // not in-region order, so the forward layout is semantically equivalent and saves
     // one subtract per call.
+    //
+    // The `(cap > prev) ? cap - prev : 0` guard exists because `cap - prev` would
+    // underflow (wrap) when `prev >= cap` for unsigned `OffsetT`. A naive
+    // `min(n, cap - prev)` would then read a huge value and return `n` instead of the
+    // correct `0`.
     const OffsetT prev    = atomicAdd(counter, n);
-    const OffsetT granted = (cap > prev) ? ((n < cap - prev) ? n : (cap - prev)) : OffsetT{0};
+    const OffsetT avail   = (cap > prev) ? OffsetT(cap - prev) : OffsetT{0};
+    const OffsetT granted = (::cuda::std::min) (n, avail);
     const OffsetT base    = region_start + prev;
     return {base, granted};
   }
