@@ -2333,10 +2333,24 @@ private:
       s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    s.segment_counter = d_segment_counters + queue_idx;
-    s.input_length    = s.segment_counter->num_candidates_in;
+    // `segment_counter` is a per-segment pointer (= `d_segment_counters + queue_idx`). All
+    // lanes of a warp share the same `queue_idx` (broadcast + `makeWarpUniform` in
+    // `resolve_queue_idx`), so the pointer is logically warp-uniform. Route it through
+    // `makeWarpUniform` explicitly so ptxas's `R2UR` (register-to-uniform-register)
+    // promotion pass picks it up -- without this hint, ptxas in some narrow-type builds
+    // emits an `LDC` (per-thread) instead of `LDCU` (uniform) for the kernel param load,
+    // never lifts it to UR, and the downstream atomic on
+    // `&segment_counter->num_ties_written_to_back` loses its warp-aggregated-atomic
+    // lowering (becoming one ATOM per active lane instead of one per warp).
+    {
+      counter_t* raw_seg_counter = d_segment_counters + queue_idx;
+      auto       raw_u64         = reinterpret_cast<::cuda::std::uint64_t>(raw_seg_counter);
+      raw_u64                    = detail::warpspeed::makeWarpUniform(raw_u64);
+      s.segment_counter          = reinterpret_cast<counter_t*>(raw_u64);
+    }
+    s.input_length                = s.segment_counter->num_candidates_in;
     s.load_from_candidates_buffer = s.segment_counter->load_from_candidates_buffer;
-    s.pass            = pass;
+    s.pass                        = pass;
 
     s.empty = (s.input_length == 0);
     if (s.empty)
