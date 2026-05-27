@@ -2349,8 +2349,17 @@ private:
   // kth_key_bits}` atomic sites (see the narrowing commit's experiment notes). Lifting it out
   // as a stand-alone local pointer keeps the value's data-flow simple enough for the R2UR pass
   // to recognise it as warp-uniform throughout the tile loop.
-  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t
-  resolve_segment_state(LargeSegmentTileOffsetT queue_idx, counter_t*& out_segment_counter)
+  //
+  // `out_segment_counter_wide` is a *parallel* pointer to the same `counter_t` slot, computed
+  // through **64-bit explicit pointer arithmetic** rather than 32-bit pointer-plus-index. This
+  // pointer is threaded to the atomic write sites only (see
+  // `make_partition_for_segment`). The hypothesis: when `queue_idx_t == uint32_t`,
+  // `d_segment_counters + queue_idx` emits a 32-bit-typed offset chain that ptxas's R2UR pass
+  // refuses to track through, demoting the atomic pointer to GPR-per-lane and disabling
+  // warp-aggregated-atomic lowering. An explicit `static_cast<uint64_t>(queue_idx)` should
+  // produce a 64-bit offset chain whose dataflow R2UR is willing to track end-to-end.
+  _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(
+    LargeSegmentTileOffsetT queue_idx, counter_t*& out_segment_counter, counter_t*& out_segment_counter_wide)
   {
     per_segment_state_t s{};
     s.slab_base         = d_large_segments_tile_offsets[queue_idx];
@@ -2368,7 +2377,11 @@ private:
       s.d_values_out = d_value_segments_out_it[segment_id];
     }
 
-    counter_t* segment_counter    = d_segment_counters + queue_idx;
+    counter_t* segment_counter = d_segment_counters + queue_idx;
+    // Explicitly 64-bit-typed offset chain for the atomic-site pointer. See the comment on
+    // `out_segment_counter_wide` above.
+    counter_t* segment_counter_wide = reinterpret_cast<counter_t*>(
+      reinterpret_cast<char*>(d_segment_counters) + static_cast<uint64_t>(queue_idx) * sizeof(counter_t));
     s.input_length                = segment_counter->num_candidates_in;
     s.load_from_candidates_buffer = segment_counter->load_from_candidates_buffer;
     s.pass                        = pass;
@@ -2376,7 +2389,8 @@ private:
     s.empty = (s.input_length == 0);
     if (s.empty)
     {
-      out_segment_counter = segment_counter;
+      out_segment_counter      = segment_counter;
+      out_segment_counter_wide = segment_counter_wide;
       return s;
     }
 
@@ -2399,7 +2413,8 @@ private:
     s.partial_items  = s.input_length - s.num_full_tiles * static_cast<OffsetT>(tile_items);
     s.segment_tiles_input =
       static_cast<OffsetT>(::cuda::ceil_div(s.input_length, OffsetT{tile_items}));
-    out_segment_counter = segment_counter;
+    out_segment_counter      = segment_counter;
+    out_segment_counter_wide = segment_counter_wide;
     return s;
   }
 
@@ -2416,12 +2431,17 @@ private:
   // atomics after the first observed grant=0) persists, just like `agent_topk_last_filter::run`
   // already does in the single-problem dispatch. Called fresh at every segment-boundary crossing
   // in `run()`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE partition_t
-  make_partition_for_segment(const per_segment_state_t& s, counter_t* segment_counter)
+  // `segment_counter` (32-bit-offset derived) is used for the non-atomic `&...->kth_key_bits`
+  // pointer that flows into the `identify_candidates_op` (read-only, not on the warp-agg path).
+  // `segment_counter_wide` (64-bit-offset derived) is used for the warp-aggregated atomic write
+  // sites (`num_selected_written`, `num_ties_written_to_back`). See the comment on
+  // `resolve_segment_state` for the R2UR rationale.
+  _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(
+    const per_segment_state_t& s, counter_t* segment_counter, counter_t* segment_counter_wide)
   {
-    selected_reserve_op_t reserve_sel{&segment_counter->num_selected_written};
+    selected_reserve_op_t reserve_sel{&segment_counter_wide->num_selected_written};
     candidate_reserve_op_t reserve_cand{
-      &segment_counter->num_ties_written_to_back,
+      &segment_counter_wide->num_ties_written_to_back,
       static_cast<candidate_offset_t>(s.k_total),
       static_cast<candidate_offset_t>(s.num_of_kth_needed)};
 
@@ -2594,8 +2614,15 @@ public:
     // `segment_counter` is deliberately kept as a plain top-level local (not a struct field
     // of `state`) so ptxas's R2UR pass tracks it as warp-uniform end-to-end. See
     // `resolve_segment_state`'s comment for the motivation.
-    counter_t* segment_counter = nullptr;
-    per_segment_state_t state  = resolve_segment_state(resolve_queue_idx(first_tile), segment_counter);
+    //
+    // `segment_counter_wide` is the parallel pointer with 64-bit-typed offset arithmetic,
+    // used at the atomic write sites in `make_partition_for_segment`. The hypothesis is that
+    // the 32-bit `queue_idx_t` offset chain is what blocks R2UR; the explicit 64-bit cast
+    // should give ptxas a dataflow it can track end-to-end into the atomic instruction.
+    counter_t* segment_counter      = nullptr;
+    counter_t* segment_counter_wide = nullptr;
+    per_segment_state_t state =
+      resolve_segment_state(resolve_queue_idx(first_tile), segment_counter, segment_counter_wide);
     // Fast-empty-exit -- same motivation as `agent_batched_topk_filter_partition::run`.
     // When a prior pass set `num_candidates_in = 0` universally, every CTA sees an empty
     // segment and would otherwise spend O(total/stride) iterations doing `continue;` plus
@@ -2610,7 +2637,7 @@ public:
         return;
       }
     }
-    partition_t partition     = make_partition_for_segment(state, segment_counter);
+    partition_t partition     = make_partition_for_segment(state, segment_counter, segment_counter_wide);
     keys_source_t keys_source = make_keys_source_for_segment(state);
 
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
@@ -2621,8 +2648,8 @@ public:
       if (tile_id >= state.queue_segment_end)
       {
         partition.epilogue();
-        state       = resolve_segment_state(resolve_queue_idx(tile_id), segment_counter);
-        partition   = make_partition_for_segment(state, segment_counter);
+        state       = resolve_segment_state(resolve_queue_idx(tile_id), segment_counter, segment_counter_wide);
+        partition   = make_partition_for_segment(state, segment_counter, segment_counter_wide);
         keys_source = make_keys_source_for_segment(state);
       }
 
