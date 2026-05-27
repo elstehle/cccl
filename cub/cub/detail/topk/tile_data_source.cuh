@@ -95,6 +95,13 @@ namespace topk
 // (omitted; treated as empty by the brokering protocol).
 //---------------------------------------------------------------------
 
+// `atomicAdd` on CUDA only supports the integer types `int`, `unsigned int`, and
+// `unsigned long long`. The op is therefore constrained to those `OffsetT`s -- any other
+// integer type fails overload resolution at the call site, not via an implicit
+// conversion or a warning. For every legal `OffsetT`, `cap - prev`, `region_start +
+// prev`, and `atomicAdd(...)` already evaluate to `OffsetT` under "usual arithmetic
+// conversions", so no `static_cast<OffsetT>` is needed to fix up the return / operand
+// types of the math below.
 template <typename OffsetT>
 struct atomic_reserve_range_op
 {
@@ -104,7 +111,7 @@ struct atomic_reserve_range_op
 
   _CCCL_DEVICE _CCCL_FORCEINLINE ::cuda::std::pair<OffsetT, OffsetT> operator()(OffsetT n) const
   {
-    const OffsetT base = static_cast<OffsetT>(atomicAdd(counter, n));
+    const OffsetT base = atomicAdd(counter, n);
     return {base, n};
   }
 };
@@ -136,9 +143,9 @@ struct back_grow_capped_reserve_op
     // *reverse* claim order. Top-k cares only about set membership of the back region,
     // not in-region order, so the forward layout is semantically equivalent and saves
     // one subtract per call.
-    const OffsetT prev    = static_cast<OffsetT>(atomicAdd(counter, n));
-    const OffsetT granted = (cap > prev) ? ((n < cap - prev) ? n : static_cast<OffsetT>(cap - prev)) : OffsetT{0};
-    const OffsetT base    = static_cast<OffsetT>(region_start + prev);
+    const OffsetT prev    = atomicAdd(counter, n);
+    const OffsetT granted = (cap > prev) ? ((n < cap - prev) ? n : (cap - prev)) : OffsetT{0};
+    const OffsetT base    = region_start + prev;
     return {base, granted};
   }
 };
