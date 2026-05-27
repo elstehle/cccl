@@ -549,11 +549,11 @@ private:
   // already fired callbacks at construction).
   //
   // `HasCandidateStream` selects between the full path (per-candidate
-  // `reserve_cand` + write) and the closed-stream specialization (no
-  // candidate-side reserve/write at all; the candidate callback is still
-  // fired, so the threshold-update protocol is preserved). The dispatch is
-  // peeled by `partition_impl` from the per-thread `cand_reserve_open`
-  // flag.
+  // `reserve_cand` + write + callback) and the closed-stream specialization
+  // (no candidate-side reserve / write / callback at all). The dispatch is
+  // peeled by `partition_impl` from the per-thread `cand_reserve_open` flag.
+  // The candidate callback fires only for items that actually get written --
+  // see the contract doc on `partition_atomics_fused_scatter` below.
   // -----------------------------------------------------------------
   template <bool IsFull, bool HasCandidateStream, typename Classifier, typename CandidateCallbackOpT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused(
@@ -649,14 +649,6 @@ private:
     {
       const candidate_class c = classifier(keys[j], j);
 
-      // Architecture §10.2: callback fires for every `candidate`-classified item,
-      // including ones the candidate reserve op subsequently drops (cap clamp)
-      // and the ones we drop here when the candidate stream has closed.
-      if (c == candidate_class::candidate)
-      {
-        candidate_callback_op(keys[j]);
-      }
-
       if (c == candidate_class::selected)
       {
         const auto r = reserve_sel(SelectedOffsetT{1});
@@ -674,6 +666,19 @@ private:
           }
         }
       }
+      // Candidate stream: the callback fires for every `candidate`-classified item
+      // *that ends up written* to the candidate output. Items dropped by the cap
+      // clamp (reserve_cand returns granted=0) or by the closed-stream specialization
+      // (`HasCandidateStream == false`) are silently skipped, **including the
+      // callback**. This is safe because:
+      //   - The only non-no-op callback in the pipeline is filter-buffered's
+      //     `histogram_callback_op_t`. Filter-buffered uses `atomic_reserve_range_op`
+      //     (`may_grant_less == false`), so `granted` is always true and
+      //     `cand_reserve_open` never turns off -- the histogram observes every
+      //     candidate item exactly the same as before this refactor.
+      //   - The only `may_grant_less == true` consumer is last_filter, which pairs
+      //     `back_grow_capped_reserve_op` with `topk_noop_candidate_callback_op`. Its
+      //     "missed" callbacks are noops, so the observation is moot.
       if constexpr (HasCandidateStream)
       {
         if (c == candidate_class::candidate)
@@ -687,6 +692,7 @@ private:
           }
           if (granted)
           {
+            candidate_callback_op(keys[j]);
             cand_iter[r.first] = keys[j];
             if constexpr (!keys_only)
             {
@@ -725,10 +731,12 @@ private:
   // tracking the per-thread observation inside the scatter loop and, once
   // set, dispatching the next tile's classify+scatter to a
   // `HasCandidateStream=false`-specialized instantiation that drops the
-  // per-item candidate-reserve atomic + candidate-write entirely. Items
-  // classified as `candidate` still fire the candidate callback (architecture
-  // §10.2) and skip the selected stream, equivalent to the granted-0 drop
-  // path in the full-stream specialization.
+  // per-item candidate-reserve atomic, candidate-write, **and candidate
+  // callback** entirely. Items classified as `candidate` are silently dropped
+  // on this path -- the callback is dropped too because the only consumer of
+  // this `may_grant_less=true` configuration is last_filter, which pairs the
+  // back-grow-capped reserve with `topk_noop_candidate_callback_op`. See the
+  // contract on `partition_atomics_fused_scatter`.
   //
   // Convergence is bounded: any thread that called `reserve_cand(1)` and
   // observed 0 has flag=false by tile end; any thread that didn't classify

@@ -95,14 +95,6 @@ namespace topk
 // `may_grant_less` trait. Stateless function objects: empty TempStorage / ScratchStorage
 // (omitted; treated as empty by the brokering protocol).
 //---------------------------------------------------------------------
-
-// `atomicAdd` on CUDA only supports the integer types `int`, `unsigned int`, and
-// `unsigned long long`. The op is therefore constrained to those `OffsetT`s -- any other
-// integer type fails overload resolution at the call site, not via an implicit
-// conversion or a warning. For every legal `OffsetT`, `cap - prev`, `region_start +
-// prev`, and `atomicAdd(...)` already evaluate to `OffsetT` under "usual arithmetic
-// conversions", so no `static_cast<OffsetT>` is needed to fix up the return / operand
-// types of the math below.
 template <typename OffsetT>
 struct atomic_reserve_range_op
 {
@@ -123,34 +115,19 @@ struct back_grow_capped_reserve_op
   static constexpr bool may_grant_less = true;
 
   OffsetT* counter;
-  // Index of the first slot of the back region (= `back_anchor - cap` precomputed by the
-  // caller). Storing the region start instead of the anchor lets the operator()'s base
-  // computation collapse from two subtracts (`back_anchor - prev - granted`) to one add
-  // (`region_start + prev`); see the doc on `operator()` below.
+  
+  // The start offset of the reservable region
   OffsetT region_start;
+
+  // The number of items in that can be reserved in total
   OffsetT cap;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE ::cuda::std::pair<OffsetT, OffsetT> operator()(OffsetT n) const
   {
-    // Advance the global counter by the unclamped n (so subsequent blocks compute the
-    // right `prev`) and locally clamp to writable items. `base` is the per-block forward
-    // write index such that the union of all blocks fills `[region_start, region_start +
-    // cap)` with no gaps. Items appear in claim order: the first claim's `granted_0`
-    // items land at `[region_start, region_start + granted_0)`, the next at
-    // `[region_start + granted_0, region_start + granted_0 + granted_1)`, etc.
-    //
-    // The previous formulation stored `back_anchor` (the END of the back region) and
-    // returned `base = back_anchor - prev - granted`, which laid items out in
-    // *reverse* claim order. Top-k cares only about set membership of the back region,
-    // not in-region order, so the forward layout is semantically equivalent and saves
-    // one subtract per call.
-    //
     // The `(cap > prev) ? cap - prev : 0` guard exists because `cap - prev` would
-    // underflow (wrap) when `prev >= cap` for unsigned `OffsetT`. A naive
-    // `min(n, cap - prev)` would then read a huge value and return `n` instead of the
-    // correct `0`.
+    // underflow (wrap) when `prev >= cap` for unsigned `OffsetT`. 
     const OffsetT prev    = atomicAdd(counter, n);
-    const OffsetT avail   = (cap > prev) ? OffsetT(cap - prev) : OffsetT{0};
+    const OffsetT avail   = (cap > prev) ? (cap - prev) : OffsetT{0};
     const OffsetT granted = (::cuda::std::min) (n, avail);
     const OffsetT base    = region_start + prev;
     return {base, granted};
