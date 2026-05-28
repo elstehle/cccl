@@ -1566,7 +1566,17 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
       h.complete_load(items);
-      __syncthreads();
+      // Fence the just-completed load's smem writes (smem-using BlockLoad case)
+      // *and* the previous tile's `partition` smem writes against the next
+      // `partition` call's writes -- both alias `partition_arena` via the
+      // smem union. When neither wrote to smem (DIRECT/VECTORIZE keys load and
+      // an empty `partition_t::ScratchStorage` -- the typical
+      // `multi_source<direct, direct>` config), the barrier is dead work.
+      if constexpr (tile_load_kind_uses_smem
+                    || !is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -1598,7 +1608,11 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem
+                    || !is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
 
@@ -1666,7 +1680,12 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
-      __syncthreads();
+      // See the matching note on the early-stop arm above.
+      if constexpr (tile_load_kind_uses_smem
+                    || !is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -1698,7 +1717,11 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem
+                    || !is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       partition.partition(
         storage.arms.buffered.arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
@@ -2415,7 +2438,12 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
-      __syncthreads();
+      // See the matching note on the filter agent's early-stop arm.
+      if constexpr (tile_load_kind_uses_smem
+                    || !is_empty_storage_v<typename partition_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -2447,7 +2475,11 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem
+                    || !is_empty_storage_v<typename partition_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }

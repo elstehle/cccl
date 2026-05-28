@@ -581,7 +581,14 @@ private:
           auto h = value_source.submit_load(vphase.load, num_items);
           h.complete_load(reg_values);
         }
-        __syncthreads();
+        // Fence the just-completed load's smem writes (to `vphase.load`) before the
+        // alias swap in the scatter loop below starts writing to `vphase.values`.
+        // When `ValueDataSourceScratchT` is empty the load wrote nothing to smem,
+        // so the alias swap is safe without a barrier (see `empty_storage.cuh`).
+        if constexpr (!is_empty_storage_v<ValueDataSourceScratchT>)
+        {
+          __syncthreads();
+        }
 
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < ItemsPerThread; ++j)
@@ -768,7 +775,13 @@ private:
       }
     }
 
-    __syncthreads();
+    // Phase union switches from `delegate_loads` view to `kv` view only if the
+    // eager pre-load above actually wrote to smem. See the matching note in
+    // `block_partition_shared_mem`.
+    if constexpr (!keys_only && !LazyValueLoad && !is_empty_storage_v<ValueDataSourceScratchT>)
+    {
+      __syncthreads();
+    }
     if (threadIdx.x == 0)
     {
       buffer.cnt.counter = 0;
