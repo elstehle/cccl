@@ -465,21 +465,30 @@ private:
 
 // 4.4 multi_source_data_source -- runtime-switched two-source adapter.
 //
-// Both underlying sources are alive (`TempStorage` is the aggregate of both)
-// and the multi-source delegates every operation -- `set_tile_base` to both
-// (cheap and lets ptxas hoist constants into uniform registers without a
-// branch) and `submit_load` / `gather_one` to whichever arm `pick_source_b`
-// selects (the per-tile data only ever comes from one arm).
+// Both underlying sources are alive and the multi-source delegates every
+// operation -- `set_tile_base` to both (cheap and lets ptxas hoist constants
+// into uniform registers without a branch) and `submit_load` / `gather_one`
+// to whichever arm `pick_source_b` selects (the per-tile data only ever
+// comes from one arm).
 //
-// Children ownership: the **agent** allocates both `SourceA` and `SourceB`
-// (typically as locals in `process_tile` / `run`), constructed against slots
-// of its own agent-owned aggregate `TempStorage`. The multi-source then
-// borrows references to those constructed children. This shape:
+// Children ownership: the **agent** owns both child sources and their
+// per-source `TempStorage` slots. Each child is constructed by the agent
+// against its own agent-owned `TempStorage` instance; the multi-source then
+// borrows references to the two constructed children. The multi-source
+// itself does not publish a `TempStorage` -- it has no persistent per-tile
+// state of its own beyond the two references and `pick_source_b`. This
+// keeps the agent / multi-source contract clean (no agent-side introspection
+// of an opaque aggregate type) and matches the symmetric story for
+// `ScratchStorage`, which the multi-source *does* publish because it owns
+// the per-tile alias decision between the two arms' scratch slots.
+//
+// The shape has two practical wins:
 //
 //   1. Keeps `<direct, direct>` / `<sync_block_load, direct>` codegen
-//      identical to the OLD `(SourceA, SourceB, bool)` value ctor -- ptxas
-//      still sees both arms as straight-line members and the LDCU hoist /
-//      uniform-register propagation around `pick_source_b` keeps firing.
+//      byte-identical to the OLD `(SourceA, SourceB, bool)` value ctor --
+//      ptxas still sees both arms as straight-line members and the LDCU
+//      hoist / uniform-register propagation around `pick_source_b` keeps
+//      firing.
 //   2. Composes with future non-copyable / non-movable children
 //      (`async_to_shared_data_source`'s embedded `BlockLoadToShared` has
 //      `= delete` copy and no implicit move): the multi-source ctor takes
@@ -500,19 +509,12 @@ public:
   static_assert(::cuda::std::is_same_v<value_t, typename SourceB::value_t>,
                 "multi_source_data_source requires both sources to share value_t");
 
-  // Aggregate per-child TempStorage. Kept as a named-member `struct` (not
-  // collapsed to a union or `empty_storage_t`) so the agent can drill the
-  // slots directly via `state.a` / `state.b` when constructing each child.
-  // For our typical `<direct, direct>` config both child TempStorages are
-  // `empty_storage_t` -- the aggregate is 1-2 bytes via EBO. For a future
-  // `<async_to_shared, direct>` config the aggregate carries one barrier +
-  // an empty stub (one byte over the smem footprint a union would have);
-  // we accept that cost to keep agent-side construction trivial.
-  struct TempStorage
-  {
-    typename SourceA::TempStorage a;
-    typename SourceB::TempStorage b;
-  };
+  // Note: this class intentionally does NOT publish a `TempStorage` member
+  // type. Per-source persistent state is owned by the agent as two separate
+  // `SourceA::TempStorage` / `SourceB::TempStorage` allocations -- the
+  // multi-source has no persistent state to host on top of them. Agents
+  // construct the children against their own slots, then build the
+  // multi-source with references to the constructed children.
 
   // Only one of the two sources is active per submit/complete window (`pick_source_b`
   // is set once at construction), so the two scratch slots alias via a union. The

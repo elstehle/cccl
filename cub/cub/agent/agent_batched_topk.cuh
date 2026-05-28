@@ -1250,6 +1250,11 @@ struct agent_batched_topk_filter_partition
   // `buffered`/`early_stop`) has been removed; the per-segment prefix-sum + kth-bucket scan
   // now lives in `device_segmented_topk_finalize_filter_kernel`. Smem here is just the
   // per-mode arms used during the tile body itself.
+  // Per-child persistent state. The `keys_source_t` multi-source intentionally
+  // doesn't publish a `TempStorage` of its own (see its docs in
+  // `tile_data_source.cuh`); the agent holds one `TempStorage` per child
+  // source instead, and each child source is constructed against its own
+  // slot before being passed into the multi-source ctor.
   struct _TempStorage
   {
     union arms_t
@@ -1257,13 +1262,15 @@ struct agent_batched_topk_filter_partition
       struct buffered_t
       {
         OffsetT histogram[num_buckets];
-        typename keys_source_t::TempStorage keys_source_state;
+        typename key_source_input_t::TempStorage key_src_input_state;
+        typename key_source_buffer_t::TempStorage key_src_buffer_state;
         buffered_storage_layout_t arena;
       } buffered;
 
       struct early_stop_t
       {
-        typename keys_source_t::TempStorage keys_source_state;
+        typename key_source_input_t::TempStorage key_src_input_state;
+        typename key_source_buffer_t::TempStorage key_src_buffer_state;
         early_stop_storage_layout_t arena;
       } early_stop;
 
@@ -1516,8 +1523,8 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
+    key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.key_src_input_state};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
 
     // The filter primitive's ctor takes the identify-selected op by non-const reference,
@@ -1630,8 +1637,8 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
+    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.key_src_input_state};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
 
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
@@ -1754,8 +1761,8 @@ private:
       &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
     filter_op_t filter_op{identify_candidates_op};
 
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
+    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.key_src_input_state};
+    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/false};
 
     if constexpr (IsFullTile)
@@ -2172,9 +2179,13 @@ struct agent_batched_topk_last_filter
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
+  // Per-child persistent state. `keys_source_t` (multi-source) does not
+  // publish a `TempStorage`; the agent holds one `TempStorage` per child
+  // source.
   struct _TempStorage
   {
-    typename keys_source_t::TempStorage keys_source_state;
+    typename key_source_input_t::TempStorage key_src_input_state;
+    typename key_source_buffer_t::TempStorage key_src_buffer_state;
     storage_layout_t partition_arena;
   };
 
@@ -2579,8 +2590,8 @@ public:
     // share lifetime. The multi-source holds references to `key_src_input` /
     // `key_src_buffer`; both must outlive `keys_source`, which is true for
     // the duration of this stack scope.
-    key_source_input_t key_src_input{state.d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{state.in_key_buf, storage.keys_source_state.b};
+    key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
+    key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
 
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
@@ -2602,9 +2613,9 @@ public:
         // writes today's move-assign would have.
         keys_source.~keys_source_t();
         key_src_input.~key_source_input_t();
-        ::new (&key_src_input) key_source_input_t{state.d_keys_in, storage.keys_source_state.a};
+        ::new (&key_src_input) key_source_input_t{state.d_keys_in, storage.key_src_input_state};
         key_src_buffer.~key_source_buffer_t();
-        ::new (&key_src_buffer) key_source_buffer_t{state.in_key_buf, storage.keys_source_state.b};
+        ::new (&key_src_buffer) key_source_buffer_t{state.in_key_buf, storage.key_src_buffer_state};
         ::new (&keys_source) keys_source_t{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
       }
 

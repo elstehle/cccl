@@ -508,7 +508,11 @@ struct agent_topk_filter_partition
       struct buffered_t
       {
         OffsetT histogram[num_buckets]; // phases 1 + 2
-        typename keys_source_t::TempStorage keys_source_state; // phase 1
+        // Per-child persistent state. `keys_source_t` (multi-source) does
+        // not publish a `TempStorage`; the agent holds one `TempStorage` per
+        // child source. See `tile_data_source.cuh::multi_source_data_source`.
+        typename key_source_input_t::TempStorage key_src_input_state; // phase 1
+        typename key_source_buffer_t::TempStorage key_src_buffer_state; // phase 1
         buffered_storage_layout_t arena; // phase 1
       } buffered;
 
@@ -516,7 +520,8 @@ struct agent_topk_filter_partition
 
       struct early_stop_t
       {
-        typename keys_source_t::TempStorage keys_source_state;
+        typename key_source_input_t::TempStorage key_src_input_state;
+        typename key_source_buffer_t::TempStorage key_src_buffer_state;
         early_stop_storage_layout_t arena;
       } early_stop;
 
@@ -734,8 +739,8 @@ public:
       // `keys_source_state` lives in this arm (so it can alias with the
       // buffered arm's footprint), hence the keys-source is constructed here
       // rather than at function scope.
-      key_source_input_t key_src_input{d_keys_in, storage.arms.early_stop.keys_source_state.a};
-      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.early_stop.keys_source_state.b};
+      key_source_input_t key_src_input{d_keys_in, storage.arms.early_stop.key_src_input_state};
+      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.early_stop.key_src_buffer_state};
       keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
 
       identify_selected_op_t identify_selected{identify_candidates_op};
@@ -754,8 +759,8 @@ public:
     {
       // Buffered branch: accumulate a histogram over candidates, scatter
       // selected to `d_keys_out` and candidates to `out_key_buf`.
-      key_source_input_t key_src_input{d_keys_in, storage.arms.buffered.keys_source_state.a};
-      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.buffered.keys_source_state.b};
+      key_source_input_t key_src_input{d_keys_in, storage.arms.buffered.key_src_input_state};
+      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.buffered.key_src_buffer_state};
       keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
 
       init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
@@ -933,9 +938,13 @@ struct agent_topk_last_filter
     typename keys_source_t::ScratchStorage,
     empty_prefix_sum_t>;
 
+  // Per-child persistent state. `keys_source_t` (multi-source) does not
+  // publish a `TempStorage`; the agent holds one `TempStorage` per child
+  // source.
   struct _TempStorage
   {
-    typename keys_source_t::TempStorage keys_source_state;
+    typename key_source_input_t::TempStorage key_src_input_state;
+    typename key_source_buffer_t::TempStorage key_src_buffer_state;
     storage_layout_t partition_arena;
   };
 
@@ -1023,8 +1032,8 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(OutOffsetT* p_num_ties_written_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
   {
-    key_source_input_t key_src_input{d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{in_key_buf, storage.keys_source_state.b};
+    key_source_input_t key_src_input{d_keys_in, storage.key_src_input_state};
+    key_source_buffer_t key_src_buffer{in_key_buf, storage.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
 
     // Build the reserve ops + sinks once, before the tile loop. The partition object
