@@ -544,46 +544,169 @@ public:
   using ScratchStorage =
     ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorageWrapped>;
 
-  // Tagged-union load handles. Both alternatives are alive in the small POD; only the
-  // one matching `pick_source_b` is initialized via the underlying source's submit, and only
-  // it is read in `complete_load`. The runtime branch is constant within a kernel
-  // launch (set once by the agent), so the compiler eliminates the dead branch.
+  // Tagged-union load handles. Only the arm matching `pick_b` is ever
+  // initialized -- the inactive arm's bytes stay uninitialized. The runtime
+  // tag is constant within a kernel launch (set once by the agent), so the
+  // compiler eliminates the dead branch.
+  //
+  // The handles use a union with no-op ctor/dtor so the alternatives don't
+  // have to be default-constructible. `async_to_shared_data_source`'s handle
+  // carries a `loader_t::CommitToken` whose default ctor is intentionally
+  // inaccessible and whose copy ctor is deleted (move-only). The handle is
+  // therefore:
+  //   - Not default-constructible (would leave both arms unbuilt).
+  //   - Not copy-constructible (matches the move-only nature of async's token).
+  //   - Move-constructible via an explicit ctor that placement-news the
+  //     active arm into the destination based on `other.pick_b`.
+  // Construction goes through tagged ctors (`from_a_t{}` / `from_b_t{}`),
+  // each of which placement-news exactly one arm; `submit_load` returns a
+  // prvalue via these ctors so the call site gets C++17 mandatory copy
+  // elision (NRVO fallback would otherwise need a move).
+  struct from_a_t
+  {};
+  struct from_b_t
+  {};
+
   struct full_load_handle
   {
-    typename SourceA::full_load_handle a{};
-    typename SourceB::full_load_handle b{};
-    bool pick_b{};
+    using a_t = typename SourceA::full_load_handle;
+    using b_t = typename SourceB::full_load_handle;
+
+    union _H
+    {
+      a_t a;
+      b_t b;
+      _CCCL_DEVICE _CCCL_FORCEINLINE _H() {}
+      _CCCL_DEVICE _CCCL_FORCEINLINE ~_H() {}
+    } h;
+    bool pick_b;
+
+    template <typename... Args>
+    _CCCL_DEVICE _CCCL_FORCEINLINE explicit full_load_handle(from_a_t, Args&&... args)
+        : pick_b(false)
+    {
+      ::new (static_cast<void*>(&h.a)) a_t(::cuda::std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    _CCCL_DEVICE _CCCL_FORCEINLINE explicit full_load_handle(from_b_t, Args&&... args)
+        : pick_b(true)
+    {
+      ::new (static_cast<void*>(&h.b)) b_t(::cuda::std::forward<Args>(args)...);
+    }
+
+    _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle(full_load_handle&& other) noexcept
+        : pick_b(other.pick_b)
+    {
+      if (pick_b)
+      {
+        ::new (static_cast<void*>(&h.b)) b_t(::cuda::std::move(other.h.b));
+      }
+      else
+      {
+        ::new (static_cast<void*>(&h.a)) a_t(::cuda::std::move(other.h.a));
+      }
+    }
+
+    full_load_handle()                                   = delete;
+    full_load_handle(const full_load_handle&)            = delete;
+    full_load_handle& operator=(const full_load_handle&) = delete;
+    full_load_handle& operator=(full_load_handle&&)      = delete;
+
+    _CCCL_DEVICE _CCCL_FORCEINLINE ~full_load_handle()
+    {
+      if (pick_b)
+      {
+        h.b.~b_t();
+      }
+      else
+      {
+        h.a.~a_t();
+      }
+    }
 
     template <int IPT>
     _CCCL_DEVICE _CCCL_FORCEINLINE void complete_load(value_t (&out)[IPT])
     {
       if (pick_b)
       {
-        b.complete_load(out);
+        h.b.complete_load(out);
       }
       else
       {
-        a.complete_load(out);
+        h.a.complete_load(out);
       }
     }
   };
 
   struct partial_load_handle
   {
-    typename SourceA::partial_load_handle a{};
-    typename SourceB::partial_load_handle b{};
-    bool pick_b{};
+    using a_t = typename SourceA::partial_load_handle;
+    using b_t = typename SourceB::partial_load_handle;
+
+    union _H
+    {
+      a_t a;
+      b_t b;
+      _CCCL_DEVICE _CCCL_FORCEINLINE _H() {}
+      _CCCL_DEVICE _CCCL_FORCEINLINE ~_H() {}
+    } h;
+    bool pick_b;
+
+    template <typename... Args>
+    _CCCL_DEVICE _CCCL_FORCEINLINE explicit partial_load_handle(from_a_t, Args&&... args)
+        : pick_b(false)
+    {
+      ::new (static_cast<void*>(&h.a)) a_t(::cuda::std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+    _CCCL_DEVICE _CCCL_FORCEINLINE explicit partial_load_handle(from_b_t, Args&&... args)
+        : pick_b(true)
+    {
+      ::new (static_cast<void*>(&h.b)) b_t(::cuda::std::forward<Args>(args)...);
+    }
+
+    _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle(partial_load_handle&& other) noexcept
+        : pick_b(other.pick_b)
+    {
+      if (pick_b)
+      {
+        ::new (static_cast<void*>(&h.b)) b_t(::cuda::std::move(other.h.b));
+      }
+      else
+      {
+        ::new (static_cast<void*>(&h.a)) a_t(::cuda::std::move(other.h.a));
+      }
+    }
+
+    partial_load_handle()                                      = delete;
+    partial_load_handle(const partial_load_handle&)            = delete;
+    partial_load_handle& operator=(const partial_load_handle&) = delete;
+    partial_load_handle& operator=(partial_load_handle&&)      = delete;
+
+    _CCCL_DEVICE _CCCL_FORCEINLINE ~partial_load_handle()
+    {
+      if (pick_b)
+      {
+        h.b.~b_t();
+      }
+      else
+      {
+        h.a.~a_t();
+      }
+    }
 
     template <int IPT>
     _CCCL_DEVICE _CCCL_FORCEINLINE void complete_load(value_t (&out)[IPT])
     {
       if (pick_b)
       {
-        b.complete_load(out);
+        h.b.complete_load(out);
       }
       else
       {
-        a.complete_load(out);
+        h.a.complete_load(out);
       }
     }
   };
@@ -624,30 +747,33 @@ public:
     source_b.set_tile_base(tile_base);
   }
 
+  // Each `return` is a prvalue invocation of one of the tagged ctors --
+  // C++17 mandatory copy elision constructs the handle directly in the
+  // caller's slot, no copy / move at the return. When the aggregate
+  // `ScratchStorage` is `empty_storage_t` (both children empty), the union
+  // doesn't exist; the children's `submit_load` doesn't touch the scratch in
+  // that case anyway, so we pass them stack-local stubs the compiler folds
+  // away.
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
-    // When the aggregate `ScratchStorage` is `empty_storage_t` (both children
-    // empty) the union doesn't exist; the children's `submit_load` doesn't
-    // actually touch the scratch in that case anyway, so we pass them empty
-    // stack-local stubs that the compiler folds away.
     if constexpr (_scratch_storage_is_empty)
     {
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
       if (pick_source_b)
       {
-        return full_load_handle{{}, source_b.submit_load(b_dummy), true};
+        return full_load_handle{from_b_t{}, source_b.submit_load(b_dummy)};
       }
-      return full_load_handle{source_a.submit_load(a_dummy), {}, false};
+      return full_load_handle{from_a_t{}, source_a.submit_load(a_dummy)};
     }
     else
     {
       auto& inner = s.Alias();
       if (pick_source_b)
       {
-        return full_load_handle{{}, source_b.submit_load(inner.b), true};
+        return full_load_handle{from_b_t{}, source_b.submit_load(inner.b)};
       }
-      return full_load_handle{source_a.submit_load(inner.a), {}, false};
+      return full_load_handle{from_a_t{}, source_a.submit_load(inner.a)};
     }
   }
 
@@ -659,18 +785,18 @@ public:
       typename SourceB::ScratchStorage b_dummy{};
       if (pick_source_b)
       {
-        return partial_load_handle{{}, source_b.submit_load(b_dummy, num_items), true};
+        return partial_load_handle{from_b_t{}, source_b.submit_load(b_dummy, num_items)};
       }
-      return partial_load_handle{source_a.submit_load(a_dummy, num_items), {}, false};
+      return partial_load_handle{from_a_t{}, source_a.submit_load(a_dummy, num_items)};
     }
     else
     {
       auto& inner = s.Alias();
       if (pick_source_b)
       {
-        return partial_load_handle{{}, source_b.submit_load(inner.b, num_items), true};
+        return partial_load_handle{from_b_t{}, source_b.submit_load(inner.b, num_items)};
       }
-      return partial_load_handle{source_a.submit_load(inner.a, num_items), {}, false};
+      return partial_load_handle{from_a_t{}, source_a.submit_load(inner.a, num_items)};
     }
   }
 
