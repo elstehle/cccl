@@ -599,18 +599,19 @@ public:
       , pick_source_b(pick_b)
   {}
 
-  // Non-copyable / non-movable for two reasons:
-  //   1. The class holds references; copy/move-assigning them is brittle.
-  //   2. Future children with deleted copy/move (`async_to_shared_data_source`
-  //      via `BlockLoadToShared`) would propagate deletion into the
-  //      multi-source anyway. Making it explicit here documents the contract
-  //      and ensures a caller that accidentally routes through copy/move
-  //      fails at the declaration site, not deep inside a template error.
-  // Existing call sites are all direct-init in the enclosing scope; the one
-  // assignment site at the segment boundary in `agent_batched_topk_last_filter
-  // ::run` uses destroy-then-construct via placement-new.
-  multi_source_data_source(const multi_source_data_source&)            = delete;
-  multi_source_data_source(multi_source_data_source&&)                 = delete;
+  // Copy/move construction is implicitly available (memberwise copy of the
+  // two references + the `bool`). For future non-copyable / non-movable
+  // children (e.g. `async_to_shared_data_source` via `BlockLoadToShared`)
+  // this remains safe -- the multi-source copies only the *references*,
+  // never the child itself, so the child's deleted copy ctor is never
+  // reached.
+  //
+  // Copy/move *assignment* is implicitly deleted because reference members
+  // can't be re-bound after construction. The explicit `= delete` below is
+  // documentation only -- it locks the assumption that "rebinding the
+  // multi-source to a different pair of children" is not part of the API
+  // (the segment-boundary refresh in `agent_batched_topk_last_filter::run`
+  // uses destroy-then-construct via placement-new for that reason).
   multi_source_data_source& operator=(const multi_source_data_source&) = delete;
   multi_source_data_source& operator=(multi_source_data_source&&)      = delete;
 
