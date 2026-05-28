@@ -284,11 +284,16 @@ __global__ void multi_source_kernel(
     tds::sync_block_load_data_source<const ValueT*, BlockThreads, ItemsPerThread, cub::BLOCK_LOAD_DIRECT, OffsetT>;
   using ds_t = tds::multi_source_data_source<src_a_t, src_b_t, OffsetT>;
 
-  __shared__ typename ds_t::TempStorage state;
+  // Per-child persistent state. `multi_source_data_source` deliberately does
+  // not publish a `TempStorage` -- the caller (here this test, in production
+  // the agents) holds one `TempStorage` per child and feeds each child its
+  // own slot at construction.
+  __shared__ typename src_a_t::TempStorage state_a;
+  __shared__ typename src_b_t::TempStorage state_b;
   __shared__ typename ds_t::ScratchStorage scratch;
 
-  src_a_t a{in_a, state.a};
-  src_b_t b{in_b, state.b};
+  src_a_t a{in_a, state_a};
+  src_b_t b{in_b, state_b};
   ds_t ds{a, b, pick_b};
   ds.set_tile_base(tile_base);
 

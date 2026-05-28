@@ -544,46 +544,63 @@ public:
   using ScratchStorage =
     ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorageWrapped>;
 
-  // Tagged-union load handles. Both alternatives are alive in the small POD; only the
-  // one matching `pick_source_b` is initialized via the underlying source's submit, and only
-  // it is read in `complete_load`. The runtime branch is constant within a kernel
-  // launch (set once by the agent), so the compiler eliminates the dead branch.
+  // Tagged-union load handles. Only the arm matching `pick_b` is initialized
+  // (via placement-new in `submit_load` below); only that arm is read in
+  // `complete_load`. The inactive arm's bytes stay uninitialized. The
+  // runtime tag is constant within a kernel launch (set once by the agent),
+  // so the compiler eliminates the dead branch.
+  //
+  // The handles are *unions* with user-defined no-op ctor / dtor so the
+  // alternatives don't have to be default-constructible: `async_to_shared_data_source`'s
+  // handle carries a `loader_t::CommitToken` whose default ctor is
+  // intentionally inaccessible, and aggregate-initializing the inactive arm
+  // would therefore fail to compile.
   struct full_load_handle
   {
-    typename SourceA::full_load_handle a{};
-    typename SourceB::full_load_handle b{};
-    bool pick_b{};
+    union _H
+    {
+      typename SourceA::full_load_handle a;
+      typename SourceB::full_load_handle b;
+      _CCCL_DEVICE _CCCL_FORCEINLINE _H() {}
+      _CCCL_DEVICE _CCCL_FORCEINLINE ~_H() {}
+    } h;
+    bool pick_b;
 
     template <int IPT>
     _CCCL_DEVICE _CCCL_FORCEINLINE void complete_load(value_t (&out)[IPT])
     {
       if (pick_b)
       {
-        b.complete_load(out);
+        h.b.complete_load(out);
       }
       else
       {
-        a.complete_load(out);
+        h.a.complete_load(out);
       }
     }
   };
 
   struct partial_load_handle
   {
-    typename SourceA::partial_load_handle a{};
-    typename SourceB::partial_load_handle b{};
-    bool pick_b{};
+    union _H
+    {
+      typename SourceA::partial_load_handle a;
+      typename SourceB::partial_load_handle b;
+      _CCCL_DEVICE _CCCL_FORCEINLINE _H() {}
+      _CCCL_DEVICE _CCCL_FORCEINLINE ~_H() {}
+    } h;
+    bool pick_b;
 
     template <int IPT>
     _CCCL_DEVICE _CCCL_FORCEINLINE void complete_load(value_t (&out)[IPT])
     {
       if (pick_b)
       {
-        b.complete_load(out);
+        h.b.complete_load(out);
       }
       else
       {
-        a.complete_load(out);
+        h.a.complete_load(out);
       }
     }
   };
@@ -624,54 +641,81 @@ public:
     source_b.set_tile_base(tile_base);
   }
 
+  // Build a tagged-union handle by placement-new'ing only the active arm.
+  // When the aggregate `ScratchStorage` is `empty_storage_t` (both children
+  // empty), the union doesn't exist; the children's `submit_load` doesn't
+  // touch the scratch in that case anyway, so we pass them stack-local
+  // stubs the compiler folds away.
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
-    // When the aggregate `ScratchStorage` is `empty_storage_t` (both children
-    // empty) the union doesn't exist; the children's `submit_load` doesn't
-    // actually touch the scratch in that case anyway, so we pass them empty
-    // stack-local stubs that the compiler folds away.
+    full_load_handle out;
+    out.pick_b = pick_source_b;
     if constexpr (_scratch_storage_is_empty)
     {
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
       if (pick_source_b)
       {
-        return full_load_handle{{}, source_b.submit_load(b_dummy), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::full_load_handle(source_b.submit_load(b_dummy));
       }
-      return full_load_handle{source_a.submit_load(a_dummy), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::full_load_handle(source_a.submit_load(a_dummy));
+      }
     }
     else
     {
       auto& inner = s.Alias();
       if (pick_source_b)
       {
-        return full_load_handle{{}, source_b.submit_load(inner.b), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::full_load_handle(source_b.submit_load(inner.b));
       }
-      return full_load_handle{source_a.submit_load(inner.a), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::full_load_handle(source_a.submit_load(inner.a));
+      }
     }
+    return out;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
+    partial_load_handle out;
+    out.pick_b = pick_source_b;
     if constexpr (_scratch_storage_is_empty)
     {
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
       if (pick_source_b)
       {
-        return partial_load_handle{{}, source_b.submit_load(b_dummy, num_items), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::partial_load_handle(source_b.submit_load(b_dummy, num_items));
       }
-      return partial_load_handle{source_a.submit_load(a_dummy, num_items), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::partial_load_handle(source_a.submit_load(a_dummy, num_items));
+      }
     }
     else
     {
       auto& inner = s.Alias();
       if (pick_source_b)
       {
-        return partial_load_handle{{}, source_b.submit_load(inner.b, num_items), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::partial_load_handle(source_b.submit_load(inner.b, num_items));
       }
-      return partial_load_handle{source_a.submit_load(inner.a, num_items), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::partial_load_handle(source_a.submit_load(inner.a, num_items));
+      }
     }
+    return out;
   }
 
   // On-demand single-item gather. Dispatches to whichever underlying source is
