@@ -24,6 +24,7 @@
 #include <cub/detail/topk/block_filter_speculative.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/block_partition_accumulating.cuh>
+#include <cub/detail/topk/partition_storage_layout.cuh>
 #include <cub/detail/topk/block_partition_speculative.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
