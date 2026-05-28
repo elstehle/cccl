@@ -210,9 +210,20 @@ public:
   struct TempStorage
   {};
 
-  // Per-tile scratch. Empty: the atomics strategies hold no smem state -- per-item
-  // scatter goes direct to the user's iterator via the captured reserve op.
-  struct ScratchStorage
+  // Per-tile scratch. The atomics strategies hold no scatter-side smem (per-item
+  // scatter goes direct to the user's iterator via the captured reserve op), but
+  // they DO own the per-tile load scratch for the value channel: see the matching
+  // doc on `block_partition_atomics::ScratchStorage` for the full rationale. The
+  // struct is wrapped in `cub::Uninitialized<>` so it can sit in `__shared__` even
+  // when `ValueDataSourceScratchT` carries a non-trivial union ctor / dtor.
+private:
+  struct _ScratchStorage
+  {
+    ValueDataSourceScratchT value_load;
+  };
+
+public:
+  struct ScratchStorage : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorage>
   {};
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_atomics(
@@ -274,7 +285,7 @@ private:
   // -----------------------------------------------------------------
   template <bool IsFull, typename Classifier, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_atomics_fused(
-    ScratchStorage& /*buffer*/,
+    ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
@@ -284,6 +295,10 @@ private:
     {
       static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
                     "Per-call value source's value_t must match the class-level ValueT template parameter.");
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::ScratchStorage, ValueDataSourceScratchT>,
+                    "Per-call value source's ScratchStorage must match the class-level "
+                    "ValueDataSourceScratchT template parameter (the agent is responsible for picking "
+                    "the smem-backed scratch type up front so it can flow through ScratchStorage).");
 
       if constexpr (LazyValueLoad)
       {
@@ -293,8 +308,10 @@ private:
       }
       else
       {
-        typename ValueSourceT::ScratchStorage chan_scratch{};
-        auto h = value_source.submit_load(chan_scratch);
+        // Smem-backed scratch for the value-channel load. See the matching comment
+        // in `block_partition_atomics::partition_atomics_fused`.
+        auto& chan_scratch = buffer.Alias().value_load;
+        auto h             = value_source.submit_load(chan_scratch);
         ValueT values[ItemsPerThread]{};
         h.complete_load(values);
 
