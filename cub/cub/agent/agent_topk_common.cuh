@@ -36,6 +36,7 @@
 #include <cub/block/block_scan.cuh>
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/empty_storage.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 

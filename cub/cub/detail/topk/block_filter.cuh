@@ -42,6 +42,7 @@
 #endif // no system header
 
 #include <cub/detail/topk/block_partition.cuh>
+#include <cub/detail/topk/empty_storage.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
@@ -207,24 +208,28 @@ public:
   static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
   // Class-lifetime persistent state. Empty (no carried state across partition() calls).
-  struct TempStorage
-  {};
+  using TempStorage = empty_storage_t;
 
   // Per-tile scratch. The atomics strategies hold no scatter-side smem (per-item
   // scatter goes direct to the user's iterator via the captured reserve op), but
   // they DO own the per-tile load scratch for the value channel: see the matching
-  // doc on `block_partition_atomics::ScratchStorage` for the full rationale. The
-  // struct is wrapped in `cub::Uninitialized<>` so it can sit in `__shared__` even
-  // when `ValueDataSourceScratchT` carries a non-trivial union ctor / dtor.
+  // doc on `block_partition_atomics::ScratchStorage` for the full rationale. When
+  // the value-channel scratch is itself empty, we publish `ScratchStorage` as the
+  // canonical empty marker so consumers can elide barriers / setup transitively.
 private:
-  struct _ScratchStorage
+  static constexpr bool _scratch_storage_is_empty = is_empty_storage_v<ValueDataSourceScratchT>;
+
+  struct _ScratchStorage_full
   {
     ValueDataSourceScratchT value_load;
   };
 
-public:
-  struct ScratchStorage : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorage>
+  struct _ScratchStorage_wrapped : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorage_full>
   {};
+
+public:
+  using ScratchStorage =
+    ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorage_wrapped>;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE block_filter_atomics(
     TempStorage& /*storage*/,
@@ -310,10 +315,19 @@ private:
       {
         // Smem-backed scratch for the value-channel load. See the matching comment
         // in `block_partition_atomics::partition_atomics_fused`.
-        auto& chan_scratch = buffer.Alias().value_load;
-        auto h             = value_source.submit_load(chan_scratch);
         ValueT values[ItemsPerThread]{};
-        h.complete_load(values);
+        if constexpr (_scratch_storage_is_empty)
+        {
+          ValueDataSourceScratchT chan_scratch_dummy{};
+          auto h = value_source.submit_load(chan_scratch_dummy);
+          h.complete_load(values);
+        }
+        else
+        {
+          auto& chan_scratch = buffer.Alias().value_load;
+          auto h             = value_source.submit_load(chan_scratch);
+          h.complete_load(values);
+        }
 
         filter_atomics_fused_scatter<IsFull>(
           keys, num_thread_items, classifier, value_source, values);
@@ -414,8 +428,7 @@ public:
   static constexpr int tile_items = BlockThreads * ItemsPerThread;
   static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
-  struct TempStorage
-  {};
+  using TempStorage = empty_storage_t;
 
   // Per-tile scratch. `phase` is a phase union: phase 1 (key scatter) uses the
   // `keys[]` arena; phase 2 (value scatter) reuses the same smem through the
@@ -435,9 +448,7 @@ public:
     };
     CUB_NS_QUALIFIER::Uninitialized<_payload> storage;
   };
-  struct value_phase_empty
-  {};
-  using value_phase_t = ::cuda::std::conditional_t<keys_only, value_phase_empty, value_phase_full>;
+  using value_phase_t = ::cuda::std::conditional_t<keys_only, empty_storage_t, value_phase_full>;
 
   struct ScratchStorage
   {
@@ -655,8 +666,7 @@ public:
   static constexpr int tile_items = BlockThreads * ItemsPerThread;
   static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
 
-  struct TempStorage
-  {};
+  using TempStorage = empty_storage_t;
 
   // Per-tile scratch. The `phase` union has two views: `delegate_loads` (pre-Phase-1
   // delegate-load staging area for the value channel) and `kv` (the keys + values
@@ -678,9 +688,7 @@ public:
   {
     ValueDataSourceScratchT load;
   };
-  struct delegate_load_empty
-  {};
-  using delegate_load_t = ::cuda::std::conditional_t<keys_only, delegate_load_empty, delegate_load_full>;
+  using delegate_load_t = ::cuda::std::conditional_t<keys_only, empty_storage_t, delegate_load_full>;
 
   // The phase union carries non-trivial alternatives (the data-source's `load`
   // scratch may be `multi_source_data_source::ScratchStorage`); wrapping it in

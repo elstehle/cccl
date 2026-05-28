@@ -51,6 +51,7 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cub/detail/topk/empty_storage.cuh>
 #include <cub/util_type.cuh>
 
 #include <cuda/std/__type_traits/is_empty.h>
