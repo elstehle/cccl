@@ -1573,7 +1573,7 @@ private:
       // an empty `partition_t::ScratchStorage` -- the typical
       // `multi_source<direct, direct>` config), the barrier is dead work.
       if constexpr (tile_load_kind_uses_smem
-                    || !is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
+                    || !detail::topk::is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
       {
         __syncthreads();
       }
@@ -1609,7 +1609,7 @@ private:
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       if constexpr (tile_load_kind_uses_smem
-                    || !is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
+                    || !detail::topk::is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
       {
         __syncthreads();
       }
@@ -1682,7 +1682,7 @@ private:
       h.complete_load(items);
       // See the matching note on the early-stop arm above.
       if constexpr (tile_load_kind_uses_smem
-                    || !is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
+                    || !detail::topk::is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
       {
         __syncthreads();
       }
@@ -1718,7 +1718,7 @@ private:
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       if constexpr (tile_load_kind_uses_smem
-                    || !is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
+                    || !detail::topk::is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
       {
         __syncthreads();
       }
@@ -2440,7 +2440,7 @@ private:
       h.complete_load(items);
       // See the matching note on the filter agent's early-stop arm.
       if constexpr (tile_load_kind_uses_smem
-                    || !is_empty_storage_v<typename partition_t::ScratchStorage>)
+                    || !detail::topk::is_empty_storage_v<typename partition_t::ScratchStorage>)
       {
         __syncthreads();
       }
@@ -2476,7 +2476,7 @@ private:
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       if constexpr (tile_load_kind_uses_smem
-                    || !is_empty_storage_v<typename partition_t::ScratchStorage>)
+                    || !detail::topk::is_empty_storage_v<typename partition_t::ScratchStorage>)
       {
         __syncthreads();
       }
