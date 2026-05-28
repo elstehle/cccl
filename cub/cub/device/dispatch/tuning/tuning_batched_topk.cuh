@@ -299,7 +299,8 @@ struct policy_selector
         /*.threads_per_block                    =*/512,
         /*.items_per_thread                     =*/multi_items_per_thread,
         /*.bits_per_pass                        =*/multi_bits_per_pass,
-        /*.keys_tile_load_kind                  =*/detail::topk::tile_load_kind::block_load_vectorize,
+        // EVAL: async keys load (was: block_load_vectorize).
+        /*.keys_tile_load_kind                  =*/detail::topk::tile_load_kind::block_load_to_shared_async,
         /*.scan_algorithm                       =*/BLOCK_SCAN_WARP_SCANS,
         /*.buffered_partition_strategy          =*/detail::topk::block_partition_strategy::atomics,
         /*.early_stop_filter_strategy           =*/detail::topk::block_filter_strategy::atomics,
