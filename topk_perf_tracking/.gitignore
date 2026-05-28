@@ -1,0 +1,12 @@
+# Build artifacts and big derivable dumps -- the canonical snapshots/ and
+# reports/ ARE checked in, so that switching B200 nodes (or losing /raid)
+# doesn't lose the baseline data.
+build_*/
+sass/
+sass_flat/
+
+# Raw PTXAS logs are ~400 KB each and can be regenerated from `ninja
+# cub.bench.topk.pairs.base` with `-Xptxas=-v`, but they're also tiny
+# enough that we keep them in-tree as the evidence behind each snapshot.
+# (Uncomment the next line to drop them from history if a tree gets large.)
+# raw_logs/
