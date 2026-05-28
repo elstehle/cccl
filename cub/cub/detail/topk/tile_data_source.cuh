@@ -478,16 +478,18 @@ public:
 
   // Only one of the two sources is active per submit/complete window (`pick_source_b`
   // is set once at construction), so the two scratch slots alias via a union. The
-  // explicit special members satisfy the "trivially constructible" requirement that
-  // would otherwise be violated by the typed union alternatives' own ctors/dtors.
-  union ScratchStorage
+  // union is wrapped in `cub::Uninitialized<>` so callers can place `ScratchStorage`
+  // directly in `__shared__` without tripping CUDA's "no dynamic init in shared
+  // memory" rule -- the alternatives can carry their own non-trivial ctors / dtors
+  // (e.g. another `multi_source_data_source` nested below) and the wrapper sidesteps
+  // those by carrying raw byte storage.
+  union _ScratchStorageInner
   {
     typename SourceA::ScratchStorage a;
     typename SourceB::ScratchStorage b;
-
-    _CCCL_HOST_DEVICE ScratchStorage() {}
-    _CCCL_HOST_DEVICE ~ScratchStorage() {}
   };
+  struct ScratchStorage : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorageInner>
+  {};
 
   // Tagged-union load handles. Both alternatives are alive in the small POD; only the
   // one matching `pick_source_b` is initialized via the underlying source's submit, and only
@@ -547,20 +549,22 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
+    auto& inner = s.Alias();
     if (pick_source_b)
     {
-      return full_load_handle{{}, source_b.submit_load(s.b), true};
+      return full_load_handle{{}, source_b.submit_load(inner.b), true};
     }
-    return full_load_handle{source_a.submit_load(s.a), {}, false};
+    return full_load_handle{source_a.submit_load(inner.a), {}, false};
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
+    auto& inner = s.Alias();
     if (pick_source_b)
     {
-      return partial_load_handle{{}, source_b.submit_load(s.b, num_items), true};
+      return partial_load_handle{{}, source_b.submit_load(inner.b, num_items), true};
     }
-    return partial_load_handle{source_a.submit_load(s.a, num_items), {}, false};
+    return partial_load_handle{source_a.submit_load(inner.a, num_items), {}, false};
   }
 
   // On-demand single-item gather. Dispatches to whichever underlying source is

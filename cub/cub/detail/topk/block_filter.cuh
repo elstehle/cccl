@@ -423,14 +423,17 @@ public:
   // `load` scratch and the per-tile `values[]` array. `cnt` lives outside the
   // union because it carries the per-tile count and the broadcast `granted_*`
   // slot across the whole `partition()` call. Mirrors the sister layout in
-  // `block_partition_staged`.
+  // `block_partition_staged`. Both phase unions are wrapped in
+  // `cub::Uninitialized<>` to keep the public ScratchStorage free of explicit
+  // ctor / dtor declarations.
   struct value_phase_full
   {
-    union
+    union _payload
     {
       ValueDataSourceScratchT load;
       ValueT values[tile_items];
     };
+    CUB_NS_QUALIFIER::Uninitialized<_payload> storage;
   };
   struct value_phase_empty
   {};
@@ -438,15 +441,12 @@ public:
 
   struct ScratchStorage
   {
-    union phase_t
+    union _phase_payload
     {
       KeyT keys[tile_items];
       value_phase_t value_phase;
-
-      _CCCL_HOST_DEVICE phase_t() {}
-      _CCCL_HOST_DEVICE ~phase_t() {}
-    } phase;
-
+    };
+    CUB_NS_QUALIFIER::Uninitialized<_phase_payload> phase;
     filter_counters<SelectedOffsetT> cnt;
   };
 
@@ -524,10 +524,12 @@ private:
     const SelectedOffsetT sel_to_write =
       SelectedReserveOp::may_grant_less ? buffer.cnt.granted_selected : static_cast<SelectedOffsetT>(selected_cnt);
 
+    auto& phase = buffer.phase.Alias();
+
     // Phase 3: cooperative coalesced store of keys.
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = buffer.phase.keys[i];
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = phase.keys[i];
     }
 
     if constexpr (!keys_only)
@@ -536,7 +538,7 @@ private:
                     "Per-call value source's value_t must match the class-level ValueT template parameter.");
 
       __syncthreads();
-      auto& vphase = buffer.phase.value_phase;
+      auto& vphase = phase.value_phase.storage.Alias();
       if constexpr (LazyValueLoad)
       {
         // Lazy: skip the eager tile-wide load. Each thread gathers only the
@@ -603,9 +605,9 @@ private:
     {
       if (classifier(keys[j], j))
       {
-        const int pos          = atomicAdd(&buffer.cnt.counter, 1);
-        buffer.phase.keys[pos] = keys[j];
-        positions[j]           = pos;
+        const int pos                  = atomicAdd(&buffer.cnt.counter, 1);
+        buffer.phase.Alias().keys[pos] = keys[j];
+        positions[j]                   = pos;
       }
       else
       {
@@ -680,17 +682,18 @@ public:
   {};
   using delegate_load_t = ::cuda::std::conditional_t<keys_only, delegate_load_empty, delegate_load_full>;
 
+  // The phase union carries non-trivial alternatives (the data-source's `load`
+  // scratch may be `multi_source_data_source::ScratchStorage`); wrapping it in
+  // `cub::Uninitialized<>` keeps the public ScratchStorage free of explicit
+  // ctor / dtor declarations.
   struct ScratchStorage
   {
-    union phase_t
+    union _phase_payload
     {
       delegate_load_t delegate_loads;
       keys_and_values_t kv;
-
-      _CCCL_HOST_DEVICE phase_t() {}
-      _CCCL_HOST_DEVICE ~phase_t() {}
-    } phase;
-
+    };
+    CUB_NS_QUALIFIER::Uninitialized<_phase_payload> phase;
     filter_counters<SelectedOffsetT> cnt;
   };
 
@@ -744,7 +747,7 @@ private:
     {
       static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
                     "Per-call value source's value_t must match the class-level ValueT template parameter.");
-      auto& load_slot = buffer.phase.delegate_loads;
+      auto& load_slot = buffer.phase.Alias().delegate_loads;
       if constexpr (IsFull)
       {
         auto h = value_source.submit_load(load_slot.load);
@@ -791,9 +794,10 @@ private:
     const SelectedOffsetT sel_to_write =
       SelectedReserveOp::may_grant_less ? buffer.cnt.granted_selected : static_cast<SelectedOffsetT>(selected_cnt);
 
+    auto& kv = buffer.phase.Alias().kv;
     for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
     {
-      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = buffer.phase.kv.keys[i];
+      sel_iter[sel_base + static_cast<SelectedOffsetT>(i)] = kv.keys[i];
     }
 
     if constexpr (!keys_only)
@@ -801,7 +805,7 @@ private:
       for (int i = static_cast<int>(threadIdx.x); i < static_cast<int>(sel_to_write); i += BlockThreads)
       {
         sinks.selected_values_out[sel_base + static_cast<SelectedOffsetT>(i)] =
-          buffer.phase.kv.values[i];
+          kv.values[i];
       }
     }
     __syncthreads();
@@ -828,17 +832,18 @@ private:
       {
         continue;
       }
-      const int idx             = atomicAdd(&buffer.cnt.counter, 1);
-      buffer.phase.kv.keys[idx] = keys[j];
+      const int idx = atomicAdd(&buffer.cnt.counter, 1);
+      auto& kv      = buffer.phase.Alias().kv;
+      kv.keys[idx]  = keys[j];
       if constexpr (!keys_only)
       {
         if constexpr (LazyValueLoad)
         {
-          buffer.phase.kv.values[idx] = value_source.gather_one(j);
+          kv.values[idx] = value_source.gather_one(j);
         }
         else
         {
-          buffer.phase.kv.values[idx] = reg_values[j];
+          kv.values[idx] = reg_values[j];
         }
       }
     }
