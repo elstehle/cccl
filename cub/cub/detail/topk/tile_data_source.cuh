@@ -463,10 +463,42 @@ private:
   OffsetT tile_base{};
 };
 
-// 4.4 multi_source_data_source -- runtime-switched two-source adapter. Both underlying
-// sources are alive (`TempStorage` is the aggregate of both); only one is active per
-// submit/complete window so their `ScratchStorage`s alias via a hand-rolled union with
-// named members.
+// 4.4 multi_source_data_source -- runtime-switched two-source adapter folded
+// around the *single active source* invariant.
+//
+// `pick_source_b` is set once at construction and never changes; from that
+// point on the two children alias one another at every level. Concretely:
+//
+//   - `TempStorage` is a union over the two children's TempStorages (wrapped in
+//     `Uninitialized<>` so it can sit in `__shared__` even when an arm carries a
+//     non-trivial ctor like `async_to_shared`'s mbarrier). When both children
+//     publish empty TempStorage, the aggregate collapses to `empty_storage_t`
+//     so the empty signal survives across class boundaries (see
+//     `empty_storage.cuh`).
+//
+//   - `ScratchStorage` likewise (already the shape before the refactor).
+//
+//   - Only the *active* source object exists. The ctor takes two factory
+//     callbacks; only the one matching `pick_b` is invoked and its result is
+//     placement-new'd into the active arm of `_ActiveSourceStorage`. The
+//     inactive arm is raw uninitialized bytes and is never read.
+//
+//   - `set_tile_base`, `submit_load`, `gather_one` dispatch on the runtime
+//     `pick_source_b` and call only the active arm.
+//
+//   - Load handles are tagged unions over the two children's handle types --
+//     only the active arm is initialized in `submit_load`, only the active
+//     arm is read in `complete_load`.
+//
+// Non-copyable / non-movable: the refactor is designed to compose with
+// children that have deleted copy / move (notably `async_to_shared_data_source`,
+// whose embedded `BlockLoadToShared` has `= delete` copy and no implicit
+// move). Existing factory call sites (e.g. `make_keys_source_for_segment`,
+// `make_value_channel_sources`) keep working via C++17 mandatory prvalue
+// copy elision. Segment-boundary reassignment sites use explicit
+// destroy-then-construct via placement-new. See the design proposal in
+// `topk_perf_tracking/reports/proposal_multi_source_active_source_refactor.md`
+// for the full migration discussion.
 template <typename SourceA, typename SourceB, typename OffsetT = ::cuda::std::int64_t>
 class multi_source_data_source
 {
@@ -475,29 +507,25 @@ public:
   static_assert(::cuda::std::is_same_v<value_t, typename SourceB::value_t>,
                 "multi_source_data_source requires both sources to share value_t");
 
-  // Both sources' TempStorages are alive (each persists across tiles for its
-  // own source). The agent accesses `.a` / `.b` directly on this type, so we
-  // expose it as a struct with named members rather than auto-collapsing to
-  // `empty_storage_t` when both children are empty -- transitivity at the
-  // TempStorage level would require accessor helpers on the consumer side
-  // (left for a follow-up).
-  struct TempStorage
+private:
+  // ---------- TempStorage (the per-source persistent state slot) ----------
+  static constexpr bool _temp_storage_is_empty =
+       is_empty_storage_v<typename SourceA::TempStorage>
+    && is_empty_storage_v<typename SourceB::TempStorage>;
+
+  union _TempStorageInner
   {
     typename SourceA::TempStorage a;
     typename SourceB::TempStorage b;
   };
+  struct _TempStorageWrapped : CUB_NS_QUALIFIER::Uninitialized<_TempStorageInner>
+  {};
 
-  // Only one of the two sources is active per submit/complete window (`pick_source_b`
-  // is set once at construction), so the two scratch slots alias via a union. The
-  // union is wrapped in `cub::Uninitialized<>` so callers can place `ScratchStorage`
-  // directly in `__shared__` without tripping CUDA's "no dynamic init in shared
-  // memory" rule -- the alternatives can carry their own non-trivial ctors / dtors
-  // (e.g. another `multi_source_data_source` nested below) and the wrapper sidesteps
-  // those by carrying raw byte storage.
-  //
-  // When *both* children publish an empty ScratchStorage, the aggregate is empty too;
-  // collapse to `empty_storage_t` rather than wrap-in-Uninitialized so consumers see
-  // the empty signal across class boundaries.
+public:
+  using TempStorage =
+    ::cuda::std::conditional_t<_temp_storage_is_empty, empty_storage_t, _TempStorageWrapped>;
+
+  // ---------- ScratchStorage (the per-tile scratch slot) ----------
 private:
   static constexpr bool _scratch_storage_is_empty =
        is_empty_storage_v<typename SourceA::ScratchStorage>
@@ -515,110 +543,228 @@ public:
   using ScratchStorage =
     ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorageWrapped>;
 
-  // Tagged-union load handles. Both alternatives are alive in the small POD; only the
-  // one matching `pick_source_b` is initialized via the underlying source's submit, and only
-  // it is read in `complete_load`. The runtime branch is constant within a kernel
-  // launch (set once by the agent), so the compiler eliminates the dead branch.
+  // ---------- Tagged-union load handles ----------
+  // Only the active arm is initialized in `submit_load`, only the active arm
+  // is read in `complete_load`. The runtime `pick_b` tag is constant within a
+  // kernel launch (set once by the agent at construction), so ptxas folds the
+  // dead arm at codegen.
   struct full_load_handle
   {
-    typename SourceA::full_load_handle a{};
-    typename SourceB::full_load_handle b{};
-    bool pick_b{};
+    union _H
+    {
+      typename SourceA::full_load_handle a;
+      typename SourceB::full_load_handle b;
+      _CCCL_DEVICE _CCCL_FORCEINLINE _H() {}
+      _CCCL_DEVICE _CCCL_FORCEINLINE ~_H() {}
+    } h;
+    bool pick_b;
 
     template <int IPT>
     _CCCL_DEVICE _CCCL_FORCEINLINE void complete_load(value_t (&out)[IPT])
     {
       if (pick_b)
       {
-        b.complete_load(out);
+        h.b.complete_load(out);
       }
       else
       {
-        a.complete_load(out);
+        h.a.complete_load(out);
       }
     }
   };
 
   struct partial_load_handle
   {
-    typename SourceA::partial_load_handle a{};
-    typename SourceB::partial_load_handle b{};
-    bool pick_b{};
+    union _H
+    {
+      typename SourceA::partial_load_handle a;
+      typename SourceB::partial_load_handle b;
+      _CCCL_DEVICE _CCCL_FORCEINLINE _H() {}
+      _CCCL_DEVICE _CCCL_FORCEINLINE ~_H() {}
+    } h;
+    bool pick_b;
 
     template <int IPT>
     _CCCL_DEVICE _CCCL_FORCEINLINE void complete_load(value_t (&out)[IPT])
     {
       if (pick_b)
       {
-        b.complete_load(out);
+        h.b.complete_load(out);
       }
       else
       {
-        a.complete_load(out);
+        h.a.complete_load(out);
       }
     }
   };
 
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE multi_source_data_source(SourceA a, SourceB b, bool pick_b)
-      : source_a(a)
-      , source_b(b)
-      , pick_source_b(pick_b)
-  {}
+  // ---------- Active-source storage ----------
+  //
+  // Raw-byte union over the two source types. The ctor placement-news the
+  // active arm; the dtor placement-deletes it. The inactive arm is never
+  // constructed -- its bytes are uninitialized and never read. The union has
+  // a trivial user-declared default ctor / dtor so the outer class controls
+  // the lifetime explicitly.
+private:
+  union _ActiveSourceStorage
+  {
+    SourceA a;
+    SourceB b;
+    _CCCL_DEVICE _CCCL_FORCEINLINE _ActiveSourceStorage() {}
+    _CCCL_DEVICE _CCCL_FORCEINLINE ~_ActiveSourceStorage() {}
+  };
+
+public:
+  // Factory-callback ctor:
+  //   - `ts`:      aggregate per-source TempStorage (a union under the new shape).
+  //   - `pick_b`:  picks the active arm (true -> SourceB; false -> SourceA).
+  //   - `make_a`:  callable `(SourceA::TempStorage&) -> SourceA`, invoked only when `!pick_b`.
+  //   - `make_b`:  callable `(SourceB::TempStorage&) -> SourceB`, invoked only when `pick_b`.
+  //
+  // The inactive factory is captured but never called -- ptxas eliminates its body
+  // along with any work it would have done (input-iterator dereferences, ref-binding,
+  // etc.) as dead code under the `if constexpr` / runtime branch.
+  template <typename MakeA, typename MakeB>
+  _CCCL_DEVICE _CCCL_FORCEINLINE multi_source_data_source(TempStorage& ts, bool pick_b, MakeA make_a, MakeB make_b)
+      : pick_source_b(pick_b)
+  {
+    if constexpr (_temp_storage_is_empty)
+    {
+      // Both children publish empty TempStorage; pass on-stack empties of the
+      // matching child type so the factory's ref binding works. Folded away.
+      typename SourceA::TempStorage a_dummy{};
+      typename SourceB::TempStorage b_dummy{};
+      if (pick_b)
+      {
+        ::new (static_cast<void*>(&active_source.b)) SourceB(make_b(b_dummy));
+      }
+      else
+      {
+        ::new (static_cast<void*>(&active_source.a)) SourceA(make_a(a_dummy));
+      }
+    }
+    else
+    {
+      auto& inner = ts.Alias();
+      if (pick_b)
+      {
+        ::new (static_cast<void*>(&active_source.b)) SourceB(make_b(inner.b));
+      }
+      else
+      {
+        ::new (static_cast<void*>(&active_source.a)) SourceA(make_a(inner.a));
+      }
+    }
+  }
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE ~multi_source_data_source()
+  {
+    if (pick_source_b)
+    {
+      active_source.b.~SourceB();
+    }
+    else
+    {
+      active_source.a.~SourceA();
+    }
+  }
+
+  // The active-source / handle unions inherit deletion of copy/move from any
+  // child that has it (notably `async_to_shared_data_source`'s embedded
+  // `BlockLoadToShared`). Mark them deleted explicitly so a future caller
+  // accidentally routing through a copy / move-assignment site fails at
+  // declaration rather than at a confusing template instantiation error
+  // inside the union.
+  multi_source_data_source(const multi_source_data_source&)            = delete;
+  multi_source_data_source(multi_source_data_source&&)                 = delete;
+  multi_source_data_source& operator=(const multi_source_data_source&) = delete;
+  multi_source_data_source& operator=(multi_source_data_source&&)      = delete;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
   {
-    source_a.set_tile_base(tile_base);
-    source_b.set_tile_base(tile_base);
+    if (pick_source_b)
+    {
+      active_source.b.set_tile_base(tile_base);
+    }
+    else
+    {
+      active_source.a.set_tile_base(tile_base);
+    }
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
-    // When the aggregate `ScratchStorage` is `empty_storage_t` (both children
-    // empty) the union doesn't exist; the children's `submit_load` doesn't
-    // actually touch the scratch in that case anyway, so we pass them empty
-    // stack-local stubs that the compiler folds away.
+    full_load_handle out;
+    out.pick_b = pick_source_b;
     if constexpr (_scratch_storage_is_empty)
     {
+      // Both children's scratch is empty; their `submit_load` doesn't touch
+      // the slot in that case anyway, so we pass on-stack stubs that the
+      // compiler folds away.
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
       if (pick_source_b)
       {
-        return full_load_handle{{}, source_b.submit_load(b_dummy), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::full_load_handle(active_source.b.submit_load(b_dummy));
       }
-      return full_load_handle{source_a.submit_load(a_dummy), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::full_load_handle(active_source.a.submit_load(a_dummy));
+      }
     }
     else
     {
       auto& inner = s.Alias();
       if (pick_source_b)
       {
-        return full_load_handle{{}, source_b.submit_load(inner.b), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::full_load_handle(active_source.b.submit_load(inner.b));
       }
-      return full_load_handle{source_a.submit_load(inner.a), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::full_load_handle(active_source.a.submit_load(inner.a));
+      }
     }
+    return out;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
+    partial_load_handle out;
+    out.pick_b = pick_source_b;
     if constexpr (_scratch_storage_is_empty)
     {
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
       if (pick_source_b)
       {
-        return partial_load_handle{{}, source_b.submit_load(b_dummy, num_items), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::partial_load_handle(active_source.b.submit_load(b_dummy, num_items));
       }
-      return partial_load_handle{source_a.submit_load(a_dummy, num_items), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::partial_load_handle(active_source.a.submit_load(a_dummy, num_items));
+      }
     }
     else
     {
       auto& inner = s.Alias();
       if (pick_source_b)
       {
-        return partial_load_handle{{}, source_b.submit_load(inner.b, num_items), true};
+        ::new (static_cast<void*>(&out.h.b))
+          typename SourceB::partial_load_handle(active_source.b.submit_load(inner.b, num_items));
       }
-      return partial_load_handle{source_a.submit_load(inner.a, num_items), {}, false};
+      else
+      {
+        ::new (static_cast<void*>(&out.h.a))
+          typename SourceA::partial_load_handle(active_source.a.submit_load(inner.a, num_items));
+      }
     }
+    return out;
   }
 
   // On-demand single-item gather. Dispatches to whichever underlying source is
@@ -626,12 +772,11 @@ public:
   // within a kernel launch and ptxas eliminates the dead arm).
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
-    return pick_source_b ? source_b.gather_one(item_idx) : source_a.gather_one(item_idx);
+    return pick_source_b ? active_source.b.gather_one(item_idx) : active_source.a.gather_one(item_idx);
   }
 
 private:
-  SourceA source_a;
-  SourceB source_b;
+  _ActiveSourceStorage active_source;
   bool pick_source_b;
 };
 

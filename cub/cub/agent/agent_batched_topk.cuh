@@ -1508,6 +1508,32 @@ private:
   // (will_buffer) {} else {}` branches, minus the surrounding init / merge / finalize_pass --
   // those are managed by `process_chunk` (init/merge) and the finalize kernel (finalize_pass).
 
+  // Per-tile value source factory. Returns either `NullType` (keys_only) or a fresh prvalue
+  // `value_source_t` constructed via the new factory-callback ctor. The aggregate per-tile
+  // TempStorage is a stack local here; for the current direct/sync_block_load configs the
+  // children don't store a reference to it, matching today's lifetime behaviour. A future
+  // async-shared value source would require lifting this to durable storage; out of scope.
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_source(const per_segment_state_t& s)
+  {
+    if constexpr (keys_only)
+    {
+      return NullType{};
+    }
+    else
+    {
+      typename value_source_t::TempStorage value_state{};
+      return value_source_t{
+        value_state,
+        /*pick_b=*/s.load_from_candidates_buffer,
+        [&](typename value_source_input_t::TempStorage& ts) {
+          return value_source_input_t{s.d_values_in, ts};
+        },
+        [&](typename value_source_buffer_t::TempStorage& ts) {
+          return value_source_buffer_t{s.in_val_buf, ts};
+        }};
+    }
+  }
+
   // Templated on `IsFullTile` so the fast / slow-full-tile paths can skip the runtime
   // partial-vs-full branch. Callers must guarantee:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
@@ -1516,9 +1542,15 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    keys_source_t keys_source{
+      storage.arms.early_stop.keys_source_state,
+      /*pick_b=*/s.load_from_candidates_buffer,
+      [&](typename key_source_input_t::TempStorage& ts) {
+        return key_source_input_t{s.d_keys_in, ts};
+      },
+      [&](typename key_source_buffer_t::TempStorage& ts) {
+        return key_source_buffer_t{s.in_key_buf, ts};
+      }};
 
     // The filter primitive's ctor takes the identify-selected op by non-const reference,
     // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
@@ -1542,22 +1574,11 @@ private:
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(s);
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1584,22 +1605,11 @@ private:
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(s);
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1624,9 +1634,15 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    keys_source_t keys_source{
+      storage.arms.buffered.keys_source_state,
+      /*pick_b=*/s.load_from_candidates_buffer,
+      [&](typename key_source_input_t::TempStorage& ts) {
+        return key_source_input_t{s.d_keys_in, ts};
+      },
+      [&](typename key_source_buffer_t::TempStorage& ts) {
+        return key_source_buffer_t{s.in_key_buf, ts};
+      }};
 
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
@@ -1656,22 +1672,11 @@ private:
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(s);
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1701,22 +1706,11 @@ private:
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source(s);
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1745,9 +1739,16 @@ private:
       &s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
     filter_op_t filter_op{identify_candidates_op};
 
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/false};
+    // `pick_b=false` is hard-wired: the unbuffered path never reads from the candidate buffer.
+    keys_source_t keys_source{
+      storage.arms.buffered.keys_source_state,
+      /*pick_b=*/false,
+      [&](typename key_source_input_t::TempStorage& ts) {
+        return key_source_input_t{s.d_keys_in, ts};
+      },
+      [&](typename key_source_buffer_t::TempStorage& ts) {
+        return key_source_buffer_t{s.in_key_buf, ts};
+      }};
 
     if constexpr (IsFullTile)
     {
@@ -2345,11 +2346,19 @@ private:
   }
 
   // Build the keys-source for the current segment. Lives across all tiles of this segment.
+  // Returns a prvalue (constructed directly into the caller's slot under C++17 mandatory
+  // copy elision) -- `keys_source_t` is intentionally non-movable, see the type's docs.
   _CCCL_DEVICE _CCCL_FORCEINLINE keys_source_t make_keys_source_for_segment(const per_segment_state_t& s)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.keys_source_state.b};
-    return keys_source_t{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    return keys_source_t{
+      storage.keys_source_state,
+      /*pick_b=*/s.load_from_candidates_buffer,
+      [&](typename key_source_input_t::TempStorage& ts) {
+        return key_source_input_t{s.d_keys_in, ts};
+      },
+      [&](typename key_source_buffer_t::TempStorage& ts) {
+        return key_source_buffer_t{s.in_key_buf, ts};
+      }};
   }
 
   // Build the partition object for the current segment. Lives across all tiles of this segment so
@@ -2415,27 +2424,42 @@ private:
     keys_source_t& keys_source,
     LargeSegmentTileOffsetT local_tile)
   {
+    // Per-tile value source. Returns either `NullType` (keys_only) or a fresh
+    // `value_source_t` constructed via the factory-callback ctor. The
+    // aggregate TempStorage is a per-tile stack local -- for the current
+    // direct/sync_block_load configs the children don't store a reference to
+    // it, matching today's lifetime behaviour. (A future async-shared value
+    // source would need this lifted to durable storage; out of scope here.)
+    auto make_value_source = [&]() {
+      if constexpr (keys_only)
+      {
+        return NullType{};
+      }
+      else
+      {
+        typename value_source_t::TempStorage value_state{};
+        return value_source_t{
+          value_state,
+          /*pick_b=*/s.load_from_candidates_buffer,
+          [&](typename value_source_input_t::TempStorage& ts) {
+            return value_source_input_t{s.d_values_in, ts};
+          },
+          [&](typename value_source_buffer_t::TempStorage& ts) {
+            return value_source_buffer_t{s.in_val_buf, ts};
+          }};
+      }
+    };
+
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -2457,22 +2481,11 @@ private:
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
-        }
-      }();
+      auto value_source = make_value_source();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -2568,9 +2581,18 @@ public:
       if (tile_id >= state.queue_segment_end)
       {
         partition.epilogue();
-        state       = resolve_segment_state(resolve_queue_idx(tile_id));
-        partition   = make_partition_for_segment(state);
-        keys_source = make_keys_source_for_segment(state);
+        state = resolve_segment_state(resolve_queue_idx(tile_id));
+        // Destroy-then-construct via explicit placement-new. The new
+        // `keys_source_t` (multi_source_data_source) is intentionally
+        // non-copyable / non-movable to compose with `async_to_shared`-style
+        // children; the segment-boundary refresh therefore can't use
+        // move-assignment. Applying the same pattern to `partition` keeps the
+        // boundary block uniformly structured. Both prvalues constructed
+        // here lower into the same writes today's move-assigns would have.
+        partition.~partition_t();
+        ::new (&partition) partition_t(make_partition_for_segment(state));
+        keys_source.~keys_source_t();
+        ::new (&keys_source) keys_source_t(make_keys_source_for_segment(state));
       }
 
       if (state.empty)

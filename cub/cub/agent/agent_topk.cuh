@@ -609,22 +609,30 @@ private:
   // Per-tile value source. Returns the concrete `multi_source_data_source` for
   // values-mode, `NullType` for keys-only. Both modes consume the same value
   // source type at the partition primitive's templated `partition()`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sources(OffsetT tile_base)
+  //
+  // The aggregate per-tile TempStorage is a stack local here; for the current
+  // direct/sync_block_load configs the children don't store a reference to
+  // it. The caller invokes `value_source.set_tile_base(tile_base)` on the
+  // returned prvalue after construction (the type is intentionally
+  // non-copyable / non-movable so this can't be a member of the helper).
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sources()
   {
-    (void) tile_base;
     if constexpr (keys_only)
     {
       return NullType{};
     }
     else
     {
-      typename value_source_input_t::TempStorage val_state_input{};
-      typename value_source_buffer_t::TempStorage val_state_buffer{};
-      value_source_input_t val_input{d_values_in, val_state_input};
-      value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-      value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
-      val_src.set_tile_base(tile_base);
-      return val_src;
+      typename value_source_t::TempStorage value_state{};
+      return value_source_t{
+        value_state,
+        /*pick_b=*/load_from_candidates_buffer,
+        [&](typename value_source_input_t::TempStorage& ts) {
+          return value_source_input_t{d_values_in, ts};
+        },
+        [&](typename value_source_buffer_t::TempStorage& ts) {
+          return value_source_buffer_t{in_val_buf, ts};
+        }};
     }
   }
 
@@ -647,7 +655,11 @@ private:
       const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
 
       keys_source.set_tile_base(tile_base);
-      auto value_source = make_value_channel_sources(tile_base);
+      auto value_source = make_value_channel_sources();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       __syncthreads();
       key_in_t items[items_per_thread];
@@ -667,7 +679,11 @@ private:
         const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
 
         keys_source.set_tile_base(tile_base);
-        auto value_source = make_value_channel_sources(tile_base);
+        auto value_source = make_value_channel_sources();
+        if constexpr (!keys_only)
+        {
+          value_source.set_tile_base(tile_base);
+        }
 
         __syncthreads();
         key_in_t items[items_per_thread];
@@ -716,9 +732,15 @@ public:
       // `keys_source_state` lives in this arm (so it can alias with the
       // buffered arm's footprint), hence the keys-source is constructed here
       // rather than at function scope.
-      key_source_input_t key_src_input{d_keys_in, storage.arms.early_stop.keys_source_state.a};
-      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.early_stop.keys_source_state.b};
-      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+      keys_source_t keys_source{
+        storage.arms.early_stop.keys_source_state,
+        /*pick_b=*/load_from_candidates_buffer,
+        [&](typename key_source_input_t::TempStorage& ts) {
+          return key_source_input_t{d_keys_in, ts};
+        },
+        [&](typename key_source_buffer_t::TempStorage& ts) {
+          return key_source_buffer_t{in_key_buf, ts};
+        }};
 
       identify_selected_op_t identify_selected{identify_candidates_op};
       auto value_channel_sinks = make_early_stop_value_channel_sinks();
@@ -736,9 +758,15 @@ public:
     {
       // Buffered branch: accumulate a histogram over candidates, scatter
       // selected to `d_keys_out` and candidates to `out_key_buf`.
-      key_source_input_t key_src_input{d_keys_in, storage.arms.buffered.keys_source_state.a};
-      key_source_buffer_t key_src_buffer{in_key_buf, storage.arms.buffered.keys_source_state.b};
-      keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+      keys_source_t keys_source{
+        storage.arms.buffered.keys_source_state,
+        /*pick_b=*/load_from_candidates_buffer,
+        [&](typename key_source_input_t::TempStorage& ts) {
+          return key_source_input_t{d_keys_in, ts};
+        },
+        [&](typename key_source_buffer_t::TempStorage& ts) {
+          return key_source_buffer_t{in_key_buf, ts};
+        }};
 
       init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
       __syncthreads();
@@ -977,22 +1005,25 @@ private:
     }
   }
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sources(OffsetT tile_base)
+  // Caller invokes `value_source.set_tile_base(tile_base)` on the returned prvalue.
+  _CCCL_DEVICE _CCCL_FORCEINLINE auto make_value_channel_sources()
   {
-    (void) tile_base;
     if constexpr (keys_only)
     {
       return NullType{};
     }
     else
     {
-      typename value_source_input_t::TempStorage val_state_input{};
-      typename value_source_buffer_t::TempStorage val_state_buffer{};
-      value_source_input_t val_input{d_values_in, val_state_input};
-      value_source_buffer_t val_buffer{in_val_buf, val_state_buffer};
-      value_source_t val_src{val_input, val_buffer, /*pick_b=*/load_from_candidates_buffer};
-      val_src.set_tile_base(tile_base);
-      return val_src;
+      typename value_source_t::TempStorage value_state{};
+      return value_source_t{
+        value_state,
+        /*pick_b=*/load_from_candidates_buffer,
+        [&](typename value_source_input_t::TempStorage& ts) {
+          return value_source_input_t{d_values_in, ts};
+        },
+        [&](typename value_source_buffer_t::TempStorage& ts) {
+          return value_source_buffer_t{in_val_buf, ts};
+        }};
     }
   }
 
@@ -1017,9 +1048,15 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   run(OutOffsetT* p_num_ties_written_to_back, OutOffsetT k_total, OutOffsetT num_of_kth_needed)
   {
-    key_source_input_t key_src_input{d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{in_key_buf, storage.keys_source_state.b};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/load_from_candidates_buffer};
+    keys_source_t keys_source{
+      storage.keys_source_state,
+      /*pick_b=*/load_from_candidates_buffer,
+      [&](typename key_source_input_t::TempStorage& ts) {
+        return key_source_input_t{d_keys_in, ts};
+      },
+      [&](typename key_source_buffer_t::TempStorage& ts) {
+        return key_source_buffer_t{in_key_buf, ts};
+      }};
 
     // Build the reserve ops + sinks once, before the tile loop. The partition object
     // captures these references and consults them at every flush.
@@ -1060,7 +1097,11 @@ public:
       const OffsetT tile_base = tile_id * static_cast<OffsetT>(tile_items);
 
       keys_source.set_tile_base(tile_base);
-      auto value_source = make_value_channel_sources(tile_base);
+      auto value_source = make_value_channel_sources();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       __syncthreads();
       key_in_t items[items_per_thread];
@@ -1079,7 +1120,11 @@ public:
         const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
 
         keys_source.set_tile_base(tile_base);
-        auto value_source = make_value_channel_sources(tile_base);
+        auto value_source = make_value_channel_sources();
+        if constexpr (!keys_only)
+        {
+          value_source.set_tile_base(tile_base);
+        }
 
         __syncthreads();
         key_in_t items[items_per_thread];
