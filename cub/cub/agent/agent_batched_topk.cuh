@@ -1537,6 +1537,16 @@ private:
       value_channel_sinks,
       identify_selected};
 
+    // Per-tile value-source setup. The children must outlive `value_source`
+    // (which holds references to them) so we declare them at this scope
+    // -- *not* inside the IIFE below. For `keys_only`, these locals are
+    // unused (`value_source` is `NullType{}`) but their construction is
+    // trivial.
+    [[maybe_unused]] typename value_source_input_t::TempStorage val_state_input{};
+    [[maybe_unused]] typename value_source_buffer_t::TempStorage val_state_buffer{};
+    [[maybe_unused]] value_source_input_t val_input{s.d_values_in, val_state_input};
+    [[maybe_unused]] value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
@@ -1549,15 +1559,13 @@ private:
         }
         else
         {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
+          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
         }
       }();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1591,15 +1599,13 @@ private:
         }
         else
         {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
+          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
         }
       }();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1651,6 +1657,13 @@ private:
       identify_candidates_op,
       histogram_cb};
 
+    // Per-tile value-source setup. See the matching note on the early-stop
+    // arm above for why the children are declared at this scope.
+    [[maybe_unused]] typename value_source_input_t::TempStorage val_state_input{};
+    [[maybe_unused]] typename value_source_buffer_t::TempStorage val_state_buffer{};
+    [[maybe_unused]] value_source_input_t val_input{s.d_values_in, val_state_input};
+    [[maybe_unused]] value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
@@ -1663,15 +1676,13 @@ private:
         }
         else
         {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
+          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
         }
       }();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -1708,15 +1719,13 @@ private:
         }
         else
         {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
+          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
         }
       }();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -2344,13 +2353,12 @@ private:
     return s;
   }
 
-  // Build the keys-source for the current segment. Lives across all tiles of this segment.
-  _CCCL_DEVICE _CCCL_FORCEINLINE keys_source_t make_keys_source_for_segment(const per_segment_state_t& s)
-  {
-    key_source_input_t key_src_input{s.d_keys_in, storage.keys_source_state.a};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.keys_source_state.b};
-    return keys_source_t{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-  }
+  // Note: `make_keys_source_for_segment` was removed when `keys_source_t` became
+  // non-movable (the by-reference ctor binds to children that need to outlive
+  // the multi-source). The keys-source is now constructed in-line at its
+  // single live site in `run()`, paired with destroy-then-construct at the
+  // segment boundary so all three locals (`key_src_input`, `key_src_buffer`,
+  // `keys_source`) refresh together.
 
   // Build the partition object for the current segment. Lives across all tiles of this segment so
   // its per-thread `cand_reserve_open` flag (the back-grow-cap exit hint that drops per-item
@@ -2415,11 +2423,24 @@ private:
     keys_source_t& keys_source,
     LargeSegmentTileOffsetT local_tile)
   {
+    // Per-tile value-source setup. The children must outlive `value_source`
+    // (which holds references to them) so we declare them at this scope --
+    // *not* inside the IIFE below. For `keys_only`, these locals are unused
+    // (`value_source` is `NullType{}`) but their construction is trivial.
+    [[maybe_unused]] typename value_source_input_t::TempStorage val_state_input{};
+    [[maybe_unused]] typename value_source_buffer_t::TempStorage val_state_buffer{};
+    [[maybe_unused]] value_source_input_t val_input{s.d_values_in, val_state_input};
+    [[maybe_unused]] value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
 
+      // Lambda returns a prvalue of `value_source_t` (or `NullType`).
+      // Mandatory copy elision constructs `value_source` directly in the
+      // outer slot; the multi-source's references bind to the *outer*
+      // `val_input` / `val_buffer` declared above, which outlive it.
       auto value_source = [&] {
         if constexpr (keys_only)
         {
@@ -2427,15 +2448,13 @@ private:
         }
         else
         {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
+          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
         }
       }();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -2464,15 +2483,13 @@ private:
         }
         else
         {
-          typename value_source_input_t::TempStorage val_state_input{};
-          typename value_source_buffer_t::TempStorage val_state_buffer{};
-          value_source_input_t val_input{s.d_values_in, val_state_input};
-          value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-          value_source_t val_src{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-          val_src.set_tile_base(tile_base);
-          return val_src;
+          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
         }
       }();
+      if constexpr (!keys_only)
+      {
+        value_source.set_tile_base(tile_base);
+      }
 
       if constexpr (tile_load_kind_uses_smem)
       {
@@ -2557,8 +2574,14 @@ public:
         return;
       }
     }
-    partition_t partition     = make_partition_for_segment(state);
-    keys_source_t keys_source = make_keys_source_for_segment(state);
+    partition_t partition = make_partition_for_segment(state);
+    // Construct keys-source children + multi-source as locals here so they
+    // share lifetime. The multi-source holds references to `key_src_input` /
+    // `key_src_buffer`; both must outlive `keys_source`, which is true for
+    // the duration of this stack scope.
+    key_source_input_t key_src_input{state.d_keys_in, storage.keys_source_state.a};
+    key_source_buffer_t key_src_buffer{state.in_key_buf, storage.keys_source_state.b};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
 
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
@@ -2568,9 +2591,21 @@ public:
       if (tile_id >= state.queue_segment_end)
       {
         partition.epilogue();
-        state       = resolve_segment_state(resolve_queue_idx(tile_id));
-        partition   = make_partition_for_segment(state);
-        keys_source = make_keys_source_for_segment(state);
+        state     = resolve_segment_state(resolve_queue_idx(tile_id));
+        partition = make_partition_for_segment(state);
+        // Destroy-then-construct the keys-source trio in place. The
+        // multi-source is non-movable (its ref members would dangle through a
+        // move), so we can't reuse the move-assign pattern; rebuild each
+        // local at its original address so the references in `keys_source`
+        // bind to the (newly-constructed) `key_src_input` / `key_src_buffer`
+        // in the same memory. For trivial children this lowers to the same
+        // writes today's move-assign would have.
+        keys_source.~keys_source_t();
+        key_src_input.~key_source_input_t();
+        ::new (&key_src_input) key_source_input_t{state.d_keys_in, storage.keys_source_state.a};
+        key_src_buffer.~key_source_buffer_t();
+        ::new (&key_src_buffer) key_source_buffer_t{state.in_key_buf, storage.keys_source_state.b};
+        ::new (&keys_source) keys_source_t{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
       }
 
       if (state.empty)
