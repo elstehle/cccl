@@ -108,74 +108,166 @@ class of workloads async makes things 6-21x slower; the rest of the sweep
 is between 1.04x and ~3x slower with a 1.44x median. **No cell improved**;
 the best entry is still 1.04x slower than dev.
 
-## Why async is broken here
+## Why async is broken here — root cause + fix
 
-A few candidate causes, all interacting with the multi-source's "both arms
-alive" design:
+Bisected the multi-CTA-all-large `cudaErrorLaunchFailure`. The behaviour
+was deterministic and the binary hung (SIGTERM at the test's 120 s
+timeout) on the `multi-CTA mixed` workloads when run in isolation; with
+both `all-large` and `mixed` in the same process the `mixed` case bubbled
+an error-719 up through the host-side `verify_unique_indices` thrust
+inclusive_scan as `cudaErrorLaunchFailure`. compute-sanitizer memcheck
+ran clean — no OOB / sync / race / init violations — so the failure is
+*not* a memory error; it's the kernel itself getting stuck or aborting.
 
-1. **Both arms become async, but only one is ever loaded per submit.** The
-   tuning sets `keys_tile_load_kind` globally, so `multi_source<async,
-   async>` is instantiated. Each child source then needs its own
-   mbarrier in agent smem (`storage.key_src_input_state.barrier` and
-   `storage.key_src_buffer_state.barrier`). The agent owns both, but only
-   one barrier participates in each tile's TMA. The inactive arm's
-   barrier is initialized at the agent's source-construction but never
-   used -- and the per-segment destroy-then-construct at the segment
-   boundary tears down the loader bound to it. This is at least wasteful
-   smem and may be a correctness hazard if the barrier's destructor
-   isn't a true no-op.
+**Root cause:** `cub::detail::BlockLoadToShared::Invalidate()` (the
+mbarrier reset) is *not* called from the loader's destructor by design.
+Per its API docs:
 
-2. **Multi-CTA on the same segment + async TMA.** The
-   `cudaErrorLaunchFailure` is concentrated on multi-CTA-all-large
-   segmented workloads. Multiple CTAs operating on the same segment is a
-   pattern where the async loader's per-CTA-private barrier should still
-   be safe in principle, but the failure suggests something about the
-   `mbarrier`/`cp.async` state isn't right -- possibly a missing
-   commit/wait pair when the segment boundary's destroy-then-construct
-   rebuilds the async source mid-segment-traversal across CTAs.
+```
+// This is not the destructor to avoid overhead when shared memory reuse is not needed.
+_CCCL_DEVICE_API _CCCL_FORCEINLINE void Invalidate() { ... mbarrier_inval ... }
+```
 
-3. **`Entropy=0.000` runs many filter passes.** With all keys equal, the
-   algorithm hits the "stay in the same bucket" degenerate case --
-   roughly `ceil(sizeof(KeyT) * 8 / bits_per_pass)` passes, each
-   processing every input element. Each pass goes through async load.
-   If the async load's per-tile overhead is large (TMA setup, barrier
-   wait), it'll get amortized over many fewer items than e.g. the
-   buffered path. The 6-21x cluster is exactly where this would show up.
+The dtor is a no-op; the caller is required to call `Invalidate()`
+explicitly if the loader's `TempStorage` will be reused. We weren't.
 
-## Recommendation
+In the batched-topk agents, the keys source is reconstructed in two
+shapes that *both* reuse the loader's `TempStorage`:
 
-The current default-tuning experiment ("just flip to async") is not viable
--- both correctness (multi-CTA large-segment failures) and performance
-(geo mean 1.9x slower, no improvements) regress.
+- **Per-tile, in the filter agent** (`agent_batched_topk_filter_partition`).
+  Each `process_tile_{early_stop,buffered,unbuffered}` declares
+  `key_src_input` / `key_src_buffer` / `keys_source` as locals bound to
+  arm-specific smem slots (`storage.arms.{early_stop,buffered}.key_src_*_state`).
+  At construction, `BlockLoadToShared`'s ctor runs `mbarrier_init`. When
+  the function returns the locals' dtors are no-ops, leaving the
+  mbarriers initialized. The next `process_tile_*` call re-runs
+  `mbarrier_init` on already-initialized mbarriers.
+- **Per-segment, in `agent_batched_topk_last_filter::run`**. The
+  segment-boundary destroy-then-construct (added by my by-ref refactor)
+  tears down `keys_source` / `key_src_input` / `key_src_buffer` in
+  place, then placement-news new ones in the same smem. Same shape: old
+  loader's dtor is no-op, new ctor re-runs `mbarrier_init`.
+- **Per-stretch, in the histogram agent's slow path** (and the
+  fully-unrolled fast path's `continue`). Same pattern: per-stretch
+  ctor without an intervening `Invalidate()`.
 
-To benchmark async productively the path forward would be:
+Re-initializing an already-active mbarrier produces undefined behaviour
+on the TMA path; with multi-CTA traversal of large segments it
+manifested as a launch failure / hang. With `block_load_vectorize` (the
+dev default), `BlockLoad` carries no persistent mbarrier state across
+calls so this is dormant; flipping to `block_load_to_shared_async` (TMA)
+exposes it.
 
-1. **Use `<async, direct>` instead of `<async, async>`** — only the
-   input arm is interesting to async-load (it's the gmem-resident
-   read-only stream); the candidate buffer is already chip-local. This
-   needs the policy to support different load-kinds per arm.
-2. **Investigate the multi-CTA segmented launch failure**. Likely a
-   handshake issue between the destroy-then-construct refresh at segment
-   boundaries and the async loader's persistent mbarrier state. The
-   loader's `Invalidate()` API exists for exactly this kind of refresh
-   -- the agent's segment-boundary code may need to call it on the
-   outgoing source before destroying it (today we just destruct and
-   reconstruct).
-3. **Validate the entropy=0 regression separately**. Likely a structural
-   property of how often the async load runs vs how many items each
-   pass actually processes -- may not be fixable without a different
-   algorithmic shape for the degenerate-bucket case.
+**Fix** (commit `75772a6a0e`, on top of dev):
 
-None of these are required for the by-ref refactor itself — that part is
-landed on dev, SASS-identical, and all 20 tests pass on the default tuning.
-The async-keys evaluation is just a forward-looking experiment that
-surfaced these issues.
+1. Add an `invalidate()` method to every `tile_data_source_t` variant:
+   - `direct_data_source` and `sync_block_load_data_source`: no-op
+     (these carry no persistent smem state across calls).
+   - `async_to_shared_data_source`: was already there — delegates to
+     `loader.Invalidate()` (mbarrier_inval + the two syncs the API
+     requires).
+   - `multi_source_data_source`: delegates to *both* children. Even the
+     inactive arm's ctor ran `__init_mbarrier` and needs to be
+     invalidated before its smem can be reused.
+
+2. Call `keys_source.invalidate()` at every reconstruction site that
+   reuses the loader's smem `TempStorage`:
+   - End of each `process_tile_{early_stop,buffered,unbuffered}` in
+     `agent_batched_topk_filter_partition` (before locals exit scope).
+   - End of each chunk-iteration in `agent_batched_topk_histogram::run`
+     (both fast-path before `continue` and slow-path while-loop tail).
+   - Before the destroy-then-construct at the segment boundary in
+     `agent_batched_topk_last_filter::run`.
+   - The single-problem agents (`agent_topk_filter_partition`,
+     `agent_topk_last_filter`) construct the keys source *once* per
+     `invoke()` / `run()` and never reuse the loader's smem, so they
+     need no change.
+
+For non-async sources `invalidate()` is a no-op and compiles to nothing
+at every site (verified: tests pass + benchmarks stable with the dev
+tuning; see `pairs.dev.json` / `keys.dev.json`).
+
+## Test results — after the fix
+
+Built with `block_load_to_shared_async` everywhere on `umb-b200-236`:
+
+```
+19 of 19 test binaries pass, ~245k assertions across ~370 test cases:
+
+Segmented (with async):
+  cub.test.device.segmented_topk_keys.lid_{0,1,2}                ✓ 158172 asserts / 126 cases
+  cub.test.device.segmented_topk_pairs.lid_{0,1,2}.types_{0,1,2} ✓  88,272 asserts / 144 cases
+  (incl. the previously-failing `multi-CTA all-large` and `multi-CTA mixed`)
+Single-problem (with async):
+  cub.test.device.topk_api.lid_0                                 ✓     12 asserts /   5 cases
+  cub.test.device.topk_keys.lid_{0,1,2}                          ✓   6806 asserts /  63 cases
+  cub.test.device.topk_pairs.lid_{0,1,2}                         ✓   6624 asserts /  66 cases
+```
+
+## Benchmark results — after the fix
+
+With correctness restored I re-ran the full I32-OffsetT/I32-OutOffsetT
+sweep on `pairs.base` and `keys.base`. `dev/` here is the dev tip
+(`exp/topk-batched-large-segments-regressions`, `block_load_vectorize`);
+`async/` is the same dev tip with `block_load_to_shared_async` and the
+invalidate fix.
+
+```
+Aggregate (async/dev runtime ratio, >1 means async slower):
+
+| binary | rows | geo mean | worst (entropy=0.000) | best   |
+|--------|------|----------|-----------------------|--------|
+| pairs  | 816  | 2.223x   |  I8/I8/N=2^24/S=2^23   = 26.0x | I16/I64/N=2^28/S=2^23 = 1.02x |
+| keys   | 357  | 2.048x   |  I8/N=2^24/S=2^23      = 26.5x | I16/N=2^28/S=2^23     = 1.04x |
+```
+
+Worst regressions cluster around `Entropy=0.000` (all-equal-keys
+degenerate workload). At entropy ≥ 0.201 ratios drop to 1.02x – ~3x;
+at entropy = 1.000 the ratios are 1.04x – ~1.5x. **No cell improved**;
+the best entry on each binary is still ~1.04x slower than dev. This
+matches the pre-fix benchmark shape (numbers in §"Benchmark results
+(pairs.base, I32/I32, full sweep)" above) — the fix changes correctness,
+not performance.
+
+## Recommendation (unchanged)
+
+The "just flip to async" default-tuning experiment is correct after this
+fix but still ~2x slower in geomean. The structural issues remain:
+
+1. **Use `<async, direct>` instead of `<async, async>`**. Only the input
+   arm benefits from TMA (gmem read-only stream); the candidate buffer
+   is chip-local so it has nothing to gain. The policy needs to support
+   different load-kinds per arm.
+2. **The `entropy=0.000` regression is structural**. With all keys
+   equal, the radix-pass loop visits every input element on every pass
+   (~`8 * sizeof(KeyT) / bits_per_pass` passes for the
+   degenerate-bucket case). With async, each tile carries the TMA's
+   per-tile setup/barrier-wait overhead; the rebuilt-per-tile shape
+   amplifies that. A different algorithmic path for that degenerate
+   case (e.g. an early "all-buckets-equal → return any k of them"
+   detection) is likely the only way to claw the 6-26x gap back.
+3. **Per-tile reconstruction of the keys source is wasteful**. Even on
+   the dev (sync) path, every `process_tile_*` rebuilds the trio. With
+   async this means an extra `__syncthreads()` pair per tile from the
+   invalidate. Hoisting the trio outside `process_tile_*` (or even
+   outside the run-loop, like the last_filter agent does) would
+   eliminate the per-tile overhead entirely. That refactor wasn't done
+   here because the smem footprint differs across arms (the
+   `arms_t` union), but it's the natural next step.
+
+The invalidate fix itself is cheap on the dev path (no-op lowering) and
+required for any future async work, so it's worth landing independently
+of the experiment.
 
 ## Files
 
-- Branch with the eval-only tuning change: `exp/topk-eval-async-keys`
-  (`5f54e1edb1`). Single-commit delta on top of dev:
-  `cub/cub/device/dispatch/tuning/tuning_batched_topk.cuh` line 302
-  changed from `block_load_vectorize` to `block_load_to_shared_async`.
-- Sweep JSON: `topk_perf_tracking/bench/sweep_async_pairs_i32i32.json`.
-- Aggregate report (per K,V): see runtime numbers section above.
+- Branch with the eval tuning + the fix: `exp/topk-eval-async-keys` tip
+  `75772a6a0e` ("topk(fix): invalidate mbarriers before per-tile /
+  segment-boundary source reconstruction"). Two-commit delta on top of
+  dev: the tuning flip (`5f54e1edb1`) and the invalidate fix
+  (`75772a6a0e`).
+- Sweep JSONs (post-fix, B200, `umb-b200-236`):
+  `topk_perf_tracking/bench/{pairs,keys}.{dev,async}.json`.
+- Old sweep JSON (pre-fix, kept for the historical numbers in
+  §"Benchmark results (pairs.base, I32/I32, full sweep)" above):
+  `topk_perf_tracking/bench/sweep_async_pairs_i32i32.json`.
