@@ -463,10 +463,44 @@ private:
   OffsetT tile_base{};
 };
 
-// 4.4 multi_source_data_source -- runtime-switched two-source adapter. Both underlying
-// sources are alive (`TempStorage` is the aggregate of both); only one is active per
-// submit/complete window so their `ScratchStorage`s alias via a hand-rolled union with
-// named members.
+// 4.4 multi_source_data_source -- runtime-switched two-source adapter.
+//
+// Both underlying sources are alive and the multi-source delegates every
+// operation -- `set_tile_base` to both (cheap and lets ptxas hoist constants
+// into uniform registers without a branch) and `submit_load` / `gather_one`
+// to whichever arm `pick_source_b` selects (the per-tile data only ever
+// comes from one arm).
+//
+// Children ownership: the **agent** owns both child sources and their
+// per-source `TempStorage` slots. Each child is constructed by the agent
+// against its own agent-owned `TempStorage` instance; the multi-source then
+// borrows references to the two constructed children. The multi-source
+// itself does not publish a `TempStorage` -- it has no persistent per-tile
+// state of its own beyond the two references and `pick_source_b`. This
+// keeps the agent / multi-source contract clean (no agent-side introspection
+// of an opaque aggregate type) and matches the symmetric story for
+// `ScratchStorage`, which the multi-source *does* publish because it owns
+// the per-tile alias decision between the two arms' scratch slots.
+//
+// The shape has two practical wins:
+//
+//   1. Keeps `<direct, direct>` / `<sync_block_load, direct>` codegen
+//      byte-identical to the OLD `(SourceA, SourceB, bool)` value ctor --
+//      ptxas still sees both arms as straight-line members and the LDCU
+//      hoist / uniform-register propagation around `pick_source_b` keeps
+//      firing.
+//   2. Composes with future non-copyable / non-movable children
+//      (`async_to_shared_data_source`'s embedded `BlockLoadToShared` has
+//      `= delete` copy and no implicit move): the multi-source ctor takes
+//      references rather than values, so the deleted-copy chain never gets
+//      reached. The multi-source itself is non-copyable / non-movable below
+//      to keep the lifetime contract symmetric.
+//
+// Lifetime contract: the agent guarantees both child references outlive the
+// multi-source. Existing call sites already satisfy this (children + multi-
+// source declared back-to-back in the same enclosing block; the one
+// segment-boundary refresh in `agent_batched_topk_last_filter::run` uses
+// destroy-then-construct via placement-new on the entire trio).
 template <typename SourceA, typename SourceB, typename OffsetT = ::cuda::std::int64_t>
 class multi_source_data_source
 {
@@ -475,17 +509,12 @@ public:
   static_assert(::cuda::std::is_same_v<value_t, typename SourceB::value_t>,
                 "multi_source_data_source requires both sources to share value_t");
 
-  // Both sources' TempStorages are alive (each persists across tiles for its
-  // own source). The agent accesses `.a` / `.b` directly on this type, so we
-  // expose it as a struct with named members rather than auto-collapsing to
-  // `empty_storage_t` when both children are empty -- transitivity at the
-  // TempStorage level would require accessor helpers on the consumer side
-  // (left for a follow-up).
-  struct TempStorage
-  {
-    typename SourceA::TempStorage a;
-    typename SourceB::TempStorage b;
-  };
+  // Note: this class intentionally does NOT publish a `TempStorage` member
+  // type. Per-source persistent state is owned by the agent as two separate
+  // `SourceA::TempStorage` / `SourceB::TempStorage` allocations -- the
+  // multi-source has no persistent state to host on top of them. Agents
+  // construct the children against their own slots, then build the
+  // multi-source with references to the constructed children.
 
   // Only one of the two sources is active per submit/complete window (`pick_source_b`
   // is set once at construction), so the two scratch slots alias via a union. The
@@ -559,12 +588,36 @@ public:
     }
   };
 
-  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE multi_source_data_source(SourceA a, SourceB b, bool pick_b)
+  // Take both child sources by reference. The agent owns the underlying
+  // objects -- the multi-source just borrows for delegation. This composes
+  // with non-copyable / non-movable children (the proposal's headline
+  // future-async support) without forcing the by-value ctor path that would
+  // hit a deleted copy ctor for `async_to_shared_data_source`.
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE multi_source_data_source(SourceA& a, SourceB& b, bool pick_b)
       : source_a(a)
       , source_b(b)
       , pick_source_b(pick_b)
   {}
 
+  // Copy/move construction is implicitly available (memberwise copy of the
+  // two references + the `bool`). For future non-copyable / non-movable
+  // children (e.g. `async_to_shared_data_source` via `BlockLoadToShared`)
+  // this remains safe -- the multi-source copies only the *references*,
+  // never the child itself, so the child's deleted copy ctor is never
+  // reached.
+  //
+  // Copy/move *assignment* is implicitly deleted because reference members
+  // can't be re-bound after construction. The explicit `= delete` below is
+  // documentation only -- it locks the assumption that "rebinding the
+  // multi-source to a different pair of children" is not part of the API
+  // (the segment-boundary refresh in `agent_batched_topk_last_filter::run`
+  // uses destroy-then-construct via placement-new for that reason).
+  multi_source_data_source& operator=(const multi_source_data_source&) = delete;
+  multi_source_data_source& operator=(multi_source_data_source&&)      = delete;
+
+  // Both sources alive -- propagate `set_tile_base` to both. Per-tile cost
+  // is one extra register store (cheap) and matches the OLD codegen shape
+  // that ptxas optimises well (uniform-register hoisting, no branch).
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
   {
     source_a.set_tile_base(tile_base);
@@ -630,8 +683,8 @@ public:
   }
 
 private:
-  SourceA source_a;
-  SourceB source_b;
+  SourceA& source_a;
+  SourceB& source_b;
   bool pick_source_b;
 };
 
