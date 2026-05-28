@@ -40,6 +40,7 @@
 
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_load_to_shared.cuh>
+#include <cub/detail/topk/empty_storage.cuh>
 #include <cub/util_device.cuh>
 #include <cub/util_type.cuh>
 
@@ -210,10 +211,12 @@ class direct_data_source
 public:
   using value_t = CUB_NS_QUALIFIER::detail::it_value_t<InputIt>;
 
-  struct TempStorage
-  {};
-  struct ScratchStorage
-  {};
+  // No persistent state and no per-tile scratch -- direct loads go straight from
+  // gmem to registers via per-thread `it[base + ...]` accesses. Publishing the
+  // canonical empty marker lets transitive empty-storage detection work without
+  // any user-defined union ctor / dtor declarations downstream.
+  using TempStorage    = empty_storage_t;
+  using ScratchStorage = empty_storage_t;
 
   struct full_load_handle
   {
@@ -297,8 +300,10 @@ public:
   using value_t      = CUB_NS_QUALIFIER::detail::it_value_t<InputIt>;
   using block_load_t = CUB_NS_QUALIFIER::BlockLoad<value_t, BlockThreads, ItemsPerThread, Algo>;
 
-  struct TempStorage
-  {};
+  // No cross-tile state to carry; the per-tile `BlockLoad::TempStorage` lives
+  // in `ScratchStorage` below.
+  using TempStorage = empty_storage_t;
+
   struct ScratchStorage
   {
     typename block_load_t::TempStorage block_load;
@@ -470,6 +475,12 @@ public:
   static_assert(::cuda::std::is_same_v<value_t, typename SourceB::value_t>,
                 "multi_source_data_source requires both sources to share value_t");
 
+  // Both sources' TempStorages are alive (each persists across tiles for its
+  // own source). The agent accesses `.a` / `.b` directly on this type, so we
+  // expose it as a struct with named members rather than auto-collapsing to
+  // `empty_storage_t` when both children are empty -- transitivity at the
+  // TempStorage level would require accessor helpers on the consumer side
+  // (left for a follow-up).
   struct TempStorage
   {
     typename SourceA::TempStorage a;
@@ -483,13 +494,26 @@ public:
   // memory" rule -- the alternatives can carry their own non-trivial ctors / dtors
   // (e.g. another `multi_source_data_source` nested below) and the wrapper sidesteps
   // those by carrying raw byte storage.
+  //
+  // When *both* children publish an empty ScratchStorage, the aggregate is empty too;
+  // collapse to `empty_storage_t` rather than wrap-in-Uninitialized so consumers see
+  // the empty signal across class boundaries.
+private:
+  static constexpr bool _scratch_storage_is_empty =
+       is_empty_storage_v<typename SourceA::ScratchStorage>
+    && is_empty_storage_v<typename SourceB::ScratchStorage>;
+
   union _ScratchStorageInner
   {
     typename SourceA::ScratchStorage a;
     typename SourceB::ScratchStorage b;
   };
-  struct ScratchStorage : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorageInner>
+  struct _ScratchStorageWrapped : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorageInner>
   {};
+
+public:
+  using ScratchStorage =
+    ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorageWrapped>;
 
   // Tagged-union load handles. Both alternatives are alive in the small POD; only the
   // one matching `pick_source_b` is initialized via the underlying source's submit, and only
@@ -549,22 +573,52 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
-    auto& inner = s.Alias();
-    if (pick_source_b)
+    // When the aggregate `ScratchStorage` is `empty_storage_t` (both children
+    // empty) the union doesn't exist; the children's `submit_load` doesn't
+    // actually touch the scratch in that case anyway, so we pass them empty
+    // stack-local stubs that the compiler folds away.
+    if constexpr (_scratch_storage_is_empty)
     {
-      return full_load_handle{{}, source_b.submit_load(inner.b), true};
+      typename SourceA::ScratchStorage a_dummy{};
+      typename SourceB::ScratchStorage b_dummy{};
+      if (pick_source_b)
+      {
+        return full_load_handle{{}, source_b.submit_load(b_dummy), true};
+      }
+      return full_load_handle{source_a.submit_load(a_dummy), {}, false};
     }
-    return full_load_handle{source_a.submit_load(inner.a), {}, false};
+    else
+    {
+      auto& inner = s.Alias();
+      if (pick_source_b)
+      {
+        return full_load_handle{{}, source_b.submit_load(inner.b), true};
+      }
+      return full_load_handle{source_a.submit_load(inner.a), {}, false};
+    }
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
-    auto& inner = s.Alias();
-    if (pick_source_b)
+    if constexpr (_scratch_storage_is_empty)
     {
-      return partial_load_handle{{}, source_b.submit_load(inner.b, num_items), true};
+      typename SourceA::ScratchStorage a_dummy{};
+      typename SourceB::ScratchStorage b_dummy{};
+      if (pick_source_b)
+      {
+        return partial_load_handle{{}, source_b.submit_load(b_dummy, num_items), true};
+      }
+      return partial_load_handle{source_a.submit_load(a_dummy, num_items), {}, false};
     }
-    return partial_load_handle{source_a.submit_load(inner.a, num_items), {}, false};
+    else
+    {
+      auto& inner = s.Alias();
+      if (pick_source_b)
+      {
+        return partial_load_handle{{}, source_b.submit_load(inner.b, num_items), true};
+      }
+      return partial_load_handle{source_a.submit_load(inner.a, num_items), {}, false};
+    }
   }
 
   // On-demand single-item gather. Dispatches to whichever underlying source is
