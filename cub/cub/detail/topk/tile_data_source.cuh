@@ -282,6 +282,11 @@ public:
     return it[idx];
   }
 
+  // No-op: direct reads have no persistent smem state to reset. Provided so
+  // agents can unconditionally call `source.invalidate()` regardless of the
+  // tile-load kind tuned in.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void invalidate() {}
+
 private:
   InputIt it;
   OffsetT tile_base{};
@@ -350,6 +355,9 @@ public:
   {
     return partial_load_handle{it + tile_base, &scratch, num_items};
   }
+
+  // No-op: `cub::BlockLoad` carries no persistent smem state between calls.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void invalidate() {}
 
 private:
   InputIt it;
@@ -806,6 +814,20 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
     return pick_source_b ? source_b.gather_one(item_idx) : source_a.gather_one(item_idx);
+  }
+
+  // Propagate the (optional) mbarrier-reset step to both arms. Required by
+  // any TMA-style source (e.g. `async_to_shared_data_source`) before the
+  // underlying smem TempStorage is reused: their dtor is a no-op by design,
+  // so the agent must explicitly invalidate before destroy-then-construct
+  // (or per-tile reconstruction). For direct / sync_block_load sources the
+  // delegated call is a no-op. We call both arms because both children are
+  // alive in our shape -- even the inactive arm's ctor initialized its
+  // mbarrier and must be invalidated before reuse.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void invalidate()
+  {
+    source_a.invalidate();
+    source_b.invalidate();
   }
 
 private:

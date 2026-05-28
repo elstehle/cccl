@@ -842,6 +842,10 @@ public:
         {
           process_full_tile_at(keys_source, static_cast<OffsetT>(local_tile_start + i));
         }
+        // Reset the mbarrier(s) before the source goes out of scope so the
+        // next chunk's ctor doesn't re-`mbarrier_init` an already-initialized
+        // mbarrier. No-op on non-async sources.
+        keys_source.invalidate();
         continue;
       }
 
@@ -927,9 +931,15 @@ public:
         const OffsetT tiles_consumed = full_tiles_in_stretch + (reaches_partial_slot ? OffsetT{1} : OffsetT{0});
         if (tiles_consumed == OffsetT{0})
         {
+          // `keys_source` is reachable on this path too; reset before the
+          // while-loop scope ends. See the matching note below.
+          keys_source.invalidate();
           break;
         }
         chunk_cursor += static_cast<LargeSegmentTileOffsetT>(tiles_consumed);
+        // Reset the mbarrier(s) before the next stretch's ctor re-runs
+        // `mbarrier_init` on the same smem slot. No-op for non-async sources.
+        keys_source.invalidate();
       }
     }
 
@@ -1630,6 +1640,13 @@ private:
     }
 
     filter.epilogue();
+    // `BlockLoadToShared`'s dtor is a no-op by design (per its API docs), so
+    // the mbarriers in `key_src_*_state` stay initialized when this function
+    // returns. The next `process_tile_*` call would otherwise re-run
+    // `mbarrier_init` on an already-initialized mbarrier, causing launch
+    // failures / hangs on TMA-style sources. For non-async sources this is
+    // a no-op (and lowers to nothing).
+    keys_source.invalidate();
   }
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
@@ -1749,6 +1766,8 @@ private:
     }
 
     partition.epilogue();
+    // See `process_tile_early_stop` for the mbarrier-reset rationale.
+    keys_source.invalidate();
   }
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
@@ -1815,6 +1834,8 @@ private:
         }
       }
     }
+    // See `process_tile_early_stop` for the mbarrier-reset rationale.
+    keys_source.invalidate();
   }
 
   // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` is what
@@ -2611,6 +2632,15 @@ public:
         // bind to the (newly-constructed) `key_src_input` / `key_src_buffer`
         // in the same memory. For trivial children this lowers to the same
         // writes today's move-assign would have.
+        //
+        // For TMA-style children (`async_to_shared_data_source`), reusing
+        // the smem `TempStorage` requires an explicit `invalidate()` first:
+        // `BlockLoadToShared`'s dtor is a no-op, so the mbarrier stays
+        // initialized; the new ctor would otherwise run `mbarrier_init` on
+        // an already-initialized mbarrier (and the prior arm's mbarrier
+        // would be leaked) leading to launch failures / hangs. For
+        // non-async children this collapses to a no-op.
+        keys_source.invalidate();
         keys_source.~keys_source_t();
         key_src_input.~key_source_input_t();
         ::new (&key_src_input) key_source_input_t{state.d_keys_in, storage.key_src_input_state};
