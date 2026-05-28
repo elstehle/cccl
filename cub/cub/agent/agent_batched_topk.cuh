@@ -1566,7 +1566,17 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
       h.complete_load(items);
-      __syncthreads();
+      // Fence the just-completed load's smem writes (smem-using BlockLoad case)
+      // *and* the previous tile's `partition` smem writes against the next
+      // `partition` call's writes -- both alias `partition_arena` via the
+      // smem union. When neither wrote to smem (DIRECT/VECTORIZE keys load and
+      // an empty `partition_t::ScratchStorage` -- the typical
+      // `multi_source<direct, direct>` config), the barrier is dead work.
+      if constexpr (tile_load_kind_uses_smem
+                    || !detail::topk::is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -1598,7 +1608,11 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem
+                    || !detail::topk::is_empty_storage_v<typename early_stop_filter_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       filter.partition(storage.arms.early_stop.arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
 
@@ -1666,6 +1680,19 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
+      // Kept unconditionally even though the early-stop arm's sister site can
+      // be elided when both `tile_load_kind_uses_smem == false` and
+      // `is_empty_storage_v<buffered_partition_t::ScratchStorage>`. Bisecting
+      // the elision against the dev baseline showed a ~+25% regression on
+      // workloads that spend most of their time in the buffered tile loop
+      // (e.g. `KeyT/ValueT=I32, Elements=2^28, SelectedElements=2^19,
+      // Entropy>=0.201`). The hypothesis is that without the barrier the
+      // per-tile bursts of `atomicAdd` to the smem histogram that the
+      // buffered partition fires (via `histogram_callback_op`) overlap with
+      // the next tile's bursts, increasing smem-atomic contention. The
+      // early-stop and last-filter arms don't have that callback (early-stop
+      // has no histogram; last-filter installs a no-op callback), so the
+      // elision there is a clean win.
       __syncthreads();
       partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, value_source);
     }
@@ -1698,6 +1725,8 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
+      // See the matching comment on the full-tile arm above for why this
+      // sync is kept unconditionally on the buffered partition path.
       __syncthreads();
       partition.partition(
         storage.arms.buffered.arena.get_partition_scratch(), items, s.partial_items, value_source);
@@ -2415,7 +2444,12 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
-      __syncthreads();
+      // See the matching note on the filter agent's early-stop arm.
+      if constexpr (tile_load_kind_uses_smem
+                    || !detail::topk::is_empty_storage_v<typename partition_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -2447,7 +2481,11 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
-      __syncthreads();
+      if constexpr (tile_load_kind_uses_smem
+                    || !detail::topk::is_empty_storage_v<typename partition_t::ScratchStorage>)
+      {
+        __syncthreads();
+      }
       partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
