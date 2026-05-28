@@ -1680,12 +1680,7 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
-      // See the matching note on the early-stop arm above.
-      if constexpr (tile_load_kind_uses_smem
-                    || !detail::topk::is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
-      {
-        __syncthreads();
-      }
+      __syncthreads();
       partition.partition(storage.arms.buffered.arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -1717,11 +1712,7 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
-      if constexpr (tile_load_kind_uses_smem
-                    || !detail::topk::is_empty_storage_v<typename buffered_partition_t::ScratchStorage>)
-      {
-        __syncthreads();
-      }
+      __syncthreads();
       partition.partition(
         storage.arms.buffered.arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
