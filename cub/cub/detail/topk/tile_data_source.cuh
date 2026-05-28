@@ -598,83 +598,59 @@ public:
     }
   };
 
-  // ---------- Active-source storage ----------
+  // Factory-callback ctor (factory-only variant of the proposal):
   //
-  // Raw-byte union over the two source types. The ctor placement-news the
-  // active arm; the dtor placement-deletes it. The inactive arm is never
-  // constructed -- its bytes are uninitialized and never read. The union has
-  // a trivial user-declared default ctor / dtor so the outer class controls
-  // the lifetime explicitly.
-private:
-  union _ActiveSourceStorage
-  {
-    SourceA a;
-    SourceB b;
-    _CCCL_DEVICE _CCCL_FORCEINLINE _ActiveSourceStorage() {}
-    _CCCL_DEVICE _CCCL_FORCEINLINE ~_ActiveSourceStorage() {}
-  };
-
-public:
-  // Factory-callback ctor:
-  //   - `ts`:      aggregate per-source TempStorage (a union under the new shape).
-  //   - `pick_b`:  picks the active arm (true -> SourceB; false -> SourceA).
-  //   - `make_a`:  callable `(SourceA::TempStorage&) -> SourceA`, invoked only when `!pick_b`.
-  //   - `make_b`:  callable `(SourceB::TempStorage&) -> SourceB`, invoked only when `pick_b`.
+  // Both child sources are constructed eagerly via their factories at
+  // construction; only the active arm is read in subsequent operations.
+  // This matches the OLD operational shape (both sources alive in registers)
+  // while keeping the factory-callback API the proposal targets. The
+  // smem-saving "active arm only" optimisation is dropped here -- when ptxas
+  // sees the runtime `if (pick_source_b)` branches in `set_tile_base` /
+  // `submit_load`, it flattens to predicated SEL execution which inflates
+  // register pressure (~+10 regs on the last-filter kernel for I64 keys,
+  // dropping occupancy from 3 to 2 CTAs/SM and costing ~+6% runtime). The
+  // factory-only variant pays the API churn without the SASS regression and
+  // still composes with future non-copyable children (the type is
+  // non-copyable / non-movable below).
   //
-  // The inactive factory is captured but never called -- ptxas eliminates its body
-  // along with any work it would have done (input-iterator dereferences, ref-binding,
-  // etc.) as dead code under the `if constexpr` / runtime branch.
+  //   - `ts`:      aggregate per-source TempStorage (union under the new shape).
+  //   - `pick_b`:  picks the active arm for submit_load / gather_one.
+  //   - `make_a` / `make_b`: invoked exactly once each at construction. Both
+  //     children are alive afterwards; only the active arm's load / gather
+  //     methods are called.
   template <typename MakeA, typename MakeB>
   _CCCL_DEVICE _CCCL_FORCEINLINE multi_source_data_source(TempStorage& ts, bool pick_b, MakeA make_a, MakeB make_b)
-      : pick_source_b(pick_b)
-  {
-    if constexpr (_temp_storage_is_empty)
-    {
-      // Both children publish empty TempStorage; pass on-stack empties of the
-      // matching child type so the factory's ref binding works. Folded away.
-      typename SourceA::TempStorage a_dummy{};
-      typename SourceB::TempStorage b_dummy{};
-      if (pick_b)
-      {
-        ::new (static_cast<void*>(&active_source.b)) SourceB(make_b(b_dummy));
-      }
-      else
-      {
-        ::new (static_cast<void*>(&active_source.a)) SourceA(make_a(a_dummy));
-      }
-    }
-    else
-    {
-      auto& inner = ts.Alias();
-      if (pick_b)
-      {
-        ::new (static_cast<void*>(&active_source.b)) SourceB(make_b(inner.b));
-      }
-      else
-      {
-        ::new (static_cast<void*>(&active_source.a)) SourceA(make_a(inner.a));
-      }
-    }
-  }
+      : source_a([&] {
+          if constexpr (_temp_storage_is_empty)
+          {
+            typename SourceA::TempStorage a_dummy{};
+            return make_a(a_dummy);
+          }
+          else
+          {
+            return make_a(ts.Alias().a);
+          }
+        }())
+      , source_b([&] {
+          if constexpr (_temp_storage_is_empty)
+          {
+            typename SourceB::TempStorage b_dummy{};
+            return make_b(b_dummy);
+          }
+          else
+          {
+            return make_b(ts.Alias().b);
+          }
+        }())
+      , pick_source_b(pick_b)
+  {}
 
-  _CCCL_DEVICE _CCCL_FORCEINLINE ~multi_source_data_source()
-  {
-    if (pick_source_b)
-    {
-      active_source.b.~SourceB();
-    }
-    else
-    {
-      active_source.a.~SourceA();
-    }
-  }
-
-  // The active-source / handle unions inherit deletion of copy/move from any
-  // child that has it (notably `async_to_shared_data_source`'s embedded
-  // `BlockLoadToShared`). Mark them deleted explicitly so a future caller
-  // accidentally routing through a copy / move-assignment site fails at
-  // declaration rather than at a confusing template instantiation error
-  // inside the union.
+  // Non-copyable / non-movable so the type composes with children that have
+  // deleted copy/move (notably `async_to_shared_data_source`'s embedded
+  // `BlockLoadToShared`). Existing factory call sites continue to work via
+  // C++17 mandatory prvalue copy elision; the one segment-boundary
+  // reassignment in `agent_batched_topk_last_filter::run` uses explicit
+  // destroy-then-construct.
   multi_source_data_source(const multi_source_data_source&)            = delete;
   multi_source_data_source(multi_source_data_source&&)                 = delete;
   multi_source_data_source& operator=(const multi_source_data_source&) = delete;
@@ -682,101 +658,95 @@ public:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
   {
-    if (pick_source_b)
-    {
-      active_source.b.set_tile_base(tile_base);
-    }
-    else
-    {
-      active_source.a.set_tile_base(tile_base);
-    }
+    // Both sources alive -- call both unconditionally. Matches the OLD code
+    // shape so ptxas's existing optimization heuristics (LDCU hoisting,
+    // uniform-register propagation) keep firing.
+    source_a.set_tile_base(tile_base);
+    source_b.set_tile_base(tile_base);
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
-    full_load_handle out;
-    out.pick_b = pick_source_b;
     if constexpr (_scratch_storage_is_empty)
     {
-      // Both children's scratch is empty; their `submit_load` doesn't touch
-      // the slot in that case anyway, so we pass on-stack stubs that the
-      // compiler folds away.
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
+      full_load_handle out;
+      out.pick_b = pick_source_b;
       if (pick_source_b)
       {
-        ::new (static_cast<void*>(&out.h.b))
-          typename SourceB::full_load_handle(active_source.b.submit_load(b_dummy));
+        ::new (static_cast<void*>(&out.h.b)) typename SourceB::full_load_handle(source_b.submit_load(b_dummy));
       }
       else
       {
-        ::new (static_cast<void*>(&out.h.a))
-          typename SourceA::full_load_handle(active_source.a.submit_load(a_dummy));
+        ::new (static_cast<void*>(&out.h.a)) typename SourceA::full_load_handle(source_a.submit_load(a_dummy));
       }
+      return out;
     }
     else
     {
       auto& inner = s.Alias();
+      full_load_handle out;
+      out.pick_b = pick_source_b;
       if (pick_source_b)
       {
-        ::new (static_cast<void*>(&out.h.b))
-          typename SourceB::full_load_handle(active_source.b.submit_load(inner.b));
+        ::new (static_cast<void*>(&out.h.b)) typename SourceB::full_load_handle(source_b.submit_load(inner.b));
       }
       else
       {
-        ::new (static_cast<void*>(&out.h.a))
-          typename SourceA::full_load_handle(active_source.a.submit_load(inner.a));
+        ::new (static_cast<void*>(&out.h.a)) typename SourceA::full_load_handle(source_a.submit_load(inner.a));
       }
+      return out;
     }
-    return out;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE partial_load_handle submit_load(ScratchStorage& s, OffsetT num_items)
   {
-    partial_load_handle out;
-    out.pick_b = pick_source_b;
     if constexpr (_scratch_storage_is_empty)
     {
       typename SourceA::ScratchStorage a_dummy{};
       typename SourceB::ScratchStorage b_dummy{};
+      partial_load_handle out;
+      out.pick_b = pick_source_b;
       if (pick_source_b)
       {
         ::new (static_cast<void*>(&out.h.b))
-          typename SourceB::partial_load_handle(active_source.b.submit_load(b_dummy, num_items));
+          typename SourceB::partial_load_handle(source_b.submit_load(b_dummy, num_items));
       }
       else
       {
         ::new (static_cast<void*>(&out.h.a))
-          typename SourceA::partial_load_handle(active_source.a.submit_load(a_dummy, num_items));
+          typename SourceA::partial_load_handle(source_a.submit_load(a_dummy, num_items));
       }
+      return out;
     }
     else
     {
       auto& inner = s.Alias();
+      partial_load_handle out;
+      out.pick_b = pick_source_b;
       if (pick_source_b)
       {
         ::new (static_cast<void*>(&out.h.b))
-          typename SourceB::partial_load_handle(active_source.b.submit_load(inner.b, num_items));
+          typename SourceB::partial_load_handle(source_b.submit_load(inner.b, num_items));
       }
       else
       {
         ::new (static_cast<void*>(&out.h.a))
-          typename SourceA::partial_load_handle(active_source.a.submit_load(inner.a, num_items));
+          typename SourceA::partial_load_handle(source_a.submit_load(inner.a, num_items));
       }
+      return out;
     }
-    return out;
   }
 
-  // On-demand single-item gather. Dispatches to whichever underlying source is
-  // active (`pick_source_b` is set once at construction, so the branch is constant
-  // within a kernel launch and ptxas eliminates the dead arm).
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
-    return pick_source_b ? active_source.b.gather_one(item_idx) : active_source.a.gather_one(item_idx);
+    return pick_source_b ? source_b.gather_one(item_idx) : source_a.gather_one(item_idx);
   }
 
 private:
-  _ActiveSourceStorage active_source;
+  SourceA source_a;
+  SourceB source_b;
   bool pick_source_b;
 };
 
