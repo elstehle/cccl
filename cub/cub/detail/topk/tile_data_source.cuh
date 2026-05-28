@@ -476,22 +476,16 @@ public:
                 "multi_source_data_source requires both sources to share value_t");
 
   // Both sources' TempStorages are alive (each persists across tiles for its
-  // own source). When *both* children publish empty TempStorage, the aggregate
-  // is empty too -- propagate that signal upward via `empty_storage_t` so the
-  // emptiness survives across class boundaries (see `empty_storage.cuh`).
-private:
-  static constexpr bool _temp_storage_is_empty =
-       is_empty_storage_v<typename SourceA::TempStorage>
-    && is_empty_storage_v<typename SourceB::TempStorage>;
-
-  struct _TempStorage_full
+  // own source). The agent accesses `.a` / `.b` directly on this type, so we
+  // expose it as a struct with named members rather than auto-collapsing to
+  // `empty_storage_t` when both children are empty -- transitivity at the
+  // TempStorage level would require accessor helpers on the consumer side
+  // (left for a follow-up).
+  struct TempStorage
   {
     typename SourceA::TempStorage a;
     typename SourceB::TempStorage b;
   };
-
-public:
-  using TempStorage = ::cuda::std::conditional_t<_temp_storage_is_empty, empty_storage_t, _TempStorage_full>;
 
   // Only one of the two sources is active per submit/complete window (`pick_source_b`
   // is set once at construction), so the two scratch slots alias via a union. The
