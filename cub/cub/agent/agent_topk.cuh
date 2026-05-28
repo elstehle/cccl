@@ -524,9 +524,6 @@ struct agent_topk_filter_partition
         typename key_source_buffer_t::TempStorage key_src_buffer_state;
         early_stop_storage_layout_t arena;
       } early_stop;
-
-      _CCCL_HOST_DEVICE arms_t() {}
-      _CCCL_HOST_DEVICE ~arms_t() {}
     } arms;
   };
 

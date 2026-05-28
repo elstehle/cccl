@@ -74,9 +74,10 @@ namespace partition_storage_layout_detail
 {
 // Inner storage for the non-persistent layout. `Uninitialized<>` wraps it so
 // the agent can place it directly in `__shared__` regardless of the inner
-// types' constructors -- the alternatives may include data-source scratch
-// (e.g. `multi_source_data_source::ScratchStorage`, which carries an
-// explicitly-defined union ctor/dtor pair).
+// types' constructors -- the alternative members are themselves typically
+// `Uninitialized<>`-wrapped (e.g. `multi_source_data_source::ScratchStorage`
+// is a wrapped union); this outer wrapper keeps that pattern composable
+// when arbitrary inner types are plugged in.
 template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
 union nonpersistent_scratch_inner
 {

@@ -181,8 +181,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   {
     typename agent_fp_t::TempStorage fp;
     typename agent_ub_t::TempStorage ub;
-
-    _CCCL_DEVICE all_modes_ts_t() {}
   };
   __shared__ all_modes_ts_t temp_storage;
 
