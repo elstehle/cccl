@@ -59,7 +59,6 @@
 
 #include <cuda/std/__algorithm/min.h>
 #include <cuda/std/__type_traits/integral_constant.h>
-#include <cuda/std/__type_traits/is_empty.h>
 #include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/__type_traits/remove_reference.h>
 #include <cuda/std/array>
@@ -275,127 +274,6 @@ _CCCL_DEVICE _CCCL_FORCEINLINE int compute_num_thread_items(int num_items)
 }
 
 //---------------------------------------------------------------------
-// `partition_storage_layout` -- agent-side smem layout helper.
-//
-// Picks the right storage shape for the union (`partition_t::TempStorage`, prefix-sum
-// state, load scratch, partition scratch) based on whether the partition class
-// carries persistent state across calls. Both shapes are temporally safe -- prefix
-// sum runs strictly after the partition's terminal `epilogue()` and only on the
-// last block, and load+partition are sequential within a tile.
-//
-//   NeedsPersistent == false (BlockPartition{Atomics,Staged,SharedMem} / BlockFilter*;
-//     `TempStorage` is empty): `partition_state` is empty; the union spans
-//     {keys_source_scratch | prefix_sum | partition_scratch}, giving byte-equivalent
-//     smem footprint to the original three-way union.
-//
-//   NeedsPersistent == true  (Accumulating variants; `TempStorage` is non-empty):
-//     `partition_state` carries the per-stream slot buffers + counters across all
-//     tiles; it aliases with `prefix_sum` (only safe because prefix_sum runs after
-//     epilogue on the last block). The per-tile scratch union spans
-//     {keys_source_scratch | partition_scratch}; for the accumulating variants
-//     `partition_scratch` is empty so the union collapses to just keys_source_scratch.
-//
-// All four pieces of storage are accessed via the four `get_*()` member functions so
-// the agent's call sites are layout-agnostic.
-//
-// Agents should generally consume `partition_storage_layout_for_t<...>` (below) which
-// derives `NeedsPersistent` from `cuda::std::is_empty_v<typename PartitionT::TempStorage>`
-// automatically.
-//---------------------------------------------------------------------
-template <bool NeedsPersistent, typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
-struct partition_storage_layout;
-
-template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
-struct partition_storage_layout</*NeedsPersistent=*/false, PartitionT, KeysSourceScratchT, PrefixSumT>
-{
-  union scratch_t
-  {
-    KeysSourceScratchT keys_source_scratch;
-    PrefixSumT prefix_sum;
-    typename PartitionT::ScratchStorage partition_scratch;
-
-    _CCCL_HOST_DEVICE scratch_t() {}
-    _CCCL_HOST_DEVICE ~scratch_t() {}
-  } scratch;
-
-  // Empty TempStorage -- accessed only for parity with the Accumulating layout. Sized
-  // to zero by the compiler (PartitionT::TempStorage is `struct{}`).
-  typename PartitionT::TempStorage partition_state;
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::TempStorage& get_partition_state()
-  {
-    return partition_state;
-  }
-  _CCCL_DEVICE _CCCL_FORCEINLINE PrefixSumT& get_prefix_sum()
-  {
-    return scratch.prefix_sum;
-  }
-  _CCCL_DEVICE _CCCL_FORCEINLINE KeysSourceScratchT& get_keys_source_scratch()
-  {
-    return scratch.keys_source_scratch;
-  }
-  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::ScratchStorage& get_partition_scratch()
-  {
-    return scratch.partition_scratch;
-  }
-};
-
-template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
-struct partition_storage_layout</*NeedsPersistent=*/true, PartitionT, KeysSourceScratchT, PrefixSumT>
-{
-  union persistent_t
-  {
-    typename PartitionT::TempStorage partition_state;
-    PrefixSumT prefix_sum;
-
-    _CCCL_HOST_DEVICE persistent_t() {}
-    _CCCL_HOST_DEVICE ~persistent_t() {}
-  } persistent;
-
-  union scratch_t
-  {
-    KeysSourceScratchT keys_source_scratch;
-    typename PartitionT::ScratchStorage partition_scratch;
-
-    _CCCL_HOST_DEVICE scratch_t() {}
-    _CCCL_HOST_DEVICE ~scratch_t() {}
-  } scratch;
-
-  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::TempStorage& get_partition_state()
-  {
-    return persistent.partition_state;
-  }
-  _CCCL_DEVICE _CCCL_FORCEINLINE PrefixSumT& get_prefix_sum()
-  {
-    return persistent.prefix_sum;
-  }
-  _CCCL_DEVICE _CCCL_FORCEINLINE KeysSourceScratchT& get_keys_source_scratch()
-  {
-    return scratch.keys_source_scratch;
-  }
-  _CCCL_DEVICE _CCCL_FORCEINLINE typename PartitionT::ScratchStorage& get_partition_scratch()
-  {
-    return scratch.partition_scratch;
-  }
-};
-
-// Agent-friendly alias that auto-derives `NeedsPersistent` from
-// `cuda::std::is_empty_v<typename PartitionT::TempStorage>`. The partition class
-// itself doesn't have to expose any explicit "needs-persistent-state" trait --
-// the non-accumulating primitives' `TempStorage = struct{}` is empty (so we get
-// the 3-way union), and the accumulating variants' `TempStorage` is non-empty (so
-// we get the persistent + scratch layout). Empty-struct vs. wrapped-data is a
-// clean signal because `cub::Uninitialized<T>` carries a `DeviceWord storage[N]`
-// member, which makes `is_empty_v` correctly return `false` on the wrapper.
-template <typename PartitionT, typename KeysSourceScratchT, typename PrefixSumT>
-using partition_storage_layout_for_t =
-  partition_storage_layout<!::cuda::std::is_empty_v<typename PartitionT::TempStorage>,
-                           PartitionT,
-                           KeysSourceScratchT,
-                           PrefixSumT>;
-
-
-//---------------------------------------------------------------------
 // `block_partition_atomics` -- per-non-rejected-item global atomic + scatter,
 // no smem. `InlinedClassify` selects between the precomputed-classes form
 // (smaller scatter loop, larger live register set for the `classes[]` array)
@@ -435,9 +313,28 @@ public:
   struct TempStorage
   {};
 
-  // Per-tile scratch. Empty: the atomics strategies hold no smem state -- per-item
-  // scatter goes direct to the user's iterators via the captured reserve ops.
-  struct ScratchStorage
+  // Per-tile scratch. The atomics strategies hold no scatter-side smem (per-item
+  // scatter goes direct to the user's iterators via the captured reserve ops),
+  // but they DO own the per-tile load scratch for the value channel: the value
+  // `TileDataSource` may need its own staging buffer (e.g. `BlockLoad::TempStorage`
+  // for the sync block-load variants, or the TMA staging buffer for the async
+  // variant). Routing it through `ScratchStorage` keeps it in shared memory
+  // instead of letting it land on the per-thread stack.
+  //
+  // For keys-only configurations `ValueDataSourceScratchT = NullType`, so the
+  // member collapses to a 1-byte placeholder.
+  //
+  // The struct is wrapped in `cub::Uninitialized<>` so it can sit in `__shared__`
+  // even when `ValueDataSourceScratchT` carries a non-trivial union ctor / dtor
+  // (e.g. `multi_source_data_source::ScratchStorage`).
+private:
+  struct _ScratchStorage
+  {
+    ValueDataSourceScratchT value_load;
+  };
+
+public:
+  struct ScratchStorage : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorage>
   {};
 
   // Ctor (safe-both shape): captures sinks + classify hooks. The TempStorage
@@ -557,7 +454,7 @@ private:
   // -----------------------------------------------------------------
   template <bool IsFull, bool HasCandidateStream, typename Classifier, typename CandidateCallbackOpT, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void partition_atomics_fused(
-    ScratchStorage& /*buffer*/,
+    ScratchStorage& buffer,
     const KeyT (&keys)[ItemsPerThread],
     int num_thread_items,
     Classifier& classifier,
@@ -568,6 +465,10 @@ private:
     {
       static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
                     "Per-call value source's value_t must match the class-level ValueT template parameter.");
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::ScratchStorage, ValueDataSourceScratchT>,
+                    "Per-call value source's ScratchStorage must match the class-level "
+                    "ValueDataSourceScratchT template parameter (the agent is responsible for picking "
+                    "the smem-backed scratch type up front so it can flow through ScratchStorage).");
 
       if constexpr (LazyValueLoad)
       {
@@ -577,8 +478,12 @@ private:
       }
       else
       {
-        typename ValueSourceT::ScratchStorage chan_scratch{};
-        auto h = value_source.submit_load(chan_scratch);
+        // Smem-backed scratch for the value-channel load. Lives inside `buffer` (the
+        // agent-allocated `__shared__` ScratchStorage), so neither it nor any large
+        // staging buffer it embeds (e.g. `BlockLoad::TempStorage`, the TMA buffer)
+        // ends up on the per-thread stack.
+        auto& chan_scratch = buffer.Alias().value_load;
+        auto h             = value_source.submit_load(chan_scratch);
         ValueT values[ItemsPerThread]{};
         h.complete_load(values);
 
