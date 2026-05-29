@@ -1047,6 +1047,19 @@ public:
 // `d_segment_*_key_buf + queue_idx * candidate_buffer_length` (similarly for the value channel).
 //---------------------------------------------------------------------
 
+// How the filter/partition agent processes one segment on a given pass. Mutually exclusive and
+// recomputed per segment in `resolve_segment_state` from the counter's current length vs k. This is
+// the *mode*; the orthogonal `load_from_candidates_buffer` source selector is carried alongside it
+// (a segment in any non-empty mode may read either the original input or the prior pass's candidates
+// buffer).
+enum class segment_processing_mode
+{
+  empty, // counter's `num_candidates_in == 0` -> every tile of this segment is a no-op
+  early_stop, // `current_len == current_k` -> scatter survivors straight out, no histogram
+  buffered, // !early_stop && fits-in-back-buffer && cost-justified -> partition into the candidates buffer
+  unbuffered, // scout/default -> re-histogram the full input without buffering
+};
+
 template <typename AgentTopKPolicyT,
           typename KeyInputItItT,
           typename KeyOutputItItT,
@@ -1364,9 +1377,10 @@ private:
   // a segment boundary; held in registers across same-segment tiles.
   struct per_segment_state_t
   {
-    bool empty; // counter_input_length == 0 -> all tiles of this segment are no-ops
-    bool early_stop; // current_len == current_k
-    bool will_buffer; // !early_stop && fits-in-back-buffer && cost-justified
+    // How this segment is processed this pass (empty / early_stop / buffered / unbuffered).
+    segment_processing_mode mode;
+    // Orthogonal to `mode`: whether this pass's input for the segment comes from the prior pass's
+    // candidates buffer (source B) rather than the original input (source A). Read from the counter.
     bool load_from_candidates_buffer;
 
     keys_in_it_t d_keys_in{};
@@ -1448,26 +1462,29 @@ private:
 
     s.pass = pass;
 
-    s.empty = (counter_input_length == 0);
-    if (s.empty)
+    if (counter_input_length == 0)
     {
+      s.mode = segment_processing_mode::empty;
       return s;
     }
 
     const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
     s.input_length_actual           = counter_input_length;
 
-    s.early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
-    s.will_buffer = !s.early_stop && (s.current_len <= candidate_buffer_length)
-                 && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
+    const bool early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
+    const bool will_buffer = !early_stop && (s.current_len <= candidate_buffer_length)
+                          && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
+    s.mode                 = early_stop  ? segment_processing_mode::early_stop
+                           : will_buffer ? segment_processing_mode::buffered
+                                         : segment_processing_mode::unbuffered;
 
     s.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
-    s.out_key_buf = s.will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
+    s.out_key_buf = will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
     if constexpr (!keys_only)
     {
       s.in_val_buf =
         s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
-      s.out_val_buf = s.will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
+      s.out_val_buf = will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
     }
 
     s.num_full_tiles      = s.input_length_actual / static_cast<OffsetT>(tile_items);
@@ -1700,10 +1717,10 @@ private:
     }
   }
 
-  // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` is what
-  // separates the three tile bodies; the agent reads them on every call but their value is
-  // fixed for the whole segment-stretch the caller is processing, so within a single
-  // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
+  // Per-mode tile dispatcher. Loop-invariant `s.mode` is what separates the three tile bodies; the
+  // agent reads it on every call but its value is fixed for the whole segment-stretch the caller is
+  // processing, so within a single unrolled / bit-decomposed run ptxas can hoist the mode branch
+  // above the tile loop.
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(
     const per_segment_state_t& s,
@@ -1711,11 +1728,11 @@ private:
     keys_source_t& keys_source,
     held_value_source_t& value_source)
   {
-    if (s.early_stop)
+    if (s.mode == segment_processing_mode::early_stop)
     {
       process_tile_early_stop<IsFullTile>(s, local_tile, keys_source, value_source);
     }
-    else if (s.will_buffer)
+    else if (s.mode == segment_processing_mode::buffered)
     {
       process_tile_buffered<IsFullTile>(s, local_tile, keys_source, value_source);
     }
@@ -1733,7 +1750,9 @@ private:
   // Matches the per-mode `pick_b` the per-tile bodies hard-coded before the source was hoisted.
   _CCCL_DEVICE _CCCL_FORCEINLINE static bool keys_pick_source_b(const per_segment_state_t& s)
   {
-    return (s.early_stop || s.will_buffer) ? static_cast<bool>(s.load_from_candidates_buffer) : false;
+    return (s.mode == segment_processing_mode::early_stop || s.mode == segment_processing_mode::buffered)
+           ? static_cast<bool>(s.load_from_candidates_buffer)
+           : false;
   }
 
   // Whether the segment's mode uses the smem histogram. The two non-early_stop modes
@@ -1741,7 +1760,7 @@ private:
   // early_stop touches none of it. Empty segments don't touch it either.
   _CCCL_DEVICE _CCCL_FORCEINLINE static bool segment_uses_smem_histogram(const per_segment_state_t& s)
   {
-    return !s.empty && !s.early_stop;
+    return s.mode == segment_processing_mode::buffered || s.mode == segment_processing_mode::unbuffered;
   }
 
   // Init the smem histogram for the given segment iff its mode uses it. Caller must
@@ -1848,7 +1867,7 @@ public:
     // This catches the common single-segment-per-dispatch case where one (universal-)
     // early-stop pass leaves `num_candidates_in == 0`; without this exit, the filter /
     // last-filter kernels would still spend ~20-30 us per launch in pure overhead.
-    if (state.empty)
+    if (state.mode == segment_processing_mode::empty)
     {
       // `total > first_tile` is guaranteed by the early-return above; `stride > 0`
       // because grid is non-empty.
@@ -1914,7 +1933,7 @@ public:
         __syncthreads();
       }
 
-      if (state.empty)
+      if (state.mode == segment_processing_mode::empty)
       {
         continue;
       }
@@ -1979,7 +1998,7 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx, int pass)
   {
     per_segment_state_t state = resolve_segment_state(queue_idx, pass);
-    if (state.empty || state.partial_items == 0)
+    if (state.mode == segment_processing_mode::empty || state.partial_items == 0)
     {
       return;
     }
