@@ -66,6 +66,19 @@ struct batched_topk_counters
   alignas(128) unsigned retirement_count;
 };
 
+// Narrowed segment-count type for the multi-CTA agents/kernels: 32-bit when the segment count's
+// static upper bound (or its declared `value_type`) fits in `uint32_t`, else 64-bit. Mirrors the
+// dispatch's `SegmentCountT` exactly, so the agents can derive the same type locally from
+// `NumSegmentsParameterT` instead of having it threaded as a separate template parameter. Keeps
+// `resolve_queue_idx`'s `UpperBound` + offset-table indexing in 32-bit arithmetic when it fits.
+template <typename NumSegmentsParameterT>
+using narrow_segment_count_t = ::cuda::std::conditional_t<
+  (static_cast<unsigned long long>(params::static_max_value_v<NumSegmentsParameterT>)
+     <= static_cast<unsigned long long>(::cuda::std::numeric_limits<::cuda::std::uint32_t>::max()))
+    || (sizeof(typename NumSegmentsParameterT::value_type) <= 4),
+  ::cuda::std::uint32_t,
+  unsigned long long>;
+
 template <typename PolicyGetter, // TODO(bgruber): pass worker_policy as NTTP in C++20
           typename KeyInputItItT,
           typename KeyOutputItItT,
@@ -1292,7 +1305,9 @@ struct agent_batched_topk_filter_partition
   // the per-segment buffer-sizing assumption and the runtime gating heuristic stay consistent.
   OffsetT candidate_buffer_coefficient;
   // (See `agent_batched_topk_histogram` for the rationale behind dropping `total_large_tiles`.)
-  typename NumSegmentsParameterT::value_type num_large_segments;
+  // Narrowed segment count (32-bit when the count fits) so `resolve_queue_idx`'s `UpperBound` and the
+  // offset-table indexing stay 32-bit.
+  narrow_segment_count_t<NumSegmentsParameterT> num_large_segments;
 
   // Owns the smem histogram plus per-tile binning and lifecycle, over the buffered arm's bins.
   // Only the buffered / unbuffered modes touch it (guarded by `segment_uses_smem_histogram`).
@@ -1318,7 +1333,7 @@ struct agent_batched_topk_filter_partition
     DecomposerT decomposer,
     OffsetT candidate_buffer_length,
     OffsetT candidate_buffer_coefficient,
-    typename NumSegmentsParameterT::value_type num_large_segments)
+    narrow_segment_count_t<NumSegmentsParameterT> num_large_segments)
       : storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , d_key_segments_out_it(d_key_segments_out_it)
@@ -2195,7 +2210,8 @@ struct agent_batched_topk_last_filter
   DecomposerT decomposer;
   OffsetT candidate_buffer_length;
   // (See `agent_batched_topk_histogram` for the rationale behind dropping `total_large_tiles`.)
-  typename NumSegmentsParameterT::value_type num_large_segments;
+  // Narrowed segment count: keeps `resolve_queue_idx`'s `UpperBound` + indexing 32-bit.
+  narrow_segment_count_t<NumSegmentsParameterT> num_large_segments;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_last_filter(
     TempStorage& ts,
@@ -2214,7 +2230,7 @@ struct agent_batched_topk_last_filter
     int total_bits,
     DecomposerT decomposer,
     OffsetT candidate_buffer_length,
-    typename NumSegmentsParameterT::value_type num_large_segments)
+    narrow_segment_count_t<NumSegmentsParameterT> num_large_segments)
       : storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , d_key_segments_out_it(d_key_segments_out_it)

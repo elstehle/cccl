@@ -495,12 +495,12 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   };
   __shared__ ::cuda::std::conditional_t<process_partial, staged_storage_t, plain_storage_t> temp_storage;
 
-  const typename NumSegmentsParameterT::value_type num_large_segments =
-    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  const narrow_segment_count_t<NumSegmentsParameterT> num_large_segments =
+    static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(*large_segments_count_it);
 
   // Grid-stride loop over queue slots. One CTA owns one segment for the duration of that
   // segment's epilogue; CTAs are independent and write to disjoint counter / histogram slabs.
-  using queue_idx_t = typename NumSegmentsParameterT::value_type;
+  using queue_idx_t = narrow_segment_count_t<NumSegmentsParameterT>;
   for (queue_idx_t queue_idx = static_cast<queue_idx_t>(blockIdx.x); queue_idx < num_large_segments;
        queue_idx += static_cast<queue_idx_t>(gridDim.x))
   {
@@ -642,9 +642,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
 {
   using key_t = it_value_t<it_value_t<KeyInputItItT>>;
   // See the histogram kernel for the rationale behind reading `total_large_tiles` from the
-  // sentinel slot and `large_segments_count` through an iterator.
-  const typename NumSegmentsParameterT::value_type num_large_segments =
-    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  // sentinel slot and `large_segments_count` through an iterator. Narrowed to `narrow_segment_count_t`
+  // so the agent's `resolve_queue_idx` `UpperBound` + indexing stay 32-bit when the count fits.
+  const narrow_segment_count_t<NumSegmentsParameterT> num_large_segments =
+    static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(*large_segments_count_it);
   // Pointer to the sentinel slot of the per-segment tile-offset table; the agent dereferences
   // it lazily at the grid-stride loop boundary instead of materialising the value into a
   // long-lived register at kernel entry. See the agent's `run` doc for the register-pressure
@@ -851,8 +852,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
 
   // The agent's constructor is cheap (member-init of pointers + iterators) so we always
   // build it; ptxas drops the unused args when `process_partial == false`.
-  const typename NumSegmentsParameterT::value_type num_large_segments =
-    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  const narrow_segment_count_t<NumSegmentsParameterT> num_large_segments =
+    static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(*large_segments_count_it);
   const extract_bin_op_t extract_bin_op{pass, total_bits, decomposer};
   filter_agent_t agent{
     temp_storage.agent_storage,
@@ -876,7 +877,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     candidate_buffer_coefficient,
     num_large_segments};
 
-  using queue_idx_t = typename NumSegmentsParameterT::value_type;
+  using queue_idx_t = narrow_segment_count_t<NumSegmentsParameterT>;
   for (queue_idx_t queue_idx = static_cast<queue_idx_t>(blockIdx.x); queue_idx < num_large_segments;
        queue_idx += static_cast<queue_idx_t>(gridDim.x))
   {
@@ -1005,9 +1006,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   using key_t = it_value_t<it_value_t<KeyInputItItT>>;
   // Materialise the queue-shape `num_large_segments` so the agent can hold it as a member
   // (the agent re-derives `d_total_large_tiles` from `d_large_segments_tile_offsets +
-  // num_large_segments` itself on entry to `run`).
-  const typename NumSegmentsParameterT::value_type num_large_segments =
-    static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
+  // num_large_segments` itself on entry to `run`). Narrowed to `narrow_segment_count_t` to keep the
+  // agent's `resolve_queue_idx` `UpperBound` + indexing 32-bit when the count fits.
+  const narrow_segment_count_t<NumSegmentsParameterT> num_large_segments =
+    static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(*large_segments_count_it);
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
   static constexpr batched_topk_policy bp                            = current_policy<PolicySelector>();
