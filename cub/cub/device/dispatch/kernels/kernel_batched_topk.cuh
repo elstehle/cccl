@@ -485,10 +485,22 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OffsetT,
     OutOffsetT>;
 
-  __shared__ union
+  // In `process_partial` mode the trailing partial tile is staged into an smem histogram (primed
+  // from the global slab), read into blocked registers, and fed to the bucket-finder from registers
+  // -- avoiding the global atomic-adds and the global histogram re-read. The staged histogram is
+  // dead before the bucket-finder reuses the smem for its scan, so the two alias via a union. In
+  // the default mode only the bucket-finder storage is needed.
+  using tile_histogram_t = detail::topk::tile_histogram<block_threads, num_buckets, OffsetT, ExtractBinOpT>;
+  union staged_storage_t
+  {
+    typename tile_histogram_t::TempStorage staged_histogram;
+    typename block_identify_kth_bucket_t::TempStorage prefix_sum;
+  };
+  union plain_storage_t
   {
     typename block_identify_kth_bucket_t::TempStorage prefix_sum;
-  } temp_storage;
+  };
+  __shared__ ::cuda::std::conditional_t<process_partial, staged_storage_t, plain_storage_t> temp_storage;
 
   const typename NumSegmentsParameterT::value_type num_large_segments =
     static_cast<typename NumSegmentsParameterT::value_type>(*large_segments_count_it);
@@ -503,41 +515,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     const OffsetT num_items    = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
     counter_t* segment_counter = d_segment_counters + queue_idx;
     OffsetT* segment_histogram = d_segment_histograms + queue_idx * num_buckets;
-
-    // Trailing-partial-tile pickup. In the experimental "histogram processes full tiles only"
-    // mode (`process_partial == true`), this CTA loads + bins the segment's trailing partial
-    // tile straight into `segment_histogram` via global atomic adds, before the prefix-sum +
-    // bucket-finder kicks in. In the default mode the histogram kernel already binned the
-    // partial; this whole branch is `if constexpr`-eliminated.
-    if constexpr (process_partial)
-    {
-      const OffsetT num_full_tiles = num_items / static_cast<OffsetT>(tile_items);
-      const OffsetT partial_items  = num_items - num_full_tiles * static_cast<OffsetT>(tile_items);
-      if (partial_items > OffsetT{0})
-      {
-        const auto inner_key_it = d_key_segments_it[segment_id];
-        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
-        // Striped per-thread load (lane t loads idx t + warp*32 etc.) is coalesced for
-        // dense per-segment input pointers and remains correct for any iterator. Each
-        // in-bounds item is binned and atomic-added to the global slab; out-of-bounds
-        // lanes contribute nothing. A single `__syncthreads()` at the end ensures the
-        // global atomics are visible to the subsequent `find_kth_bucket` (which reads
-        // through `BlockLoad` against `segment_histogram`).
-        _CCCL_PRAGMA_UNROLL_FULL()
-        for (int i = 0; i < items_per_thread; ++i)
-        {
-          const OffsetT idx = static_cast<OffsetT>(i) * static_cast<OffsetT>(block_threads)
-                            + static_cast<OffsetT>(threadIdx.x);
-          if (idx < partial_items)
-          {
-            const KeyInT key = inner_key_it[tile_base + idx];
-            const int bucket = extract_bin_op(key);
-            atomicAdd(segment_histogram + bucket, OffsetT{1});
-          }
-        }
-        __syncthreads();
-      }
-    }
 
     // Clip `k` to the segment's input size (same as the histogram agent did pre-refactor; see
     // the comment on that clip for why).
@@ -561,7 +538,56 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
       segment_counter->num_candidates_written = 0;
     }
 
-    block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(segment_histogram, k, on_kth_bucket);
+    if constexpr (process_partial)
+    {
+      // "Histogram processes full tiles only" mode: the companion histogram kernel skipped each
+      // segment's trailing partial tile. Rather than atomic-adding the partial into the global
+      // slab and re-reading the global histogram, stage the complete histogram in smem: prime it
+      // from the global slab (the full-tile counts), add the partial tile via fast smem atomics,
+      // then drain it into blocked registers and run the bucket-finder against registers.
+      tile_histogram_t hist{temp_storage.staged_histogram, extract_bin_op};
+      hist.load_from(segment_histogram);
+      __syncthreads();
+
+      const OffsetT num_full_tiles = num_items / static_cast<OffsetT>(tile_items);
+      const OffsetT partial_items  = num_items - num_full_tiles * static_cast<OffsetT>(tile_items);
+      if (partial_items > OffsetT{0})
+      {
+        const auto inner_key_it = d_key_segments_it[segment_id];
+        const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
+        // Blocked per-thread load of the trailing partial tile (matches the histogram agent's
+        // `add_partial` arrangement); out-of-range lanes load nothing and are not binned.
+        KeyInT items[items_per_thread];
+        const OffsetT thread_base = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int j = 0; j < items_per_thread; ++j)
+        {
+          const OffsetT idx = thread_base + static_cast<OffsetT>(j);
+          if (idx < num_items)
+          {
+            items[j] = inner_key_it[idx];
+          }
+        }
+        const int num_thread_items =
+          (thread_base >= num_items)
+            ? 0
+            : static_cast<int>((::cuda::std::min) (static_cast<OffsetT>(items_per_thread), num_items - thread_base));
+        hist.add_partial(items, num_thread_items);
+        __syncthreads();
+      }
+
+      // Drain the staged histogram into this thread's blocked register chunk (direct smem read, no
+      // transpose), then run the bucket-finder against registers. The staged-histogram smem aliases
+      // the bucket-finder's scan storage, so the read must complete before the scan overwrites it.
+      OffsetT thread_histogram[block_identify_kth_bucket_t::bins_per_thread];
+      block_identify_kth_bucket_t::load_blocked(hist.data(), thread_histogram);
+      __syncthreads();
+      block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(thread_histogram, k, on_kth_bucket);
+    }
+    else
+    {
+      block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(segment_histogram, k, on_kth_bucket);
+    }
 
     if (reset_histogram)
     {
