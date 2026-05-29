@@ -397,6 +397,27 @@ merge_histogram(const LocalCounterT* local_histogram, GlobalCounterT* global_his
 }
 
 //---------------------------------------------------------------------
+// Copy a histogram from `src` into `dst`. The read-side complement of `merge_histogram`: used to
+// prime a block-local (smem) histogram from a previously-accumulated (global) one instead of
+// zero-initializing it. The two counter types may differ; each source value is widened/narrowed
+// to the destination counter type.
+//---------------------------------------------------------------------
+template <int BlockThreads, int NumBuckets, typename DstCounterT, typename SrcCounterT>
+_CCCL_DEVICE _CCCL_FORCEINLINE void load_histogram(DstCounterT* dst, const SrcCounterT* src)
+{
+  int histo_offset = 0;
+  _CCCL_PRAGMA_UNROLL_FULL()
+  for (; histo_offset + BlockThreads <= NumBuckets; histo_offset += BlockThreads)
+  {
+    dst[histo_offset + threadIdx.x] = static_cast<DstCounterT>(src[histo_offset + threadIdx.x]);
+  }
+  if ((NumBuckets % BlockThreads != 0) && (histo_offset + static_cast<int>(threadIdx.x) < NumBuckets))
+  {
+    dst[histo_offset + threadIdx.x] = static_cast<DstCounterT>(src[histo_offset + threadIdx.x]);
+  }
+}
+
+//---------------------------------------------------------------------
 // Last-block coordination primitive.
 // Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes `epilogue_op` exactly once on that block. 
 // The epilogue owns whatever smem it needs and decides what "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
@@ -457,6 +478,9 @@ struct block_identify_kth_bucket
 
   static constexpr int num_buckets     = 1 << BitsPerPass;
   static constexpr int bins_per_thread = ::cuda::ceil_div(num_buckets, BlockThreads);
+  // True when the bins exactly fill `BlockThreads * bins_per_thread` (no ragged last chunk); lets
+  // the full-tile paths skip the out-of-bounds checks.
+  static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
 
   // Only threads owning at least one in-range bin contribute a boundary, so the buffer is capped at `num_buckets` slots
   // when `num_buckets < BlockThreads`.
@@ -483,8 +507,31 @@ struct block_identify_kth_bucket
       : storage(s)
   {}
 
-  // Inclusive-prefix-sums `input_histogram`, identifies the bucket containing the `current_k`-th element, and invokes
-  // `on_kth_bucket` exactly once on the unique thread that owns that bucket. `on_kth_bucket` callback signature and
+  // Read a histogram laid out by bin index (e.g. an smem slab) into this thread's blocked register
+  // chunk: thread `t` owns bins `[t*bins_per_thread, t*bins_per_thread + bins_per_thread)`. Unlike
+  // the `find_kth_bucket(const OffsetT*)` overload's `BlockLoad`, this is a direct (non-transposed)
+  // read -- there is no coalescing benefit for an smem source, and skipping the transpose avoids
+  // using the load scratch, which lets a caller alias the histogram storage with this primitive's
+  // `TempStorage`. The ragged last chunk is zero-filled.
+  _CCCL_DEVICE _CCCL_FORCEINLINE static void
+  load_blocked(const OffsetT* histogram, OffsetT (&thread_data)[bins_per_thread])
+  {
+    const int base_bin = static_cast<int>(threadIdx.x) * bins_per_thread;
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int i = 0; i < bins_per_thread; ++i)
+    {
+      const int bin  = base_bin + i;
+      thread_data[i] = (is_full_tile || bin < num_buckets) ? histogram[bin] : OffsetT{0};
+    }
+  }
+
+  // Bucket-finder over a histogram already resident in this thread's blocked registers
+  // (`thread_data[i]` holds the count for bin `threadIdx.x * bins_per_thread + i`). Identical to the
+  // `const OffsetT*` overload except that it skips the histogram load, so the caller can feed a
+  // histogram it already has in registers (e.g. read from an smem slab via `load_blocked`).
+  //
+  // Identifies the bucket containing the `current_k`-th element and invokes `on_kth_bucket` exactly
+  // once on the unique thread that owns that bucket. `on_kth_bucket` callback signature and
   // arguments: `on_kth_bucket(OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates)`
   // - current_k: echoed back from the `current_k` argument so the callback can compute `current_k - num_selected`
   // (number of candidates in the k-th item's bucket)
@@ -494,27 +541,15 @@ struct block_identify_kth_bucket
   //    for the next pass is `current_k - num_selected`.
   // - num_candidates: count of items inside `bin_index` itself, i.e. the number of candidates the next filter pass will
   //    write.
+  //
+  // Storage contract: the first operation is the in-place block scan into `storage.scan`. If the
+  // caller sourced `thread_data` from memory that aliases this primitive's `TempStorage` (e.g. an
+  // smem histogram unioned with it), it must `__syncthreads()` before calling so all reads complete
+  // before the scan overwrites the shared storage.
   template <typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  find_kth_bucket(const OffsetT* input_histogram, OutOffsetT current_k, KthBucketFn on_kth_bucket)
+  find_kth_bucket(OffsetT (&thread_data)[bins_per_thread], OutOffsetT current_k, KthBucketFn on_kth_bucket)
   {
-    // Full tiles (of bins) will skip the out-of-bounds checks
-    static constexpr bool is_full_tile = (num_buckets == BlockThreads * bins_per_thread);
-
-    // Each thread loads its contiguous chunk of bins into registers
-    OffsetT thread_data[bins_per_thread];
-    if constexpr (is_full_tile)
-    {
-      block_load_t(storage.load).Load(input_histogram, thread_data);
-    }
-    else
-    {
-      block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
-    }
-
-    // Ensure we can reuse temporary storage for the prefix-sum
-    __syncthreads();
-
     // Compute the prefix-sum over the bins
     block_scan_t(storage.scan).InclusiveSum(thread_data, thread_data);
 
@@ -560,6 +595,30 @@ struct block_identify_kth_bucket
         }
       }
     }
+  }
+
+  // Loads `input_histogram` (typically a global slab) into blocked registers via a coalesced
+  // `BlockLoad`, then delegates to the in-registers overload above. See that overload for the
+  // `on_kth_bucket` contract.
+  template <typename KthBucketFn>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  find_kth_bucket(const OffsetT* input_histogram, OutOffsetT current_k, KthBucketFn on_kth_bucket)
+  {
+    // Each thread loads its contiguous chunk of bins into registers
+    OffsetT thread_data[bins_per_thread];
+    if constexpr (is_full_tile)
+    {
+      block_load_t(storage.load).Load(input_histogram, thread_data);
+    }
+    else
+    {
+      block_load_t(storage.load).Load(input_histogram, thread_data, num_buckets);
+    }
+
+    // Ensure we can reuse temporary storage for the prefix-sum
+    __syncthreads();
+
+    find_kth_bucket(thread_data, current_k, on_kth_bucket);
   }
 };
 
@@ -663,6 +722,118 @@ struct topk_histogram_callback_op
   }
 };
 
+//---------------------------------------------------------------------
+// tile_histogram: block-wide primitive that owns a shared-memory histogram and provides the
+// populate / drain / read operations shared by the top-k histogram and filter agents (and the
+// finalize-histogram kernel).
+//
+// Concern split: this primitive owns the smem histogram -- its state -- plus the per-tile binning
+// and the histogram lifecycle (`reset` / `add_*` / `load_from` / `flush`). Tile iteration, segment
+// handling, and data loading stay in the owning agent/kernel. The primitive is deliberately
+// *sync-free*: every method is a data-parallel op with no internal `__syncthreads()`, so the
+// owner retains full control over barrier placement (which is performance-critical and
+// context-dependent at segment boundaries).
+//
+// The bins are exposed via `data()` so collaborating block primitives can read them
+// (`block_identify_kth_bucket::find_kth_bucket`) or write them (the buffered partition's
+// `topk_histogram_callback_op`, via `make_callback()`) without owning the storage -- reading a
+// histogram's contents is part of its contract, not an encapsulation leak. The owner remains the
+// single manager of the buffer's lifecycle.
+//
+// `extract_bin_op` is fixed for the lifetime of the histogram (it also feeds `make_callback`), so
+// it is stored. The per-item accept predicate `filter_op` is taken per `add_*` call (defaulting to
+// pass-through): the histogram agent uses a fixed pass-through, while the filter agent's unbuffered
+// path supplies a per-segment `topk_candidate_filter_op` built from that segment's counter state.
+//---------------------------------------------------------------------
+template <int BlockThreads, int NumBuckets, typename CounterT, typename ExtractBinOpT>
+class tile_histogram
+{
+public:
+  // Shared-memory state: one counter per bucket. The owning agent embeds this where its raw
+  // `histogram[NumBuckets]` array used to live (standalone, or inside a per-mode union arm), so
+  // the smem layout is unchanged.
+  struct TempStorage
+  {
+    CounterT bins[NumBuckets];
+  };
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE tile_histogram(TempStorage& temp_storage, ExtractBinOpT extract_bin_op)
+      : temp_storage(temp_storage)
+      , extract_bin_op(extract_bin_op)
+  {}
+
+  // Zero the local histogram. No internal sync; the caller brackets.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void reset()
+  {
+    init_histogram<BlockThreads, NumBuckets>(temp_storage.bins);
+  }
+
+  // Initialize the local histogram from a histogram in (typically global) memory -- the read-side
+  // complement of `flush`. No internal sync; the caller brackets.
+  template <typename SrcCounterT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void load_from(const SrcCounterT* src)
+  {
+    load_histogram<BlockThreads, NumBuckets>(temp_storage.bins, src);
+  }
+
+  // Bin a full tile of per-thread `items` into the local histogram. Every item that passes
+  // `filter_op` contributes one count to its `extract_bin_op` bucket.
+  template <typename KeyT, int ItemsPerThread, typename FilterOpT = topk_pass_through_filter_op>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void add_full(const KeyT (&items)[ItemsPerThread], FilterOpT filter_op = {})
+  {
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < ItemsPerThread; ++j)
+    {
+      if (filter_op(items[j]))
+      {
+        const int bucket = extract_bin_op(items[j]);
+        atomicAdd(temp_storage.bins + bucket, CounterT{1});
+      }
+    }
+  }
+
+  // Bin the trailing partial tile's `num_thread_items` items per thread.
+  template <typename KeyT, int ItemsPerThread, typename FilterOpT = topk_pass_through_filter_op>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  add_partial(const KeyT (&items)[ItemsPerThread], int num_thread_items, FilterOpT filter_op = {})
+  {
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < ItemsPerThread; ++j)
+    {
+      if (j < num_thread_items && filter_op(items[j]))
+      {
+        const int bucket = extract_bin_op(items[j]);
+        atomicAdd(temp_storage.bins + bucket, CounterT{1});
+      }
+    }
+  }
+
+  // Atomically merge the local histogram into a destination histogram (typically the segment's
+  // global slab). No internal sync; the caller brackets.
+  template <typename GlobalCounterT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void flush(GlobalCounterT* dst)
+  {
+    merge_histogram<BlockThreads, NumBuckets>(temp_storage.bins, dst);
+  }
+
+  // Raw access to the local bins, for collaborating block primitives that read
+  // (`block_identify_kth_bucket`) or write (`topk_histogram_callback_op`) the histogram.
+  [[nodiscard]] _CCCL_DEVICE _CCCL_FORCEINLINE CounterT* data() const
+  {
+    return temp_storage.bins;
+  }
+
+  // Build a per-item bin callback targeting this histogram, for the buffered partition primitive
+  // (which bins each surviving candidate as a side effect of classification).
+  [[nodiscard]] _CCCL_DEVICE _CCCL_FORCEINLINE topk_histogram_callback_op<ExtractBinOpT, CounterT> make_callback() const
+  {
+    return topk_histogram_callback_op<ExtractBinOpT, CounterT>{extract_bin_op, temp_storage.bins};
+  }
+
+private:
+  TempStorage& temp_storage;
+  ExtractBinOpT extract_bin_op;
+};
 } // namespace detail::topk
 
 CUB_NAMESPACE_END

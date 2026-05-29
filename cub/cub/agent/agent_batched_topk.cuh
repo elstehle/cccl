@@ -508,6 +508,10 @@ struct agent_batched_topk_histogram
     items_per_thread,
     OffsetT>;
 
+  // Block-wide histogram primitive: owns the smem bins plus the per-tile binning and histogram
+  // lifecycle. Tile iteration, segment handling, and data loading stay in this agent.
+  using tile_histogram_t = detail::topk::tile_histogram<block_threads, num_buckets, OffsetT, ExtractBinOpT>;
+
   // Per-segment cache. Lives in smem rather than per-thread registers so all use sites read
   // through the same canonical handle. Thread 0 of the CTA writes this on each segment
   // boundary; every other thread reads through it. Each scalar / pointer / iterator is
@@ -539,7 +543,7 @@ struct agent_batched_topk_histogram
   // keys-source state / scratch + the smem-resident `active_segment` cache.
   struct _TempStorage
   {
-    OffsetT histogram[num_buckets];
+    typename tile_histogram_t::TempStorage histogram;
     typename keys_source_t::TempStorage keys_source_state;
     typename keys_source_t::ScratchStorage keys_source_scratch;
     active_segment_state_t active_segment;
@@ -557,7 +561,6 @@ struct agent_batched_topk_histogram
   SegmentIdProviderT segment_id_provider;
   const LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
   OffsetT* d_segment_histograms;
-  ExtractBinOpT extract_bin_op;
   FilterOpT filter_op;
 
   // Iterator yielding the number of enqueued large segments (queue slots) when dereferenced.
@@ -567,6 +570,10 @@ struct agent_batched_topk_histogram
   // `UpperBound` upper bound is `*large_segments_count_it` -- both deferred to use sites
   // inside the agent body.
   LargeSegmentsCountItT large_segments_count_it;
+
+  // Owns the smem histogram plus the per-tile binning and lifecycle (constructed over
+  // `temp_storage.histogram`). `extract_bin_op` lives inside this primitive now.
+  tile_histogram_t hist;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_histogram(
     TempStorage& ts,
@@ -584,41 +591,12 @@ struct agent_batched_topk_histogram
       , segment_id_provider(segment_id_provider)
       , d_large_segments_tile_offsets(d_large_segments_tile_offsets)
       , d_segment_histograms(d_segment_histograms)
-      , extract_bin_op(extract_bin_op)
       , filter_op(filter_op)
       , large_segments_count_it(large_segments_count_it)
+      , hist(temp_storage.histogram, extract_bin_op)
   {}
 
 private:
-  // Process one full tile's items by binning into the smem histogram.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_full(const key_in_t (&items)[items_per_thread])
-  {
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < items_per_thread; ++j)
-    {
-      if (filter_op(items[j]))
-      {
-        const int bucket = extract_bin_op(items[j]);
-        atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
-      }
-    }
-  }
-
-  // Process the trailing partial tile's `num_thread_items` items per thread.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_partial(const key_in_t (&items)[items_per_thread], int num_thread_items)
-  {
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int j = 0; j < items_per_thread; ++j)
-    {
-      if (j < num_thread_items && filter_op(items[j]))
-      {
-        const int bucket = extract_bin_op(items[j]);
-        atomicAdd(temp_storage.histogram + bucket, OffsetT{1});
-      }
-    }
-  }
-
   // Thread 0 resolves the segment containing `cursor` and publishes the result to smem. Other
   // threads only need to participate in the surrounding `__syncthreads()`. The caller is
   // responsible for the publish barrier after this returns.
@@ -652,8 +630,7 @@ private:
   // visible.
   _CCCL_DEVICE _CCCL_FORCEINLINE void flush_active_segment()
   {
-    detail::topk::merge_histogram<block_threads, num_buckets>(
-      temp_storage.histogram, temp_storage.active_segment.segment_histogram);
+    hist.flush(temp_storage.active_segment.segment_histogram);
   }
 
   // Bring up a freshly-resolved segment-stretch: thread 0 writes the new `active_segment`,
@@ -663,7 +640,7 @@ private:
   {
     load_segment_state(cursor);
     __syncthreads();
-    detail::topk::init_histogram<block_threads, num_buckets>(temp_storage.histogram);
+    hist.reset();
     __syncthreads();
   }
 
@@ -713,7 +690,7 @@ private:
     key_in_t items[items_per_thread];
     auto h = keys_source.submit_load(temp_storage.keys_source_scratch);
     h.complete_load(items);
-    process_tile_full(items);
+    hist.add_full(items, filter_op);
   }
 
   // Process the active segment's trailing partial tile (exactly `partial_items` items spread
@@ -742,7 +719,7 @@ private:
         ? 0
         : static_cast<int>(
             (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), num_items - thread_offset));
-    process_tile_partial(items, num_thread_items);
+    hist.add_partial(items, num_thread_items, filter_op);
   }
 
 public:
@@ -1194,6 +1171,10 @@ struct agent_batched_topk_filter_partition
   using histogram_callback_op_t = detail::topk::topk_histogram_callback_op<ExtractBinOpT, OffsetT>;
   using identify_selected_op_t  = detail::topk::topk_identify_selected_op<IdentifyCandidatesOpT>;
 
+  // Block-wide histogram primitive shared with the histogram agent: owns the smem bins plus the
+  // per-tile binning and lifecycle. Only the buffered / unbuffered (non-early_stop) modes use it.
+  using tile_histogram_t = detail::topk::tile_histogram<block_threads, num_buckets, OffsetT, ExtractBinOpT>;
+
   using buffered_partition_t = detail::topk::strategy_to_partition_class_t<
     BufferedPartStrat,
     block_threads,
@@ -1259,7 +1240,7 @@ struct agent_batched_topk_filter_partition
     {
       struct buffered_t
       {
-        OffsetT histogram[num_buckets];
+        typename tile_histogram_t::TempStorage histogram;
         typename key_source_input_t::TempStorage key_src_input_state;
         typename key_source_buffer_t::TempStorage key_src_buffer_state;
         buffered_storage_layout_t arena;
@@ -1294,7 +1275,6 @@ struct agent_batched_topk_filter_partition
   value_in_t* d_segment_in_val_buf;
   key_in_t* d_segment_out_key_buf;
   value_in_t* d_segment_out_val_buf;
-  ExtractBinOpT extract_bin_op;
   int total_bits;
   DecomposerT decomposer;
   OffsetT candidate_buffer_length;
@@ -1306,6 +1286,10 @@ struct agent_batched_topk_filter_partition
   OffsetT candidate_buffer_coefficient;
   // (See `agent_batched_topk_histogram` for the rationale behind dropping `total_large_tiles`.)
   typename NumSegmentsParameterT::value_type num_large_segments;
+
+  // Owns the smem histogram plus per-tile binning and lifecycle, over the buffered arm's bins.
+  // Only the buffered / unbuffered modes touch it (guarded by `segment_uses_smem_histogram`).
+  tile_histogram_t hist;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_filter_partition(
     TempStorage& ts,
@@ -1342,12 +1326,12 @@ struct agent_batched_topk_filter_partition
       , d_segment_in_val_buf(d_segment_in_val_buf)
       , d_segment_out_key_buf(d_segment_out_key_buf)
       , d_segment_out_val_buf(d_segment_out_val_buf)
-      , extract_bin_op(extract_bin_op)
       , total_bits(total_bits)
       , decomposer(decomposer)
       , candidate_buffer_length(candidate_buffer_length)
       , candidate_buffer_coefficient(candidate_buffer_coefficient)
       , num_large_segments(num_large_segments)
+      , hist(storage.arms.buffered.histogram, extract_bin_op)
   {}
 
 private:
@@ -1642,7 +1626,7 @@ private:
 
     buffered_cand_key_out_t cand_key_out = s.out_key_buf;
     [[maybe_unused]] buffered_cand_val_out_t cand_val_out = s.out_val_buf;
-    histogram_callback_op_t histogram_cb{extract_bin_op, storage.arms.buffered.histogram};
+    histogram_callback_op_t histogram_cb                  = hist.make_callback();
     auto value_channel_sinks = make_buffered_value_channel_sinks(s.d_values_out, cand_val_out);
 
     // The partition primitive's ctor takes `IdentifyCandidatesOp&` (non-const); build a
@@ -1775,15 +1759,7 @@ private:
       key_in_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
-      _CCCL_PRAGMA_UNROLL_FULL()
-      for (int j = 0; j < items_per_thread; ++j)
-      {
-        if (filter_op(items[j]))
-        {
-          const int bucket = extract_bin_op(items[j]);
-          atomicAdd(storage.arms.buffered.histogram + bucket, OffsetT{1});
-        }
-      }
+      hist.add_full(items, filter_op);
     }
     else
     {
@@ -1803,15 +1779,7 @@ private:
           ? 0
           : static_cast<int>((::cuda::std::min) (
             static_cast<OffsetT>(items_per_thread), s.input_length_actual - thread_offset));
-      _CCCL_PRAGMA_UNROLL_FULL()
-      for (int j = 0; j < items_per_thread; ++j)
-      {
-        if (j < num_thread_items && filter_op(items[j]))
-        {
-          const int bucket = extract_bin_op(items[j]);
-          atomicAdd(storage.arms.buffered.histogram + bucket, OffsetT{1});
-        }
-      }
+      hist.add_partial(items, num_thread_items, filter_op);
     }
     // See `process_tile_early_stop` for the mbarrier-reset rationale.
     keys_source.invalidate();
@@ -1852,7 +1820,7 @@ private:
   {
     if (segment_uses_smem_histogram(s))
     {
-      detail::topk::init_histogram<block_threads, num_buckets>(storage.arms.buffered.histogram);
+      hist.reset();
     }
   }
 
@@ -1863,8 +1831,7 @@ private:
   {
     if (segment_uses_smem_histogram(s))
     {
-      detail::topk::merge_histogram<block_threads, num_buckets>(
-        storage.arms.buffered.histogram, s.segment_histogram);
+      hist.flush(s.segment_histogram);
     }
   }
 
