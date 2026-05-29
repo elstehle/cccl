@@ -85,22 +85,22 @@ template <int ThreadsPerBlock,
           int ItemsPerThread,
           int BitsPerPass,
           BlockScanAlgorithm ScanAlgorithm,
-          tile_load_kind KeysTileLoadKind         = tile_load_kind::block_load_vectorize,
-          int AccumulatingBufferCapacity          = 256,
-          int SpeculativeSelectedBufferCapacity   = 128>
+          tile_load_kind KeysTileLoadKind       = tile_load_kind::block_load_vectorize,
+          int AccumulatingBufferCapacity        = 256,
+          int SpeculativeSelectedBufferCapacity = 128>
 struct AgentTopKPolicy
 {
-  static constexpr int block_threads                  = ThreadsPerBlock;
-  static constexpr int items_per_thread               = ItemsPerThread;
-  static constexpr int bits_per_pass                  = BitsPerPass;
-  static constexpr BlockScanAlgorithm scan_algorithm  = ScanAlgorithm;
+  static constexpr int block_threads                 = ThreadsPerBlock;
+  static constexpr int items_per_thread              = ItemsPerThread;
+  static constexpr int bits_per_pass                 = BitsPerPass;
+  static constexpr BlockScanAlgorithm scan_algorithm = ScanAlgorithm;
   // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
   // Used by the new agents to pick a TileDataSource specialization for the keys
   // stream. Defaults to the legacy `BLOCK_LOAD_VECTORIZE` mapping so existing call
   // sites that don't set it preserve current behavior.
-  static constexpr tile_load_kind keys_tile_load_kind         = KeysTileLoadKind;
-  static constexpr int accumulating_buffer_capacity           = AccumulatingBufferCapacity;
-  static constexpr int speculative_selected_buffer_capacity   = SpeculativeSelectedBufferCapacity;
+  static constexpr tile_load_kind keys_tile_load_kind       = KeysTileLoadKind;
+  static constexpr int accumulating_buffer_capacity         = AccumulatingBufferCapacity;
+  static constexpr int speculative_selected_buffer_capacity = SpeculativeSelectedBufferCapacity;
 };
 
 template <typename KeyT, bool CanTwiddle = detail::radix::can_twiddle<KeyT>>
@@ -419,9 +419,9 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void load_histogram(DstCounterT* dst, const SrcCo
 
 //---------------------------------------------------------------------
 // Last-block coordination primitive.
-// Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes `epilogue_op` exactly once on that block. 
-// The epilogue owns whatever smem it needs and decides what "finalization" means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus
-// any per-mode counter bookkeeping). 
+// Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes
+// `epilogue_op` exactly once on that block. The epilogue owns whatever smem it needs and decides what "finalization"
+// means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus any per-mode counter bookkeeping).
 // `expected_block_count` is the number of blocks expected to retire (e.g., `gridDim.x`.
 //---------------------------------------------------------------------
 template <typename BlockCountT, typename EpilogueOpT>
@@ -446,7 +446,7 @@ finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_co
 
 //---------------------------------------------------------------------
 // Computes the prefix-sum over bins and finds the k-th item bucket.
-// Exposes a the `find_kth_bucket()` entry point that invokes a callback exactly once with the kth-bucket index and the 
+// Exposes a the `find_kth_bucket()` entry point that invokes a callback exactly once with the kth-bucket index and the
 // The primitive performs:
 //   1) load of the per-bin counts from `input_histogram` into a blocked arrangement;
 //   2) `BlockScan::InclusiveSum` over that chunk, keeping prefix sums in registers;
@@ -631,7 +631,8 @@ struct block_identify_kth_bucket
 // canonical specializations live here:
 //
 //  - `topk_pass_through_filter_op` -- pass-0 default. Always returns `true`.
-//  - `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used by the unbuffered filter pass. It wraps the kernel's `identify_candidates_op` and returns `true` only for keys classified as `candidate`
+//  - `topk_candidate_filter_op<IdentifyCandidatesOpT>` -- thin wrapper used by the unbuffered filter pass. It wraps the
+//  kernel's `identify_candidates_op` and returns `true` only for keys classified as `candidate`
 struct topk_pass_through_filter_op
 {
   template <typename T>
