@@ -1124,6 +1124,12 @@ struct agent_batched_topk_filter_partition
   using value_source_buffer_t = detail::topk::direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = detail::topk::multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
+  // The value multi-source the agent actually holds for the whole CTA run. `keys_only` has no value
+  // channel, so it collapses to `NullType` (built but never loaded from); pairs hold the real source.
+  // Named (rather than a per-tile `auto`) so `run()` can build it once and pass it by reference into
+  // the per-tile bodies -- the value analog of `keys_source_t`.
+  using held_value_source_t = ::cuda::std::conditional_t<keys_only, NullType, value_source_t>;
+
   using val_out_t               = inner_value_out_it_t;
   using buffered_cand_val_out_t = value_in_t*;
   using buffered_cand_key_out_t = key_in_t*;
@@ -1221,6 +1227,13 @@ struct agent_batched_topk_filter_partition
     // the hoist costs no extra smem.
     typename key_source_input_t::TempStorage key_src_input_state;
     typename key_source_buffer_t::TempStorage key_src_buffer_state;
+    // Persistent value-source state, hoisted for the same reason as the keys-source state above so the
+    // value source can also persist across segments / be re-targeted instead of rebuilt. Today the value
+    // source is always `direct` (empty state, so these slots add no smem -- and they're empty for
+    // `keys_only` too); the hoist is in place so a future async value source's mbarrier has a stable home
+    // and is initialized once per CTA rather than per tile.
+    typename value_source_input_t::TempStorage val_src_input_state;
+    typename value_source_buffer_t::TempStorage val_src_buffer_state;
     union arms_t
     {
       struct buffered_t
@@ -1473,11 +1486,15 @@ private:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_early_stop(
+    const per_segment_state_t& s,
+    LargeSegmentTileOffsetT local_tile,
+    keys_source_t& keys_source,
+    held_value_source_t& value_source)
   {
-    // `keys_source` is owned by `run()` and re-targeted to this segment via `set_inputs`; here we
-    // only set the per-tile base + submit the load, so the (async) mbarrier is never re-initialized.
+    // `keys_source` / `value_source` are both owned by `run()` and re-targeted to this segment via
+    // `set_inputs`; here we only set the per-tile base + submit the load, so an (async) source's
+    // mbarrier is never re-initialized.
 
     // The filter primitive's ctor takes the identify-selected op by non-const reference,
     // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
@@ -1495,31 +1512,10 @@ private:
       value_channel_sinks,
       identify_selected};
 
-    // Per-tile value-source setup. The children must outlive `value_source`
-    // (which holds references to them) so we declare them at this scope
-    // -- *not* inside the IIFE below. For `keys_only`, these locals are
-    // unused (`value_source` is `NullType{}`) but their construction is
-    // trivial.
-    [[maybe_unused]] typename value_source_input_t::TempStorage val_state_input{};
-    [[maybe_unused]] typename value_source_buffer_t::TempStorage val_state_buffer{};
-    [[maybe_unused]] value_source_input_t val_input{s.d_values_in, val_state_input};
-    [[maybe_unused]] value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
-
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-        }
-      }();
       if constexpr (!keys_only)
       {
         value_source.set_tile_base(tile_base);
@@ -1549,17 +1545,6 @@ private:
     {
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
-
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-        }
-      }();
       if constexpr (!keys_only)
       {
         value_source.set_tile_base(tile_base);
@@ -1585,8 +1570,11 @@ private:
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_buffered(
+    const per_segment_state_t& s,
+    LargeSegmentTileOffsetT local_tile,
+    keys_source_t& keys_source,
+    held_value_source_t& value_source)
   {
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
@@ -1610,28 +1598,10 @@ private:
       identify_candidates_op,
       histogram_cb};
 
-    // Per-tile value-source setup. See the matching note on the early-stop
-    // arm above for why the children are declared at this scope.
-    [[maybe_unused]] typename value_source_input_t::TempStorage val_state_input{};
-    [[maybe_unused]] typename value_source_buffer_t::TempStorage val_state_buffer{};
-    [[maybe_unused]] value_source_input_t val_input{s.d_values_in, val_state_input};
-    [[maybe_unused]] value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
-
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
-
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-        }
-      }();
       if constexpr (!keys_only)
       {
         value_source.set_tile_base(tile_base);
@@ -1664,17 +1634,6 @@ private:
     {
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
-
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-        }
-      }();
       if constexpr (!keys_only)
       {
         value_source.set_tile_base(tile_base);
@@ -1746,19 +1705,24 @@ private:
   // fixed for the whole segment-stretch the caller is processing, so within a single
   // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void
-  dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(
+    const per_segment_state_t& s,
+    LargeSegmentTileOffsetT local_tile,
+    keys_source_t& keys_source,
+    held_value_source_t& value_source)
   {
     if (s.early_stop)
     {
-      process_tile_early_stop<IsFullTile>(s, local_tile, keys_source);
+      process_tile_early_stop<IsFullTile>(s, local_tile, keys_source, value_source);
     }
     else if (s.will_buffer)
     {
-      process_tile_buffered<IsFullTile>(s, local_tile, keys_source);
+      process_tile_buffered<IsFullTile>(s, local_tile, keys_source, value_source);
     }
     else
     {
+      // The unbuffered (scout) arm is keys-only -- it accumulates the histogram and never touches the
+      // value channel -- so the hoisted `value_source` isn't threaded into it.
       process_tile_unbuffered<IsFullTile>(s, local_tile, keys_source);
     }
   }
@@ -1909,6 +1873,24 @@ public:
     key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/keys_pick_source_b(state)};
 
+    // Build the value multi-source ONCE too, the same way (children over the hoisted state, re-targeted
+    // per segment below). For `keys_only` this collapses to `NullType{}` and is never loaded from. The
+    // value source is consumed only by the early_stop / buffered arms, whose active-arm selector matches
+    // the keys' `keys_pick_source_b`. Today it's always a `direct` source (no mbarrier); the single-build
+    // + re-target shape mirrors the keys source so a future async value source is initialized once per CTA.
+    [[maybe_unused]] value_source_input_t val_src_input{state.d_values_in, storage.val_src_input_state};
+    [[maybe_unused]] value_source_buffer_t val_src_buffer{state.in_val_buf, storage.val_src_buffer_state};
+    held_value_source_t value_source = [&]() -> held_value_source_t {
+      if constexpr (keys_only)
+      {
+        return NullType{};
+      }
+      else
+      {
+        return value_source_t{val_src_input, val_src_buffer, /*pick_b=*/keys_pick_source_b(state)};
+      }
+    }();
+
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
       // Segment refresh -- only when the cached segment no longer covers `tile_id`.
@@ -1921,6 +1903,12 @@ public:
         // reconstruction, so an async source's mbarrier stays initialized. `set_inputs` only
         // mutates per-thread iterator/selector state, so it needs no barrier of its own.
         keys_source.set_inputs(state.d_keys_in, state.in_key_buf, keys_pick_source_b(state));
+        if constexpr (!keys_only)
+        {
+          // Re-target the value source to the new segment too (iterators + active arm). Same no-barrier
+          // contract as the keys source: `set_inputs` only mutates per-thread iterator/selector state.
+          value_source.set_inputs(state.d_values_in, state.in_val_buf, keys_pick_source_b(state));
+        }
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
@@ -1934,7 +1922,7 @@ public:
       const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
       if (local_tile < state.num_full_tiles)
       {
-        dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile), keys_source);
+        dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile), keys_source, value_source);
       }
       else if constexpr (!FullTilesOnly)
       {
@@ -1946,7 +1934,8 @@ public:
         // tile is owned by `device_segmented_topk_finalize_filter_kernel`.
         if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
         {
-          dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles), keys_source);
+          dispatch_tile<false>(
+            state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles), keys_source, value_source);
         }
       }
     }
@@ -1958,9 +1947,13 @@ public:
     __syncthreads();
     merge_segment_histogram(state);
 
-    // Reset the (async) mbarrier(s) now this CTA is done with the source -- once per CTA, matching
+    // Reset the (async) mbarrier(s) now this CTA is done with the sources -- once per CTA, matching
     // the single construction above. No-op for sync / direct sources.
     keys_source.invalidate();
+    if constexpr (!keys_only)
+    {
+      value_source.invalidate();
+    }
   }
 
   // Process the trailing partial tile of `queue_idx`'s segment for the current pass, using
@@ -1997,15 +1990,32 @@ public:
       __syncthreads();
     }
 
-    // One CTA per segment here, so build the keys source for this single segment, process its
-    // partial tile, and reset the (async) mbarrier once. Same hoisted state slots as `run()`.
+    // One CTA per segment here, so build the keys + value sources for this single segment, process its
+    // partial tile, and reset the (async) mbarrier(s) once. Same hoisted state slots as `run()`.
     key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
     key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/keys_pick_source_b(state)};
 
-    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles), keys_source);
+    [[maybe_unused]] value_source_input_t val_src_input{state.d_values_in, storage.val_src_input_state};
+    [[maybe_unused]] value_source_buffer_t val_src_buffer{state.in_val_buf, storage.val_src_buffer_state};
+    held_value_source_t value_source = [&]() -> held_value_source_t {
+      if constexpr (keys_only)
+      {
+        return NullType{};
+      }
+      else
+      {
+        return value_source_t{val_src_input, val_src_buffer, /*pick_b=*/keys_pick_source_b(state)};
+      }
+    }();
+
+    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles), keys_source, value_source);
 
     keys_source.invalidate();
+    if constexpr (!keys_only)
+    {
+      value_source.invalidate();
+    }
 
     if (segment_uses_smem_histogram(state))
     {
@@ -2082,6 +2092,11 @@ struct agent_batched_topk_last_filter
   using value_source_buffer_t = detail::topk::direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = detail::topk::multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
+  // The value multi-source the agent holds for the whole CTA run (the value analog of `keys_source_t`).
+  // `keys_only` collapses it to `NullType`; pairs hold the real source. Built once and passed by
+  // reference into `process_tile` so it isn't reconstructed per tile.
+  using held_value_source_t = ::cuda::std::conditional_t<keys_only, NullType, value_source_t>;
+
   using val_out_t      = inner_value_out_it_t;
   using cand_val_out_t = inner_value_out_it_t;
 
@@ -2129,6 +2144,12 @@ struct agent_batched_topk_last_filter
   {
     typename key_source_input_t::TempStorage key_src_input_state;
     typename key_source_buffer_t::TempStorage key_src_buffer_state;
+    // Persistent value-source state, hoisted alongside the keys-source state so the value source can
+    // also persist across segments / be re-targeted (via `set_inputs`) instead of rebuilt. Empty for
+    // the current `direct` value source (and for `keys_only`), so no extra smem; the hoist gives a
+    // future async value source a stable mbarrier home that is initialized once per CTA.
+    typename value_source_input_t::TempStorage val_src_input_state;
+    typename value_source_buffer_t::TempStorage val_src_buffer_state;
     storage_layout_t partition_arena;
   };
 
@@ -2359,44 +2380,28 @@ private:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
   //
-  // `partition` and `keys_source` are owned by the caller (`run()`) and reused across all tiles
-  // of the same segment. The per-thread `cand_reserve_open` flag inside `partition` therefore
+  // `partition`, `keys_source`, and `value_source` are owned by the caller (`run()`) and reused
+  // across all tiles. The per-thread `cand_reserve_open` flag inside `partition` therefore
   // persists across calls, so once any thread observes a grant=0 from the back-grow-capped
   // candidate reserve the subsequent tiles dispatch through the cheaper
   // `HasCandidateStream=false` classifier specialisation that drops the per-item atomic
   // entirely (see `block_partition.cuh` doc on `cand_reserve_open`).
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(
-    const per_segment_state_t& s, partition_t& partition, keys_source_t& keys_source, LargeSegmentTileOffsetT local_tile)
+    const per_segment_state_t& s,
+    partition_t& partition,
+    keys_source_t& keys_source,
+    held_value_source_t& value_source,
+    LargeSegmentTileOffsetT local_tile)
   {
-    // Per-tile value-source setup. The children must outlive `value_source`
-    // (which holds references to them) so we declare them at this scope --
-    // *not* inside the IIFE below. For `keys_only`, these locals are unused
-    // (`value_source` is `NullType{}`) but their construction is trivial.
-    [[maybe_unused]] typename value_source_input_t::TempStorage val_state_input{};
-    [[maybe_unused]] typename value_source_buffer_t::TempStorage val_state_buffer{};
-    [[maybe_unused]] value_source_input_t val_input{s.d_values_in, val_state_input};
-    [[maybe_unused]] value_source_buffer_t val_buffer{s.in_val_buf, val_state_buffer};
+    // `keys_source` / `value_source` are owned by `run()` and re-targeted to this segment via
+    // `set_inputs`; here we only set the per-tile base + submit the load, so an (async) source's
+    // mbarrier is never re-initialized.
 
     if constexpr (IsFullTile)
     {
       const OffsetT tile_base = static_cast<OffsetT>(local_tile) * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
-
-      // Lambda returns a prvalue of `value_source_t` (or `NullType`).
-      // Mandatory copy elision constructs `value_source` directly in the
-      // outer slot; the multi-source's references bind to the *outer*
-      // `val_input` / `val_buffer` declared above, which outlive it.
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-        }
-      }();
       if constexpr (!keys_only)
       {
         value_source.set_tile_base(tile_base);
@@ -2420,17 +2425,6 @@ private:
     {
       const OffsetT tile_base = s.num_full_tiles * static_cast<OffsetT>(tile_items);
       keys_source.set_tile_base(tile_base);
-
-      auto value_source = [&] {
-        if constexpr (keys_only)
-        {
-          return NullType{};
-        }
-        else
-        {
-          return value_source_t{val_input, val_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-        }
-      }();
       if constexpr (!keys_only)
       {
         value_source.set_tile_base(tile_base);
@@ -2518,46 +2512,47 @@ public:
       }
     }
     partition_t partition = make_partition_for_segment(state);
-    // Construct keys-source children + multi-source as locals here so they
-    // share lifetime. The multi-source holds references to `key_src_input` /
-    // `key_src_buffer`; both must outlive `keys_source`, which is true for
-    // the duration of this stack scope.
+    // Build the keys + value multi-sources ONCE for this CTA, against the hoisted (mode-independent)
+    // per-child state. The children outlive the sources (declared here, alive for the whole run); on
+    // each segment boundary below we re-target via `set_inputs` (iterators + active arm) rather than
+    // reconstructing -- so an async source's mbarrier is initialized once per CTA, not per segment.
+    // (The `partition` still *is* rebuilt per segment: that resets its per-thread `cand_reserve_open`
+    // flag, which the sources don't carry.) For `keys_only` the value source collapses to `NullType{}`.
     key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
     key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
 
+    [[maybe_unused]] value_source_input_t val_src_input{state.d_values_in, storage.val_src_input_state};
+    [[maybe_unused]] value_source_buffer_t val_src_buffer{state.in_val_buf, storage.val_src_buffer_state};
+    held_value_source_t value_source = [&]() -> held_value_source_t {
+      if constexpr (keys_only)
+      {
+        return NullType{};
+      }
+      else
+      {
+        return value_source_t{val_src_input, val_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
+      }
+    }();
+
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
       // Segment refresh -- only when the cached segment no longer covers `tile_id`. Flush the
-      // previous segment's partition (terminal accumulation flush; no-op on atomics) and
-      // rebuild for the new segment so `cand_reserve_open` resets to `true`.
+      // previous segment's partition (terminal accumulation flush; no-op on atomics) and rebuild it
+      // for the new segment so `cand_reserve_open` resets to `true`. The keys / value sources are
+      // *not* rebuilt -- they're re-targeted in place via `set_inputs` (iterators + active arm),
+      // leaving any persistent child state (an async source's mbarrier) initialized. `set_inputs`
+      // only mutates per-thread iterator/selector state, so it needs no barrier of its own.
       if (tile_id >= state.queue_segment_end)
       {
         partition.epilogue();
         state     = resolve_segment_state(resolve_queue_idx(tile_id));
         partition = make_partition_for_segment(state);
-        // Destroy-then-construct the keys-source trio in place. The
-        // multi-source is non-movable (its ref members would dangle through a
-        // move), so we can't reuse the move-assign pattern; rebuild each
-        // local at its original address so the references in `keys_source`
-        // bind to the (newly-constructed) `key_src_input` / `key_src_buffer`
-        // in the same memory. For trivial children this lowers to the same
-        // writes today's move-assign would have.
-        //
-        // For TMA-style children (`async_to_shared_data_source`), reusing
-        // the smem `TempStorage` requires an explicit `invalidate()` first:
-        // `BlockLoadToShared`'s dtor is a no-op, so the mbarrier stays
-        // initialized; the new ctor would otherwise run `mbarrier_init` on
-        // an already-initialized mbarrier (and the prior arm's mbarrier
-        // would be leaked) leading to launch failures / hangs. For
-        // non-async children this collapses to a no-op.
-        keys_source.invalidate();
-        keys_source.~keys_source_t();
-        key_src_input.~key_source_input_t();
-        ::new (&key_src_input) key_source_input_t{state.d_keys_in, storage.key_src_input_state};
-        key_src_buffer.~key_source_buffer_t();
-        ::new (&key_src_buffer) key_source_buffer_t{state.in_key_buf, storage.key_src_buffer_state};
-        ::new (&keys_source) keys_source_t{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
+        keys_source.set_inputs(state.d_keys_in, state.in_key_buf, /*pick_b=*/state.load_from_candidates_buffer);
+        if constexpr (!keys_only)
+        {
+          value_source.set_inputs(state.d_values_in, state.in_val_buf, /*pick_b=*/state.load_from_candidates_buffer);
+        }
       }
 
       if (state.empty)
@@ -2568,17 +2563,27 @@ public:
       const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
       if (local_tile < state.num_full_tiles)
       {
-        process_tile<true>(state, partition, keys_source, static_cast<LargeSegmentTileOffsetT>(local_tile));
+        process_tile<true>(
+          state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(local_tile));
       }
       else if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
       {
-        process_tile<false>(state, partition, keys_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+        process_tile<false>(
+          state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
       }
       // else: wasted-tail tile beyond segment data; skip implicitly via the grid-stride loop.
     }
 
     // Final flush of the last active segment.
     partition.epilogue();
+
+    // Reset the (async) mbarrier(s) now this CTA is done with the sources -- once per CTA, matching the
+    // single construction above. No-op for the current sync / direct sources.
+    keys_source.invalidate();
+    if constexpr (!keys_only)
+    {
+      value_source.invalidate();
+    }
   }
 };
 } // namespace detail::batched_topk
