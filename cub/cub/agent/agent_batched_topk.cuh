@@ -103,7 +103,10 @@ struct agent_batched_topk_worker_per_segment
 
   using segment_size_val_t = typename SegmentSizeParameterT::value_type;
   using num_segments_val_t = typename NumSegmentsParameterT::value_type;
-  using counters_t         = batched_topk_counters<num_segments_val_t>;
+  // Narrowed (32-bit when the segment count fits) so the enqueue `atomicAdd` on
+  // `large_segments_count` and the `d_large_segments_ids` writes are 32-bit; matches the dispatch's
+  // `SegmentCountT`. A 32-bit `atomicAdd` is also eligible for the warp-aggregate optimisation.
+  using counters_t = batched_topk_counters<narrow_segment_count_t<NumSegmentsParameterT>>;
 
   static constexpr auto policy                 = PolicyGetter{}();
   static constexpr worker_policy active_policy = policy.worker_per_segment_policy;
@@ -187,7 +190,7 @@ struct agent_batched_topk_worker_per_segment
   SelectDirectionParameterT select_directions;
   NumSegmentsParameterT num_segments;
   counters_t* d_counters;
-  num_segments_val_t* d_large_segments_ids;
+  narrow_segment_count_t<NumSegmentsParameterT>* d_large_segments_ids;
   LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
   // -------------------------------------------------------------------------
   // Constructor
@@ -203,7 +206,7 @@ struct agent_batched_topk_worker_per_segment
     SelectDirectionParameterT select_directions,
     NumSegmentsParameterT num_segments,
     counters_t* d_counters,
-    num_segments_val_t* d_large_segments_ids,
+    narrow_segment_count_t<NumSegmentsParameterT>* d_large_segments_ids,
     LargeSegmentTileOffsetT* d_large_segments_tile_offsets)
       : temp_storage(temp_storage.Alias())
       , d_key_segments_it(d_key_segments_it)
@@ -242,8 +245,10 @@ struct agent_batched_topk_worker_per_segment
       if (threadIdx.x == 0u)
       {
         // Add to large segment queue
-        const auto large_segment_queue_idx            = atomicAdd(&d_counters->large_segments_count, 1ull);
-        d_large_segments_ids[large_segment_queue_idx] = static_cast<num_segments_val_t>(segment_id);
+        const auto large_segment_queue_idx =
+          atomicAdd(&d_counters->large_segments_count, typename counters_t::segment_count_t{1});
+        d_large_segments_ids[large_segment_queue_idx] =
+          static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(segment_id);
         d_large_segments_tile_offsets[large_segment_queue_idx] =
           static_cast<LargeSegmentTileOffsetT>(::cuda::ceil_div(segment_size, multi_worker_per_segment_tile_size));
       }

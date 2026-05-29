@@ -223,8 +223,8 @@ __launch_bounds__(int(
     // (`large_segments_count` + `retirement_count`) is atomically mutated by this kernel,
     // but the base pointer itself is set once on the host. See the
     // `device_segmented_topk_histogram_kernel` doc for the broader rationale.
-    _CCCL_GRID_CONSTANT batched_topk_counters<typename NumSegmentsParameterT::value_type>* const d_counters,
-    _CCCL_GRID_CONSTANT typename NumSegmentsParameterT::value_type* const d_large_segments_ids,
+    _CCCL_GRID_CONSTANT batched_topk_counters<narrow_segment_count_t<NumSegmentsParameterT>>* const d_counters,
+    _CCCL_GRID_CONSTANT narrow_segment_count_t<NumSegmentsParameterT>* const d_large_segments_ids,
     _CCCL_GRID_CONSTANT LargeSegmentTileOffsetT* const d_large_segments_tile_offsets)
 {
   using resolved_t = resolved_worker_per_segment_policy<

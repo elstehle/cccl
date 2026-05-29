@@ -367,7 +367,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   static constexpr bool keys_only = ::cuda::std::is_same_v<value_t, cub::NullType>;
 
   using num_segments_val_t         = typename NumSegmentsParameterT::value_type;
-  using counters_t                 = batched_topk_counters<num_segments_val_t>;
+  using counters_t                 = batched_topk_counters<narrow_segment_count_t<NumSegmentsParameterT>>;
   using segment_size_scan_offset_t = detail::choose_offset_t<num_segments_val_t>;
   using segment_size_scan_input_op_t =
     segment_size_to_tile_count_op<SegmentSizeParameterT, large_segment_tile_offset_t, NumSegmentsParameterT>;
@@ -581,7 +581,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     {
       // Mixed: counters struct + large-segment ids.
       allocation_sizes[1] = sizeof(counters_t);
-      allocation_sizes[2] = num_segments_upper_bound * sizeof(num_segments_val_t);
+      allocation_sizes[2] = num_segments_upper_bound * sizeof(narrow_segment_count_t<NumSegmentsParameterT>);
     }
     else
     {
@@ -669,7 +669,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
               select_directions,
               num_segments,
               only_small_segments ? nullptr : static_cast<counters_t*>(allocations[1]),
-              only_small_segments ? nullptr : static_cast<num_segments_val_t*>(allocations[2]),
+              only_small_segments ? nullptr : static_cast<narrow_segment_count_t<NumSegmentsParameterT>*>(allocations[2]),
               only_small_segments ? nullptr : static_cast<large_segment_tile_offset_t*>(allocations[0]))))
     {
       return error;
@@ -839,11 +839,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     auto segment_id_provider = [&]() {
       if constexpr (any_small_segments)
       {
-        return static_cast<num_segments_val_t*>(allocations[2]);
+        return static_cast<narrow_segment_count_t<NumSegmentsParameterT>*>(allocations[2]);
       }
       else
       {
-        return ::cuda::counting_iterator<num_segments_val_t>{num_segments_val_t{0}};
+        return ::cuda::counting_iterator<narrow_segment_count_t<NumSegmentsParameterT>>{
+          narrow_segment_count_t<NumSegmentsParameterT>{0}};
       }
     }();
     using segment_id_provider_t = decltype(segment_id_provider);
