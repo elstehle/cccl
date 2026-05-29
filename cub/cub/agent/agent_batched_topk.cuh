@@ -1211,20 +1211,26 @@ struct agent_batched_topk_filter_partition
   // slot before being passed into the multi-source ctor.
   struct _TempStorage
   {
+    // Persistent keys-source state (an async source's mbarrier; `empty_storage_t` for sync loads),
+    // hoisted out of the per-mode `arms` union so the keys source can persist across segments of
+    // different modes. The union arm is reinterpreted per mode, which would relocate/clobber the
+    // mbarrier the live source's `loader` points at; keeping the state here lets `run()` build the
+    // keys source once and re-target it (via `set_inputs`) on each segment boundary instead of
+    // reconstructing it (which would re-init the mbarrier). The per-load staging scratch stays in
+    // each arm's `arena` (passed into `submit_load` per call). For sync loads these are empty, so
+    // the hoist costs no extra smem.
+    typename key_source_input_t::TempStorage key_src_input_state;
+    typename key_source_buffer_t::TempStorage key_src_buffer_state;
     union arms_t
     {
       struct buffered_t
       {
         typename tile_histogram_t::TempStorage histogram;
-        typename key_source_input_t::TempStorage key_src_input_state;
-        typename key_source_buffer_t::TempStorage key_src_buffer_state;
         buffered_storage_layout_t arena;
       } buffered;
 
       struct early_stop_t
       {
-        typename key_source_input_t::TempStorage key_src_input_state;
-        typename key_source_buffer_t::TempStorage key_src_buffer_state;
         early_stop_storage_layout_t arena;
       } early_stop;
     } arms;
@@ -1468,11 +1474,10 @@ private:
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  process_tile_early_stop(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.early_stop.key_src_input_state};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.early_stop.key_src_buffer_state};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
+    // `keys_source` is owned by `run()` and re-targeted to this segment via `set_inputs`; here we
+    // only set the per-tile base + submit the load, so the (async) mbarrier is never re-initialized.
 
     // The filter primitive's ctor takes the identify-selected op by non-const reference,
     // so we build a local op (its ctor is cheap: a `key_prefix_storage_t*` copy + an
@@ -1576,24 +1581,13 @@ private:
     }
 
     filter.epilogue();
-    // `BlockLoadToShared`'s dtor is a no-op by design (per its API docs), so
-    // the mbarriers in `key_src_*_state` stay initialized when this function
-    // returns. The next `process_tile_*` call would otherwise re-run
-    // `mbarrier_init` on an already-initialized mbarrier, causing launch
-    // failures / hangs on TMA-style sources. For non-async sources this is
-    // a no-op (and lowers to nothing).
-    keys_source.invalidate();
   }
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  process_tile_buffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
   {
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.key_src_input_state};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.key_src_buffer_state};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/s.load_from_candidates_buffer};
-
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     candidate_reserve_op_t reserve_cand{&s.segment_counter->num_candidates_written};
 
@@ -1700,22 +1694,16 @@ private:
     }
 
     partition.epilogue();
-    // See `process_tile_early_stop` for the mbarrier-reset rationale.
-    keys_source.invalidate();
   }
 
   // See the `process_tile_early_stop` doc for the `IsFullTile` contract.
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_unbuffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  process_tile_unbuffered(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
   {
     using filter_op_t = detail::topk::topk_candidate_filter_op<IdentifyCandidatesOpT>;
     IdentifyCandidatesOpT identify_candidates_op{&s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
     filter_op_t filter_op{identify_candidates_op};
-
-    key_source_input_t key_src_input{s.d_keys_in, storage.arms.buffered.key_src_input_state};
-    key_source_buffer_t key_src_buffer{s.in_key_buf, storage.arms.buffered.key_src_buffer_state};
-    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/false};
 
     if constexpr (IsFullTile)
     {
@@ -1751,8 +1739,6 @@ private:
               (::cuda::std::min) (static_cast<OffsetT>(items_per_thread), s.input_length_actual - thread_offset));
       hist.add_partial(items, num_thread_items, filter_op);
     }
-    // See `process_tile_early_stop` for the mbarrier-reset rationale.
-    keys_source.invalidate();
   }
 
   // Per-mode tile dispatcher. Loop-invariant `s.early_stop` / `s.will_buffer` is what
@@ -1760,20 +1746,30 @@ private:
   // fixed for the whole segment-stretch the caller is processing, so within a single
   // unrolled / bit-decomposed run ptxas can hoist the mode branch above the tile loop.
   template <bool IsFullTile>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile)
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  dispatch_tile(const per_segment_state_t& s, LargeSegmentTileOffsetT local_tile, keys_source_t& keys_source)
   {
     if (s.early_stop)
     {
-      process_tile_early_stop<IsFullTile>(s, local_tile);
+      process_tile_early_stop<IsFullTile>(s, local_tile, keys_source);
     }
     else if (s.will_buffer)
     {
-      process_tile_buffered<IsFullTile>(s, local_tile);
+      process_tile_buffered<IsFullTile>(s, local_tile, keys_source);
     }
     else
     {
-      process_tile_unbuffered<IsFullTile>(s, local_tile);
+      process_tile_unbuffered<IsFullTile>(s, local_tile, keys_source);
     }
+  }
+
+  // Active-arm selector for the keys multi-source, per segment mode:
+  //   - unbuffered (scout): always re-reads the original input -> source A (`false`).
+  //   - early_stop / buffered: follow the counter's `load_from_candidates_buffer`.
+  // Matches the per-mode `pick_b` the per-tile bodies hard-coded before the source was hoisted.
+  _CCCL_DEVICE _CCCL_FORCEINLINE static bool keys_pick_source_b(const per_segment_state_t& s)
+  {
+    return (s.early_stop || s.will_buffer) ? static_cast<bool>(s.load_from_candidates_buffer) : false;
   }
 
   // Whether the segment's mode uses the smem histogram. The two non-early_stop modes
@@ -1903,6 +1899,16 @@ public:
     init_segment_histogram(state);
     __syncthreads();
 
+    // Build the keys multi-source ONCE for this CTA, against the hoisted (mode-independent)
+    // per-child state. The children outlive the source (declared here, alive for the whole run),
+    // and on each segment boundary below we re-target it via `set_inputs` (iterators + active arm)
+    // rather than reconstructing it -- so an async source's mbarrier is initialized once per CTA,
+    // not once per tile. The per-load staging scratch still comes from the active mode's arena
+    // inside the per-tile bodies.
+    key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
+    key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/keys_pick_source_b(state)};
+
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
       // Segment refresh -- only when the cached segment no longer covers `tile_id`.
@@ -1911,6 +1917,10 @@ public:
         __syncthreads();
         merge_segment_histogram(state);
         state = resolve_segment_state(resolve_queue_idx(tile_id), pass);
+        // Re-target the long-lived keys source to the new segment (iterators + active arm); no
+        // reconstruction, so an async source's mbarrier stays initialized. `set_inputs` only
+        // mutates per-thread iterator/selector state, so it needs no barrier of its own.
+        keys_source.set_inputs(state.d_keys_in, state.in_key_buf, keys_pick_source_b(state));
         __syncthreads();
         init_segment_histogram(state);
         __syncthreads();
@@ -1924,7 +1934,7 @@ public:
       const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
       if (local_tile < state.num_full_tiles)
       {
-        dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile));
+        dispatch_tile<true>(state, static_cast<LargeSegmentTileOffsetT>(local_tile), keys_source);
       }
       else if constexpr (!FullTilesOnly)
       {
@@ -1936,7 +1946,7 @@ public:
         // tile is owned by `device_segmented_topk_finalize_filter_kernel`.
         if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
         {
-          dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+          dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles), keys_source);
         }
       }
     }
@@ -1947,6 +1957,10 @@ public:
     // actually merge.
     __syncthreads();
     merge_segment_histogram(state);
+
+    // Reset the (async) mbarrier(s) now this CTA is done with the source -- once per CTA, matching
+    // the single construction above. No-op for sync / direct sources.
+    keys_source.invalidate();
   }
 
   // Process the trailing partial tile of `queue_idx`'s segment for the current pass, using
@@ -1983,7 +1997,15 @@ public:
       __syncthreads();
     }
 
-    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+    // One CTA per segment here, so build the keys source for this single segment, process its
+    // partial tile, and reset the (async) mbarrier once. Same hoisted state slots as `run()`.
+    key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
+    key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/keys_pick_source_b(state)};
+
+    dispatch_tile<false>(state, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles), keys_source);
+
+    keys_source.invalidate();
 
     if (segment_uses_smem_histogram(state))
     {

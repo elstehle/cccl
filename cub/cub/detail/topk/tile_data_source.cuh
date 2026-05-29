@@ -257,6 +257,14 @@ public:
     tile_base = base;
   }
 
+  // Re-target to a new input iterator without disturbing any persistent state, so an agent can
+  // keep one long-lived source and only swap the per-segment iterator (paired with
+  // `set_tile_base` for the per-tile offset) instead of reconstructing it per segment.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_input(InputIt input_it)
+  {
+    it = input_it;
+  }
+
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& /*scratch*/)
   {
     return full_load_handle{it + tile_base};
@@ -344,6 +352,13 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT base)
   {
     tile_base = base;
+  }
+
+  // Re-target to a new input iterator. `cub::BlockLoad` carries no persistent state, so this is
+  // just an iterator swap; lets an agent reuse one source across segments.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_input(InputIt input_it)
+  {
+    it = input_it;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& scratch)
@@ -438,6 +453,15 @@ public:
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT base)
   {
     tile_base = base;
+  }
+
+  // Re-target to a new input iterator, leaving the persistent `loader` (and its already-initialized
+  // mbarrier) untouched. This is the whole point of the re-target API: an agent can keep one
+  // long-lived source across segments and only swap the iterator here, instead of reconstructing
+  // the source -- which would re-run `mbarrier_init` via the `loader(state.barrier)` ctor above.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_input(InputIt input_it)
+  {
+    it = input_it;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& scratch)
@@ -753,6 +777,20 @@ public:
   {
     source_a.set_tile_base(tile_base);
     source_b.set_tile_base(tile_base);
+  }
+
+  // Re-target both child sources to new inputs and switch the active arm, without reconstructing
+  // them. Crucially this leaves any persistent child state (e.g. an async source's mbarrier)
+  // initialized, so a long-lived multi-source can be re-pointed at a new segment's
+  // iterators/buffer instead of being rebuilt (which would re-init the mbarrier). The child
+  // references are mutated through, not rebound, so the deleted assignment / non-movable contract
+  // is unaffected.
+  template <typename InputItA, typename InputItB>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void set_inputs(InputItA input_a, InputItB input_b, bool pick_b)
+  {
+    source_a.set_input(input_a);
+    source_b.set_input(input_b);
+    pick_source_b = pick_b;
   }
 
   // Each `return` is a prvalue invocation of one of the tagged ctors --
