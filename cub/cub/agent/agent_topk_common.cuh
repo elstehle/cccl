@@ -302,7 +302,7 @@ struct alignas(16) counter_cross_pass_state
   ::cuda::std::uint32_t load_from_candidates_buffer;
 };
 
-template <typename KeyInT, typename OffsetT, typename OutOffsetT>
+template <typename KeyT, typename OffsetT, typename OutOffsetT>
 struct alignas(128) counter : counter_cross_pass_state<OffsetT, OutOffsetT>
 {
   // ----- (1) Cross-pass scalar state -----
@@ -321,7 +321,7 @@ struct alignas(128) counter : counter_cross_pass_state<OffsetT, OutOffsetT>
   // known bits are stored in `kth_key_bits`. It's used to discriminate whether an element is a
   // result (written to `out`), a candidate for next pass (written to `out_buf`), or not useful
   // (discarded). The bits that are not yet processed do not matter for this purpose.
-  key_prefix_storage_t<KeyInT> kth_key_bits;
+  key_prefix_storage_t<KeyT> kth_key_bits;
 
   // ----- (2) Per-pass scratch atomics -----
 

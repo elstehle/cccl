@@ -106,7 +106,7 @@ template <typename PolicySelector,
           typename ValueOutputIteratorT,
           typename OffsetT,
           typename OutOffsetT,
-          typename KeyInT,
+          typename KeyT,
           typename ValueInT,
           typename ExtractBinOpT,
           typename IdentifyCandidatesOpT>
@@ -119,9 +119,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     _CCCL_GRID_CONSTANT const KeyOutputIteratorT d_keys_out,
     _CCCL_GRID_CONSTANT const ValueInputIteratorT d_values_in,
     _CCCL_GRID_CONSTANT const ValueOutputIteratorT d_values_out,
-    _CCCL_GRID_CONSTANT KeyInT* const in_key_buf,
+    _CCCL_GRID_CONSTANT KeyT* const in_key_buf,
     _CCCL_GRID_CONSTANT ValueInT* const in_val_buf,
-    _CCCL_GRID_CONSTANT KeyInT* const out_key_buf,
+    _CCCL_GRID_CONSTANT KeyT* const out_key_buf,
     _CCCL_GRID_CONSTANT ValueInT* const out_val_buf,
     counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT OffsetT* const histogram,
@@ -201,7 +201,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
   const bool will_buffer = !early_stop && (current_len <= buffer_length);
 
   ValueInT* effective_in_val_buf  = load_from_candidates_buffer ? in_val_buf : nullptr;
-  KeyInT* effective_out_key_buf   = will_buffer ? out_key_buf : nullptr;
+  KeyT* effective_out_key_buf   = will_buffer ? out_key_buf : nullptr;
   ValueInT* effective_out_val_buf = will_buffer ? out_val_buf : nullptr;
 
   // Two last-block-only callbacks update the device-side `counter`. Shared across all three
@@ -293,7 +293,7 @@ template <typename PolicySelector,
           typename ValueOutputIteratorT,
           typename OffsetT,
           typename OutOffsetT,
-          typename KeyInT,
+          typename KeyT,
           typename ValueInT,
           typename IdentifyCandidatesOpT>
 #if _CCCL_HAS_CONCEPTS()
@@ -305,7 +305,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().threads_per_block))
     _CCCL_GRID_CONSTANT const KeyOutputIteratorT d_keys_out,
     _CCCL_GRID_CONSTANT const ValueInputIteratorT d_values_in,
     _CCCL_GRID_CONSTANT const ValueOutputIteratorT d_values_out,
-    _CCCL_GRID_CONSTANT KeyInT* const in_key_buf,
+    _CCCL_GRID_CONSTANT KeyT* const in_key_buf,
     _CCCL_GRID_CONSTANT ValueInT* const in_val_buf,
     counter<it_value_t<KeyInputIteratorT>, OffsetT, OutOffsetT>* counter,
     _CCCL_GRID_CONSTANT const OutOffsetT k,
@@ -437,9 +437,9 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
 
   return dispatch_compute_cap(policy_selector, cc, [&](auto policy_getter) {
     static constexpr topk_policy active_policy = policy_getter();
-    using key_in_t                             = it_value_t<KeyInputIteratorT>;
-    using value_in_t                           = it_value_t<ValueInputIteratorT>;
-    static constexpr bool keys_only            = ::cuda::std::is_same_v<value_in_t, NullType>;
+    using key_t                             = it_value_t<KeyInputIteratorT>;
+    using value_t                           = it_value_t<ValueInputIteratorT>;
+    static constexpr bool keys_only            = ::cuda::std::is_same_v<value_t, NullType>;
 
     // Resolve the value-channel materialization mode. The agent / kernels are iterator-
     // agnostic; the only behavioral difference between `indexed` and
@@ -452,7 +452,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     //                   gathers from the user's input iterator on each write
     //                   (matches `main`'s behavior; the default).
     //   materialized -- value channel uses the user's iterators directly; the
-    //                   candidate buffer holds full `value_in_t` records.
+    //                   candidate buffer holds full `value_t` records.
     //
     // Forced to `materialized` when keys_only so the existing keys-only path
     // (which never instantiates the value channel) keeps all of its types
@@ -461,7 +461,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       !keys_only && active_policy.value_materialization == value_materialization_mode::indexed;
     using effective_value_iterators_t =
       effective_value_iterators<indexed, ValueInputIteratorT, ValueOutputIteratorT, OffsetT>;
-    using effective_value_in_t        = typename effective_value_iterators_t::value_t;
+    using effective_value_t        = typename effective_value_iterators_t::value_t;
     using effective_value_input_it_t  = typename effective_value_iterators_t::in_t;
     using effective_value_output_it_t = typename effective_value_iterators_t::out_t;
 
@@ -486,13 +486,13 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     constexpr int bits_per_pass                               = active_policy.bits_per_pass;
     constexpr int tile_size                                   = threads_per_block * items_per_thread;
     const auto num_tiles      = static_cast<unsigned int>(::cuda::ceil_div(num_items, tile_size));
-    const int total_bits      = detail::radix::traits_t<key_in_t>::default_end_bit(decomposer);
+    const int total_bits      = detail::radix::traits_t<key_t>::default_end_bit(decomposer);
     const int num_passes      = calc_num_passes<bits_per_pass>(total_bits);
     constexpr int num_buckets = 1 << bits_per_pass;
 
     // Define operators
-    using identify_candidates_op = identify_candidates_op_t<key_in_t, SelectDirection, bits_per_pass, DecomposerT>;
-    using extract_bin_op         = extract_bin_op_t<key_in_t, SelectDirection, bits_per_pass, DecomposerT>;
+    using identify_candidates_op = identify_candidates_op_t<key_t, SelectDirection, bits_per_pass, DecomposerT>;
+    using extract_bin_op         = extract_bin_op_t<key_t, SelectDirection, bits_per_pass, DecomposerT>;
 
     // We are capping k at a maximum of num_items
     using common_offset_t = ::cuda::std::common_type_t<OffsetT, OutOffsetT>;
@@ -528,7 +528,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     }();
 
     // Specify temporary storage allocation requirements
-    using counter_t             = counter<key_in_t, OffsetT, OutOffsetT>;
+    using counter_t             = counter<key_t, OffsetT, OutOffsetT>;
     const size_t size_counter   = sizeof(counter_t);
     const size_t size_histogram = num_buckets * sizeof(OffsetT);
     const OffsetT candidate_buffer_length =
@@ -538,15 +538,15 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     size_t allocation_sizes[allocations_array_size] = {
       size_counter,
       size_histogram,
-      candidate_buffer_length * sizeof(key_in_t),
-      candidate_buffer_length * sizeof(key_in_t)};
+      candidate_buffer_length * sizeof(key_t),
+      candidate_buffer_length * sizeof(key_t)};
     if constexpr (!keys_only)
     {
-      // `effective_value_in_t` is `OffsetT` on the indexed path and the user's
+      // `effective_value_t` is `OffsetT` on the indexed path and the user's
       // value type on the materialized path -- shrinking the candidate buffer
       // when values are wider than offsets is the whole point of indexed mode.
-      allocation_sizes[4] = candidate_buffer_length * sizeof(effective_value_in_t);
-      allocation_sizes[5] = candidate_buffer_length * sizeof(effective_value_in_t);
+      allocation_sizes[4] = candidate_buffer_length * sizeof(effective_value_t);
+      allocation_sizes[5] = candidate_buffer_length * sizeof(effective_value_t);
     }
 
     // Compute allocation pointers into the single storage blob (or compute the necessary size of the blob)
@@ -587,8 +587,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       effective_value_output_it_t,
       OffsetT,
       OutOffsetT,
-      key_in_t,
-      effective_value_in_t,
+      key_t,
+      effective_value_t,
       extract_bin_op,
       identify_candidates_op>;
 
@@ -640,12 +640,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
 
     // Passes 1..num_passes-1: fused filter + histogram kernel
     // Current() = input buffer (read), Alternate() = output buffer (write)
-    DoubleBuffer<key_in_t> key_bufs(static_cast<key_in_t*>(allocations[3]), static_cast<key_in_t*>(allocations[2]));
-    DoubleBuffer<effective_value_in_t> val_bufs;
+    DoubleBuffer<key_t> key_bufs(static_cast<key_t*>(allocations[3]), static_cast<key_t*>(allocations[2]));
+    DoubleBuffer<effective_value_t> val_bufs;
     if constexpr (!keys_only)
     {
-      val_bufs = DoubleBuffer<effective_value_in_t>(
-        static_cast<effective_value_in_t*>(allocations[5]), static_cast<effective_value_in_t*>(allocations[4]));
+      val_bufs = DoubleBuffer<effective_value_t>(
+        static_cast<effective_value_t*>(allocations[5]), static_cast<effective_value_t*>(allocations[4]));
     }
 
     int pass = 1;
@@ -694,8 +694,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       effective_value_output_it_t,
       OffsetT,
       OutOffsetT,
-      key_in_t,
-      effective_value_in_t,
+      key_t,
+      effective_value_t,
       identify_candidates_op>;
 
     int last_filter_kernel_blocks_per_sm = 0;

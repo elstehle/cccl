@@ -244,8 +244,8 @@ struct per_segment_indexed_out_op
   template <typename SegmentIndexT>
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto operator()(SegmentIndexT segment_id) const
   {
-    using inner_value_in_it_t = it_value_t<ValueInputItItT>;
-    using gather_op_t         = detail::topk::topk_index_gather_op<inner_value_in_it_t>;
+    using values_in_it_t = it_value_t<ValueInputItItT>;
+    using gather_op_t         = detail::topk::topk_index_gather_op<values_in_it_t>;
     return ::cuda::make_transform_output_iterator(
       d_value_segments_out_it[segment_id], gather_op_t{d_value_segments_it[segment_id]});
   }
@@ -362,9 +362,9 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   // Derived value-channel types -- the segmented dispatch is iterator-of-iterators, so peel the
   // inner iterator type once and then re-derive the inner value type. `keys_only` propagates
   // from `ValueInputItItT == NullType**`.
-  using key_in_t        = it_value_t<it_value_t<KeyInputItItT>>;
-  using value_in_t      = it_value_t<it_value_t<ValueInputItItT>>;
-  static constexpr bool keys_only = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
+  using key_t        = it_value_t<it_value_t<KeyInputItItT>>;
+  using value_t      = it_value_t<it_value_t<ValueInputItItT>>;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<value_t, cub::NullType>;
 
   using num_segments_val_t         = typename NumSegmentsParameterT::value_type;
   using counters_t                 = batched_topk_counters<num_segments_val_t>;
@@ -434,7 +434,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   using SegmentCountT =
     ::cuda::std::conditional_t<segment_count_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
   // Per-segment top-k counter type. The dispatch allocates an `N_slabs`-sized array of these.
-  using seg_counter_t = detail::topk::counter<key_in_t, OffsetT, OutOffsetT>;
+  using seg_counter_t = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   // Value-channel materialization mode for the multi-CTA-per-segment path. Mirrors the
   // single-problem dispatch (`dispatch_topk.cuh`):
@@ -443,7 +443,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   //                   `OffsetT` indices and the value-output iterator is wrapped per-segment in
   //                   a `cuda::transform_output_iterator{user_out[i], topk_index_gather_op{user_in[i]}}`.
   //                   Smem / temp-storage footprint shrinks when values are wider than offsets.
-  //   materialized -- the per-segment candidate buffer stores full `value_in_t` records and the
+  //   materialized -- the per-segment candidate buffer stores full `value_t` records and the
   //                   kernels read/write the user's iterators directly.
   //
   // Only consulted on the multi-CTA path; the worker_per_segment kernel has no candidate
@@ -454,8 +454,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     !only_small_segments && !keys_only
     && multi_worker_per_segment_policy.value_materialization == detail::topk::value_materialization_mode::indexed;
   // Per-record type of the per-segment candidate value buffer. `OffsetT` in indexed mode, the
-  // user's `value_in_t` otherwise.
-  using effective_value_in_t = ::cuda::std::conditional_t<indexed, OffsetT, value_in_t>;
+  // user's `value_t` otherwise.
+  using effective_value_t = ::cuda::std::conditional_t<indexed, OffsetT, value_t>;
 
   // ---------------------------------------------------------------------
   // Allocation layout (see plan §5.1).
@@ -474,12 +474,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   // Multi-CTA path slabs (appended in both !only_small cases, in the same order):
   //   [+0] = per-segment counter array        (N_slabs * sizeof(seg_counter_t))
   //   [+1] = per-segment histogram slab       (N_slabs * num_buckets * sizeof(OffsetT))
-  //   [+2] = per-segment candidate-key buf A  (N_slabs * candidate_buffer_length * sizeof(key_in_t))
-  //   [+3] = per-segment candidate-key buf B  (N_slabs * candidate_buffer_length * sizeof(key_in_t))
+  //   [+2] = per-segment candidate-key buf A  (N_slabs * candidate_buffer_length * sizeof(key_t))
+  //   [+3] = per-segment candidate-key buf B  (N_slabs * candidate_buffer_length * sizeof(key_t))
   //   [+4] = per-segment candidate-val buf A  (only when !keys_only;
-  //          element type is `effective_value_in_t`: `OffsetT` in indexed mode, `value_in_t` otherwise)
+  //          element type is `effective_value_t`: `OffsetT` in indexed mode, `value_t` otherwise)
   //   [+5] = per-segment candidate-val buf B  (only when !keys_only;
-  //          element type is `effective_value_in_t`: `OffsetT` in indexed mode, `value_in_t` otherwise)
+  //          element type is `effective_value_t`: `OffsetT` in indexed mode, `value_t` otherwise)
   //
   // N_slabs is the host upper bound on the number of large segments, which equals
   // `num_segments_upper_bound` (any segment could in principle land in the large queue, and the
@@ -607,12 +607,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     // Multi-CTA per-segment slabs. N_slabs = num_segments_upper_bound.
     allocation_sizes[idx_seg_counters_arr]   = num_segments_upper_bound * sizeof(seg_counter_t);
     allocation_sizes[idx_seg_histograms_arr] = num_segments_upper_bound * static_cast<size_t>(num_buckets) * sizeof(OffsetT);
-    allocation_sizes[idx_seg_key_buf_a]      = num_segments_upper_bound * candidate_buffer_length * sizeof(key_in_t);
-    allocation_sizes[idx_seg_key_buf_b]      = num_segments_upper_bound * candidate_buffer_length * sizeof(key_in_t);
+    allocation_sizes[idx_seg_key_buf_a]      = num_segments_upper_bound * candidate_buffer_length * sizeof(key_t);
+    allocation_sizes[idx_seg_key_buf_b]      = num_segments_upper_bound * candidate_buffer_length * sizeof(key_t);
     if constexpr (!keys_only)
     {
-      allocation_sizes[idx_seg_val_buf_a] = num_segments_upper_bound * candidate_buffer_length * sizeof(effective_value_in_t);
-      allocation_sizes[idx_seg_val_buf_b] = num_segments_upper_bound * candidate_buffer_length * sizeof(effective_value_in_t);
+      allocation_sizes[idx_seg_val_buf_a] = num_segments_upper_bound * candidate_buffer_length * sizeof(effective_value_t);
+      allocation_sizes[idx_seg_val_buf_b] = num_segments_upper_bound * candidate_buffer_length * sizeof(effective_value_t);
     }
   }
 
@@ -740,16 +740,16 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       return error;
     }
 
-    key_in_t* const d_seg_key_buf_a = static_cast<key_in_t*>(allocations[idx_seg_key_buf_a]);
-    key_in_t* const d_seg_key_buf_b = static_cast<key_in_t*>(allocations[idx_seg_key_buf_b]);
+    key_t* const d_seg_key_buf_a = static_cast<key_t*>(allocations[idx_seg_key_buf_a]);
+    key_t* const d_seg_key_buf_b = static_cast<key_t*>(allocations[idx_seg_key_buf_b]);
     // The candidate-value buffer's element type tracks the value-channel materialization mode
-    // (see `effective_value_in_t` above): `OffsetT` in indexed mode, `value_in_t` in materialized.
-    [[maybe_unused]] effective_value_in_t* d_seg_val_buf_a = nullptr;
-    [[maybe_unused]] effective_value_in_t* d_seg_val_buf_b = nullptr;
+    // (see `effective_value_t` above): `OffsetT` in indexed mode, `value_t` in materialized.
+    [[maybe_unused]] effective_value_t* d_seg_val_buf_a = nullptr;
+    [[maybe_unused]] effective_value_t* d_seg_val_buf_b = nullptr;
     if constexpr (!keys_only)
     {
-      d_seg_val_buf_a = static_cast<effective_value_in_t*>(allocations[idx_seg_val_buf_a]);
-      d_seg_val_buf_b = static_cast<effective_value_in_t*>(allocations[idx_seg_val_buf_b]);
+      d_seg_val_buf_a = static_cast<effective_value_t*>(allocations[idx_seg_val_buf_a]);
+      d_seg_val_buf_b = static_cast<effective_value_t*>(allocations[idx_seg_val_buf_b]);
     }
 
     // Effective outer value iterators consumed by the multi-CTA filter / last-filter kernels.
@@ -761,7 +761,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     //   * `effective_d_value_segments_it[segment_id]` returns
     //     `cuda::counting_iterator<OffsetT>{0}` -- a stateless source of per-segment indices,
     //     letting the filter agents stamp the candidate-value buffer with `OffsetT` indices
-    //     instead of full `value_in_t` records.
+    //     instead of full `value_t` records.
     //
     //   * `effective_d_value_segments_out_it[segment_id]` returns a
     //     `cuda::transform_output_iterator{user_out[i], topk_index_gather_op{user_in[i]}}` so
@@ -798,10 +798,10 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     using effective_value_output_it_it_t = decltype(effective_d_value_segments_out_it);
 
     // Compute radix-style multi-pass scheduling. `total_bits` and `num_passes` are derived from
-    // `key_in_t` and `bits_per_pass`, both compile-time / dispatch-time scalars uniform across
+    // `key_t` and `bits_per_pass`, both compile-time / dispatch-time scalars uniform across
     // all segments (single-source-invariant for pass scheduling across segments).
     const detail::identity_decomposer_t decomposer{};
-    const int total_bits = detail::radix::traits_t<key_in_t>::default_end_bit(decomposer);
+    const int total_bits = detail::radix::traits_t<key_t>::default_end_bit(decomposer);
     const int num_passes = detail::topk::calc_num_passes<bits_per_pass>(total_bits);
 
     // Host-side upper bound on the total number of large tiles. Used as a *cap* on the
@@ -894,7 +894,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // `pass`, `total_bits`, or `decomposer` directly any more -- they're absorbed into the
       // op.
       using extract_bin_op_t = detail::topk::extract_bin_op_t<
-        key_in_t,
+        key_t,
         select_dir,
         multi_worker_per_segment_policy.bits_per_pass,
         detail::identity_decomposer_t>;
@@ -927,7 +927,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         extract_bin_op_t,
         OffsetT,
         OutOffsetT,
-        key_in_t>;
+        key_t>;
       // The filter and last-filter kernels read/write the per-segment candidate buffer through
       // the value-channel iterators, so we instantiate them on the *effective* iterator types
       // (see `effective_d_value_segments_*` above). In materialized mode these are aliases for
@@ -986,7 +986,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
         detail::identity_decomposer_t,
         OffsetT,
         OutOffsetT,
-        key_in_t>;
+        key_t>;
 
       // Max-occupancy grid sizes per kernel, capped at `total_large_tiles_upper_bound`. Each
       // multi-CTA kernel iterates the tile space via a grid-stride loop; physical CTAs whose
@@ -1086,13 +1086,13 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
 
       // Passes 1..num_passes-1: filter+histogram (or early_stop) kernel; double-buffer flips per pass.
       // The candidate value buffer's element type tracks the value-channel materialization mode
-      // (see `effective_value_in_t` above), so the value-buf DoubleBuffer is templated on
-      // `effective_value_in_t` rather than the user's `value_in_t`.
-      DoubleBuffer<key_in_t> key_bufs(d_seg_key_buf_b, d_seg_key_buf_a);
-      DoubleBuffer<effective_value_in_t> val_bufs;
+      // (see `effective_value_t` above), so the value-buf DoubleBuffer is templated on
+      // `effective_value_t` rather than the user's `value_t`.
+      DoubleBuffer<key_t> key_bufs(d_seg_key_buf_b, d_seg_key_buf_a);
+      DoubleBuffer<effective_value_t> val_bufs;
       if constexpr (!keys_only)
       {
-        val_bufs = DoubleBuffer<effective_value_in_t>(d_seg_val_buf_b, d_seg_val_buf_a);
+        val_bufs = DoubleBuffer<effective_value_t>(d_seg_val_buf_b, d_seg_val_buf_a);
       }
 
       int pass = 1;

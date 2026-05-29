@@ -82,11 +82,11 @@ struct agent_batched_topk_worker_per_segment
   // Types and Constants
   // -------------------------------------------------------------------------
   // Derive inner types from Iterator of Iterators
-  using key_it_t   = it_value_t<KeyInputItItT>;
-  using value_it_t = it_value_t<ValueInputItItT>;
+  using keys_in_it_t   = it_value_t<KeyInputItItT>;
+  using values_in_it_t = it_value_t<ValueInputItItT>;
 
-  using key_t   = it_value_t<key_it_t>;
-  using value_t = it_value_t<value_it_t>;
+  using key_t   = it_value_t<keys_in_it_t>;
+  using value_t = it_value_t<values_in_it_t>;
 
   using segment_size_val_t = typename SegmentSizeParameterT::value_type;
   using num_segments_val_t = typename NumSegmentsParameterT::value_type;
@@ -491,9 +491,9 @@ template <typename AgentTopKPolicyT,
           typename FilterOpT = detail::topk::topk_pass_through_filter_op>
 struct agent_batched_topk_histogram
 {
-  using inner_key_it_t = it_value_t<KeyInputItItT>;
-  using key_in_t       = it_value_t<inner_key_it_t>;
-  using counter_t      = detail::topk::counter<key_in_t, OffsetT, OutOffsetT>;
+  using keys_in_it_t = it_value_t<KeyInputItItT>;
+  using key_t       = it_value_t<keys_in_it_t>;
+  using counter_t      = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -502,7 +502,7 @@ struct agent_batched_topk_histogram
   static constexpr int tile_items       = block_threads * items_per_thread;
 
   using keys_source_t = detail::topk::
-    tile_data_source_t<inner_key_it_t, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<keys_in_it_t, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
 
   // Block-wide histogram primitive: owns the smem bins plus the per-tile binning and histogram
   // lifecycle. Tile iteration, segment handling, and data loading stay in this agent.
@@ -530,7 +530,7 @@ struct agent_batched_topk_histogram
     // Per-segment global-slab pointer for the merge / per-segment input iterator for the
     // tile load.
     OffsetT* segment_histogram;
-    inner_key_it_t d_keys_in;
+    keys_in_it_t d_keys_in;
   };
 
   // The histogram agent no longer carries the prefix-sum scratch used by the per-segment
@@ -681,7 +681,7 @@ private:
     {
       __syncthreads();
     }
-    key_in_t items[items_per_thread];
+    key_t items[items_per_thread];
     auto h = keys_source.submit_load(temp_storage.keys_source_scratch);
     h.complete_load(items);
     hist.add_full(items, filter_op);
@@ -704,7 +704,7 @@ private:
     {
       __syncthreads();
     }
-    key_in_t items[items_per_thread];
+    key_t items[items_per_thread];
     auto h = keys_source.submit_load(temp_storage.keys_source_scratch, partial_items);
     h.complete_load(items);
     const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
@@ -1041,7 +1041,7 @@ public:
 // `d_segment_histograms + queue_idx * num_buckets`; the last block to retire on each segment
 // runs the prefix-sum + bucket-finder epilogue via `finalize_pass`.
 //
-// Per-segment double-buffering: the global `DoubleBuffer<key_in_t>` `selector` is flipped once
+// Per-segment double-buffering: the global `DoubleBuffer<key_t>` `selector` is flipped once
 // per pass on the host (plan §5.5 -- safe because `num_passes` is uniform across all segments).
 // The per-segment back buffers are slabs of `candidate_buffer_length` items at
 // `d_segment_*_key_buf + queue_idx * candidate_buffer_length` (similarly for the value channel).
@@ -1074,21 +1074,21 @@ template <typename AgentTopKPolicyT,
           bool FullTilesOnly = false>
 struct agent_batched_topk_filter_partition
 {
-  using inner_key_it_t       = it_value_t<KeyInputItItT>;
-  using inner_value_it_t     = it_value_t<ValueInputItItT>;
-  using inner_value_out_it_t = it_value_t<ValueOutputItItT>;
-  using inner_key_out_it_t   = it_value_t<KeyOutputItItT>;
+  using keys_in_it_t       = it_value_t<KeyInputItItT>;
+  using values_in_it_t     = it_value_t<ValueInputItItT>;
+  using values_out_it_t = it_value_t<ValueOutputItItT>;
+  using keys_out_it_t   = it_value_t<KeyOutputItItT>;
 
-  using key_in_t   = it_value_t<inner_key_it_t>;
-  using value_in_t = it_value_t<inner_value_it_t>;
-  using counter_t  = detail::topk::counter<key_in_t, OffsetT, OutOffsetT>;
+  using key_t   = it_value_t<keys_in_it_t>;
+  using value_t = it_value_t<values_in_it_t>;
+  using counter_t  = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
   static constexpr int bits_per_pass    = AgentTopKPolicyT::bits_per_pass;
   static constexpr int num_buckets      = 1 << bits_per_pass;
   static constexpr int tile_items       = block_threads * items_per_thread;
-  static constexpr bool keys_only       = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
+  static constexpr bool keys_only       = ::cuda::std::is_same_v<value_t, cub::NullType>;
 
   // Mirrors the histogram agent's constexpr -- see the docstring on
   // `agent_batched_topk_histogram::tile_load_kind_uses_smem`. For DIRECT / VECTORIZE the
@@ -1114,14 +1114,14 @@ struct agent_batched_topk_filter_partition
   // Multi-source key / value channels mirror the single-problem agent. The "buffer" source is
   // the candidate slab carried over from the previous pass.
   using key_source_input_t = detail::topk::
-    tile_data_source_t<inner_key_it_t, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<keys_in_it_t, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using key_source_buffer_t = detail::topk::
-    tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<key_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using keys_source_t = detail::topk::multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
   using value_source_input_t =
-    detail::topk::direct_data_source<inner_value_it_t, block_threads, items_per_thread, OffsetT>;
-  using value_source_buffer_t = detail::topk::direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+    detail::topk::direct_data_source<values_in_it_t, block_threads, items_per_thread, OffsetT>;
+  using value_source_buffer_t = detail::topk::direct_data_source<value_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = detail::topk::multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
   // The value multi-source the agent actually holds for the whole CTA run. `keys_only` has no value
@@ -1130,9 +1130,9 @@ struct agent_batched_topk_filter_partition
   // the per-tile bodies -- the value analog of `keys_source_t`.
   using held_value_source_t = ::cuda::std::conditional_t<keys_only, NullType, value_source_t>;
 
-  using val_out_t               = inner_value_out_it_t;
-  using buffered_cand_val_out_t = value_in_t*;
-  using buffered_cand_key_out_t = key_in_t*;
+  using val_out_t               = values_out_it_t;
+  using buffered_cand_val_out_t = value_t*;
+  using buffered_cand_key_out_t = key_t*;
 
   using buffered_value_channel_sinks_concrete_t =
     detail::topk::value_channel_sinks_t<val_out_t, buffered_cand_val_out_t>;
@@ -1143,7 +1143,7 @@ struct agent_batched_topk_filter_partition
   using early_stop_value_channel_sinks_t =
     ::cuda::std::conditional_t<keys_only, NullType, early_stop_value_channel_sinks_concrete_t>;
 
-  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_in_t>;
+  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_t>;
   using agent_value_data_source_scratch_t =
     ::cuda::std::conditional_t<keys_only, NullType, typename value_source_t::ScratchStorage>;
 
@@ -1166,12 +1166,12 @@ struct agent_batched_topk_filter_partition
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
     AgentTopKPolicyT::speculative_selected_buffer_capacity,
-    key_in_t,
+    key_t,
     selected_offset_t,
     candidate_offset_t,
     selected_reserve_op_t,
     candidate_reserve_op_t,
-    inner_key_out_it_t,
+    keys_out_it_t,
     buffered_cand_key_out_t,
     IdentifyCandidatesOpT,
     histogram_callback_op_t,
@@ -1186,10 +1186,10 @@ struct agent_batched_topk_filter_partition
     block_threads,
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
-    key_in_t,
+    key_t,
     selected_offset_t,
     selected_reserve_op_t,
-    inner_key_out_it_t,
+    keys_out_it_t,
     identify_selected_op_t,
     early_stop_value_channel_sinks_t,
     agent_value_t,
@@ -1265,10 +1265,10 @@ struct agent_batched_topk_filter_partition
   const LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
   counter_t* d_segment_counters;
   OffsetT* d_segment_histograms;
-  key_in_t* d_segment_in_key_buf;
-  value_in_t* d_segment_in_val_buf;
-  key_in_t* d_segment_out_key_buf;
-  value_in_t* d_segment_out_val_buf;
+  key_t* d_segment_in_key_buf;
+  value_t* d_segment_in_val_buf;
+  key_t* d_segment_out_key_buf;
+  value_t* d_segment_out_val_buf;
   int total_bits;
   DecomposerT decomposer;
   OffsetT candidate_buffer_length;
@@ -1296,10 +1296,10 @@ struct agent_batched_topk_filter_partition
     const LargeSegmentTileOffsetT* d_large_segments_tile_offsets,
     counter_t* d_segment_counters,
     OffsetT* d_segment_histograms,
-    key_in_t* d_segment_in_key_buf,
-    value_in_t* d_segment_in_val_buf,
-    key_in_t* d_segment_out_key_buf,
-    value_in_t* d_segment_out_val_buf,
+    key_t* d_segment_in_key_buf,
+    value_t* d_segment_in_val_buf,
+    key_t* d_segment_out_key_buf,
+    value_t* d_segment_out_val_buf,
     ExtractBinOpT extract_bin_op,
     int total_bits,
     DecomposerT decomposer,
@@ -1369,15 +1369,15 @@ private:
     bool will_buffer; // !early_stop && fits-in-back-buffer && cost-justified
     bool load_from_candidates_buffer;
 
-    inner_key_it_t d_keys_in{};
-    inner_key_out_it_t d_keys_out{};
-    [[maybe_unused]] inner_value_it_t d_values_in{};
-    [[maybe_unused]] inner_value_out_it_t d_values_out{};
+    keys_in_it_t d_keys_in{};
+    keys_out_it_t d_keys_out{};
+    [[maybe_unused]] values_in_it_t d_values_in{};
+    [[maybe_unused]] values_out_it_t d_values_out{};
 
-    key_in_t* in_key_buf;
-    key_in_t* out_key_buf;
-    [[maybe_unused]] value_in_t* in_val_buf;
-    [[maybe_unused]] value_in_t* out_val_buf;
+    key_t* in_key_buf;
+    key_t* out_key_buf;
+    [[maybe_unused]] value_t* in_val_buf;
+    [[maybe_unused]] value_t* out_val_buf;
 
     OffsetT* segment_histogram;
     counter_t* segment_counter;
@@ -1525,7 +1525,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch());
       h.complete_load(items);
       // Fence the just-completed load's smem writes (smem-using BlockLoad case)
@@ -1554,7 +1554,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.early_stop.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       if constexpr (tile_load_kind_uses_smem
@@ -1611,7 +1611,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
       // Kept unconditionally even though the early-stop arm's sister site can
@@ -1643,7 +1643,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       // See the matching comment on the full-tile arm above for why this
@@ -1673,7 +1673,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch());
       h.complete_load(items);
       hist.add_full(items, filter_op);
@@ -1687,7 +1687,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.arms.buffered.arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
@@ -2053,19 +2053,19 @@ template <typename AgentTopKPolicyT,
           bool InlinedClassify                             = false>
 struct agent_batched_topk_last_filter
 {
-  using inner_key_it_t       = it_value_t<KeyInputItItT>;
-  using inner_value_it_t     = it_value_t<ValueInputItItT>;
-  using inner_value_out_it_t = it_value_t<ValueOutputItItT>;
-  using inner_key_out_it_t   = it_value_t<KeyOutputItItT>;
+  using keys_in_it_t       = it_value_t<KeyInputItItT>;
+  using values_in_it_t     = it_value_t<ValueInputItItT>;
+  using values_out_it_t = it_value_t<ValueOutputItItT>;
+  using keys_out_it_t   = it_value_t<KeyOutputItItT>;
 
-  using key_in_t   = it_value_t<inner_key_it_t>;
-  using value_in_t = it_value_t<inner_value_it_t>;
-  using counter_t  = detail::topk::counter<key_in_t, OffsetT, OutOffsetT>;
+  using key_t   = it_value_t<keys_in_it_t>;
+  using value_t = it_value_t<values_in_it_t>;
+  using counter_t  = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
   static constexpr int tile_items       = block_threads * items_per_thread;
-  static constexpr bool keys_only       = ::cuda::std::is_same_v<value_in_t, cub::NullType>;
+  static constexpr bool keys_only       = ::cuda::std::is_same_v<value_t, cub::NullType>;
 
   // Mirrors the histogram / filter agents' constexpr -- DIRECT / VECTORIZE `BlockLoad`
   // doesn't touch the shared scratch, so the pre-`submit_load` `__syncthreads()` is dead
@@ -2082,14 +2082,14 @@ struct agent_batched_topk_last_filter
   using candidate_offset_t = OutOffsetT;
 
   using key_source_input_t = detail::topk::
-    tile_data_source_t<inner_key_it_t, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<keys_in_it_t, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using key_source_buffer_t = detail::topk::
-    tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<key_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using keys_source_t = detail::topk::multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
   using value_source_input_t =
-    detail::topk::direct_data_source<inner_value_it_t, block_threads, items_per_thread, OffsetT>;
-  using value_source_buffer_t = detail::topk::direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+    detail::topk::direct_data_source<values_in_it_t, block_threads, items_per_thread, OffsetT>;
+  using value_source_buffer_t = detail::topk::direct_data_source<value_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = detail::topk::multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
   // The value multi-source the agent holds for the whole CTA run (the value analog of `keys_source_t`).
@@ -2097,13 +2097,13 @@ struct agent_batched_topk_last_filter
   // reference into `process_tile` so it isn't reconstructed per tile.
   using held_value_source_t = ::cuda::std::conditional_t<keys_only, NullType, value_source_t>;
 
-  using val_out_t      = inner_value_out_it_t;
-  using cand_val_out_t = inner_value_out_it_t;
+  using val_out_t      = values_out_it_t;
+  using cand_val_out_t = values_out_it_t;
 
   using value_channel_sinks_concrete_t = detail::topk::value_channel_sinks_t<val_out_t, cand_val_out_t>;
   using value_channel_sinks_or_null_t = ::cuda::std::conditional_t<keys_only, NullType, value_channel_sinks_concrete_t>;
 
-  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_in_t>;
+  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_t>;
   using agent_value_data_source_scratch_t =
     ::cuda::std::conditional_t<keys_only, NullType, typename value_source_t::ScratchStorage>;
 
@@ -2116,13 +2116,13 @@ struct agent_batched_topk_last_filter
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
     AgentTopKPolicyT::speculative_selected_buffer_capacity,
-    key_in_t,
+    key_t,
     selected_offset_t,
     candidate_offset_t,
     selected_reserve_op_t,
     candidate_reserve_op_t,
-    inner_key_out_it_t,
-    inner_key_out_it_t,
+    keys_out_it_t,
+    keys_out_it_t,
     IdentifyCandidatesOpT,
     detail::topk::topk_noop_candidate_callback_op,
     value_channel_sinks_or_null_t,
@@ -2169,8 +2169,8 @@ struct agent_batched_topk_last_filter
   SegmentIdProviderT segment_id_provider;
   const LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
   counter_t* d_segment_counters;
-  key_in_t* d_segment_in_key_buf;
-  value_in_t* d_segment_in_val_buf;
+  key_t* d_segment_in_key_buf;
+  value_t* d_segment_in_val_buf;
   int pass;
   int total_bits;
   DecomposerT decomposer;
@@ -2189,8 +2189,8 @@ struct agent_batched_topk_last_filter
     SegmentIdProviderT segment_id_provider,
     const LargeSegmentTileOffsetT* d_large_segments_tile_offsets,
     counter_t* d_segment_counters,
-    key_in_t* d_segment_in_key_buf,
-    value_in_t* d_segment_in_val_buf,
+    key_t* d_segment_in_key_buf,
+    value_t* d_segment_in_val_buf,
     int pass,
     int total_bits,
     DecomposerT decomposer,
@@ -2237,14 +2237,14 @@ private:
     bool empty;
     bool load_from_candidates_buffer;
 
-    inner_key_it_t d_keys_in{};
-    inner_key_out_it_t d_keys_out{};
-    [[maybe_unused]] inner_value_it_t d_values_in{};
-    [[maybe_unused]] inner_value_out_it_t d_values_out{};
+    keys_in_it_t d_keys_in{};
+    keys_out_it_t d_keys_out{};
+    [[maybe_unused]] values_in_it_t d_values_in{};
+    [[maybe_unused]] values_out_it_t d_values_out{};
 
     counter_t* segment_counter;
-    key_in_t* in_key_buf;
-    [[maybe_unused]] value_in_t* in_val_buf;
+    key_t* in_key_buf;
+    [[maybe_unused]] value_t* in_val_buf;
 
     // `identify_candidates_op_t` has no default ctor for some `T`; cache ctor inputs and
     // build the op on demand in `process_tile`.
@@ -2411,7 +2411,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
       // See the matching note on the filter agent's early-stop arm.
@@ -2434,7 +2434,7 @@ private:
       {
         __syncthreads();
       }
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), s.partial_items);
       h.complete_load(items);
       if constexpr (tile_load_kind_uses_smem || !detail::topk::is_empty_storage_v<typename partition_t::ScratchStorage>)

@@ -62,7 +62,7 @@ enum class value_materialization_mode
 {
   // candidate buffer stores `OffsetT` indices; values are gathered from the user's input iterator at write time
   indexed,
-  // candidate buffer stores full `value_in_t` items
+  // candidate buffer stores full `value_t` items
   materialized,
 };
 

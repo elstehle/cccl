@@ -73,7 +73,7 @@ template <typename AgentTopKPolicyT,
           typename FilterOpT = topk_pass_through_filter_op>
 struct AgentTopKHistogram
 {
-  using key_in_t = it_value_t<KeyInputIteratorT>;
+  using key_t = it_value_t<KeyInputIteratorT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -161,7 +161,7 @@ struct AgentTopKHistogram
   // bound-checks against `num_thread_items`. The default `FilterOpT` returns a
   // constexpr `true`, so the predicate call folds away and the pass-0 inner
   // loop reduces to the original `extract_bin_op + atomicAdd` sequence.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_full(const key_in_t (&items)[items_per_thread])
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile_full(const key_t (&items)[items_per_thread])
   {
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < items_per_thread; ++j)
@@ -175,7 +175,7 @@ struct AgentTopKHistogram
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE void
-  process_tile_partial(const key_in_t (&items)[items_per_thread], int num_thread_items)
+  process_tile_partial(const key_t (&items)[items_per_thread], int num_thread_items)
   {
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int j = 0; j < items_per_thread; ++j)
@@ -226,7 +226,7 @@ struct AgentTopKHistogram
       keys_source.set_tile_base(tile_base);
 
       __syncthreads();
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(temp_storage.phase_load.keys_source_scratch);
       h.complete_load(items);
       process_tile_full(items);
@@ -247,7 +247,7 @@ struct AgentTopKHistogram
         keys_source.set_tile_base(tile_base);
 
         __syncthreads();
-        key_in_t items[items_per_thread];
+        key_t items[items_per_thread];
         auto h = keys_source.submit_load(temp_storage.phase_load.keys_source_scratch, partial_items);
         h.complete_load(items);
         const OffsetT thread_offset = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
@@ -331,8 +331,8 @@ template <typename AgentTopKPolicyT,
           bool InlinedClassify             = false>
 struct agent_topk_filter_partition
 {
-  using key_in_t   = it_value_t<KeyInputIteratorT>;
-  using value_in_t = it_value_t<ValueInputIteratorT>;
+  using key_t   = it_value_t<KeyInputIteratorT>;
+  using value_t = it_value_t<ValueInputIteratorT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -352,19 +352,19 @@ struct agent_topk_filter_partition
   using key_source_input_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using key_source_buffer_t =
-    tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<key_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using keys_source_t = multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
   // Value channels: multi_source over (d_values_in, in_val_buf)
   using value_source_input_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
-  using value_source_buffer_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+  using value_source_buffer_t = direct_data_source<value_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
   using val_out_t = ValueOutputIteratorT;
-  // Buffered mode: the candidate iterators are `key_in_t*` / `value_in_t*` (the
+  // Buffered mode: the candidate iterators are `key_t*` / `value_t*` (the
   // back buffers). Early-stop mode has only the selected stream.
-  using buffered_cand_val_out_t = value_in_t*;
-  using buffered_cand_key_out_t = key_in_t*;
+  using buffered_cand_val_out_t = value_t*;
+  using buffered_cand_key_out_t = key_t*;
 
   // Buffered-mode sinks: 2-stream `value_channel_sinks_t` (selected + candidate).
   // `NullType` for keys-only; the block primitive captures the reference but
@@ -381,7 +381,7 @@ struct agent_topk_filter_partition
   // Value-channel type fed to the block primitive as `ValueT`. `NullType`
   // selects the keys-only paths inside the primitives (via their internal
   // `keys_only` constexpr).
-  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_in_t>;
+  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_t>;
 
   // Per-channel data-source `ScratchStorage`, supplied to the partition class so
   // it can size its `load` slot in the Staged / SharedMem scratch. `NullType`
@@ -413,7 +413,7 @@ struct agent_topk_filter_partition
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
     AgentTopKPolicyT::speculative_selected_buffer_capacity,
-    key_in_t,
+    key_t,
     selected_offset_t,
     candidate_offset_t,
     selected_reserve_op_t,
@@ -434,7 +434,7 @@ struct agent_topk_filter_partition
     block_threads,
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
-    key_in_t,
+    key_t,
     selected_offset_t,
     selected_reserve_op_t,
     KeyOutputIteratorT,
@@ -537,8 +537,8 @@ struct agent_topk_filter_partition
   KeyOutputIteratorT d_keys_out;
   ValueInputIteratorT d_values_in;
   ValueOutputIteratorT d_values_out;
-  key_in_t* in_key_buf;
-  value_in_t* in_val_buf;
+  key_t* in_key_buf;
+  value_t* in_val_buf;
 
   OutOffsetT* p_num_selected_written;
 
@@ -555,8 +555,8 @@ struct agent_topk_filter_partition
     KeyOutputIteratorT d_keys_out,
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
-    key_in_t* in_key_buf,
-    value_in_t* in_val_buf,
+    key_t* in_key_buf,
+    value_t* in_val_buf,
     OutOffsetT* p_num_selected_written,
     OffsetT input_length,
     bool load_from_candidates_buffer,
@@ -657,7 +657,7 @@ private:
       }
 
       __syncthreads();
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(arena.get_keys_source_scratch());
       h.complete_load(items);
       __syncthreads();
@@ -690,7 +690,7 @@ private:
         }
 
         __syncthreads();
-        key_in_t items[items_per_thread];
+        key_t items[items_per_thread];
         auto h = keys_source.submit_load(arena.get_keys_source_scratch(), partial_items);
         h.complete_load(items);
         __syncthreads();
@@ -721,8 +721,8 @@ public:
       CounterUpdateFn counter_update_fn,
       KthBucketFn on_kth_bucket,
       sink_mode mode,
-      key_in_t* out_key_buf             = nullptr,
-      value_in_t* out_val_buf           = nullptr,
+      key_t* out_key_buf             = nullptr,
+      value_t* out_val_buf           = nullptr,
       OffsetT* p_num_candidates_written = nullptr)
   {
     // Mode-shared stack-locals.
@@ -845,8 +845,8 @@ template <typename AgentTopKPolicyT,
           bool InlinedClassify             = false>
 struct agent_topk_last_filter
 {
-  using key_in_t   = it_value_t<KeyInputIteratorT>;
-  using value_in_t = it_value_t<ValueInputIteratorT>;
+  using key_t   = it_value_t<KeyInputIteratorT>;
+  using value_t = it_value_t<ValueInputIteratorT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -870,11 +870,11 @@ struct agent_topk_last_filter
   using key_source_input_t =
     tile_data_source_t<KeyInputIteratorT, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using key_source_buffer_t =
-    tile_data_source_t<key_in_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
+    tile_data_source_t<key_t*, AgentTopKPolicyT::keys_tile_load_kind, block_threads, items_per_thread, OffsetT>;
   using keys_source_t = multi_source_data_source<key_source_input_t, key_source_buffer_t, OffsetT>;
 
   using value_source_input_t = direct_data_source<ValueInputIteratorT, block_threads, items_per_thread, OffsetT>;
-  using value_source_buffer_t = direct_data_source<value_in_t*, block_threads, items_per_thread, OffsetT>;
+  using value_source_buffer_t = direct_data_source<value_t*, block_threads, items_per_thread, OffsetT>;
   using value_source_t = multi_source_data_source<value_source_input_t, value_source_buffer_t, OffsetT>;
 
   using val_out_t      = ValueOutputIteratorT;
@@ -887,7 +887,7 @@ struct agent_topk_last_filter
     ::cuda::std::conditional_t<keys_only, NullType, value_channel_sinks_concrete_t>;
 
   // Value-channel type fed to the block primitive as `ValueT`.
-  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_in_t>;
+  using agent_value_t = ::cuda::std::conditional_t<keys_only, NullType, value_t>;
 
   // Per-channel data-source `ScratchStorage`, used to size the partition's
   // `load` slot in the Staged / SharedMem scratch.
@@ -906,7 +906,7 @@ struct agent_topk_last_filter
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
     AgentTopKPolicyT::speculative_selected_buffer_capacity,
-    key_in_t,
+    key_t,
     selected_offset_t,
     candidate_offset_t,
     selected_reserve_op_t,
@@ -954,8 +954,8 @@ struct agent_topk_last_filter
   KeyOutputIteratorT d_keys_out;
   ValueInputIteratorT d_values_in;
   ValueOutputIteratorT d_values_out;
-  key_in_t* in_key_buf;
-  value_in_t* in_val_buf;
+  key_t* in_key_buf;
+  value_t* in_val_buf;
 
   OutOffsetT* p_num_selected_written;
   OffsetT input_length;
@@ -968,8 +968,8 @@ struct agent_topk_last_filter
     KeyOutputIteratorT d_keys_out,
     ValueInputIteratorT d_values_in,
     ValueOutputIteratorT d_values_out,
-    key_in_t* in_key_buf,
-    value_in_t* in_val_buf,
+    key_t* in_key_buf,
+    value_t* in_val_buf,
     OutOffsetT* p_num_selected_written,
     OffsetT input_length,
     bool load_from_candidates_buffer,
@@ -1011,7 +1011,7 @@ private:
   template <bool IsFull, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void do_partition(
     partition_t& partition,
-    const key_in_t (&keys)[items_per_thread],
+    const key_t (&keys)[items_per_thread],
     OffsetT num_items_in_tile,
     ValueSourceT& value_source)
   {
@@ -1096,7 +1096,7 @@ public:
       }
 
       __syncthreads();
-      key_in_t items[items_per_thread];
+      key_t items[items_per_thread];
       auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch());
       h.complete_load(items);
       __syncthreads();
@@ -1128,7 +1128,7 @@ public:
         }
 
         __syncthreads();
-        key_in_t items[items_per_thread];
+        key_t items[items_per_thread];
         auto h = keys_source.submit_load(storage.partition_arena.get_keys_source_scratch(), partial_items);
         h.complete_load(items);
         __syncthreads();

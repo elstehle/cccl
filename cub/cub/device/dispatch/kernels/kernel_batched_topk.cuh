@@ -442,7 +442,7 @@ template <typename PolicySelector,
           typename ExtractBinOpT,
           typename OffsetT,
           typename OutOffsetT,
-          typename KeyInT>
+          typename KeyT>
 #if _CCCL_HAS_CONCEPTS()
   requires batched_topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
@@ -454,7 +454,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
     // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
     // (not the pointee) grid-constant.
-    _CCCL_GRID_CONSTANT detail::topk::counter<KeyInT, OffsetT, OutOffsetT>* const d_segment_counters,
+    _CCCL_GRID_CONSTANT detail::topk::counter<KeyT, OffsetT, OutOffsetT>* const d_segment_counters,
     _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
     _CCCL_GRID_CONSTANT const ExtractBinOpT extract_bin_op,
@@ -474,7 +474,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // to load + bin that partial tile directly into the segment's global histogram slab.
   static constexpr bool process_partial = topk_seg_kernel_detail::full_tiles_only_histogram<PolicySelector>::value;
 
-  using counter_t                   = detail::topk::counter<KeyInT, OffsetT, OutOffsetT>;
+  using counter_t                   = detail::topk::counter<KeyT, OffsetT, OutOffsetT>;
   using block_identify_kth_bucket_t = detail::topk::
     block_identify_kth_bucket<block_threads, bits_per_pass, agent_topk_policy_t::scan_algorithm, OffsetT, OutOffsetT>;
 
@@ -550,7 +550,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
         const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
         // Blocked per-thread load of the trailing partial tile (matches the histogram agent's
         // `add_partial` arrangement); out-of-range lanes load nothing and are not binned.
-        KeyInT items[items_per_thread];
+        KeyT items[items_per_thread];
         const OffsetT thread_base = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < items_per_thread; ++j)
@@ -640,7 +640,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const bool reset_histogram,
     _CCCL_GRID_CONSTANT const DecomposerT decomposer)
 {
-  using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
+  using key_t = it_value_t<it_value_t<KeyInputItItT>>;
   // See the histogram kernel for the rationale behind reading `total_large_tiles` from the
   // sentinel slot and `large_segments_count` through an iterator.
   const typename NumSegmentsParameterT::value_type num_large_segments =
@@ -666,9 +666,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr bool full_tiles_only_filter = topk_seg_kernel_detail::full_tiles_only_filter<PolicySelector>::value;
 
   using extract_bin_op_t =
-    detail::topk::extract_bin_op_t<key_in_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
+    detail::topk::extract_bin_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
   using identify_candidates_op_t =
-    detail::topk::identify_candidates_op_t<key_in_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
+    detail::topk::identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
 
   using agent_t = agent_batched_topk_filter_partition<
     agent_topk_policy_t,
@@ -757,7 +757,7 @@ template <typename PolicySelector,
           typename DecomposerT,
           typename OffsetT,
           typename OutOffsetT,
-          typename KeyInT>
+          typename KeyT>
 #if _CCCL_HAS_CONCEPTS()
   requires batched_topk_policy_selector<PolicySelector>
 #endif // _CCCL_HAS_CONCEPTS()
@@ -772,11 +772,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
     // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
     // (not the pointee) grid-constant.
-    _CCCL_GRID_CONSTANT detail::topk::counter<KeyInT, OffsetT, OutOffsetT>* const d_segment_counters,
+    _CCCL_GRID_CONSTANT detail::topk::counter<KeyT, OffsetT, OutOffsetT>* const d_segment_counters,
     _CCCL_GRID_CONSTANT OffsetT* const d_segment_histograms,
-    _CCCL_GRID_CONSTANT KeyInT* const d_segment_in_key_buf,
+    _CCCL_GRID_CONSTANT KeyT* const d_segment_in_key_buf,
     _CCCL_GRID_CONSTANT it_value_t<it_value_t<ValueInputItItT>>* const d_segment_in_val_buf,
-    _CCCL_GRID_CONSTANT KeyInT* const d_segment_out_key_buf,
+    _CCCL_GRID_CONSTANT KeyT* const d_segment_out_key_buf,
     _CCCL_GRID_CONSTANT it_value_t<it_value_t<ValueInputItItT>>* const d_segment_out_val_buf,
     _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
     _CCCL_GRID_CONSTANT const OffsetT candidate_buffer_length,
@@ -799,7 +799,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // primitive.
   static constexpr bool process_partial = topk_seg_kernel_detail::full_tiles_only_filter<PolicySelector>::value;
 
-  using counter_t                   = detail::topk::counter<KeyInT, OffsetT, OutOffsetT>;
+  using counter_t                   = detail::topk::counter<KeyT, OffsetT, OutOffsetT>;
   using block_identify_kth_bucket_t = detail::topk::
     block_identify_kth_bucket<block_threads, bits_per_pass, agent_topk_policy_t::scan_algorithm, OffsetT, OutOffsetT>;
 
@@ -814,9 +814,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr bool inlined_classify                                       = mw.inlined_classify;
 
   using extract_bin_op_t =
-    detail::topk::extract_bin_op_t<KeyInT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
+    detail::topk::extract_bin_op_t<KeyT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
   using identify_candidates_op_t =
-    detail::topk::identify_candidates_op_t<KeyInT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
+    detail::topk::identify_candidates_op_t<KeyT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
 
   using filter_agent_t = agent_batched_topk_filter_partition<
     agent_topk_policy_t,
@@ -1002,7 +1002,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     _CCCL_GRID_CONSTANT const int total_bits,
     _CCCL_GRID_CONSTANT const DecomposerT decomposer)
 {
-  using key_in_t = it_value_t<it_value_t<KeyInputItItT>>;
+  using key_t = it_value_t<it_value_t<KeyInputItItT>>;
   // Materialise the queue-shape `num_large_segments` so the agent can hold it as a member
   // (the agent re-derives `d_total_large_tiles` from `d_large_segments_tile_offsets +
   // num_large_segments` itself on entry to `run`).
@@ -1017,7 +1017,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr bool inlined_classify                             = mw.inlined_classify;
 
   using identify_candidates_op_t =
-    detail::topk::identify_candidates_op_t<key_in_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
+    detail::topk::identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
 
   using agent_t = agent_batched_topk_last_filter<
     agent_topk_policy_t,
