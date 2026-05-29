@@ -475,8 +475,6 @@ template <typename AgentTopKPolicyT,
           typename KeyInputItItT,
           typename ExtractBinOpT,
           typename SegmentSizeParameterT,
-          typename KParameterT,
-          typename NumSegmentsParameterT,
           typename SegmentIdProviderT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
@@ -556,11 +554,8 @@ struct agent_batched_topk_histogram
   _TempStorage& temp_storage;
   KeyInputItItT d_key_segments_it;
   SegmentSizeParameterT segment_sizes;
-  KParameterT k_param;
-  NumSegmentsParameterT num_segments;
   SegmentIdProviderT segment_id_provider;
   const LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
-  counter_t* d_segment_counters;
   OffsetT* d_segment_histograms;
   ExtractBinOpT extract_bin_op;
   FilterOpT filter_op;
@@ -577,11 +572,8 @@ struct agent_batched_topk_histogram
     TempStorage& ts,
     KeyInputItItT d_key_segments_it,
     SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
     SegmentIdProviderT segment_id_provider,
     const LargeSegmentTileOffsetT* d_large_segments_tile_offsets,
-    counter_t* d_segment_counters,
     OffsetT* d_segment_histograms,
     ExtractBinOpT extract_bin_op,
     LargeSegmentsCountItT large_segments_count_it,
@@ -589,11 +581,8 @@ struct agent_batched_topk_histogram
       : temp_storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , segment_sizes(segment_sizes)
-      , k_param(k_param)
-      , num_segments(num_segments)
       , segment_id_provider(segment_id_provider)
       , d_large_segments_tile_offsets(d_large_segments_tile_offsets)
-      , d_segment_counters(d_segment_counters)
       , d_segment_histograms(d_segment_histograms)
       , extract_bin_op(extract_bin_op)
       , filter_op(filter_op)
@@ -1098,7 +1087,6 @@ template <typename AgentTopKPolicyT,
           typename IdentifyCandidatesOpT,
           typename DecomposerT,
           typename SegmentSizeParameterT,
-          typename KParameterT,
           typename NumSegmentsParameterT,
           typename SegmentIdProviderT,
           typename LargeSegmentTileOffsetT,
@@ -1298,8 +1286,6 @@ struct agent_batched_topk_filter_partition
   ValueInputItItT d_value_segments_it;
   ValueOutputItItT d_value_segments_out_it;
   SegmentSizeParameterT segment_sizes;
-  KParameterT k_param;
-  NumSegmentsParameterT num_segments;
   SegmentIdProviderT segment_id_provider;
   const LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
   counter_t* d_segment_counters;
@@ -1328,8 +1314,6 @@ struct agent_batched_topk_filter_partition
     ValueInputItItT d_value_segments_it,
     ValueOutputItItT d_value_segments_out_it,
     SegmentSizeParameterT segment_sizes,
-    KParameterT k_param,
-    NumSegmentsParameterT num_segments,
     SegmentIdProviderT segment_id_provider,
     const LargeSegmentTileOffsetT* d_large_segments_tile_offsets,
     counter_t* d_segment_counters,
@@ -1350,8 +1334,6 @@ struct agent_batched_topk_filter_partition
       , d_value_segments_it(d_value_segments_it)
       , d_value_segments_out_it(d_value_segments_out_it)
       , segment_sizes(segment_sizes)
-      , k_param(k_param)
-      , num_segments(num_segments)
       , segment_id_provider(segment_id_provider)
       , d_large_segments_tile_offsets(d_large_segments_tile_offsets)
       , d_segment_counters(d_segment_counters)
@@ -2220,7 +2202,6 @@ struct agent_batched_topk_last_filter
   ValueOutputItItT d_value_segments_out_it;
   SegmentSizeParameterT segment_sizes;
   KParameterT k_param;
-  NumSegmentsParameterT num_segments;
   SegmentIdProviderT segment_id_provider;
   const LargeSegmentTileOffsetT* d_large_segments_tile_offsets;
   counter_t* d_segment_counters;
@@ -2241,7 +2222,6 @@ struct agent_batched_topk_last_filter
     ValueOutputItItT d_value_segments_out_it,
     SegmentSizeParameterT segment_sizes,
     KParameterT k_param,
-    NumSegmentsParameterT num_segments,
     SegmentIdProviderT segment_id_provider,
     const LargeSegmentTileOffsetT* d_large_segments_tile_offsets,
     counter_t* d_segment_counters,
@@ -2259,7 +2239,6 @@ struct agent_batched_topk_last_filter
       , d_value_segments_out_it(d_value_segments_out_it)
       , segment_sizes(segment_sizes)
       , k_param(k_param)
-      , num_segments(num_segments)
       , segment_id_provider(segment_id_provider)
       , d_large_segments_tile_offsets(d_large_segments_tile_offsets)
       , d_segment_counters(d_segment_counters)
