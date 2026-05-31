@@ -2286,6 +2286,11 @@ private:
     key_t* in_key_buf;
     [[maybe_unused]] value_t* in_val_buf;
 
+    // Queue slot for this segment. Kept so `make_partition_for_segment` can re-derive the counter
+    // pointer from a freshly warp-uniformed `queue_idx` per tile (EXPERIMENT: warp-aggregate the
+    // back-grow-capped reserve atomic without a pointer makeWarpUniform).
+    LargeSegmentTileOffsetT queue_idx;
+
     // `identify_candidates_op_t` has no default ctor for some `T`; cache ctor inputs and
     // build the op on demand in `process_tile`.
     int pass;
@@ -2317,6 +2322,7 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
   {
     per_segment_state_t s{};
+    s.queue_idx = queue_idx;
     s.slab_base = d_large_segments_tile_offsets[queue_idx];
     // `queue_segment_end` is the next segment's `slab_base` -- the table is sized
     // `num_large_segments + 1` (sentinel at the end stores `total_large_tiles`), so the
@@ -2378,12 +2384,17 @@ private:
   // in `run()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
   {
-    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    // EXPERIMENT: re-derive the counter base from a freshly warp-uniformed `queue_idx` (CREDUX,
+    // which ptxas's R2UR pass trusts) so the back-grow-capped reserve's `atomicAdd` targets a
+    // proven-uniform address and ptxas can warp-aggregate it. Built per tile (see `process_tile`)
+    // so the CREDUX is fresh and not demoted across the tile loop. No pointer is warp-uniformed.
+    counter_t* const seg_counter = d_segment_counters + detail::warpspeed::makeWarpUniform(s.queue_idx);
+    selected_reserve_op_t reserve_sel{&seg_counter->num_selected_written};
     // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
     // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
     // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
     candidate_reserve_op_t reserve_cand{
-      &s.segment_counter->num_ties_written_to_back,
+      &seg_counter->num_ties_written_to_back,
       static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
       static_cast<candidate_offset_t>(s.num_of_kth_needed)};
 
@@ -2459,7 +2470,13 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      // EXPERIMENT: rebuild the partition per tile so the counter pointer is re-derived from a
+      // fresh CREDUX (`make_partition_for_segment`) each tile and stays warp-uniform for the
+      // atomic. Drops `cand_reserve_open`'s cross-tile early-stop (the held `partition` arg is
+      // unused on this path); kept to first learn whether the back-grow clamp blocks aggregation.
+      (void) partition;
+      partition_t local_partition = make_partition_for_segment(s);
+      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
     {
@@ -2481,7 +2498,9 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      (void) partition;
+      partition_t local_partition = make_partition_for_segment(s);
+      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
 
