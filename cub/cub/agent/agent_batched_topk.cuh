@@ -2420,8 +2420,6 @@ private:
   // in `run()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
   {
-    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
-
     // The identify-candidates op carries the segment's `kth_key_bits` (value, after the
     // value-holding sibling lands), and the partition holds it by value too, so the partition
     // ctor copy is what binds it to this segment's state.
@@ -2434,7 +2432,18 @@ private:
       // (`k_total - num_of_kth_needed`) are passed to the partition, which drops any candidate
       // whose final position reaches `cap`. The candidate counter may overshoot `cap` -- the
       // last pass never reads it again.
-      candidate_reserve_op_t reserve_cand{&s.segment_counter->num_ties_written_to_back};
+      //
+      // Force the per-segment counter base warp-uniform so ptxas can prove the reserve atomics
+      // target one address per warp and emit the aggregated form (single atomic per warp + lane
+      // prefix). Without this the pointer lands in a per-thread register and the atomics stay
+      // per-lane (the `back_grow_capped` baseline never aggregated either). The 64-bit
+      // `makeWarpUniform` routes through CREDUX, which ptxas's R2UR pass recognizes as uniform
+      // (a `shfl`-broadcast does not). Built fresh here (per-tile, see `process_tile`) so the
+      // uniform value survives to the atomic instead of being demoted across the tile loop.
+      counter_t* uniform_counter = reinterpret_cast<counter_t*>(
+        detail::warpspeed::makeWarpUniform(reinterpret_cast<::cuda::std::uint64_t>(s.segment_counter)));
+      selected_reserve_op_t reserve_sel_u{&uniform_counter->num_selected_written};
+      candidate_reserve_op_t reserve_cand{&uniform_counter->num_ties_written_to_back};
 
       auto value_out = [&] {
         if constexpr (keys_only)
@@ -2449,7 +2458,7 @@ private:
 
       return partition_t{
         storage.partition_arena.get_partition_state(),
-        reserve_sel,
+        reserve_sel_u,
         reserve_cand,
         s.d_keys_out,
         value_out,
@@ -2459,6 +2468,7 @@ private:
     }
     else
     {
+      selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
       // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
       // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
       // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
