@@ -2151,11 +2151,28 @@ struct agent_batched_topk_last_filter
   using agent_value_data_source_scratch_t =
     ::cuda::std::conditional_t<keys_only, NullType, typename value_source_t::ScratchStorage>;
 
-  using selected_reserve_op_t  = detail::topk::atomic_reserve_range_op<selected_offset_t>;
-  using candidate_reserve_op_t = detail::topk::back_grow_capped_reserve_op<candidate_offset_t>;
+  // Experiment knob (plumbed via the policy's `last_filter_partition_strategy`): the `capped`
+  // strategy swaps in `block_partition_capped`, which pairs *both* output streams with plain
+  // `atomic_reserve_range_op` (warp-aggregatable) and enforces the kth-class cap as a
+  // post-reserve predicated store instead of inside a `back_grow_capped_reserve_op`.
+  static constexpr bool is_capped = (PartStrat == detail::topk::block_partition_strategy::capped);
 
-  using partition_t = detail::topk::strategy_to_partition_class_t<
-    PartStrat,
+  using selected_reserve_op_t = detail::topk::atomic_reserve_range_op<selected_offset_t>;
+  // Capped path: the candidate reserve is also a plain range op (no `may_grant_less` clamp on the
+  // per-lane return), which is what lets ptxas warp-aggregate the tie-stream atomic.
+  using candidate_reserve_op_t =
+    ::cuda::std::conditional_t<is_capped,
+                               detail::topk::atomic_reserve_range_op<candidate_offset_t>,
+                               detail::topk::back_grow_capped_reserve_op<candidate_offset_t>>;
+
+  // For the non-capped branch's type computation we must hand `strategy_to_partition_class_t` a
+  // strategy it has a specialization for (it has none for `capped`); `conditional_t` would
+  // otherwise still instantiate that branch. The aliased type is unused when `is_capped`.
+  static constexpr auto noncapped_strat =
+    is_capped ? detail::topk::block_partition_strategy::atomics : PartStrat;
+
+  using strategy_partition_t = detail::topk::strategy_to_partition_class_t<
+    noncapped_strat,
     block_threads,
     items_per_thread,
     AgentTopKPolicyT::accumulating_buffer_capacity,
@@ -2174,6 +2191,24 @@ struct agent_batched_topk_last_filter
     agent_value_data_source_scratch_t,
     effective_lazy_value_load,
     InlinedClassify>;
+
+  using capped_partition_t = detail::topk::block_partition_capped<
+    block_threads,
+    items_per_thread,
+    InlinedClassify,
+    key_t,
+    selected_offset_t,
+    candidate_offset_t,
+    selected_reserve_op_t,
+    candidate_reserve_op_t,
+    keys_out_it_t,
+    IdentifyCandidatesOpT,
+    val_out_t,
+    agent_value_t,
+    agent_value_data_source_scratch_t,
+    effective_lazy_value_load>;
+
+  using partition_t = ::cuda::std::conditional_t<is_capped, capped_partition_t, strategy_partition_t>;
 
   struct empty_prefix_sum_t
   {};
@@ -2384,40 +2419,74 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
   {
     selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
-    // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
-    // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
-    // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
-    candidate_reserve_op_t reserve_cand{
-      &s.segment_counter->num_ties_written_to_back,
-      static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
-      static_cast<candidate_offset_t>(s.num_of_kth_needed)};
-
-    auto value_channel_sinks = [&] {
-      if constexpr (keys_only)
-      {
-        return NullType{};
-      }
-      else
-      {
-        return value_channel_sinks_concrete_t{s.d_values_out, s.d_values_out};
-      }
-    }();
-    detail::topk::topk_noop_candidate_callback_op callback_op{};
 
     // The identify-candidates op carries the segment's `kth_key_bits` (value, after the
     // value-holding sibling lands), and the partition holds it by value too, so the partition
     // ctor copy is what binds it to this segment's state.
     IdentifyCandidatesOpT identify_candidates_op{&s.segment_counter->kth_key_bits, s.pass, total_bits, decomposer};
 
-    return partition_t{
-      storage.partition_arena.get_partition_state(),
-      reserve_sel,
-      reserve_cand,
-      s.d_keys_out,
-      s.d_keys_out,
-      value_channel_sinks,
-      identify_candidates_op,
-      callback_op};
+    if constexpr (is_capped)
+    {
+      // Capped (warp-aggregatable) path: both reserve ops are plain range ops over the same
+      // per-segment counters. The cap (`k_total`) and the candidate region start
+      // (`k_total - num_of_kth_needed`) are passed to the partition, which drops any candidate
+      // whose final position reaches `cap`. The candidate counter may overshoot `cap` -- the
+      // last pass never reads it again.
+      candidate_reserve_op_t reserve_cand{&s.segment_counter->num_ties_written_to_back};
+
+      auto value_out = [&] {
+        if constexpr (keys_only)
+        {
+          return NullType{};
+        }
+        else
+        {
+          return s.d_values_out;
+        }
+      }();
+
+      return partition_t{
+        storage.partition_arena.get_partition_state(),
+        reserve_sel,
+        reserve_cand,
+        s.d_keys_out,
+        value_out,
+        identify_candidates_op,
+        static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
+        static_cast<candidate_offset_t>(s.k_total)};
+    }
+    else
+    {
+      // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
+      // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
+      // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
+      candidate_reserve_op_t reserve_cand{
+        &s.segment_counter->num_ties_written_to_back,
+        static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
+        static_cast<candidate_offset_t>(s.num_of_kth_needed)};
+
+      auto value_channel_sinks = [&] {
+        if constexpr (keys_only)
+        {
+          return NullType{};
+        }
+        else
+        {
+          return value_channel_sinks_concrete_t{s.d_values_out, s.d_values_out};
+        }
+      }();
+      detail::topk::topk_noop_candidate_callback_op callback_op{};
+
+      return partition_t{
+        storage.partition_arena.get_partition_state(),
+        reserve_sel,
+        reserve_cand,
+        s.d_keys_out,
+        s.d_keys_out,
+        value_channel_sinks,
+        identify_candidates_op,
+        callback_op};
+    }
   }
 
   // Templated on `IsFullTile` so the fast / slow-full path can skip the runtime

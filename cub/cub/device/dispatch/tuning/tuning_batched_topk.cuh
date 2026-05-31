@@ -319,7 +319,10 @@ struct policy_selector
         /*.scan_algorithm                       =*/BLOCK_SCAN_WARP_SCANS,
         /*.buffered_partition_strategy          =*/detail::topk::block_partition_strategy::atomics,
         /*.early_stop_filter_strategy           =*/detail::topk::block_filter_strategy::atomics,
-        /*.last_filter_partition_strategy       =*/detail::topk::block_partition_strategy::atomics,
+        // Experiment: `capped` swaps the last-filter scatter to the warp-aggregatable
+        // `block_partition_capped` (two plain reserve ops + post-reserve cap). Flip back to
+        // `atomics` for the baseline A/B arm.
+        /*.last_filter_partition_strategy       =*/detail::topk::block_partition_strategy::capped,
         /*.accumulating_buffer_capacity         =*/256,
         /*.speculative_selected_buffer_capacity =*/128,
         /*.value_materialization                =*/detail::topk::value_materialization_mode::indexed,
@@ -328,7 +331,10 @@ struct policy_selector
         /*.tiles_per_chunk                      =*/8,
         /*.full_tiles_only_histogram            =*/true,
         /*.full_tiles_only_filter               =*/true,
-        /*.full_tiles_only_last_filter          =*/true}};
+        // Reverted to false for this experiment so the warp-aggregated-capped change is isolated
+        // (the partial-tile split was measured performance-neutral); the last-filter pass runs as
+        // a single monolithic kernel that processes partials inline.
+        /*.full_tiles_only_last_filter          =*/false}};
   }
 };
 

@@ -119,6 +119,11 @@ enum class block_partition_strategy
   shared_mem,
   accumulating_candidates,
   speculative_both,
+  // Warp-aggregation-friendly last-filter variant (`block_partition_capped`): single output
+  // sink + two plain (`may_grant_less=false`) reserve ops + a post-reserve cap. Selected by the
+  // last-filter agent directly (it constructs `block_partition_capped` with the per-segment cap
+  // and candidate region start), not through `strategy_to_partition_class_t`.
+  capped,
 };
 
 //---------------------------------------------------------------------
@@ -668,6 +673,248 @@ private:
   // gated at compile time, so the `may_grant_less=false` path pays nothing
   // (no runtime branch, no extra template instantiation).
   bool cand_reserve_open = true;
+};
+
+//---------------------------------------------------------------------
+// `block_partition_capped` -- warp-aggregation-friendly sibling of
+// `block_partition_atomics`, specialized for the last-filter pass.
+//
+// Motivation: `block_partition_atomics` pairs the selected stream with
+// `atomic_reserve_range_op` (which ptxas warp-aggregates) but the candidate /
+// tie stream with `back_grow_capped_reserve_op`. The latter's per-call
+// `granted = min(n, cap - prev)` clamp consumes each lane's *own* atomic return
+// (`prev`), which defeats ptxas's warp-aggregation -- so on tie-heavy inputs the
+// candidate atomics serialize as up to 32 per-warp single-lane atomics on the
+// same counter. This sibling restructures the scatter so *both* reserve ops are
+// plain `atomic_reserve_range_op` (`may_grant_less == false`, just
+// `atomicAdd(counter, n)`), which ptxas can aggregate into one atomic per warp.
+//
+// Differences from `block_partition_atomics`:
+//   * Single key output iterator + single value sink (the selected and candidate
+//     streams write to disjoint front/back sub-ranges of the *same* output).
+//   * A `cap` (the segment's total output length `k_total`) and a
+//     `candidate_region_start` (`k_total - num_of_kth_needed`) are captured at
+//     construction. Selected positions count from 0; candidate positions count
+//     from `candidate_region_start`. The cap is enforced *after* the reserve as a
+//     predicated store: `if (pos < cap) out[pos] = key;`. Items past the cap are
+//     silently dropped -- harmless on the terminal last pass, where the counter
+//     is never read again (it may legitimately overshoot `cap`).
+//   * No per-thread `cand_reserve_open` flag and no `HasCandidateStream` peeling
+//     (those exist only for the `may_grant_less` reserve op).
+//
+// Trade-off: there is no early-stop once the cap is hit, so every kth-class
+// candidate still issues a (now warp-aggregated) atomic. The bet is that
+// aggregated-but-not-early-stopped beats per-lane-serialized-but-early-stopped on
+// the tie-heavy distributions that dominate the last-filter cost.
+//
+// `InlinedClassify` / `LazyValueLoad` / value-channel handling mirror
+// `block_partition_atomics`. The candidate callback is always a no-op here (the
+// last-filter pass has no histogram callback), so it is omitted entirely.
+//---------------------------------------------------------------------
+template <int BlockThreads,
+          int ItemsPerThread,
+          bool InlinedClassify,
+          typename KeyT,
+          typename SelectedOffsetT,
+          typename CandidateOffsetT,
+          typename SelectedReserveOp,
+          typename CandidateReserveOp,
+          typename KeyOutIt,
+          typename IdentifyCandidatesOp,
+          typename ValueOutIt              = CUB_NS_QUALIFIER::NullType,
+          typename ValueT                  = CUB_NS_QUALIFIER::NullType,
+          typename ValueDataSourceScratchT = CUB_NS_QUALIFIER::NullType,
+          bool LazyValueLoad               = false>
+class block_partition_capped
+{
+public:
+  static constexpr int tile_items = BlockThreads * ItemsPerThread;
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, CUB_NS_QUALIFIER::NullType>;
+
+  // Position type used for the cap comparison + write index. Selected and candidate
+  // offsets coincide for the last-filter pass; pick the candidate type as the common one.
+  using pos_t = CandidateOffsetT;
+
+  using TempStorage = empty_storage_t;
+
+private:
+  static constexpr bool _scratch_storage_is_empty = is_empty_storage_v<ValueDataSourceScratchT>;
+
+  struct _ScratchStorage_full
+  {
+    ValueDataSourceScratchT value_load;
+  };
+
+  struct _ScratchStorage_wrapped : CUB_NS_QUALIFIER::Uninitialized<_ScratchStorage_full>
+  {};
+
+public:
+  using ScratchStorage =
+    ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorage_wrapped>;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE block_partition_capped(
+    TempStorage& /*storage*/,
+    SelectedReserveOp reserve_selected,
+    CandidateReserveOp reserve_candidate,
+    KeyOutIt keys_out,
+    ValueOutIt values_out,
+    IdentifyCandidatesOp identify_candidates_op,
+    pos_t candidate_region_start,
+    pos_t cap)
+      : reserve_sel(reserve_selected)
+      , reserve_cand(reserve_candidate)
+      , out_iter(keys_out)
+      , value_out_iter(values_out)
+      , identify_op(identify_candidates_op)
+      , cand_region_start(candidate_region_start)
+      , cap(cap)
+  {}
+
+  template <typename ValueSourceT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  partition(ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], ValueSourceT& value_source)
+  {
+    partition_impl</*IsFull=*/true>(buffer, keys, /*num_items=*/tile_items, value_source);
+  }
+
+  template <typename NumItemsT, typename ValueSourceT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], NumItemsT num_items, ValueSourceT& value_source)
+  {
+    partition_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_source);
+  }
+
+  // No-op terminal flush, for parity with the sister partition classes.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
+
+private:
+  template <bool IsFull, typename ValueSourceT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void partition_impl(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], int num_items, ValueSourceT& value_source)
+  {
+    const int num_thread_items = compute_num_thread_items<IsFull, ItemsPerThread>(num_items);
+
+    if constexpr (InlinedClassify)
+    {
+      auto classifier = make_inlined_classifier<IsFull>(identify_op, num_thread_items);
+      fused_load_and_scatter(buffer, keys, classifier, value_source);
+    }
+    else
+    {
+      noop_callback_op noop_cb{};
+      precomputed_classifier<KeyT, ItemsPerThread, IsFull> classifier{keys, num_thread_items, identify_op, noop_cb};
+      fused_load_and_scatter(buffer, keys, classifier, value_source);
+    }
+  }
+
+  // Value-channel load brokering, mirroring `block_partition_atomics::partition_atomics_fused`:
+  // lazy mode gathers per-written-item inside the scatter; eager mode block-loads the tile's
+  // values (through the smem-backed scratch when non-empty) before scattering.
+  template <typename Classifier, typename ValueSourceT>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void fused_load_and_scatter(
+    ScratchStorage& buffer, const KeyT (&keys)[ItemsPerThread], Classifier& classifier, ValueSourceT& value_source)
+  {
+    if constexpr (!keys_only)
+    {
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::value_t, ValueT>,
+                    "Per-call value source's value_t must match the class-level ValueT template parameter.");
+      static_assert(::cuda::std::is_same_v<typename ValueSourceT::ScratchStorage, ValueDataSourceScratchT>,
+                    "Per-call value source's ScratchStorage must match the class-level ValueDataSourceScratchT.");
+
+      if constexpr (LazyValueLoad)
+      {
+        int unused_values[1]{};
+        scatter(keys, classifier, value_source, unused_values);
+      }
+      else
+      {
+        ValueT values[ItemsPerThread]{};
+        if constexpr (_scratch_storage_is_empty)
+        {
+          ValueDataSourceScratchT chan_scratch_dummy{};
+          auto h = value_source.submit_load(chan_scratch_dummy);
+          h.complete_load(values);
+        }
+        else
+        {
+          auto& chan_scratch = buffer.Alias().value_load;
+          auto h             = value_source.submit_load(chan_scratch);
+          h.complete_load(values);
+        }
+        scatter(keys, classifier, value_source, values);
+      }
+    }
+    else
+    {
+      int unused_dummy[1]{};
+      scatter(keys, classifier, value_source, unused_dummy);
+    }
+  }
+
+  // Unified scatter. Both branches issue a *plain* `reserve(1)` (`atomicAdd`, no
+  // data-dependent post-processing on the return) so ptxas warp-aggregates them; the
+  // cap is a per-lane predicated store on the (aggregated) position.
+  template <typename Classifier, typename ValueSourceT, typename ValuesArr>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void scatter(
+    const KeyT (&keys)[ItemsPerThread], Classifier& classifier, ValueSourceT& value_source, ValuesArr& values)
+  {
+    (void) value_source;
+    (void) values;
+
+    auto get_value = [&](int j) {
+      if constexpr (LazyValueLoad)
+      {
+        return value_source.gather_one(j);
+      }
+      else
+      {
+        return values[j];
+      }
+    };
+
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int j = 0; j < ItemsPerThread; ++j)
+    {
+      const candidate_class c = classifier(keys[j], j);
+
+      if (c == candidate_class::selected)
+      {
+        // Selected stream: front sub-range [0, num_selected). `num_selected` is exact, so
+        // the position never reaches `cap`; the check is kept for uniformity and is free.
+        const pos_t pos = static_cast<pos_t>(reserve_sel(SelectedOffsetT{1}).first);
+        if (pos < cap)
+        {
+          out_iter[pos] = keys[j];
+          if constexpr (!keys_only)
+          {
+            value_out_iter[pos] = get_value(j);
+          }
+        }
+      }
+      else if (c == candidate_class::candidate)
+      {
+        // Candidate / tie stream: back sub-range [region_start, cap). Overflowing the
+        // counter is harmless on the terminal pass; positions at/after `cap` are dropped.
+        const pos_t pos = cand_region_start + static_cast<pos_t>(reserve_cand(CandidateOffsetT{1}).first);
+        if (pos < cap)
+        {
+          out_iter[pos] = keys[j];
+          if constexpr (!keys_only)
+          {
+            value_out_iter[pos] = get_value(j);
+          }
+        }
+      }
+    }
+  }
+
+  SelectedReserveOp reserve_sel;
+  CandidateReserveOp reserve_cand;
+  KeyOutIt out_iter;
+  ValueOutIt value_out_iter;
+  IdentifyCandidatesOp identify_op;
+  pos_t cand_region_start;
+  pos_t cap;
 };
 
 //---------------------------------------------------------------------
