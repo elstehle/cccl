@@ -2535,7 +2535,20 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      if constexpr (is_capped)
+      {
+        // Build the (stateless) capped partition fresh per tile so ptxas re-derives the counter
+        // pointer from the per-segment (uniform) state each tile and can warp-aggregate the
+        // reserve atomics -- mirroring how the filter agent constructs its partition inside its
+        // per-tile body. Holding it across tiles (as the stateful strategies do for
+        // `cand_reserve_open`) demotes the pointer to a per-thread register and blocks aggregation.
+        partition_t cap_partition = make_partition_for_segment(s);
+        cap_partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      }
+      else
+      {
+        partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      }
     }
     else
     {
@@ -2557,7 +2570,15 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      if constexpr (is_capped)
+      {
+        partition_t cap_partition = make_partition_for_segment(s);
+        cap_partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      }
+      else
+      {
+        partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      }
     }
   }
 
