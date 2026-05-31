@@ -2470,7 +2470,16 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      // Rebuild the partition per tile so the counter pointer is re-derived from a fresh CREDUX
+      // (`make_partition_for_segment` -> `makeWarpUniform(queue_idx)`) each tile and stays
+      // warp-uniform for the reserve atomic -- a held counter is demoted across the loop and the
+      // atomics stay per-lane (verified: per-segment-held gives VOTEU=0). The back-grow cap is
+      // still enforced globally via the persistent device counter, so dropping the per-thread
+      // `cand_reserve_open` early-stop is correct; aggregation (1 atomic/warp) makes that
+      // early-stop redundant anyway. The held `partition` arg is unused on this path.
+      (void) partition;
+      partition_t local_partition = make_partition_for_segment(s);
+      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
     {
@@ -2492,7 +2501,9 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      (void) partition;
+      partition_t local_partition = make_partition_for_segment(s);
+      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
 
