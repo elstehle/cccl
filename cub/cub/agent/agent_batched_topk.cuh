@@ -2203,7 +2203,9 @@ struct agent_batched_topk_last_filter
     candidate_reserve_op_t,
     keys_out_it_t,
     IdentifyCandidatesOpT,
-    val_out_t,
+    // Mirror the value-sink convention: collapse the value-out iterator to `NullType` on the
+    // keys-only path (so the ctor's `value_out` arg accepts `NullType{}`).
+    ::cuda::std::conditional_t<keys_only, NullType, val_out_t>,
     agent_value_t,
     agent_value_data_source_scratch_t,
     effective_lazy_value_load>;
