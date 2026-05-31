@@ -2157,12 +2157,16 @@ struct agent_batched_topk_last_filter
   // post-reserve predicated store instead of inside a `back_grow_capped_reserve_op`.
   static constexpr bool is_capped = (PartStrat == detail::topk::block_partition_strategy::capped);
 
-  using selected_reserve_op_t = detail::topk::atomic_reserve_range_op<selected_offset_t>;
-  // Capped path: the candidate reserve is also a plain range op (no `may_grant_less` clamp on the
-  // per-lane return), which is what lets ptxas warp-aggregate the tie-stream atomic.
+  // Capped path: both reserve ops are explicitly warp-aggregated (one atomic per warp, leader +
+  // lane-prefix). This makes the aggregation independent of ptxas proving the counter address
+  // warp-uniform -- only the leader dereferences the counter -- so no `makeWarpUniform` is needed.
+  using selected_reserve_op_t =
+    ::cuda::std::conditional_t<is_capped,
+                               detail::topk::warp_aggregated_atomic_reserve_op<selected_offset_t>,
+                               detail::topk::atomic_reserve_range_op<selected_offset_t>>;
   using candidate_reserve_op_t =
     ::cuda::std::conditional_t<is_capped,
-                               detail::topk::atomic_reserve_range_op<candidate_offset_t>,
+                               detail::topk::warp_aggregated_atomic_reserve_op<candidate_offset_t>,
                                detail::topk::back_grow_capped_reserve_op<candidate_offset_t>>;
 
   // For the non-capped branch's type computation we must hand `strategy_to_partition_class_t` a
@@ -2427,23 +2431,15 @@ private:
 
     if constexpr (is_capped)
     {
-      // Capped (warp-aggregatable) path: both reserve ops are plain range ops over the same
-      // per-segment counters. The cap (`k_total`) and the candidate region start
-      // (`k_total - num_of_kth_needed`) are passed to the partition, which drops any candidate
-      // whose final position reaches `cap`. The candidate counter may overshoot `cap` -- the
-      // last pass never reads it again.
-      //
-      // Force the per-segment counter base warp-uniform so ptxas can prove the reserve atomics
-      // target one address per warp and emit the aggregated form (single atomic per warp + lane
-      // prefix). Without this the pointer lands in a per-thread register and the atomics stay
-      // per-lane (the `back_grow_capped` baseline never aggregated either). The 64-bit
-      // `makeWarpUniform` routes through CREDUX, which ptxas's R2UR pass recognizes as uniform
-      // (a `shfl`-broadcast does not). Built fresh here (per-tile, see `process_tile`) so the
-      // uniform value survives to the atomic instead of being demoted across the tile loop.
-      counter_t* uniform_counter = reinterpret_cast<counter_t*>(
-        detail::warpspeed::makeWarpUniform(reinterpret_cast<::cuda::std::uint64_t>(s.segment_counter)));
-      selected_reserve_op_t reserve_sel_u{&uniform_counter->num_selected_written};
-      candidate_reserve_op_t reserve_cand{&uniform_counter->num_ties_written_to_back};
+      // Capped (warp-aggregated) path: both reserve ops are `warp_aggregated_atomic_reserve_op`,
+      // which aggregates the per-warp reservation itself (leader atomic + lane prefix). The
+      // counter pointers are therefore used as-is -- no `makeWarpUniform` and no uniform-address
+      // requirement, because only the elected leader dereferences them. The cap (`k_total`) and
+      // the candidate region start (`k_total - num_of_kth_needed`) are passed to the partition,
+      // which drops any candidate whose final position reaches `cap`. The candidate counter may
+      // overshoot `cap` -- the last pass never reads it again.
+      selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+      candidate_reserve_op_t reserve_cand{&s.segment_counter->num_ties_written_to_back};
 
       auto value_out = [&] {
         if constexpr (keys_only)
@@ -2458,7 +2454,7 @@ private:
 
       return partition_t{
         storage.partition_arena.get_partition_state(),
-        reserve_sel_u,
+        reserve_sel,
         reserve_cand,
         s.d_keys_out,
         value_out,
@@ -2545,20 +2541,7 @@ private:
       {
         __syncthreads();
       }
-      if constexpr (is_capped)
-      {
-        // Build the (stateless) capped partition fresh per tile so ptxas re-derives the counter
-        // pointer from the per-segment (uniform) state each tile and can warp-aggregate the
-        // reserve atomics -- mirroring how the filter agent constructs its partition inside its
-        // per-tile body. Holding it across tiles (as the stateful strategies do for
-        // `cand_reserve_open`) demotes the pointer to a per-thread register and blocks aggregation.
-        partition_t cap_partition = make_partition_for_segment(s);
-        cap_partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
-      }
-      else
-      {
-        partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
-      }
+      partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
     {
@@ -2580,15 +2563,7 @@ private:
       {
         __syncthreads();
       }
-      if constexpr (is_capped)
-      {
-        partition_t cap_partition = make_partition_for_segment(s);
-        cap_partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
-      }
-      else
-      {
-        partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
-      }
+      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
 

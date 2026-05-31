@@ -42,6 +42,7 @@
 #include <cub/block/block_load_to_shared.cuh>
 #include <cub/detail/topk/empty_storage.cuh>
 #include <cub/util_device.cuh>
+#include <cub/util_ptx.cuh>
 #include <cub/util_type.cuh>
 
 #include <cuda/__fwd/iterator.h>
@@ -132,6 +133,43 @@ struct back_grow_capped_reserve_op
     const OffsetT granted = (::cuda::std::min) (n, avail);
     const OffsetT base    = region_start + prev;
     return {base, granted};
+  }
+};
+
+// Explicitly warp-aggregated counter reservation. Same `(base, granted)` contract and
+// `may_grant_less == false` as `atomic_reserve_range_op`, but instead of relying on ptxas to
+// auto-aggregate per-lane `atomicAdd`s (which it only does when it can prove `counter` warp-uniform
+// -- true for the single-problem filter, but not for the segmented last-filter, see
+// `make_warp_uniform.cuh`), it does the aggregation itself: the lanes converged at the call elect a
+// leader, the leader issues one `atomicAdd` of the warp-wide total, and every lane derives its slot
+// from its rank in the active mask. Only the leader dereferences `counter`, so the pointer being a
+// per-thread (non-uniform) register no longer matters -- no `makeWarpUniform` needed.
+//
+// Correctness is independent of how `__activemask()` partitions the warp: if the warp is split into
+// several converged subsets, each subset's leader does its own `atomicAdd`, and the atomics
+// serialize into disjoint contiguous ranges. Convergence only affects *how much* aggregation
+// happens, never the result. Assumes every participating lane passes the same `n` (the partition
+// always calls with `n == 1`).
+template <typename OffsetT>
+struct warp_aggregated_atomic_reserve_op
+{
+  static constexpr bool may_grant_less = false;
+
+  OffsetT* counter;
+
+  _CCCL_DEVICE _CCCL_FORCEINLINE ::cuda::std::pair<OffsetT, OffsetT> operator()(OffsetT n) const
+  {
+    const unsigned mask  = __activemask();
+    const OffsetT rank   = static_cast<OffsetT>(__popc(mask & CUB_NS_QUALIFIER::LaneMaskLt()));
+    const OffsetT total  = static_cast<OffsetT>(__popc(mask)) * n;
+    const int leader     = __ffs(static_cast<int>(mask)) - 1;
+    OffsetT base         = OffsetT{0};
+    if (static_cast<int>(CUB_NS_QUALIFIER::LaneId()) == leader)
+    {
+      base = atomicAdd(counter, total);
+    }
+    base = __shfl_sync(mask, base, leader);
+    return {base + rank * n, n};
   }
 };
 
