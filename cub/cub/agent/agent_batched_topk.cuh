@@ -2470,13 +2470,7 @@ private:
       {
         __syncthreads();
       }
-      // EXPERIMENT: rebuild the partition per tile so the counter pointer is re-derived from a
-      // fresh CREDUX (`make_partition_for_segment`) each tile and stays warp-uniform for the
-      // atomic. Drops `cand_reserve_open`'s cross-tile early-stop (the held `partition` arg is
-      // unused on this path); kept to first learn whether the back-grow clamp blocks aggregation.
-      (void) partition;
-      partition_t local_partition = make_partition_for_segment(s);
-      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
     {
@@ -2498,9 +2492,7 @@ private:
       {
         __syncthreads();
       }
-      (void) partition;
-      partition_t local_partition = make_partition_for_segment(s);
-      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
 
