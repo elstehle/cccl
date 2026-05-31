@@ -1201,6 +1201,69 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       {
         return error;
       }
+
+      // Companion partial-tile kernel for the last pass -- only when the policy splits the
+      // last-filter partial off the hot kernel (`full_tiles_only_last_filter`). One CTA per
+      // large segment; scatters each segment's trailing partial tile. No epilogue. Launched on
+      // the same stream right after the last-filter kernel, so the per-segment counters (the
+      // shared selected / kth-class output reservations) are observed in a consistent state and
+      // `key_bufs.Current()` / `val_bufs.Current()` still point at the last pass's input buffers
+      // (the double-buffer selector is not flipped after the last pass).
+      if constexpr (multi_worker_per_segment_policy.full_tiles_only_last_filter)
+      {
+        auto last_filter_partial_kernel_ptr = device_segmented_topk_last_filter_partial_kernel<
+          PolicySelector,
+          select_dir,
+          KeyInputItItT,
+          KeyOutputItItT,
+          effective_value_input_it_it_t,
+          effective_value_output_it_it_t,
+          SegmentSizeParameterT,
+          KParameterT,
+          NumSegmentsParameterT,
+          segment_id_provider_t,
+          large_segment_tile_offset_t,
+          large_segments_count_it_t,
+          detail::identity_decomposer_t,
+          OffsetT,
+          OutOffsetT>;
+        int last_filter_partial_blocks_per_sm = 0;
+        if (const auto error = CubDebug(MaxSmOccupancy(
+              last_filter_partial_blocks_per_sm, last_filter_partial_kernel_ptr, multi_worker_threads_per_block)))
+        {
+          return error;
+        }
+        // One CTA per segment: cap at the host-known segment-count upper bound, matching the
+        // finalize-{histogram,filter} grid sizing. The kernel's grid-stride loop bounds itself
+        // against the device-side `num_large_segments`, so an over-sized cap is also safe.
+        const auto last_filter_partial_grid_size = (::cuda::std::min) (
+          static_cast<unsigned int>(last_filter_partial_blocks_per_sm * num_sms),
+          static_cast<unsigned int>(num_segments_upper_bound));
+        if (const auto error = CubDebug(
+              THRUST_NS_QUALIFIER::cuda_cub::detail::triple_chevron(
+                last_filter_partial_grid_size, multi_worker_threads_per_block, 0, stream)
+                .doit(
+                  last_filter_partial_kernel_ptr,
+                  d_key_segments_it,
+                  d_key_segments_out_it,
+                  effective_d_value_segments_it,
+                  effective_d_value_segments_out_it,
+                  segment_sizes,
+                  k,
+                  segment_id_provider,
+                  static_cast<const large_segment_tile_offset_t*>(d_large_segments_tile_offsets),
+                  d_seg_counters,
+                  key_bufs.Current(),
+                  val_bufs.Current(),
+                  candidate_buffer_length,
+                  large_segments_count_it,
+                  num_passes,
+                  total_bits,
+                  decomposer)))
+        {
+          return error;
+        }
+      }
       return cudaSuccess;
     };
 

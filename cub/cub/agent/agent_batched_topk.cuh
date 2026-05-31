@@ -2089,7 +2089,12 @@ template <typename AgentTopKPolicyT,
           typename OutOffsetT,
           detail::topk::block_partition_strategy PartStrat = detail::topk::block_partition_strategy::atomics,
           bool LazyValueLoad                               = false,
-          bool InlinedClassify                             = false>
+          bool InlinedClassify                             = false,
+          // Experimental switch (mirrors `multi_worker_policy::full_tiles_only_last_filter`).
+          // When `true`, `run()` drops the `process_tile<false>` call; the trailing partial
+          // tile of each segment is scattered by `device_segmented_topk_last_filter_partial_kernel`
+          // via `process_partial_for_segment(queue_idx)`. There is no epilogue on this path.
+          bool FullTilesOnly = false>
 struct agent_batched_topk_last_filter
 {
   using keys_in_it_t       = it_value_t<KeyInputItItT>;
@@ -2606,12 +2611,22 @@ public:
         process_tile<true>(
           state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(local_tile));
       }
-      else if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
+      else if constexpr (!FullTilesOnly)
       {
-        process_tile<false>(
-          state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+        // local_tile >= num_full_tiles: either the trailing partial slot (when
+        // `partial_items > 0`) or a wasted-tail slot past the segment's data end. Only the
+        // former drives a `process_tile<false>` call; the latter falls through and the
+        // grid-stride loop skips it. In `FullTilesOnly` mode this whole branch is
+        // `if constexpr`-eliminated -- the partial tile is owned by
+        // `device_segmented_topk_last_filter_partial_kernel`. Dropping the
+        // `process_tile<false>` instantiation here is the point of the split: it removes the
+        // bounds-checked partial load path from the hot kernel, lowering its register usage.
+        if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
+        {
+          process_tile<false>(
+            state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+        }
       }
-      // else: wasted-tail tile beyond segment data; skip implicitly via the grid-stride loop.
     }
 
     // Final flush of the last active segment.
@@ -2619,6 +2634,68 @@ public:
 
     // Reset the (async) mbarrier(s) now this CTA is done with the sources -- once per CTA, matching the
     // single construction above. No-op for the current sync / direct sources.
+    keys_source.invalidate();
+    if constexpr (!keys_only)
+    {
+      value_source.invalidate();
+    }
+  }
+
+  // Scatter the trailing partial tile of `queue_idx`'s segment to the user output, using the
+  // same per-segment partition `run()` builds for its full tiles. Invoked by
+  // `device_segmented_topk_last_filter_partial_kernel` (one CTA per segment in its grid-stride)
+  // when the policy's `full_tiles_only_last_filter` knob is on -- in that mode `run()` walks
+  // only full tiles, so each segment's at-most-one trailing partial is scattered here.
+  //
+  // Correctness across the split: both output streams reserve their slots through the
+  // per-segment *global* counter (selected via `num_selected_written`, kth-class ties via the
+  // back-grow-capped `num_ties_written_to_back`), and that counter persists across kernel
+  // launches. A fresh partition built here continues appending into the same output regions the
+  // full-tile kernel already wrote, and the tie cap (`num_of_kth_needed`) stays globally
+  // enforced. The two kernels may run in either order; the dispatch runs this one second on the
+  // same stream for simplicity. There is no histogram and no epilogue / bucket-finder on this
+  // path -- the last pass only scatters keys (and gathers values).
+  //
+  // Empty segments and segments with no partial (`partial_items == 0`) are no-ops.
+  _CCCL_DEVICE _CCCL_FORCEINLINE void process_partial_for_segment(LargeSegmentTileOffsetT queue_idx)
+  {
+    per_segment_state_t state = resolve_segment_state(queue_idx);
+    if (state.empty || state.partial_items == OffsetT{0})
+    {
+      return;
+    }
+
+    // Build the partition fresh for this segment (resets `cand_reserve_open` to `true`); it
+    // re-binds the same global selected / tie counters via `make_partition_for_segment`.
+    partition_t partition = make_partition_for_segment(state);
+
+    // One CTA per segment here: build the keys + value multi-sources for this single segment,
+    // scatter its partial tile, flush, and reset the (async) mbarrier(s) once. Same hoisted
+    // state slots as `run()`.
+    key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
+    key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
+    keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
+
+    [[maybe_unused]] value_source_input_t val_src_input{state.d_values_in, storage.val_src_input_state};
+    [[maybe_unused]] value_source_buffer_t val_src_buffer{state.in_val_buf, storage.val_src_buffer_state};
+    held_value_source_t value_source = [&]() -> held_value_source_t {
+      if constexpr (keys_only)
+      {
+        return NullType{};
+      }
+      else
+      {
+        return value_source_t{val_src_input, val_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
+      }
+    }();
+
+    process_tile<false>(
+      state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+
+    // Terminal accumulation flush -- no-op on the atomics strategy, a real flush on the
+    // accumulating sister classes. Mirrors `run()`'s post-loop `partition.epilogue()`.
+    partition.epilogue();
+
     keys_source.invalidate();
     if constexpr (!keys_only)
     {

@@ -335,6 +335,19 @@ struct full_tiles_only_filter
 {
   static constexpr bool value = current_policy<PolicySelector>().multi_worker_per_segment_policy.full_tiles_only_filter;
 };
+
+// Same lift, for the last-filter kernel. When `true`, the last-filter kernel walks only full
+// tiles; the trailing partial tile of every segment is scattered by
+// `device_segmented_topk_last_filter_partial_kernel` (one CTA per segment) via
+// `agent_batched_topk_last_filter::process_partial_for_segment`. Unlike the histogram / filter
+// case there is no companion epilogue -- the split is purely to drop the partial-tile load path
+// from the hot kernel.
+template <typename PolicySelector>
+struct full_tiles_only_last_filter
+{
+  static constexpr bool value =
+    current_policy<PolicySelector>().multi_worker_per_segment_policy.full_tiles_only_last_filter;
+};
 } // namespace topk_seg_kernel_detail
 
 template <typename PolicySelector,
@@ -1017,6 +1030,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr detail::topk::block_partition_strategy part_strat = mw.last_filter_partition_strategy;
   static constexpr bool lazy_value_load                              = mw.lazy_value_load;
   static constexpr bool inlined_classify                             = mw.inlined_classify;
+  // Compile-time switch for the experimental "last-filter only walks full tiles" mode. When
+  // `true`, the agent's `run()` drops the `process_tile<false>` call; the trailing partial tile
+  // of each segment is scattered by `device_segmented_topk_last_filter_partial_kernel`.
+  static constexpr bool full_tiles_only =
+    topk_seg_kernel_detail::full_tiles_only_last_filter<PolicySelector>::value;
 
   using identify_candidates_op_t =
     detail::topk::identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
@@ -1038,7 +1056,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OutOffsetT,
     part_strat,
     lazy_value_load,
-    inlined_classify>;
+    inlined_classify,
+    full_tiles_only>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
@@ -1066,6 +1085,136 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // hands off.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
   agent.template run<tiles_per_chunk>();
+}
+
+// Companion partial-tile kernel for the last-filter pass. Runs after
+// `device_segmented_topk_last_filter_kernel` (host-side launch ordering on the same stream)
+// when the policy's `full_tiles_only_last_filter` knob is on. One CTA per large segment in a
+// grid-strided loop: scatters that segment's trailing partial tile to the user output via
+// `agent_batched_topk_last_filter::process_partial_for_segment`.
+//
+// Unlike `device_segmented_topk_finalize_{histogram,filter}_kernel`, this kernel runs **no**
+// epilogue: the last pass has no histogram, no prefix-sum, no bucket-finder, and no counter
+// hand-off to a subsequent pass. Its sole job is the partial-tile scatter that the main kernel
+// skipped, so the main kernel's hot full-tile path no longer carries the bounds-checked partial
+// load (and the `process_tile<false>` instantiation it pulls in), lowering its register
+// footprint. The two kernels share the per-segment global counter, so the selected / kth-class
+// output reservations stay consistent and capped across both launches.
+//
+// Signature mirrors `device_segmented_topk_last_filter_kernel` exactly so the dispatch can reuse
+// the same argument pack.
+template <typename PolicySelector,
+          detail::topk::select SelectDirection,
+          typename KeyInputItItT,
+          typename KeyOutputItItT,
+          typename ValueInputItItT,
+          typename ValueOutputItItT,
+          typename SegmentSizeParameterT,
+          typename KParameterT,
+          typename NumSegmentsParameterT,
+          typename SegmentIdProviderT,
+          typename LargeSegmentTileOffsetT,
+          typename LargeSegmentsCountItT,
+          typename DecomposerT,
+          typename OffsetT,
+          typename OutOffsetT>
+#if _CCCL_HAS_CONCEPTS()
+  requires batched_topk_policy_selector<PolicySelector>
+#endif // _CCCL_HAS_CONCEPTS()
+__launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_policy.threads_per_block))
+  _CCCL_KERNEL_ATTRIBUTES void device_segmented_topk_last_filter_partial_kernel(
+    _CCCL_GRID_CONSTANT const KeyInputItItT d_key_segments_it,
+    _CCCL_GRID_CONSTANT const KeyOutputItItT d_key_segments_out_it,
+    _CCCL_GRID_CONSTANT const ValueInputItItT d_value_segments_it,
+    _CCCL_GRID_CONSTANT const ValueOutputItItT d_value_segments_out_it,
+    _CCCL_GRID_CONSTANT const SegmentSizeParameterT segment_sizes,
+    _CCCL_GRID_CONSTANT const KParameterT k_param,
+    _CCCL_GRID_CONSTANT const SegmentIdProviderT segment_id_provider,
+    _CCCL_GRID_CONSTANT const LargeSegmentTileOffsetT* const d_large_segments_tile_offsets,
+    // See the `device_segmented_topk_histogram_kernel` doc for why we mark the pointer
+    // (not the pointee) grid-constant.
+    _CCCL_GRID_CONSTANT detail::topk::counter<it_value_t<it_value_t<KeyInputItItT>>, OffsetT, OutOffsetT>* const
+      d_segment_counters,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<KeyInputItItT>>* const d_segment_in_key_buf,
+    _CCCL_GRID_CONSTANT it_value_t<it_value_t<ValueInputItItT>>* const d_segment_in_val_buf,
+    _CCCL_GRID_CONSTANT const OffsetT candidate_buffer_length,
+    _CCCL_GRID_CONSTANT const LargeSegmentsCountItT large_segments_count_it,
+    _CCCL_GRID_CONSTANT const int pass,
+    _CCCL_GRID_CONSTANT const int total_bits,
+    _CCCL_GRID_CONSTANT const DecomposerT decomposer)
+{
+  using key_t = it_value_t<it_value_t<KeyInputItItT>>;
+  // Narrowed to `narrow_segment_count_t` to keep the grid-stride loop bound + the agent's
+  // `resolve_queue_idx` indexing 32-bit when the count fits.
+  const narrow_segment_count_t<NumSegmentsParameterT> num_large_segments =
+    static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(*large_segments_count_it);
+  using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
+
+  static constexpr batched_topk_policy bp                            = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw                            = bp.multi_worker_per_segment_policy;
+  static constexpr detail::topk::block_partition_strategy part_strat = mw.last_filter_partition_strategy;
+  static constexpr bool lazy_value_load                              = mw.lazy_value_load;
+  static constexpr bool inlined_classify                             = mw.inlined_classify;
+  // Instantiate the agent with the same `FullTilesOnly` value the main kernel uses (this kernel
+  // is only launched when the knob is on). The flag does not affect `process_partial_for_segment`,
+  // but keeping it identical means both kernels share a single agent specialisation.
+  static constexpr bool full_tiles_only =
+    topk_seg_kernel_detail::full_tiles_only_last_filter<PolicySelector>::value;
+
+  using identify_candidates_op_t =
+    detail::topk::identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
+
+  using agent_t = agent_batched_topk_last_filter<
+    agent_topk_policy_t,
+    KeyInputItItT,
+    KeyOutputItItT,
+    ValueInputItItT,
+    ValueOutputItItT,
+    identify_candidates_op_t,
+    DecomposerT,
+    SegmentSizeParameterT,
+    KParameterT,
+    NumSegmentsParameterT,
+    SegmentIdProviderT,
+    LargeSegmentTileOffsetT,
+    OffsetT,
+    OutOffsetT,
+    part_strat,
+    lazy_value_load,
+    inlined_classify,
+    full_tiles_only>;
+
+  __shared__ typename agent_t::TempStorage temp_storage;
+
+  agent_t agent(
+    temp_storage,
+    d_key_segments_it,
+    d_key_segments_out_it,
+    d_value_segments_it,
+    d_value_segments_out_it,
+    segment_sizes,
+    k_param,
+    segment_id_provider,
+    d_large_segments_tile_offsets,
+    d_segment_counters,
+    d_segment_in_key_buf,
+    d_segment_in_val_buf,
+    pass,
+    total_bits,
+    decomposer,
+    candidate_buffer_length,
+    num_large_segments);
+
+  // One CTA per large segment; grid-stride over queue slots. Each iteration scatters one
+  // segment's trailing partial tile. Iterations share the smem partition arena, so a barrier
+  // separates consecutive segments (mirrors the finalize-filter kernel's per-iteration sync).
+  using queue_idx_t = narrow_segment_count_t<NumSegmentsParameterT>;
+  for (queue_idx_t queue_idx = static_cast<queue_idx_t>(blockIdx.x); queue_idx < num_large_segments;
+       queue_idx += static_cast<queue_idx_t>(gridDim.x))
+  {
+    agent.process_partial_for_segment(static_cast<LargeSegmentTileOffsetT>(queue_idx));
+    __syncthreads();
+  }
 }
 } // namespace detail::batched_topk
 

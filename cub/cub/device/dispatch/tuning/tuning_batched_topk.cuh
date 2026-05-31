@@ -171,6 +171,20 @@ struct multi_worker_policy
   // (early_stop / buffered / unbuffered) handles its own partial inside that method.
   bool full_tiles_only_filter;
 
+  // Same idea again, for the last-filter kernel. When `true`,
+  // `agent_batched_topk_last_filter::run()` skips its `process_tile<false>` call -- the
+  // trailing partial tile of each segment is processed by
+  // `device_segmented_topk_last_filter_partial_kernel` (one CTA per segment) via
+  // `agent_batched_topk_last_filter::process_partial_for_segment`.
+  //
+  // Unlike the histogram / filter case there is **no** epilogue (no prefix-sum, no
+  // bucket-finder, no counter hand-off to a next pass) -- the last pass only scatters the
+  // selected / kth-class keys to the user output. The split therefore exists purely to lift
+  // the bounds-checked partial-tile load path (and the `process_tile<false>` instantiation
+  // it drags in) out of the hot main kernel, lowering its register footprint so it can reach
+  // a higher occupancy on the full tiles that dominate the runtime.
+  bool full_tiles_only_last_filter;
+
   _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
   {
     return lhs.threads_per_block == rhs.threads_per_block //
@@ -188,7 +202,8 @@ struct multi_worker_policy
         && lhs.inlined_classify == rhs.inlined_classify //
         && lhs.tiles_per_chunk == rhs.tiles_per_chunk //
         && lhs.full_tiles_only_histogram == rhs.full_tiles_only_histogram //
-        && lhs.full_tiles_only_filter == rhs.full_tiles_only_filter;
+        && lhs.full_tiles_only_filter == rhs.full_tiles_only_filter //
+        && lhs.full_tiles_only_last_filter == rhs.full_tiles_only_last_filter;
   }
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator!=(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
@@ -215,6 +230,7 @@ struct multi_worker_policy
               << ", .tiles_per_chunk = " << p.tiles_per_chunk //
               << ", .full_tiles_only_histogram = " << (p.full_tiles_only_histogram ? "true" : "false") //
               << ", .full_tiles_only_filter = " << (p.full_tiles_only_filter ? "true" : "false") //
+              << ", .full_tiles_only_last_filter = " << (p.full_tiles_only_last_filter ? "true" : "false") //
               << " }";
   }
 #endif // _CCCL_HOSTED()
@@ -311,7 +327,8 @@ struct policy_selector
         /*.inlined_classify                     =*/true,
         /*.tiles_per_chunk                      =*/8,
         /*.full_tiles_only_histogram            =*/true,
-        /*.full_tiles_only_filter               =*/true}};
+        /*.full_tiles_only_filter               =*/true,
+        /*.full_tiles_only_last_filter          =*/true}};
   }
 };
 
