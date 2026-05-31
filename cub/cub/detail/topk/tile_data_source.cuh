@@ -42,8 +42,9 @@
 #include <cub/block/block_load_to_shared.cuh>
 #include <cub/detail/topk/empty_storage.cuh>
 #include <cub/util_device.cuh>
-#include <cub/util_ptx.cuh>
 #include <cub/util_type.cuh>
+
+#include <cuda/ptx>
 
 #include <cuda/__fwd/iterator.h>
 #include <cuda/std/__algorithm/min.h>
@@ -159,12 +160,12 @@ struct warp_aggregated_atomic_reserve_op
 
   _CCCL_DEVICE _CCCL_FORCEINLINE ::cuda::std::pair<OffsetT, OffsetT> operator()(OffsetT n) const
   {
-    const unsigned mask  = __activemask();
-    const OffsetT rank   = static_cast<OffsetT>(__popc(mask & CUB_NS_QUALIFIER::LaneMaskLt()));
-    const OffsetT total  = static_cast<OffsetT>(__popc(mask)) * n;
-    const int leader     = __ffs(static_cast<int>(mask)) - 1;
-    OffsetT base         = OffsetT{0};
-    if (static_cast<int>(CUB_NS_QUALIFIER::LaneId()) == leader)
+    const unsigned mask = __activemask();
+    const OffsetT rank  = static_cast<OffsetT>(__popc(mask & ::cuda::ptx::get_sreg_lanemask_lt()));
+    const OffsetT total = static_cast<OffsetT>(__popc(mask)) * n;
+    const int leader    = __ffs(static_cast<int>(mask)) - 1;
+    OffsetT base        = OffsetT{0};
+    if (static_cast<int>(::cuda::ptx::get_sreg_laneid()) == leader)
     {
       base = atomicAdd(counter, total);
     }
