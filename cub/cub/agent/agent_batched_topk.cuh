@@ -2344,16 +2344,13 @@ private:
 
   _CCCL_DEVICE _CCCL_FORCEINLINE LargeSegmentTileOffsetT resolve_queue_idx(LargeSegmentTileOffsetT global_tile_id)
   {
-    LargeSegmentTileOffsetT queue_idx_lane0 = 0;
-    if ((threadIdx.x & 31) == 0)
-    {
-      queue_idx_lane0 = UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
-    }
-    // See the matching docstring on `agent_batched_topk_filter_partition::resolve_queue_idx`.
-    // Routing the broadcast result through `makeWarpUniform` is what restores warp-aggregated
-    // atomics on the `&segment_counter->num_ties_written_to_back` pointer used by the
-    // `back_grow_capped_reserve_op` inside `partition.partition()`.
-    return detail::warpspeed::makeWarpUniform(__shfl_sync(0xffffffff, queue_idx_lane0, 0));
+    // EXPERIMENT (all-threads-compute, no broadcast/CREDUX): `global_tile_id` is block-uniform and
+    // the offsets table / count are uniform, so every thread runs the same binary search and gets
+    // the same result. The hope is that ptxas recognizes the redundant uniform-input computation
+    // as warp-uniform and keeps the per-segment addresses derived from it in the uniform datapath
+    // -- so the reserve atomics auto-aggregate -- without the lane-0 `__shfl_sync` broadcast (whose
+    // result ptxas's R2UR pass does not trust) or an explicit `makeWarpUniform`.
+    return UpperBound(d_large_segments_tile_offsets, num_large_segments, global_tile_id) - 1;
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
@@ -2433,17 +2430,11 @@ private:
       // whose final position reaches `cap`. The candidate counter may overshoot `cap` -- the
       // last pass never reads it again.
       //
-      // Force the per-segment counter base warp-uniform so ptxas can prove the reserve atomics
-      // target one address per warp and emit the aggregated form (single atomic per warp + lane
-      // prefix). Without this the pointer lands in a per-thread register and the atomics stay
-      // per-lane (the `back_grow_capped` baseline never aggregated either). The 64-bit
-      // `makeWarpUniform` routes through CREDUX, which ptxas's R2UR pass recognizes as uniform
-      // (a `shfl`-broadcast does not). Built fresh here (per-tile, see `process_tile`) so the
-      // uniform value survives to the atomic instead of being demoted across the tile loop.
-      counter_t* uniform_counter = reinterpret_cast<counter_t*>(
-        detail::warpspeed::makeWarpUniform(reinterpret_cast<::cuda::std::uint64_t>(s.segment_counter)));
-      selected_reserve_op_t reserve_sel_u{&uniform_counter->num_selected_written};
-      candidate_reserve_op_t reserve_cand{&uniform_counter->num_ties_written_to_back};
+      // EXPERIMENT (no makeWarpUniform on a pointer): use the plain per-segment counter pointer
+      // and rely on ptxas keeping the per-segment address math in the uniform datapath so the
+      // reserve atomics auto-aggregate (as the single-problem filter does).
+      selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+      candidate_reserve_op_t reserve_cand{&s.segment_counter->num_ties_written_to_back};
 
       auto value_out = [&] {
         if constexpr (keys_only)
@@ -2458,7 +2449,7 @@ private:
 
       return partition_t{
         storage.partition_arena.get_partition_state(),
-        reserve_sel_u,
+        reserve_sel,
         reserve_cand,
         s.d_keys_out,
         value_out,
