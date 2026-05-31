@@ -498,6 +498,12 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   // ---------------------------------------------------------------------
   static constexpr int bits_per_pass            = multi_worker_per_segment_policy.bits_per_pass;
   [[maybe_unused]] static constexpr int num_buckets   = 1 << bits_per_pass;
+  // Whether the last-filter pass offloads its trailing-partial-tile scatter to the dedicated
+  // `device_segmented_topk_last_filter_partial_kernel` (see the policy knob's doc). Hoisted to a
+  // `static constexpr` here so the launch lambda below can branch on it with `if constexpr`: a
+  // plain `constexpr` local is captured by reference into the lambda and is not usable as a
+  // constant expression there under nvcc ("attempt to access run-time storage").
+  static constexpr bool full_tiles_only_last_filter = multi_worker_per_segment_policy.full_tiles_only_last_filter;
   static constexpr int per_seg_allocs           = keys_only ? 4 : 6;
   // Mixed path: [0] offsets, [1] counters, [2] queue ids -> 3 pre-slots.
   // All-large path: [0] offsets, [1] scan temp -> 2 pre-slots.
@@ -1209,7 +1215,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
       // shared selected / kth-class output reservations) are observed in a consistent state and
       // `key_bufs.Current()` / `val_bufs.Current()` still point at the last pass's input buffers
       // (the double-buffer selector is not flipped after the last pass).
-      if constexpr (multi_worker_per_segment_policy.full_tiles_only_last_filter)
+      if constexpr (full_tiles_only_last_filter)
       {
         auto last_filter_partial_kernel_ptr = device_segmented_topk_last_filter_partial_kernel<
           PolicySelector,
