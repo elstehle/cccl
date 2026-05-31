@@ -2286,6 +2286,11 @@ private:
     key_t* in_key_buf;
     [[maybe_unused]] value_t* in_val_buf;
 
+    // Queue slot for this segment. Kept so the reserve ops can re-derive the counter pointer from
+    // a freshly warp-uniformed `queue_idx` per tile (see `make_partition_for_segment`) -- this is
+    // what makes the back-grow-capped reserve atomics eligible for ptxas's warp-aggregation.
+    LargeSegmentTileOffsetT queue_idx;
+
     // `identify_candidates_op_t` has no default ctor for some `T`; cache ctor inputs and
     // build the op on demand in `process_tile`.
     int pass;
@@ -2317,6 +2322,7 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
   {
     per_segment_state_t s{};
+    s.queue_idx = queue_idx;
     s.slab_base = d_large_segments_tile_offsets[queue_idx];
     // `queue_segment_end` is the next segment's `slab_base` -- the table is sized
     // `num_large_segments + 1` (sentinel at the end stores `total_large_tiles`), so the
@@ -2378,12 +2384,21 @@ private:
   // in `run()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
   {
-    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
+    // Re-derive the per-segment counter from a freshly warp-uniformed `queue_idx`. `makeWarpUniform`
+    // lowers to CREDUX, which ptxas's R2UR pass trusts as warp-uniform, so `d_segment_counters +
+    // queue_idx` stays in the uniform datapath and the reserve atomics (including the back-grow-
+    // capped tie stream) become eligible for warp-aggregation -- one atomic per warp instead of one
+    // per lane. Built per tile (this is called per-tile in `process_tile`) so the CREDUX is fresh
+    // and not demoted across the tile loop. No pointer is reinterpret-cast / warp-uniformed.
+    const LargeSegmentTileOffsetT uniform_queue_idx = detail::warpspeed::makeWarpUniform(s.queue_idx);
+    counter_t* const seg_counter                    = d_segment_counters + uniform_queue_idx;
+
+    selected_reserve_op_t reserve_sel{&seg_counter->num_selected_written};
     // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
     // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
     // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
     candidate_reserve_op_t reserve_cand{
-      &s.segment_counter->num_ties_written_to_back,
+      &seg_counter->num_ties_written_to_back,
       static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
       static_cast<candidate_offset_t>(s.num_of_kth_needed)};
 
@@ -2437,6 +2452,14 @@ private:
     // `keys_source` / `value_source` are owned by `run()` and re-targeted to this segment via
     // `set_inputs`; here we only set the per-tile base + submit the load, so an (async) source's
     // mbarrier is never re-initialized.
+    //
+    // EXPERIMENT: build the partition fresh per tile (rather than reusing the `run()`-held one) so
+    // the `makeWarpUniform` inside `make_partition_for_segment` is re-evaluated each tile and the
+    // counter pointer stays warp-uniform at the atomic. Held across the loop it gets demoted to a
+    // per-thread register, which blocks ptxas's warp-aggregation. The trade-off is that the
+    // back-grow-capped `cand_reserve_open` early-stop no longer persists across tiles.
+    (void) partition;
+    partition_t local_partition = make_partition_for_segment(s);
 
     if constexpr (IsFullTile)
     {
@@ -2459,7 +2482,7 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
+      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
     {
@@ -2481,7 +2504,7 @@ private:
       {
         __syncthreads();
       }
-      partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
+      local_partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
 
