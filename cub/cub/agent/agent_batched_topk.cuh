@@ -74,7 +74,7 @@ struct batched_topk_counters
 template <typename NumSegmentsParameterT>
 using narrow_segment_count_t = ::cuda::std::conditional_t<
   (static_cast<unsigned long long>(params::static_max_value_v<NumSegmentsParameterT>)
-     <= static_cast<unsigned long long>(::cuda::std::numeric_limits<::cuda::std::uint32_t>::max()))
+   <= static_cast<unsigned long long>(::cuda::std::numeric_limits<::cuda::std::uint32_t>::max()))
     || (sizeof(typename NumSegmentsParameterT::value_type) <= 4),
   ::cuda::std::uint32_t,
   unsigned long long>;
@@ -510,8 +510,8 @@ template <typename AgentTopKPolicyT,
 struct agent_batched_topk_histogram
 {
   using keys_in_it_t = it_value_t<KeyInputItItT>;
-  using key_t       = it_value_t<keys_in_it_t>;
-  using counter_t      = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
+  using key_t        = it_value_t<keys_in_it_t>;
+  using counter_t    = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -1105,14 +1105,14 @@ template <typename AgentTopKPolicyT,
           bool FullTilesOnly = false>
 struct agent_batched_topk_filter_partition
 {
-  using keys_in_it_t       = it_value_t<KeyInputItItT>;
-  using values_in_it_t     = it_value_t<ValueInputItItT>;
+  using keys_in_it_t    = it_value_t<KeyInputItItT>;
+  using values_in_it_t  = it_value_t<ValueInputItItT>;
   using values_out_it_t = it_value_t<ValueOutputItItT>;
   using keys_out_it_t   = it_value_t<KeyOutputItItT>;
 
-  using key_t   = it_value_t<keys_in_it_t>;
-  using value_t = it_value_t<values_in_it_t>;
-  using counter_t  = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
+  using key_t     = it_value_t<keys_in_it_t>;
+  using value_t   = it_value_t<values_in_it_t>;
+  using counter_t = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -1426,7 +1426,6 @@ private:
     OffsetT input_length_actual;
     OffsetT num_full_tiles;
     OffsetT partial_items;
-    OffsetT segment_tiles_input;
     LargeSegmentTileOffsetT slab_base;
     // Width of the segment in queue-tile-space, read from
     // `d_large_segments_tile_offsets[queue_idx + 1]`. Sized at segment-enqueue time from the
@@ -1494,9 +1493,9 @@ private:
     const bool early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
     const bool will_buffer = !early_stop && (s.current_len <= candidate_buffer_length)
                           && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
-    s.mode                 = early_stop  ? segment_processing_mode::early_stop
-                           : will_buffer ? segment_processing_mode::buffered
-                                         : segment_processing_mode::unbuffered;
+    s.mode = early_stop  ? segment_processing_mode::early_stop
+           : will_buffer ? segment_processing_mode::buffered
+                         : segment_processing_mode::unbuffered;
 
     s.in_key_buf  = d_segment_in_key_buf + queue_idx * candidate_buffer_length;
     s.out_key_buf = will_buffer ? (d_segment_out_key_buf + queue_idx * candidate_buffer_length) : nullptr;
@@ -1507,9 +1506,8 @@ private:
       s.out_val_buf = will_buffer ? (d_segment_out_val_buf + queue_idx * candidate_buffer_length) : nullptr;
     }
 
-    s.num_full_tiles      = s.input_length_actual / static_cast<OffsetT>(tile_items);
-    s.partial_items       = s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items);
-    s.segment_tiles_input = static_cast<OffsetT>(::cuda::ceil_div(s.input_length_actual, OffsetT{tile_items}));
+    s.num_full_tiles = s.input_length_actual / static_cast<OffsetT>(tile_items);
+    s.partial_items  = s.input_length_actual - s.num_full_tiles * static_cast<OffsetT>(tile_items);
     return s;
   }
 
@@ -2092,14 +2090,14 @@ template <typename AgentTopKPolicyT,
           bool InlinedClassify                             = false>
 struct agent_batched_topk_last_filter
 {
-  using keys_in_it_t       = it_value_t<KeyInputItItT>;
-  using values_in_it_t     = it_value_t<ValueInputItItT>;
+  using keys_in_it_t    = it_value_t<KeyInputItItT>;
+  using values_in_it_t  = it_value_t<ValueInputItItT>;
   using values_out_it_t = it_value_t<ValueOutputItItT>;
   using keys_out_it_t   = it_value_t<KeyOutputItItT>;
 
-  using key_t   = it_value_t<keys_in_it_t>;
-  using value_t = it_value_t<values_in_it_t>;
-  using counter_t  = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
+  using key_t     = it_value_t<keys_in_it_t>;
+  using value_t   = it_value_t<values_in_it_t>;
+  using counter_t = detail::topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -2259,17 +2257,13 @@ private:
   // Per-segment cached state, mirrors the filter agent's pattern. Re-derived only when the
   // chunk crosses a segment boundary; held in registers across same-segment tiles.
   //
-  // Note on `slab_base` / `queue_segment_end` vs `segment_tiles_input`:
+  // Note on `slab_base` / `queue_segment_end`:
   //   - `[slab_base, queue_segment_end)` is the segment's tile-space window in the global
   //     queue. The width is `d_large_segments_tile_offsets[queue_idx + 1] - slab_base`,
   //     fixed at segment-enqueue time from the *original* segment size and so independent
-  //     of which pass we're in.
-  //   - `segment_tiles_input` is the number of those slots that actually carry data this
-  //     pass (= `ceil(input_length / tile_items)`); this is per-pass and can be 0 for
-  //     "empty" segments (`num_candidates_in == 0`).
-  //   - `[slab_base, slab_base + segment_tiles_input)` contains the live tiles; any
-  //     `[slab_base + segment_tiles_input, queue_segment_end)` tail is "wasted" queue
-  //     slots that the agent must walk past.
+  //     of which pass we're in. The slots that actually carry data this pass are
+  //     `[slab_base, slab_base + ceil(num_candidates_in / tile_items))`; any tail up to
+  //     `queue_segment_end` is "wasted" queue slots that the agent walks past.
   // Tracking the wider `queue_segment_end` lets `run`'s slow-path cursor jump past empty
   // segments / wasted-slot tails in one step rather than via per-tile `UpperBound`.
   struct per_segment_state_t
@@ -2286,21 +2280,14 @@ private:
     key_t* in_key_buf;
     [[maybe_unused]] value_t* in_val_buf;
 
-    // Queue slot for this segment. Kept so `make_partition_for_segment` can re-derive the counter
-    // pointer from a freshly warp-uniformed `queue_idx` per tile (EXPERIMENT: warp-aggregate the
-    // back-grow-capped reserve atomic without a pointer makeWarpUniform).
-    LargeSegmentTileOffsetT queue_idx;
-
     // `identify_candidates_op_t` has no default ctor for some `T`; cache ctor inputs and
     // build the op on demand in `process_tile`.
     int pass;
 
     OutOffsetT k_total;
     OutOffsetT num_of_kth_needed;
-    OffsetT input_length;
     OffsetT num_full_tiles;
     OffsetT partial_items;
-    OffsetT segment_tiles_input;
     LargeSegmentTileOffsetT slab_base;
     LargeSegmentTileOffsetT queue_segment_end;
   };
@@ -2322,7 +2309,6 @@ private:
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)
   {
     per_segment_state_t s{};
-    s.queue_idx = queue_idx;
     s.slab_base = d_large_segments_tile_offsets[queue_idx];
     // `queue_segment_end` is the next segment's `slab_base` -- the table is sized
     // `num_large_segments + 1` (sentinel at the end stores `total_large_tiles`), so the
@@ -2339,11 +2325,11 @@ private:
     }
 
     s.segment_counter             = d_segment_counters + queue_idx;
-    s.input_length                = s.segment_counter->num_candidates_in;
+    const OffsetT input_length    = s.segment_counter->num_candidates_in;
     s.load_from_candidates_buffer = s.segment_counter->load_from_candidates_buffer;
     s.pass                        = pass;
 
-    s.empty = (s.input_length == 0);
+    s.empty = (input_length == 0);
     if (s.empty)
     {
       return s;
@@ -2364,9 +2350,8 @@ private:
         s.load_from_candidates_buffer ? (d_segment_in_val_buf + queue_idx * candidate_buffer_length) : nullptr;
     }
 
-    s.num_full_tiles      = s.input_length / static_cast<OffsetT>(tile_items);
-    s.partial_items       = s.input_length - s.num_full_tiles * static_cast<OffsetT>(tile_items);
-    s.segment_tiles_input = static_cast<OffsetT>(::cuda::ceil_div(s.input_length, OffsetT{tile_items}));
+    s.num_full_tiles = input_length / static_cast<OffsetT>(tile_items);
+    s.partial_items  = input_length - s.num_full_tiles * static_cast<OffsetT>(tile_items);
     return s;
   }
 
@@ -2377,24 +2362,19 @@ private:
   // segment boundary so all three locals (`key_src_input`, `key_src_buffer`,
   // `keys_source`) refresh together.
 
-  // Build the partition object for the current segment's tile. Called fresh per tile from
-  // `process_tile` (the last-filter partition is stateless on the atomics strategy, so there is no
-  // cross-tile state to preserve) -- this is what keeps the reserve counter warp-uniform; see below.
+  // Build the partition object for the current segment. Lives across all tiles of this segment so
+  // its per-thread `cand_reserve_open` flag (the back-grow-cap exit hint that drops per-item
+  // atomics after the first observed grant=0) persists, just like `agent_topk_last_filter::run`
+  // already does in the single-problem dispatch. Called fresh at every segment-boundary crossing
+  // in `run()`.
   _CCCL_DEVICE _CCCL_FORCEINLINE partition_t make_partition_for_segment(const per_segment_state_t& s)
   {
-    // Re-derive the counter base from a freshly warp-uniformed `queue_idx` (`makeWarpUniform`
-    // lowers to CREDUX, which ptxas's R2UR pass trusts as warp-uniform) so the reserve `atomicAdd`s
-    // target a proven-uniform address and ptxas emits the warp-aggregated form (one atomic per warp
-    // + lane prefix) instead of one atomic per lane. Doing this per tile keeps the CREDUX fresh; a
-    // counter held across the tile loop is demoted to a per-thread register and the atomics stay
-    // per-lane. Note: only the int `queue_idx` is warp-uniformed, never a pointer.
-    counter_t* const seg_counter = d_segment_counters + detail::warpspeed::makeWarpUniform(s.queue_idx);
-    selected_reserve_op_t reserve_sel{&seg_counter->num_selected_written};
+    selected_reserve_op_t reserve_sel{&s.segment_counter->num_selected_written};
     // The back-grow-capped reserve op carries the precomputed `region_start = k_total -
     // num_of_kth_needed` rather than the back-region end anchor, so its per-call math
     // collapses from two subtracts to one add (see `back_grow_capped_reserve_op`).
     candidate_reserve_op_t reserve_cand{
-      &seg_counter->num_ties_written_to_back,
+      &s.segment_counter->num_ties_written_to_back,
       static_cast<candidate_offset_t>(s.k_total - s.num_of_kth_needed),
       static_cast<candidate_offset_t>(s.num_of_kth_needed)};
 
@@ -2431,25 +2411,23 @@ private:
   //   - `IsFullTile == true`  -> `local_tile < s.num_full_tiles`
   //   - `IsFullTile == false` -> `local_tile == s.num_full_tiles && s.partial_items > 0`
   //
-  // The partition is built fresh per tile (rather than held across the segment) so that
-  // `make_partition_for_segment` re-derives the counter pointer from a fresh
-  // `makeWarpUniform(queue_idx)` CREDUX each tile: ptxas then proves the reserve `atomicAdd`s
-  // warp-uniform and aggregates them (one atomic per warp). A counter held across the tile loop
-  // is demoted to a per-thread register and the atomics stay per-lane (verified: a per-segment,
-  // held counter yields `VOTEU=0`). This is sound because the last-filter partition is stateless
-  // (atomics strategy): the back-grow cap is enforced through the persistent device counter, and
-  // warp-aggregation makes the old held-partition `cand_reserve_open` early-stop redundant.
-  // `keys_source` / `value_source` are still owned by `run()` and re-targeted via `set_inputs`.
+  // `partition`, `keys_source`, and `value_source` are owned by the caller (`run()`) and reused
+  // across all tiles. The per-thread `cand_reserve_open` flag inside `partition` therefore
+  // persists across calls, so once any thread observes a grant=0 from the back-grow-capped
+  // candidate reserve the subsequent tiles dispatch through the cheaper
+  // `HasCandidateStream=false` classifier specialisation that drops the per-item atomic
+  // entirely (see `block_partition.cuh` doc on `cand_reserve_open`).
   template <bool IsFullTile>
   _CCCL_DEVICE _CCCL_FORCEINLINE void process_tile(
     const per_segment_state_t& s,
+    partition_t& partition,
     keys_source_t& keys_source,
     held_value_source_t& value_source,
     LargeSegmentTileOffsetT local_tile)
   {
-    static_assert(detail::topk::is_empty_storage_v<typename partition_t::TempStorage>,
-                  "last-filter per-tile partition rebuild requires a stateless (atomics-strategy) "
-                  "partition; an accumulating strategy would lose its cross-tile state.");
+    // `keys_source` / `value_source` are owned by `run()` and re-targeted to this segment via
+    // `set_inputs`; here we only set the per-tile base + submit the load, so an (async) source's
+    // mbarrier is never re-initialized.
 
     if constexpr (IsFullTile)
     {
@@ -2472,7 +2450,6 @@ private:
       {
         __syncthreads();
       }
-      partition_t partition = make_partition_for_segment(s);
       partition.partition(storage.partition_arena.get_partition_scratch(), items, value_source);
     }
     else
@@ -2495,7 +2472,6 @@ private:
       {
         __syncthreads();
       }
-      partition_t partition = make_partition_for_segment(s);
       partition.partition(storage.partition_arena.get_partition_scratch(), items, s.partial_items, value_source);
     }
   }
@@ -2510,16 +2486,22 @@ public:
   // Shape:
   //   * Early-return for CTAs whose first tile lands past the queue.
   //   * One `resolve_segment_state(blockIdx.x)` up front.
-  //   * Build the keys / value sources once per CTA (re-targeted per segment via `set_inputs`).
-  //     The partition is built fresh per tile inside `process_tile` (see its doc) so the reserve
-  //     atomics warp-aggregate; on the atomics strategy it carries no cross-tile state, and
-  //     warp-aggregation supersedes the old held-partition `cand_reserve_open` early-stop.
+  //   * Construct one `partition_t` per segment, *outside* the tile loop, so its per-thread
+  //     `cand_reserve_open` flag survives across tiles of the same segment. This is the
+  //     mechanism that drops the per-item candidate-reserve atomic on subsequent tiles once
+  //     the back-grow cap is hit (see `block_partition.cuh` doc). Without this, every tile
+  //     of an entropy=0 (all-equal-keys) workload re-fires the per-item atomic, costing 30x
+  //     vs main on `KeyT=int, Elements=2^24, Entropy=0.000`.
   //   * Per tile:
   //       - Refresh `state` when we cross a segment boundary
-  //         (`tile_id >= state.queue_segment_end`) and re-target the keys / value sources.
+  //         (`tile_id >= state.queue_segment_end`). The refresh flushes the previous
+  //         segment's partition via `partition.epilogue()` (no-op on the atomics strategy,
+  //         a real flush on the accumulating sister classes), and rebuilds the partition
+  //         + keys_source for the new segment, resetting `cand_reserve_open` to `true`.
   //       - Skip empty segments / wasted-tail tiles past data end.
   //       - Dispatch `process_tile<true>` for full tiles or
   //         `process_tile<false>` for the at-most-one trailing partial.
+  //   * Final `partition.epilogue()` after the loop terminates the last active segment.
   //
   // `TilesPerChunk` is kept on the template signature for ABI/source
   // compatibility with the filter / histogram agents but is unused inside
@@ -2542,14 +2524,15 @@ public:
       return;
     }
 
-    // Hoist the first segment-state resolve + keys/value-source construction out of the loop. The
-    // sources live across tiles (re-targeted per segment via `set_inputs`); the partition is built
-    // fresh per tile inside `process_tile`.
+    // Hoist first segment-state resolve + the partition / keys-source construction out of the
+    // loop. Both `partition` and `keys_source` live across tiles of the same segment so
+    // per-thread cross-tile state (notably `cand_reserve_open`) is preserved.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile));
-    // Fast-empty-exit -- same motivation as `agent_batched_topk_filter_partition::run`. When a
-    // prior pass set `num_candidates_in = 0` universally, every CTA sees an empty segment and would
-    // otherwise spend O(total/stride) iterations doing `continue;`. Bail out when this CTA's whole
-    // grid-stride run is inside the same empty segment.
+    // Fast-empty-exit -- same motivation as `agent_batched_topk_filter_partition::run`.
+    // When a prior pass set `num_candidates_in = 0` universally, every CTA sees an empty
+    // segment and would otherwise spend O(total/stride) iterations doing `continue;` plus
+    // constructing an unused partition. Bail out when this CTA's whole grid-stride run is
+    // inside the same empty segment.
     if (state.empty)
     {
       const LargeSegmentTileOffsetT last_tile_for_cta =
@@ -2559,11 +2542,13 @@ public:
         return;
       }
     }
+    partition_t partition = make_partition_for_segment(state);
     // Build the keys + value multi-sources ONCE for this CTA, against the hoisted (mode-independent)
     // per-child state. The children outlive the sources (declared here, alive for the whole run); on
     // each segment boundary below we re-target via `set_inputs` (iterators + active arm) rather than
     // reconstructing -- so an async source's mbarrier is initialized once per CTA, not per segment.
-    // For `keys_only` the value source collapses to `NullType{}`.
+    // (The `partition` still *is* rebuilt per segment: that resets its per-thread `cand_reserve_open`
+    // flag, which the sources don't carry.) For `keys_only` the value source collapses to `NullType{}`.
     key_source_input_t key_src_input{state.d_keys_in, storage.key_src_input_state};
     key_source_buffer_t key_src_buffer{state.in_key_buf, storage.key_src_buffer_state};
     keys_source_t keys_source{key_src_input, key_src_buffer, /*pick_b=*/state.load_from_candidates_buffer};
@@ -2583,13 +2568,17 @@ public:
 
     for (LargeSegmentTileOffsetT tile_id = first_tile; tile_id < total; tile_id += stride)
     {
-      // Segment refresh -- only when the cached segment no longer covers `tile_id`. Re-resolve the
-      // state and re-target the keys / value sources in place via `set_inputs` (iterators + active
-      // arm), leaving any persistent child state (an async source's mbarrier) initialized;
-      // `set_inputs` only mutates per-thread iterator/selector state, so it needs no barrier.
+      // Segment refresh -- only when the cached segment no longer covers `tile_id`. Flush the
+      // previous segment's partition (terminal accumulation flush; no-op on atomics) and rebuild it
+      // for the new segment so `cand_reserve_open` resets to `true`. The keys / value sources are
+      // *not* rebuilt -- they're re-targeted in place via `set_inputs` (iterators + active arm),
+      // leaving any persistent child state (an async source's mbarrier) initialized. `set_inputs`
+      // only mutates per-thread iterator/selector state, so it needs no barrier of its own.
       if (tile_id >= state.queue_segment_end)
       {
-        state = resolve_segment_state(resolve_queue_idx(tile_id));
+        partition.epilogue();
+        state     = resolve_segment_state(resolve_queue_idx(tile_id));
+        partition = make_partition_for_segment(state);
         keys_source.set_inputs(state.d_keys_in, state.in_key_buf, /*pick_b=*/state.load_from_candidates_buffer);
         if constexpr (!keys_only)
         {
@@ -2605,14 +2594,19 @@ public:
       const OffsetT local_tile = static_cast<OffsetT>(tile_id - state.slab_base);
       if (local_tile < state.num_full_tiles)
       {
-        process_tile<true>(state, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(local_tile));
+        process_tile<true>(
+          state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(local_tile));
       }
       else if (local_tile == state.num_full_tiles && state.partial_items > OffsetT{0})
       {
-        process_tile<false>(state, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
+        process_tile<false>(
+          state, partition, keys_source, value_source, static_cast<LargeSegmentTileOffsetT>(state.num_full_tiles));
       }
       // else: wasted-tail tile beyond segment data; skip implicitly via the grid-stride loop.
     }
+
+    // Final flush of the last active segment.
+    partition.epilogue();
 
     // Reset the (async) mbarrier(s) now this CTA is done with the sources -- once per CTA, matching the
     // single construction above. No-op for the current sync / direct sources.
