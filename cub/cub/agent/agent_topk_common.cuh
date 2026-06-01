@@ -47,8 +47,7 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::batched_topk
 {
-// The generic block primitives, tile data sources, classification enums (`candidate_class`),
-// `tile_load_kind`, and `select` stay in detail::topk; bring them into scope so the batched
+// The generic primitives stay in detail::topk; bring them into scope so the batched
 // shared-layer symbols below can refer to them unqualified.
 using namespace detail::topk;
 //! @brief Parameterizable tuning policy type for AgentTopK
@@ -66,24 +65,14 @@ using namespace detail::topk;
 //!   The BlockScan algorithm to use
 //!
 //! @tparam KeysTileLoadKind
-//!   The `tile_load_kind` used by the keys-stream `TileDataSource`. Architecture
-//!   §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA, so this
-//!   subsumes what was historically expressed as a `BlockLoadAlgorithm`.
+//!   The `tile_load_kind` used by the keys-stream `TileDataSource`.
 //!
 //! @tparam AccumulatingBufferCapacity
-//!   Number of smem slots in the per-stream buffer for the
-//!   `AccumulatingCandidates` partition strategy / `AccumulatingFilter` filter
-//!   strategy (irrelevant for the non-accumulating strategies). Also reused
-//!   as the candidate-stream buffer capacity for the `SpeculativeBoth` /
-//!   `SpeculativeFilter` strategies.
+//!   Number of smem slots in the per-stream candidate buffer.
 //!
 //! @tparam SpeculativeSelectedBufferCapacity
-//!   Number of smem slots in the selected-stream buffer for the
-//!   `SpeculativeBoth` partition strategy (the agent's selected stream goes
-//!   to a typically-dense output, so a smaller capacity than the candidate
-//!   buffer often pays best). `0` short-circuits the selected smem buffer
-//!   to pure-Atomics, useful when the selected stream is dense enough that
-//!   buffering does not pay. Ignored by every other strategy.
+//!   Number of smem slots in the selected-stream buffer. `0` short-circuits it
+//!   to pure atomics.
 //!
 template <int ThreadsPerBlock,
           int ItemsPerThread,
@@ -98,10 +87,8 @@ struct AgentTopKPolicy
   static constexpr int items_per_thread              = ItemsPerThread;
   static constexpr int bits_per_pass                 = BitsPerPass;
   static constexpr BlockScanAlgorithm scan_algorithm = ScanAlgorithm;
-  // Architecture §2.4: unifies sync `BlockLoadAlgorithm` choices and adds async TMA.
-  // Used by the new agents to pick a TileDataSource specialization for the keys
-  // stream. Defaults to the legacy `BLOCK_LOAD_VECTORIZE` mapping so existing call
-  // sites that don't set it preserve current behavior.
+  // Picks a TileDataSource specialization for the keys stream. Defaults to the
+  // `BLOCK_LOAD_VECTORIZE` mapping.
   static constexpr tile_load_kind keys_tile_load_kind       = KeysTileLoadKind;
   static constexpr int accumulating_buffer_capacity         = AccumulatingBufferCapacity;
   static constexpr int speculative_selected_buffer_capacity = SpeculativeSelectedBufferCapacity;
@@ -199,81 +186,24 @@ set_kth_key_bits(key_prefix_storage_t<KeyT>& prefix, const int pass, const int b
 }
 
 // Device-side coordination state for the top-k passes. Fields are organized into three groups
-// by access pattern:
-//
-//   (1) Cross-pass scalar state -- single-thread-written at the last-block epilogue, broadcast-read
-//       at the next pass's entry. These fields share a single cache line (no internal alignof) so
-//       the entry-side reads hit one coherent line and the epilogue stores coalesce.
-//
-//   (2) Per-pass scratch atomics -- atomicAdd / atomicInc from many blocks within a pass; reset at
-//       the epilogue or wrap each pass. Isolated on their own cache lines so per-block atomic
-//       traffic does not invalidate the cross-pass scalar state line that other blocks may be
-//       reading at the start of the next pass.
-//
+// by access pattern, each isolated on its own cache line(s) to avoid false sharing:
+//   (1) Cross-pass scalar state -- written once at the last-block epilogue, broadcast-read at
+//       the next pass's entry.
+//   (2) Per-pass scratch atomics -- atomicAdd / atomicInc from many blocks within a pass; reset
+//       each pass.
 //   (3) Cross-pass cumulative atomics -- monotonic atomicAdd from many blocks across all passes.
-//       Isolated on their own cache lines for the same reason as (2).
-//
-// Pass-over-pass life cycle of the cross-pass scalar fields (group 1):
-//
-//   Entry of pass P reads:
-//     `num_candidates_in`  -- length of the input stream pass P loads. Drives the tile-loop
-//                             sizing (`ceil_div(num_candidates_in, tile_items)`) and the
-//                             universal early-exit (`num_candidates_in == 0` -> return).
-//     `num_candidates_out` -- count of candidates the previous pass passed through (the bin
-//                             count of the bucket containing the kth element). Drives the
-//                             pass's *branch selection* via the two comparisons
-//                                 `early_stop  = (num_candidates_out == k)`
-//                                 `will_buffer = (num_candidates_out <= buffer_capacity)`.
-//                             NOT used to size the tile loop -- that is `num_candidates_in`.
-//     `k`                  -- top-k items still to find; broadcast to `find_kth_bucket`.
-//     `load_from_candidates_buffer` -- source-of-truth bit for the multi-source key/value
-//                             loads (false -> `d_keys_in`/`d_values_in`, true -> back buffer).
-//     `kth_key_bits`       -- radix prefix accumulated across passes; fed to the
-//                             `identify_candidates_op` for candidate classification.
-//
-//   The last-block epilogue of pass P writes (via `on_kth_bucket` and `counter_update_fn`):
-//     `k                  = current_k - num_selected`     (decrement by what this pass wrote out)
-//     `num_candidates_out = bin_count`                    (size of the new kth bucket)
-//     `kth_key_bits[pass] = bin_index`                    (accumulate the pass's radix digit)
-//
-//   and, depending on the pass's branch:
-//     - histogram         : `num_candidates_in = num_items`; `num_candidates_written = 0`.
-//     - filter early_stop : `num_candidates_in = 0`         (universal early-exit signal;
-//                                                           remaining fields intentionally
-//                                                           left stale -- never read again).
-//     - filter buffered   : `num_candidates_in = num_candidates_out`
-//                                                           (the back buffer now holds exactly
-//                                                            `num_candidates_out` items);
-//                          `load_from_candidates_buffer = true`  (sticks for all subsequent
-//                                                                 passes);
-//                          `num_candidates_written = 0`.
-//     - filter unbuffered : no writes -- `num_candidates_in` stays at `num_items`,
-//                          `load_from_candidates_buffer` stays false (until/if a later pass
-//                          transitions into the buffered chain).
 //
 // Cross-pass invariants:
-//   - `num_candidates_in == num_candidates_out` only along the buffered chain.
-//   - Along the unbuffered chain `num_candidates_in == num_items` for every pass.
+//   - `num_candidates_in == num_candidates_out` only along the buffered chain; along the
+//     unbuffered chain `num_candidates_in == num_items` for every pass.
 //   - `load_from_candidates_buffer` is monotonic: false -> true exactly once on the first
-//     buffered pass, and sticks (the candidate set is monotonically non-increasing).
-//   - `num_candidates_in` is monotonically non-increasing across the buffered chain (the
-//     candidate set can only shrink); the early-stop epilogue terminates the chain by writing
-//     0 here.
-// Cross-pass scalar state. The fields are grouped (and the storage type of
-// `load_from_candidates_buffer` widened from `bool` to `::cuda::std::uint32_t`) so that the
-// entry-of-pass `LDG.E.128` against this struct lands four clean 32-bit values in consecutive
-// scalar registers. With `bool` storage, ptxas inserted a `PRMT` to extract byte 12 out of the
-// 16-byte vector load; that `PRMT` is a per-thread op that blocks the `R2UR` heuristic from
-// moving any of the loaded fields into uniform registers (see the register-pressure
-// investigation notes for the batched filter kernel). The widened uint32 lets the load
-// produce four `R2UR`-eligible scalars.
-//
-// `OffsetT` and `OutOffsetT` are independent at the type level but must each be 32-bit for the
-// `LDG.E.128` to cover the whole struct in one transaction (16 bytes = 4*4). The dispatch
-// already fixes the batched OffsetT/OutOffsetT to `::cuda::std::uint32_t`; the single-problem
-// path also lands here when the user picks 32-bit offsets, which is the throughput-sensitive
-// case for the per-pass counter read. Wider offset types still work, they just spill the load
-// into multiple `LDG.E.64` transactions and forfeit the `R2UR` win.
+//     buffered pass, then sticks (the candidate set is monotonically non-increasing).
+//   - `num_candidates_in` is monotonically non-increasing across the buffered chain; the
+//     early-stop epilogue terminates the chain by writing 0 here.
+// Cross-pass scalar state. The four fields are grouped and `load_from_candidates_buffer` is
+// stored as `uint32_t` (not `bool`) so that with 32-bit `OffsetT`/`OutOffsetT` the struct is
+// four consecutive 32-bit values and the per-pass entry read is a single 16-byte vector load.
+// Wider offset types still work; they just split the load into multiple transactions.
 template <typename OffsetT, typename OutOffsetT>
 struct alignas(16) counter_cross_pass_state
 {
@@ -294,15 +224,10 @@ struct alignas(16) counter_cross_pass_state
   OffsetT num_candidates_in;
 
   // Whether the next pass should load its input keys/values from `in_key_buf`/`in_val_buf` (the
-  // previous pass's candidate buffer) instead of from the original `d_keys_in`/`d_values_in`.
-  // Initialized to `false` by the dispatch-side `cudaMemsetAsync` over the counter blob and
-  // flipped to `true` exactly once when the first filter pass writes to the candidate buffer; it
-  // then sticks because the candidate set is monotonically non-increasing across passes (once we
-  // fit in the back buffer we keep fitting).
-  //
-  // Stored as `uint32_t` rather than `bool` purely to keep the four-field-in-one-cache-line load
-  // free of byte-extracting PRMT (see the struct-level note above). Read/write sites keep their
-  // `bool` semantics via implicit conversions.
+  // previous pass's candidate buffer) instead of the original `d_keys_in`/`d_values_in`. Starts
+  // `false`, flips to `true` exactly once on the first buffered pass, then sticks. Stored as
+  // `uint32_t` rather than `bool` for the layout reason noted on the struct above; read/write
+  // sites keep `bool` semantics via implicit conversions.
   ::cuda::std::uint32_t load_from_candidates_buffer;
 };
 
@@ -311,15 +236,9 @@ struct alignas(128) counter : counter_cross_pass_state<OffsetT, OutOffsetT>
 {
   // ----- (1) Cross-pass scalar state -----
   //
-  // Inherited from `counter_cross_pass_state` so they land at offsets [0..16) of `counter`,
-  // sized to one `LDG.E.128`. See the base struct's comment block for the grouping rationale.
-  //
-  // Inherited members (so existing `counter->k` / `counter->num_candidates_*` /
-  // `counter->load_from_candidates_buffer` access patterns keep compiling):
-  //   - `OutOffsetT k`
-  //   - `OffsetT    num_candidates_out`
-  //   - `OffsetT    num_candidates_in`
-  //   - `uint32_t   load_from_candidates_buffer`
+  // Inherited from `counter_cross_pass_state` (`k`, `num_candidates_out`, `num_candidates_in`,
+  // `load_from_candidates_buffer`) so existing `counter->...` access patterns keep compiling.
+  // See the base struct for the grouping rationale.
 
   // We determine the bits of the k_th key inside the mask processed by the pass. The already
   // known bits are stored in `kth_key_bits`. It's used to discriminate whether an element is a
@@ -449,16 +368,13 @@ finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_co
 }
 
 //---------------------------------------------------------------------
-// Computes the prefix-sum over bins and finds the k-th item bucket.
-// Exposes a the `find_kth_bucket()` entry point that invokes a callback exactly once with the kth-bucket index and the
-// The primitive performs:
-//   1) load of the per-bin counts from `input_histogram` into a blocked arrangement;
-//   2) `BlockScan::InclusiveSum` over that chunk, keeping prefix sums in registers;
-//   3) one boundary write/read per thread so each thread's right neighbour can use its right-edge prefix sum as the
-//   `prev` for its bin 0; 4) per-thread search for the bucket whose prefix-sum range straddles `current_k`, with
-//   `on_kth_bucket` invoked on the single thread that owns that bucket.
+// Computes the prefix-sum over bins and finds the k-th item bucket. The `find_kth_bucket()`
+// entry point invokes `on_kth_bucket` exactly once, on the single thread owning that bucket.
+// Steps: load per-bin counts into a blocked arrangement; `BlockScan::InclusiveSum`; exchange
+// each thread's right-edge prefix sum so its neighbour has the `prev` for its bin 0; per-thread
+// search for the bucket whose prefix-sum range straddles `current_k`.
 //
-// Note, the chosen `LoadAlgorithm` must produce a blocked arrangement.
+// Note: the chosen `LoadAlgorithm` must produce a blocked arrangement.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int BitsPerPass,
@@ -512,10 +428,9 @@ struct block_identify_kth_bucket
   {}
 
   // Read a histogram laid out by bin index (e.g. an smem slab) into this thread's blocked register
-  // chunk: thread `t` owns bins `[t*bins_per_thread, t*bins_per_thread + bins_per_thread)`. Unlike
-  // the `find_kth_bucket(const OffsetT*)` overload's `BlockLoad`, this is a direct (non-transposed)
-  // read -- there is no coalescing benefit for an smem source, and skipping the transpose avoids
-  // using the load scratch, which lets a caller alias the histogram storage with this primitive's
+  // chunk: thread `t` owns bins `[t*bins_per_thread, (t+1)*bins_per_thread)`. Direct (non-
+  // transposed) read: an smem source has no coalescing benefit, and skipping the transpose frees
+  // the load scratch so a caller can alias the histogram storage with this primitive's
   // `TempStorage`. The ragged last chunk is zero-filled.
   _CCCL_DEVICE _CCCL_FORCEINLINE static void
   load_blocked(const OffsetT* histogram, OffsetT (&thread_data)[bins_per_thread])
@@ -530,31 +445,27 @@ struct block_identify_kth_bucket
   }
 
   // Bucket-finder over a histogram already resident in this thread's blocked registers
-  // (`thread_data[i]` holds the count for bin `threadIdx.x * bins_per_thread + i`). Identical to the
-  // `const OffsetT*` overload except that it skips the histogram load, so the caller can feed a
-  // histogram it already has in registers (e.g. read from an smem slab via `load_blocked`).
+  // (`thread_data[i]` holds the count for bin `threadIdx.x * bins_per_thread + i`). Like the
+  // `const OffsetT*` overload but skips the load, so the caller can feed a histogram it already
+  // has in registers (e.g. via `load_blocked`).
   //
-  // Identifies the bucket containing the `current_k`-th element and invokes `on_kth_bucket` exactly
-  // once on the unique thread that owns that bucket. `on_kth_bucket` callback signature and
-  // arguments: `on_kth_bucket(OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates)`
-  // - current_k: echoed back from the `current_k` argument so the callback can compute `current_k - num_selected`
-  // (number of candidates in the k-th item's bucket)
-  //    without having to capture it.
-  // - bin_index: the index of the bucket containing the kth element.
-  // - num_selected: count of items in higher-priority buckets, i.e. items already known to be in the top-k. The new k
-  //    for the next pass is `current_k - num_selected`.
-  // - num_candidates: count of items inside `bin_index` itself, i.e. the number of candidates the next filter pass will
-  //    write.
+  // Invokes `on_kth_bucket` exactly once, on the unique thread owning the bucket that contains
+  // the `current_k`-th element:
+  //   `on_kth_bucket(OutOffsetT current_k, int bin_index, OffsetT num_selected, OffsetT num_candidates)`
+  // - current_k:      echoed back so the callback can compute `current_k - num_selected`.
+  // - bin_index:      index of the bucket containing the kth element.
+  // - num_selected:   count of items in higher-priority buckets (already in the top-k); the next
+  //                   pass's k is `current_k - num_selected`.
+  // - num_candidates: count of items inside `bin_index` (candidates the next filter pass writes).
   //
-  // Storage contract: the first operation is the in-place block scan into `storage.scan`. If the
-  // caller sourced `thread_data` from memory that aliases this primitive's `TempStorage` (e.g. an
-  // smem histogram unioned with it), it must `__syncthreads()` before calling so all reads complete
-  // before the scan overwrites the shared storage.
+  // Storage contract: the first op is an in-place block scan into `storage.scan`. If `thread_data`
+  // was sourced from memory aliasing this primitive's `TempStorage` (e.g. a unioned smem
+  // histogram), the caller must `__syncthreads()` first so all reads complete before the scan
+  // overwrites the shared storage.
   template <typename KthBucketFn>
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   find_kth_bucket(OffsetT (&thread_data)[bins_per_thread], OutOffsetT current_k, KthBucketFn on_kth_bucket)
   {
-    // Compute the prefix-sum over the bins
     block_scan_t(storage.scan).InclusiveSum(thread_data, thread_data);
 
     // Ensure we can reuse temporary storage for the boundary exchange
@@ -663,14 +574,10 @@ struct topk_candidate_filter_op
 //---------------------------------------------------------------------
 
 //---------------------------------------------------------------------
-// sink_mode: compile-time selector for agent_topk_filter_partition.
-//
-// Each mode corresponds to one behavior of the legacy sink_* family and drives a
-// single-kernel runtime switch in DeviceTopKFilterKernel. `early_stop` is the final
-// collapsed pass; `buffered` writes output and stages remaining candidates into a
-// back buffer. The "scout" mode that only builds a histogram (formerly
-// `unbuffered`) is now handled by `AgentTopKHistogram` with a candidate filter,
-// and is intentionally no longer part of this enum.
+// sink_mode: compile-time selector for agent_topk_filter_partition, driving a runtime switch in
+// DeviceTopKFilterKernel. `early_stop` is the final collapsed pass; `buffered` writes output and
+// stages remaining candidates into a back buffer. The histogram-only "scout" pass is handled
+// separately by `AgentTopKHistogram` with a candidate filter, so it is not a mode here.
 //---------------------------------------------------------------------
 
 enum class sink_mode
@@ -689,10 +596,9 @@ struct topk_noop_candidate_callback_op
   {}
 };
 
-// Wraps an `IdentifyCandidatesOp` (3-state classifier returning `candidate_class`)
-// into a unary `bool` predicate suitable for the single-stream `BlockFilter`
-// primitive. Folds the architecture's "early_stop collapses candidate -> selected"
-// rule into the wrapper: any non-rejected item is kept.
+// Wraps an `IdentifyCandidatesOp` (3-state classifier returning `candidate_class`) into a unary
+// `bool` predicate for the single-stream `BlockFilter` primitive. Implements the early_stop rule
+// (candidate collapses to selected): any non-rejected item is kept.
 template <typename IdentifyCandidatesOpT>
 struct topk_identify_selected_op
 {
@@ -705,9 +611,7 @@ struct topk_identify_selected_op
   }
 };
 
-// Histogram callback: increments the agent's smem histogram for every
-// `candidate`-classified key. Mirrors the legacy `process_tile`'s inline atomicAdd
-// per item; architecture §10.2 describes the same pattern as a callback.
+// Histogram callback: increments the agent's smem histogram for every `candidate`-classified key.
 template <typename ExtractBinOpT, typename CounterT>
 struct topk_histogram_callback_op
 {
@@ -732,31 +636,23 @@ struct topk_histogram_callback_op
 // populate / drain / read operations shared by the top-k histogram and filter agents (and the
 // finalize-histogram kernel).
 //
-// Concern split: this primitive owns the smem histogram -- its state -- plus the per-tile binning
-// and the histogram lifecycle (`reset` / `add_*` / `load_from` / `flush`). Tile iteration, segment
-// handling, and data loading stay in the owning agent/kernel. The primitive is deliberately
-// *sync-free*: every method is a data-parallel op with no internal `__syncthreads()`, so the
-// owner retains full control over barrier placement (which is performance-critical and
-// context-dependent at segment boundaries).
+// Owns the smem histogram plus the per-tile binning and the histogram lifecycle (`reset` /
+// `add_*` / `load_from` / `flush`). Tile iteration, segment handling, and data loading stay in the
+// owning agent/kernel. Deliberately *sync-free*: no method issues an internal `__syncthreads()`,
+// so the owner controls all barrier placement (performance-critical at segment boundaries).
 //
-// The bins are exposed via `data()` so collaborating block primitives can read them
-// (`block_identify_kth_bucket::find_kth_bucket`) or write them (the buffered partition's
-// `topk_histogram_callback_op`, via `make_callback()`) without owning the storage -- reading a
-// histogram's contents is part of its contract, not an encapsulation leak. The owner remains the
-// single manager of the buffer's lifecycle.
+// The bins are exposed via `data()` so collaborating primitives can read them
+// (`block_identify_kth_bucket`) or write them (`topk_histogram_callback_op`, via
+// `make_callback()`); the owner remains the single manager of the buffer's lifecycle.
 //
-// `extract_bin_op` is fixed for the lifetime of the histogram (it also feeds `make_callback`), so
-// it is stored. The per-item accept predicate `filter_op` is taken per `add_*` call (defaulting to
-// pass-through): the histogram agent uses a fixed pass-through, while the filter agent's unbuffered
-// path supplies a per-segment `topk_candidate_filter_op` built from that segment's counter state.
+// `extract_bin_op` is fixed for the histogram's lifetime, so it is stored. The per-item accept
+// predicate `filter_op` is taken per `add_*` call (defaulting to pass-through).
 //---------------------------------------------------------------------
 template <int BlockThreads, int NumBuckets, typename CounterT, typename ExtractBinOpT>
 class tile_histogram
 {
 public:
-  // Shared-memory state: one counter per bucket. The owning agent embeds this where its raw
-  // `histogram[NumBuckets]` array used to live (standalone, or inside a per-mode union arm), so
-  // the smem layout is unchanged.
+  // Shared-memory state: one counter per bucket.
   struct TempStorage
   {
     CounterT bins[NumBuckets];

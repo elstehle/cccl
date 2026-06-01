@@ -102,10 +102,10 @@ struct multi_worker_policy
   int items_per_thread;
   int bits_per_pass;
 
-  // Algorithm used to load each tile of keys (covers `BlockLoadAlgorithm` variants and async-TMA)
+  // Algorithm used to load each tile of keys (`BlockLoadAlgorithm` variants).
   detail::topk::tile_load_kind keys_tile_load_kind;
 
-  // Scan algorithm used in the `finalize_pass` epilogue, computing prefix sum over the histogram bins.
+  // Scan algorithm used to prefix-sum the histogram bins when finding the k-th bucket.
   BlockScanAlgorithm scan_algorithm;
 
   // Partition / filter strategies used for each of the three scenarios.
@@ -117,16 +117,11 @@ struct multi_worker_policy
   // selected are appended front-to-back.
   detail::topk::block_partition_strategy last_filter_partition_strategy;
 
-  // Smem-slot count for the accumulating partition / filter variants' per-stream
-  // buffer. Reused as the candidate-stream buffer capacity for `SpeculativeBoth`
-  // and the selected-stream buffer capacity for `SpeculativeFilter`. Ignored by
-  // the non-accumulating strategies.
+  // Per-stream smem buffer capacity for the accumulating partition / filter variants.
   // TODO (elstehle): Remove from initial version
   int accumulating_buffer_capacity;
 
-  // Smem-slot count for the selected-stream buffer of the `SpeculativeBoth`
-  // partition strategy. `0` short-circuits the selected smem buffer to pure
-  // per-item global atomics for the selected stream. Ignored by every other strategy.
+  // Selected-stream smem buffer capacity for the speculative partition variant.
   // TODO (elstehle): Remove from initial version
   int speculative_selected_buffer_capacity;
 
@@ -136,48 +131,32 @@ struct multi_worker_policy
   // When `true`, the partitioning loop skips loading the full tile of values data upfront.
   bool lazy_value_load;
 
-  // When `true`, the per-pass classification computed scatter use-site rather than materialized into a `classes[]`
-  // array up front.
+  // When `true`, the per-pass classification is computed at the scatter use-site rather than
+  // materialized into a `classes[]` array up front.
   bool inlined_classify;
 
   // Number of consecutive tiles a single CTA processes before grid-striding to the next chunk
-  // (`gridDim.x * tiles_per_chunk` apart). Used by every multi-CTA-per-segment kernel
-  // (histogram / filter / last_filter) as the inner-loop count of the kernel's nested
-  // grid-stride loop:
-  //   - histogram / filter: when consecutive tiles belong to the same segment, the per-segment
-  //     smem histogram is initialized once at the top of the run and merged into the
-  //     per-segment global histogram once at the bottom, amortizing init / merge across the
-  //     chunk. A chunk that crosses a segment boundary flushes the current segment's smem
-  //     histogram (when applicable for the mode) and re-initializes for the new segment.
-  //   - last_filter: no histogram, but the same chunking still amortizes the per-segment state
-  //     resolution (binary search + counter / iterator dereferences) across same-segment tiles.
-  // Set to `1` to fall back to one-tile-per-grid-stride.
+  // (`gridDim.x * tiles_per_chunk` apart), used by every multi-CTA-per-segment kernel as the
+  // inner-loop count. Amortizes per-segment setup across same-segment tiles: histogram / filter
+  // init + merge the per-segment smem histogram once per chunk (re-initializing at segment
+  // boundaries); last_filter amortizes the per-segment state resolution (binary search + counter /
+  // iterator dereferences). Set to `1` for one-tile-per-grid-stride.
   int tiles_per_chunk;
 
-  // Experimental knob: split the partial-tile responsibility off of the histogram kernel.
-  //
-  //   - `false` (default, original behavior): the histogram kernel walks all tiles of the
-  //     queue (full tiles + the trailing partial tile of each segment); the
-  //     finalize-histogram kernel does only the prefix-sum + bucket-finder epilogue.
-  //   - `true`: the histogram kernel processes **only** full tiles. The trailing partial
-  //     tile of each segment (if any) is loaded + binned by the finalize-histogram kernel
-  //     (one CTA per segment) directly into that segment's global histogram, right before
-  //     the prefix-sum + bucket-finder runs.
-  //
-  // The motivation is kernel-code streamlining: with `true`, the histogram kernel has no
-  // partial-tile load path, no partial-tile bin-extract loop, and no `process_partial`
-  // predicate -- everything the compiler sees per inner iteration is a full-tile load. The
-  // partial tile becomes one extra small loop in the (already serialized at 1 CTA per
-  // segment) finalize kernel.
+  // Splits the partial-tile responsibility off the histogram kernel.
+  //   - `false`: the histogram kernel walks all tiles (full + each segment's trailing partial);
+  //     the finalize-histogram kernel does only the prefix-sum + bucket-finder epilogue.
+  //   - `true`: the histogram kernel processes only full tiles; each segment's trailing partial
+  //     is loaded + binned by the finalize-histogram kernel (one CTA per segment) into the global
+  //     histogram, right before the prefix-sum + bucket-finder. Keeps the histogram kernel's inner
+  //     loop a pure full-tile load.
   bool full_tiles_only_histogram;
 
-  // Same idea as `full_tiles_only_histogram`, but for the filter kernels. When `true`,
-  // `agent_batched_topk_filter_partition::run()` skips its slow-path `dispatch_tile<false>`
-  // call -- the trailing partial tile of each segment is processed by
-  // `device_segmented_topk_finalize_filter_kernel` (one CTA per segment) via
-  // `agent_batched_topk_filter_partition::process_partial_for_segment`, before the
-  // finalize kernel's prefix-sum + bucket-finder runs. Each of the three filter modes
-  // (early_stop / buffered / unbuffered) handles its own partial inside that method.
+  // Same idea as `full_tiles_only_histogram`, for the filter kernels. When `true`,
+  // `agent_batched_topk_filter_partition::run()` skips its slow-path `dispatch_tile<false>` call;
+  // each segment's trailing partial tile is processed by `device_segmented_topk_finalize_filter_kernel`
+  // (one CTA per segment) via `process_partial_for_segment`, before the finalize prefix-sum +
+  // bucket-finder. Each filter mode (early_stop / buffered / unbuffered) handles its own partial there.
   bool full_tiles_only_filter;
 
   _CCCL_HOST_DEVICE_API constexpr friend bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)

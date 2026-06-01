@@ -2,31 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Top-k-private non-accumulating filter primitives (single-stream siblings of the
-//! `BlockPartition*` primitives in `block_partition.cuh`). Three self-contained
-//! class templates -- one per filter strategy:
+//! Top-k-private filter primitive `block_filter_atomics<..., InlinedClassify>`: the
+//! single-stream sibling of `block_partition_atomics` (`block_partition.cuh`). No smem; a
+//! per-kept-item global atomic + scatter. `InlinedClassify == false` precomputes a
+//! `kept[ItemsPerThread]` register array up front; `InlinedClassify == true` recomputes the
+//! predicate at each scatter use-site.
 //!
-//!   - `block_filter_atomics<..., InlinedClassify>` -- no smem; per-kept-item global
-//!     atomic + scatter. `InlinedClassify == false` precomputes a `kept[ItemsPerThread]`
-//!     register array up front; `InlinedClassify == true` recomputes the predicate
-//!     at each scatter use-site.
-//!   - `block_filter_staged` -- smem scatter into a keys arena + cooperative coalesced
-//!     store; per-channel values run sequentially after the keys phase.
-//!   - `block_filter_shared_mem` -- typed `keys[]` + per-channel `values[]` packed
-//!     into the same arena; a single coalesced store.
+//! Interface contract:
+//!   - All sinks (reserve op, output iterator, value-channel sink) AND the
+//!     `identify_selected_op` predicate are captured by ctor and stored as members. Per-call
+//!     args reduce to per-tile data plus the live value `TileDataSource`.
 //!
-//! Interface ("safe-both") contract shared with the accumulating sister class
-//! `block_filter_accumulating` (`block_filter_accumulating.cuh`):
-//!   - All sinks (reserve op, output iterator, transform, value-channel sink
-//!     tuple) AND the `identify_selected_op` predicate are captured by ctor and
-//!     stored as members. Per-call args reduce to per-tile data plus a bare
-//!     `cuda::std::tuple<TileDataSource...>` for value sources.
-//!   - `epilogue()` is argless on every variant. The three non-accumulating
-//!     primitives' `epilogue()` is a no-op. The accumulating variant's `epilogue()`
-//!     performs a terminal flush of any remaining buffered items.
-//!
-//! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` below. The
-//! default tuning uses only `block_filter_atomics`.
+//! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` below.
 
 #pragma once
 
@@ -77,10 +64,8 @@ enum class block_filter_strategy
 
 //---------------------------------------------------------------------
 // Per-channel value-sink bundle for the single-stream filter primitives.
-// Sibling of `value_channel_sinks_t` in `block_partition.cuh`, but holding
-// only the selected-stream output iterator. See the note on the partition
-// sibling for the rationale behind dropping the previous identity-only
-// `selected_value_transform`.
+// Sibling of `value_channel_sinks_t` in `block_partition.cuh`, holding only
+// the selected-stream output iterator.
 //---------------------------------------------------------------------
 template <typename SelectedValuesOutIt>
 struct value_channel_sinks_filter_t
@@ -89,15 +74,13 @@ struct value_channel_sinks_filter_t
 };
 
 //---------------------------------------------------------------------
-// Shared scratch-storage building blocks. Per-strategy assembled `ScratchStorage`
-// structs live as nested types of the three filter classes below; the helpers
-// here (single-stream counters, classifiers) are what they compose from.
+// Shared scratch-storage building blocks: single-stream counters and classifiers
+// that the filter class's nested `ScratchStorage` / classify paths compose from.
 //---------------------------------------------------------------------
 
-// Single-stream counter + broadcast slots for `Staged` / `SharedMem` filter
-// strategies. Phase 1 uses a 32-bit smem atomic (`counter`); Phase 2 reuses the
-// same word as the global base via a union (separated by `__syncthreads()`).
-// `granted_*` lives outside the union (broadcast across all threads).
+// Single-stream counter + broadcast slot. Phase 1 uses a 32-bit smem atomic (`counter`);
+// phase 2 reuses the same word as the global base via the union (separated by
+// `__syncthreads()`). `granted_selected` stays outside the union (broadcast across threads).
 template <typename SelectedOffsetT>
 struct filter_counters
 {
@@ -110,8 +93,7 @@ struct filter_counters
 };
 
 // Adapter so the atomics fused scatter can be a single function template over an
-// "indexed classifier" with signature `(KeyT, int j) -> bool`. The inlined wrapper
-// encapsulates the `is_valid` partial-tile check.
+// "indexed classifier" `(KeyT, int j) -> bool`; encapsulates the partial-tile `is_valid` check.
 template <bool IsFull, typename Op>
 struct inlined_filter_classifier
 {
@@ -140,11 +122,9 @@ make_inlined_filter_classifier(Op& op, int num_thread_items)
   return inlined_filter_classifier<IsFull, Op>{op, num_thread_items};
 }
 
-// Precomputed-classes adapter: at construction runs the predicate over the
-// per-thread keys array; `operator()(KeyT, int j)` returns the cached bool.
-// Items past `num_thread_items` (partial path) are forced to `false`. Reusable
-// across `block_filter_atomics<InlinedClassify=false>`, `block_filter_staged`,
-// and `block_filter_shared_mem` -- the latter two consume `.kept` directly.
+// Precomputed-classes adapter: at construction runs the predicate over the per-thread keys
+// array; `operator()(KeyT, int j)` returns the cached bool. Items past `num_thread_items`
+// (partial path) are forced to `false`.
 template <typename KeyT, int ItemsPerThread, bool IsFull>
 struct precomputed_filter_classifier
 {
@@ -171,12 +151,9 @@ struct precomputed_filter_classifier
 
 //---------------------------------------------------------------------
 // `block_filter_atomics` -- per-kept-item global atomic + scatter, no smem.
-// `InlinedClassify` selects between the precomputed-classes form (materializes a
-// `kept[]` register array up front) and the inlined-classify form (recomputes the
-// predicate at each scatter use-site, frees the registers that would hold
-// `kept[]`). Mapped from `block_filter_strategy::atomics`. The `InlinedClassify`
-// axis is independent and is also accepted (with the same semantics) by
-// `block_filter_staged` and `block_filter_shared_mem`.
+// `InlinedClassify` selects between the precomputed-classes form (materializes a `kept[]`
+// register array up front) and the inlined-classify form (recomputes the predicate at each
+// scatter use-site, freeing those registers). Mapped from `block_filter_strategy::atomics`.
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -199,12 +176,11 @@ public:
   // Class-lifetime persistent state. Empty (no carried state across partition() calls).
   using TempStorage = empty_storage_t;
 
-  // Per-tile scratch. The atomics strategies hold no scatter-side smem (per-item
-  // scatter goes direct to the user's iterator via the captured reserve op), but
-  // they DO own the per-tile load scratch for the value channel: see the matching
-  // doc on `block_partition_atomics::ScratchStorage` for the full rationale. When
-  // the value-channel scratch is itself empty, we publish `ScratchStorage` as the
-  // canonical empty marker so consumers can elide barriers / setup transitively.
+  // Per-tile scratch. The atomics strategy holds no scatter-side smem (per-item scatter goes
+  // direct to the user's iterator via the captured reserve op), but it DOES own the per-tile
+  // load scratch for the value channel: see `block_partition_atomics::ScratchStorage` for the
+  // full rationale. When the value-channel scratch is itself empty, we publish `ScratchStorage`
+  // as the canonical empty marker so consumers can elide barriers / setup transitively.
 
 private:
   static constexpr bool _scratch_storage_is_empty = is_empty_storage_v<ValueDataSourceScratchT>;
@@ -250,7 +226,7 @@ public:
     filter_impl</*IsFull=*/false>(buffer, keys, static_cast<int>(num_items), value_source);
   }
 
-  // No-op terminal flush. Present for parity with `block_filter_accumulating`.
+  // No-op terminal flush; the call site collapses to nothing.
   _CCCL_DEVICE _CCCL_FORCEINLINE void epilogue() {}
 
 private:
@@ -273,9 +249,8 @@ private:
   }
 
   // -----------------------------------------------------------------
-  // Fused scatter: drives a unified per-item loop via a user-supplied
-  // `Classifier` with signature `(KeyT, int j) -> bool`. The classifier
-  // abstracts the precomputed-vs-inlined decision.
+  // Fused scatter: drives a unified per-item loop via a user-supplied `Classifier`
+  // `(KeyT, int j) -> bool`, abstracting the precomputed-vs-inlined decision.
   // -----------------------------------------------------------------
   template <bool IsFull, typename Classifier, typename ValueSourceT>
   _CCCL_DEVICE _CCCL_FORCEINLINE void filter_atomics_fused(

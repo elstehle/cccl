@@ -30,10 +30,9 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::batched_topk
 {
-// Finds the smallest worker_per_segment policy whose tile size still covers the upper bound on
-// segment size AND whose instantiated agent's shared memory usage fits within the static shared
-// memory limit (max_smem_per_block). When such a policy exists, `found == true` and `policy` /
-// `agent_t` refer to it; otherwise `found == false` and callers must fall back to
+// Smallest worker_per_segment policy whose tile size covers the segment-size upper bound and whose
+// agent's shared memory fits within max_smem_per_block. Sets `found == true` with `policy` /
+// `agent_t` when one exists; otherwise `found == false` and callers fall back to
 // `find_largest_fitting_smem_policy`.
 template <typename PolicySelector, typename SegmentSizeParameterT, typename... AgentParamsT>
 struct find_smallest_covering_policy
@@ -105,11 +104,10 @@ public:
   using agent_t = agent_batched_topk_worker_per_segment<policy_getter_17, AgentParamsT...>;
 };
 
-// Finds the largest worker_per_segment policy whose instantiated agent's shared memory usage
-// fits within the static shared memory limit (max_smem_per_block). Used as the fallback when the upper bound on segment
-// size exceeds every worker policy's tile size). In that case the worker treats any segment with
-// `segment_size > tile_size` as "large" at runtime and enqueues it onto the large-segment queue
-// (the multi-CTA-per-segment kernels then consume that queue).
+// Largest worker_per_segment policy whose agent's shared memory fits within max_smem_per_block.
+// Fallback when the segment-size upper bound exceeds every policy's tile size: the worker then
+// treats any segment with `segment_size > tile_size` as "large" and enqueues it onto the
+// large-segment queue that the multi-CTA-per-segment kernels consume.
 template <typename PolicySelector, typename SegmentSizeParameterT, typename... AgentParamsT>
 struct find_largest_fitting_smem_policy
 {
@@ -219,12 +217,10 @@ __launch_bounds__(int(
     const KParameterT k,
     const SelectDirectionParameterT select_directions,
     const NumSegmentsParameterT num_segments,
-    // These device pointers are passed plain (not `_CCCL_GRID_CONSTANT`): a grid-constant pointer
-    // param lowers to generic addressing (`LD.E`/`ST.E`/`ATOM.E`) kernel-wide, under which ptxas
-    // cannot prove the per-segment reserve-counter address warp-uniform once it is carried across
-    // the tile loop, so the scatter `atomicAdd`s degrade to one-per-lane. Plain pointers resolve to
-    // the global space (`LDG`/`STG`/`ATOMG`), which keeps those atomics warp-aggregated (one per
-    // warp) and also avoids the per-access generic-addressing overhead.
+    // Passed plain (not `_CCCL_GRID_CONSTANT`): a grid-constant pointer lowers to generic addressing,
+    // under which ptxas cannot prove the per-segment reserve-counter address warp-uniform across the
+    // tile loop, degrading the scatter `atomicAdd`s to one-per-lane. Plain global pointers keep those
+    // atomics warp-aggregated.
     batched_topk_counters<narrow_segment_count_t<NumSegmentsParameterT>>* const d_counters,
     narrow_segment_count_t<NumSegmentsParameterT>* const d_large_segments_ids,
     LargeSegmentTileOffsetT* const d_large_segments_tile_offsets)
@@ -242,16 +238,13 @@ __launch_bounds__(int(
     NumSegmentsParameterT,
     LargeSegmentTileOffsetT>;
 
-  // Static Assertions (Constraints)
   static_assert(resolved_t::found, "No valid policy found for one-worker-per-segment approach");
   using agent_t = typename resolved_t::agent_t;
   static_assert(sizeof(typename agent_t::TempStorage) <= max_smem_per_block,
                 "Static shared memory per block must not exceed 48KB limit.");
 
-  // Temporary storage allocation
   __shared__ typename agent_t::TempStorage temp_storage;
 
-  // Instantiate agent
   agent_t agent(
     temp_storage,
     d_key_segments_it,
@@ -266,24 +259,17 @@ __launch_bounds__(int(
     d_large_segments_ids,
     d_large_segments_tile_offsets);
 
-  // Process segments
   agent.Process();
 }
 
 //---------------------------------------------------------------------
 // Segmented multi-CTA-per-segment top-k kernels.
 //
-// Three kernels mirror the single-problem `DeviceTopK{Histogram,Filter,LastFilter}Kernel` trio
-// in `cub/device/dispatch/dispatch_topk.cuh`. Each kernel:
-//   1. Resolves `multi_worker_per_segment_policy` from the active `batched_topk_policy`.
-//   2. Lifts that into an `AgentTopKPolicy<...>` instantiation.
-//   3. Instantiates the matching segmented agent (`agent_batched_topk_histogram`,
-//      `agent_batched_topk_filter_partition`, `agent_batched_topk_last_filter`).
-//   4. Forwards every per-launch arg to the agent's constructor and calls `agent.run(...)`.
-//
-// The `SelectDirection` template NTTP comes from the host-side `dispatch_discrete` over the
-// uniform `SelectDirectionParameterT` (plan §3.6 / §5.5); the kernels are otherwise direction-
-// agnostic.
+// Three kernels mirror the single-problem `DeviceTopK{Histogram,Filter,LastFilter}Kernel` trio in
+// `cub/device/dispatch/dispatch_topk.cuh`: each resolves `multi_worker_per_segment_policy`, lifts it
+// into an `AgentTopKPolicy<...>`, instantiates the matching segmented agent, and calls `agent.run(...)`.
+// `SelectDirection` is a template NTTP from the host-side `dispatch_discrete`; the kernels are
+// otherwise direction-agnostic.
 //---------------------------------------------------------------------
 
 namespace topk_seg_kernel_detail
@@ -304,12 +290,10 @@ struct multi_worker_agent_policy_lift
                                  mw.speculative_selected_buffer_capacity>;
 };
 
-// Lift `multi_worker_per_segment_policy.tiles_per_chunk` to a compile-time integral constant
-// the multi-CTA-per-segment kernels (histogram / filter / last_filter) can use as a
-// `static constexpr` loop bound. Kept separate from `multi_worker_agent_policy_lift` because the
-// agent's compile-time policy struct (`AgentTopKPolicy`) does not carry this knob -- it is
-// consumed only by the kernels' outer/inner grid-stride loop, not by the agents' smem layouts
-// or template logic.
+// Lift `multi_worker_per_segment_policy.tiles_per_chunk` to a compile-time constant for the
+// kernels' grid-stride loop bound. Kept separate from `multi_worker_agent_policy_lift` because
+// `AgentTopKPolicy` does not carry this knob -- it is consumed only by the kernels' loop, not the
+// agents' smem layouts or template logic.
 template <typename PolicySelector>
 struct tiles_per_chunk
 {
@@ -317,10 +301,9 @@ struct tiles_per_chunk
 };
 
 // Lift `multi_worker_per_segment_policy.full_tiles_only_histogram` to a compile-time boolean.
-// When `true`, the histogram kernel skips the partial-tile path (only full tiles are loaded /
-// binned) and the finalize-histogram kernel grows a partial-tile epilogue that loads + bins
-// the trailing partial of each segment directly into the segment's global histogram before the
-// prefix-sum + bucket-finder runs.
+// When `true`, the histogram kernel skips the partial-tile path and the finalize-histogram kernel
+// loads + bins each segment's trailing partial into the global histogram before the prefix-sum +
+// bucket-finder.
 template <typename PolicySelector>
 struct full_tiles_only_histogram
 {
@@ -364,18 +347,14 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
 {
   // `large_segments_count_it` is either a raw pointer into the mixed-path
   // `batched_topk_counters::large_segments_count` (written by the worker-per-segment kernel's
-  // atomicAdd enqueue) or a `transform_iterator` returning the host-known `num_segments_val`
-  // for the all-large path; the kernel does not need to know which. `total_large_tiles` lives
-  // in the sentinel slot of the offset table -- a `+1`-allocated entry the worker-per-segment
-  // epilogue (mixed) or the host-side scan (all-large) populates with the inclusive total of
-  // large-segment tile counts. The kernel no longer pre-resolves either value: only the raw
-  // parameters (the `large_segments_count_it` iterator + the tile-offsets array) flow into
-  // the agent, which dereferences them inside `run` / `resolve_queue_idx`.
+  // atomicAdd enqueue) or a `transform_iterator` returning the host-known `num_segments_val` for
+  // the all-large path; the kernel does not need to know which. The raw iterator + tile-offsets
+  // array flow into the agent, which dereferences them inside `run` / `resolve_queue_idx`.
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
-  // Compile-time switch for the experimental "histogram only walks full tiles" mode. When
-  // `true`, the agent drops the partial-tile path; the trailing partial of each segment is
-  // handled by `device_segmented_topk_finalize_histogram_kernel`.
+  // Compile-time switch for the "histogram walks full tiles only" mode: the agent drops the
+  // partial-tile path; the trailing partial of each segment is handled by
+  // `device_segmented_topk_finalize_histogram_kernel`.
   static constexpr bool full_tiles_only = topk_seg_kernel_detail::full_tiles_only_histogram<PolicySelector>::value;
 
   using agent_t = agent_batched_topk_histogram<
@@ -403,37 +382,22 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     extract_bin_op,
     large_segments_count_it);
 
-  // The chunk-level grid-stride loop lives inside the agent (`agent.run`) so that per-segment
-  // cached state (smem histogram, segment-end bound, segment pointers / scalars) can persist
-  // across chunks. In the common case where a CTA's grid-stride run stays inside a single
-  // segment, this collapses to exactly **one** `init_histogram` at the start of the CTA's
-  // work and **one** `merge_histogram` when the CTA finishes -- matching the single-problem
-  // agent's cost model. Multi-segment workloads pay init/merge per (CTA, segment-stretch).
-  //
-  // This kernel no longer runs the per-segment prefix-sum / bucket-finder epilogue; that work
-  // is done by `device_segmented_topk_finalize_histogram_kernel` after this kernel completes.
-  // The pass index / total_bits / decomposer that drove the radix-digit extraction in the old
-  // signature are now absorbed into `extract_bin_op` (constructed by the dispatch) -- the
-  // kernel itself does not need to know about the pass.
-  // `TilesPerChunk` is now lifted to a compile-time non-type template parameter on
-  // `agent.run` so the middle while-loop's `chunk_end - chunk_start` bound and the per-CTA
-  // stride/chunk_start arithmetic are known at codegen time. The runtime `int` overload that
-  // the agent previously exposed has been removed; the compile-time `tiles_per_chunk` helper
-  // remains the single source of truth.
+  // The chunk-level grid-stride loop lives inside `agent.run` so per-segment cached state (smem
+  // histogram, segment-end bound, segment pointers / scalars) persists across chunks. When a CTA's
+  // run stays inside one segment this collapses to one `init_histogram` + one `merge_histogram`,
+  // matching the single-problem agent's cost model; multi-segment workloads pay init/merge per
+  // (CTA, segment-stretch). `TilesPerChunk` is a compile-time NTTP so the loop bounds and per-CTA
+  // stride arithmetic are known at codegen time.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
   agent.template run<tiles_per_chunk>();
 }
 
 // Per-segment epilogue kernel for the histogram pass. Runs after
-// `device_segmented_topk_histogram_kernel` finishes (host-side launch ordering on the same
-// stream ensures all CTAs of the histogram kernel retire before this kernel starts). One CTA per
-// large segment in a grid-strided loop: prefix-sums that segment's global histogram, finds the
-// bucket containing the k-th key, updates the per-segment counter, and (optionally) zeros the
-// histogram slab for the next pass.
-//
-// Splitting this out of the histogram kernel removes the per-tile `finalize_pass` cost (a
-// `__threadfence` + `__syncthreads_or` chain plus the prefix-sum scratch's smem footprint) from
-// the histogram CTAs. The trade-off is one extra cheap kernel launch per pass on this path.
+// `device_segmented_topk_histogram_kernel` finishes (host-side launch ordering on the same stream
+// ensures all its CTAs retire first). One CTA per large segment in a grid-strided loop: prefix-sums
+// that segment's global histogram, finds the bucket containing the k-th key, updates the per-segment
+// counter, and (optionally) zeros the histogram slab for the next pass. Splitting this out keeps the
+// per-tile `finalize_pass` cost off the histogram CTAs, at the cost of one extra kernel launch per pass.
 template <typename PolicySelector,
           typename KeyInputItItT,
           typename SegmentSizeParameterT,
@@ -511,8 +475,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     counter_t* segment_counter = d_segment_counters + queue_idx;
     OffsetT* segment_histogram = d_segment_histograms + queue_idx * num_buckets;
 
-    // Clip `k` to the segment's input size (same as the histogram agent did pre-refactor; see
-    // the comment on that clip for why).
+    // Clip `k` to the segment's input size (the histogram agent's clip comment explains why).
     const OutOffsetT k =
       (::cuda::std::min) (static_cast<OutOffsetT>(k_param.get_param(segment_id)), static_cast<OutOffsetT>(num_items));
 
@@ -535,11 +498,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
 
     if constexpr (process_partial)
     {
-      // "Histogram processes full tiles only" mode: the companion histogram kernel skipped each
-      // segment's trailing partial tile. Rather than atomic-adding the partial into the global
-      // slab and re-reading the global histogram, stage the complete histogram in smem: prime it
-      // from the global slab (the full-tile counts), add the partial tile via fast smem atomics,
-      // then drain it into blocked registers and run the bucket-finder against registers.
+      // `process_partial` mode: prime the smem histogram from the global slab (full-tile counts),
+      // add the trailing partial tile via fast smem atomics, then read into registers for the
+      // bucket-finder.
       tile_histogram_t hist{temp_storage.staged_histogram, extract_bin_op};
       hist.load_from(segment_histogram);
       __syncthreads();
@@ -660,11 +621,9 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr detail::topk::block_filter_strategy early_stop_filter_strat = mw.early_stop_filter_strategy;
   static constexpr bool lazy_value_load                                        = mw.lazy_value_load;
   static constexpr bool inlined_classify                                       = mw.inlined_classify;
-  // Compile-time switch for the experimental "filter only walks full tiles" mode. When
-  // `true`, the agent drops the slow-path `dispatch_tile<false>` call; the trailing
-  // partial tile of each segment is processed by
-  // `device_segmented_topk_finalize_filter_kernel` via
-  // `agent.process_partial_for_segment(queue_idx, pass)`.
+  // Compile-time switch for the "filter walks full tiles only" mode: the agent drops the slow-path
+  // `dispatch_tile<false>` call; each segment's trailing partial tile is processed by
+  // `device_segmented_topk_finalize_filter_kernel` via `agent.process_partial_for_segment`.
   static constexpr bool full_tiles_only_filter = topk_seg_kernel_detail::full_tiles_only_filter<PolicySelector>::value;
 
   using extract_bin_op_t =
@@ -722,14 +681,11 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     candidate_buffer_coefficient,
     num_large_segments);
 
-  // Grid-stride loop now lives inside `agent.run<TilesPerChunk>(pass)` -- same shape the
-  // histogram / last_filter agents use. The kernel materialises the policy's
-  // `tiles_per_chunk` knob and hands off.
-  //
-  // The per-segment epilogue (counter update + prefix-sum + bucket-finder + optional global
-  // histogram reset) is done by `device_segmented_topk_finalize_filter_kernel`, which the
-  // dispatch launches on the same stream right after this kernel; `reset_histogram` flows
-  // to that kernel rather than this one.
+  // Grid-stride loop lives inside `agent.run<TilesPerChunk>(pass)`; the kernel materialises the
+  // policy's `tiles_per_chunk` knob and hands off. The per-segment epilogue (counter update +
+  // prefix-sum + bucket-finder + optional histogram reset) is done by
+  // `device_segmented_topk_finalize_filter_kernel`, launched on the same stream right after this
+  // kernel; `reset_histogram` flows to that kernel rather than this one.
   (void) reset_histogram;
   (void) d_total_large_tiles;
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
@@ -916,7 +872,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     const bool will_buffer = !early_stop && (current_len <= candidate_buffer_length)
                           && (current_len <= num_items / candidate_buffer_coefficient);
 
-    // Per-mode counter update (mirror of the filter agent's pre-refactor `counter_update_fn`):
+    // Per-mode counter update:
     //   - early_stop : write `num_candidates_in = 0` (universal early-exit for the next pass).
     //   - buffered   : write `num_candidates_in = current_len`, flip
     //                  `load_from_candidates_buffer` to true, reset `num_candidates_written`.
@@ -1061,9 +1017,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     candidate_buffer_length,
     num_large_segments);
 
-  // Grid-stride loop now lives inside `agent.run<TilesPerChunk>()` -- same shape the
-  // histogram agent uses. The kernel materialises the policy's `tiles_per_chunk` knob and
-  // hands off.
+  // Grid-stride loop lives inside `agent.run<TilesPerChunk>()`; the kernel materialises the policy's
+  // `tiles_per_chunk` knob and hands off.
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
   agent.template run<tiles_per_chunk>();
 }

@@ -26,16 +26,15 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::batched_topk
 {
-// `select` (dispatch_common.cuh), `candidate_class`, and the other generic detail::topk symbols
-// stay there; bring them into scope so the batched shared-layer ops below can use them unqualified.
+// Bring the generic `detail::topk` symbols (`select`, `candidate_class`, ...) into scope so the
+// batched shared-layer ops below can use them unqualified.
 using namespace detail::topk;
 //---------------------------------------------------------------------
 // Indexed Top-K helpers
 //---------------------------------------------------------------------
-// Gathers a value from the user's input iterator using an index. Used on the indexed value path: the agent will only
-// see a counting_iterator as the value input, maintaining indexes of `OffsetT` indices in the values' candidate buffer.
-// During write-out, the agent will use a transform_iterator as the output iterator, writing `user_d_values_out[pos] =
-// user_d_values_in[idx]`.
+// Gathers a value from the user's input iterator by index. On the indexed value path the agent
+// sees a counting_iterator as the value input and stores `OffsetT` indices in the candidate buffer;
+// at write-out a transform_iterator maps them back: `values_out[pos] = values_in[idx]`.
 template <typename ValueInputIteratorT>
 struct topk_index_gather_op
 {
@@ -52,22 +51,16 @@ struct topk_index_gather_op
 template <bool Indexed, typename ValueInputIteratorT, typename ValueOutputIteratorT, typename OffsetT>
 struct effective_value_iterators
 {
-  // Type alias for the input iterator
   using in_t = ValueInputIteratorT;
-  // Type alias for the output iterator
   using out_t = ValueOutputIteratorT;
-  // Type alias for value type
   using value_t = it_value_t<ValueInputIteratorT>;
 };
 
 template <typename ValueInputIteratorT, typename ValueOutputIteratorT, typename OffsetT>
 struct effective_value_iterators<true, ValueInputIteratorT, ValueOutputIteratorT, OffsetT>
 {
-  // Type alias for the input iterator (indexed top-k)
   using in_t = ::cuda::counting_iterator<OffsetT>;
-  // Type alias for the output iterator  (translating indices back to values)
   using out_t = ::cuda::transform_output_iterator<topk_index_gather_op<ValueInputIteratorT>, ValueOutputIteratorT>;
-  // Type alias for value type (i.e., indices for the idnexed top-k)
   using value_t = OffsetT;
 };
 

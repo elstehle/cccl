@@ -5,26 +5,18 @@
 //! Top-k-private foundation building blocks: reserve callbacks, generative-iterator
 //! trait, and `TileDataSource` specializations.
 //!
-//! Architecture overview:
-//! `[topk-building-blocks-architecture_2c7af1d3.plan.md]`. This header co-locates the
-//! pieces of phase P1 (foundation) and the async TMA `TileDataSource` (architecture §7);
-//! once the foundation stabilizes a future split into smaller headers is cheap.
-//!
 //! Layout in this header (mirrors the dependency order):
 //!   1. Generative-iterator trait (`is_generative_iterator`, `is_generative_iterator_v`)
-//!      -- architecture §7.5; in `cub::detail`.
+//!      in `cub::detail`.
 //!   2. Reserve callbacks (`atomic_reserve_range_op`, `back_grow_capped_reserve_op`)
-//!      -- architecture §8; in `cub::detail::topk`.
-//!   3. `tile_load_kind` enum -- the unified policy knob spanning sync `BlockLoad`
-//!      variants and async TMA -- architecture §2.4; in `cub::detail::topk`.
-//!   4. The four `TileDataSource` specializations (in `cub::detail::topk`):
+//!      in `cub::detail::topk`.
+//!   3. `tile_load_kind` enum -- the policy knob spanning the `BlockLoad` variants.
+//!   4. The `TileDataSource` specializations (in `cub::detail::topk`):
 //!        - `direct_data_source`              gmem -> registers, no smem
 //!        - `sync_block_load_data_source`     wraps `cub::BlockLoad`
-//!        - `async_to_shared_data_source`     wraps `cub::detail::BlockLoadToShared`
 //!        - `multi_source_data_source`        runtime-switched two-source adapter
-//!   5. The `make_tile_data_source` factory which applies §7.5 to redirect
-//!      `cuda::counting_iterator` to `direct_data_source` regardless of the configured
-//!      `tile_load_kind`.
+//!   5. The `make_tile_data_source` factory which redirects `cuda::counting_iterator`
+//!      to `direct_data_source` regardless of the configured `tile_load_kind`.
 
 #pragma once
 
@@ -60,11 +52,10 @@ CUB_NAMESPACE_BEGIN
 namespace detail
 {
 //---------------------------------------------------------------------
-// 1. Generative-iterator trait (architecture §7.5).
+// 1. Generative-iterator trait.
 //
-// Phase 1 is intentionally limited to `cuda::counting_iterator`. Recursion through
-// adaptors (e.g., transform_iterator over a counting_iterator) is out of scope until
-// the trait moves to libcudacxx with an opt-in inline tag.
+// Intentionally limited to `cuda::counting_iterator`. Recursion through adaptors
+// (e.g. transform_iterator over a counting_iterator) is out of scope.
 //---------------------------------------------------------------------
 
 template <typename It>
@@ -89,11 +80,10 @@ inline constexpr bool is_generative_iterator_v = is_generative_iterator<It>::val
 namespace topk
 {
 //---------------------------------------------------------------------
-// 2. Reserve callbacks (architecture §8).
+// 2. Reserve callbacks.
 //
 // Both follow the `(base, granted) operator()(n)` contract with the static
-// `may_grant_less` trait. Stateless function objects: empty TempStorage / ScratchStorage
-// (omitted; treated as empty by the brokering protocol).
+// `may_grant_less` trait. Stateless function objects with empty storage.
 //---------------------------------------------------------------------
 template <typename OffsetT>
 struct atomic_reserve_range_op
@@ -135,11 +125,10 @@ struct back_grow_capped_reserve_op
 };
 
 //---------------------------------------------------------------------
-// 3. `tile_load_kind` -- the unified policy knob (architecture §2.4).
+// 3. `tile_load_kind` -- the policy knob.
 //
-// Spans the sync `BlockLoadAlgorithm` choices (covering everything the legacy
-// `BlockLoadAlgorithm`-based policy entry could express) plus the async TMA path.
-// The factory below picks the concrete TileDataSource specialization from this enum.
+// Spans the `BlockLoadAlgorithm` choices. The factory below picks the concrete
+// TileDataSource specialization from this enum.
 //---------------------------------------------------------------------
 
 enum class tile_load_kind
@@ -153,9 +142,7 @@ enum class tile_load_kind
   block_load_warp_transpose_timesliced,
 };
 
-// Mapping from `tile_load_kind` to `cub::BlockLoadAlgorithm`. Used by the sync data
-// source factory; the async kind is handled by a different specialization so we do not
-// need a mapping for it here.
+// Mapping from `tile_load_kind` to `cub::BlockLoadAlgorithm`, used by the data source factory.
 template <tile_load_kind Kind>
 struct sync_block_load_algo;
 
@@ -191,9 +178,9 @@ struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose_timesliced
 };
 
 //---------------------------------------------------------------------
-// 4. `TileDataSource` specializations (architecture §7.4).
+// 4. `TileDataSource` specializations.
 //
-// Contract per architecture §7.2:
+// Contract:
 //   - Construct with `(InputIt it, TempStorage& state)`.
 //   - `set_tile_base(OffsetT)` advances the global offset of the next load.
 //   - `submit_load(ScratchStorage&)`            -> full_load_handle.
@@ -209,10 +196,8 @@ class direct_data_source
 public:
   using value_t = CUB_NS_QUALIFIER::detail::it_value_t<InputIt>;
 
-  // No persistent state and no per-tile scratch -- direct loads go straight from
-  // gmem to registers via per-thread `it[base + ...]` accesses. Publishing the
-  // canonical empty marker lets transitive empty-storage detection work without
-  // any user-defined union ctor / dtor declarations downstream.
+  // No persistent state and no per-tile scratch. Publishing the canonical empty marker
+  // lets transitive empty-storage detection work downstream.
   using TempStorage    = empty_storage_t;
   using ScratchStorage = empty_storage_t;
 
@@ -255,9 +240,8 @@ public:
     tile_base = base;
   }
 
-  // Re-target to a new input iterator without disturbing any persistent state, so an agent can
-  // keep one long-lived source and only swap the per-segment iterator (paired with
-  // `set_tile_base` for the per-tile offset) instead of reconstructing it per segment.
+  // Re-target to a new input iterator without disturbing persistent state, so an agent can
+  // reuse one long-lived source across segments instead of reconstructing it.
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_input(InputIt input_it)
   {
     it = input_it;
@@ -273,24 +257,18 @@ public:
     return partial_load_handle{it + tile_base, num_items};
   }
 
-  // On-demand single-item gather. Used by the lazy value-load path in
-  // `BlockPartition::partition_atomics_fused_scatter`: instead of loading the
-  // full per-thread `values[ItemsPerThread]` array up front, the scatter loop
-  // calls this for each non-rejected item, fetching only the values that will
-  // actually be written. Mirrors the access pattern of `full_load_handle`
-  // (BLOCKED layout): thread `t` owns items `[t*IPT, (t+1)*IPT)` of the tile.
-  // The caller is responsible for not gathering past `num_thread_items` on
-  // partial tiles -- the partition primitive enforces this by classifying
-  // out-of-range items as `rejected`.
+  // On-demand single-item gather for the lazy value-load path: fetch only the values that
+  // will actually be written instead of loading the full per-thread array up front. BLOCKED
+  // layout: thread `t` owns items `[t*IPT, (t+1)*IPT)` of the tile. The caller must not gather
+  // past `num_thread_items` on partial tiles.
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
     const OffsetT idx = tile_base + static_cast<OffsetT>(threadIdx.x) * ItemsPerThread + item_idx;
     return it[idx];
   }
 
-  // No-op: direct reads have no persistent smem state to reset. Provided so
-  // agents can unconditionally call `source.invalidate()` regardless of the
-  // tile-load kind tuned in.
+  // No-op: direct reads have no persistent smem state. Provided so agents can call
+  // `invalidate()` unconditionally regardless of the tile-load kind.
   _CCCL_DEVICE _CCCL_FORCEINLINE void invalidate() {}
 
 private:
@@ -299,7 +277,7 @@ private:
 };
 
 // 4.2 sync_block_load_data_source -- wraps `cub::BlockLoad`. ScratchStorage holds the
-// underlying BlockLoad's TempStorage (which is method-call in our taxonomy).
+// underlying BlockLoad's TempStorage.
 template <typename InputIt,
           int BlockThreads,
           int ItemsPerThread,
@@ -377,44 +355,21 @@ private:
   OffsetT tile_base{};
 };
 
-// 4.4 multi_source_data_source -- runtime-switched two-source adapter.
+// 4.3 multi_source_data_source -- runtime-switched two-source adapter.
 //
-// Both underlying sources are alive and the multi-source delegates every
-// operation -- `set_tile_base` to both (cheap and lets ptxas hoist constants
-// into uniform registers without a branch) and `submit_load` / `gather_one`
-// to whichever arm `pick_source_b` selects (the per-tile data only ever
-// comes from one arm).
+// Both underlying sources are alive: the multi-source delegates `set_tile_base` to both
+// and `submit_load` / `gather_one` to whichever arm `pick_source_b` selects.
 //
-// Children ownership: the **agent** owns both child sources and their
-// per-source `TempStorage` slots. Each child is constructed by the agent
-// against its own agent-owned `TempStorage` instance; the multi-source then
-// borrows references to the two constructed children. The multi-source
-// itself does not publish a `TempStorage` -- it has no persistent per-tile
-// state of its own beyond the two references and `pick_source_b`. This
-// keeps the agent / multi-source contract clean (no agent-side introspection
-// of an opaque aggregate type) and matches the symmetric story for
-// `ScratchStorage`, which the multi-source *does* publish because it owns
-// the per-tile alias decision between the two arms' scratch slots.
+// Ownership: the agent owns both child sources and their per-source `TempStorage` slots and
+// constructs each child against its own slot; the multi-source only borrows references to
+// them. It publishes a `ScratchStorage` (it owns the per-tile alias decision between the two
+// arms' scratch slots) but no `TempStorage` of its own.
 //
-// The shape has two practical wins:
+// Taking children by reference (rather than by value) composes with non-copyable /
+// non-movable children. The multi-source is itself non-copyable / non-movable to keep the
+// lifetime contract symmetric.
 //
-//   1. Keeps `<direct, direct>` / `<sync_block_load, direct>` codegen
-//      byte-identical to the OLD `(SourceA, SourceB, bool)` value ctor --
-//      ptxas still sees both arms as straight-line members and the LDCU
-//      hoist / uniform-register propagation around `pick_source_b` keeps
-//      firing.
-//   2. Composes with future non-copyable / non-movable children
-//      (`async_to_shared_data_source`'s embedded `BlockLoadToShared` has
-//      `= delete` copy and no implicit move): the multi-source ctor takes
-//      references rather than values, so the deleted-copy chain never gets
-//      reached. The multi-source itself is non-copyable / non-movable below
-//      to keep the lifetime contract symmetric.
-//
-// Lifetime contract: the agent guarantees both child references outlive the
-// multi-source. Existing call sites already satisfy this (children + multi-
-// source declared back-to-back in the same enclosing block; the one
-// segment-boundary refresh in `agent_batched_topk_last_filter::run` uses
-// destroy-then-construct via placement-new on the entire trio).
+// Lifetime contract: the agent guarantees both child references outlive the multi-source.
 template <typename SourceA, typename SourceB, typename OffsetT = ::cuda::std::int64_t>
 class multi_source_data_source
 {
@@ -423,24 +378,15 @@ public:
   static_assert(::cuda::std::is_same_v<value_t, typename SourceB::value_t>,
                 "multi_source_data_source requires both sources to share value_t");
 
-  // Note: this class intentionally does NOT publish a `TempStorage` member
-  // type. Per-source persistent state is owned by the agent as two separate
-  // `SourceA::TempStorage` / `SourceB::TempStorage` allocations -- the
-  // multi-source has no persistent state to host on top of them. Agents
-  // construct the children against their own slots, then build the
-  // multi-source with references to the constructed children.
+  // This class intentionally publishes no `TempStorage`: per-source persistent state is owned
+  // by the agent as two separate `SourceA` / `SourceB` `TempStorage` allocations.
 
-  // Only one of the two sources is active per submit/complete window (`pick_source_b`
-  // is set once at construction), so the two scratch slots alias via a union. The
-  // union is wrapped in `cub::Uninitialized<>` so callers can place `ScratchStorage`
-  // directly in `__shared__` without tripping CUDA's "no dynamic init in shared
-  // memory" rule -- the alternatives can carry their own non-trivial ctors / dtors
-  // (e.g. another `multi_source_data_source` nested below) and the wrapper sidesteps
-  // those by carrying raw byte storage.
+  // Only one source is active per submit/complete window, so the two scratch slots alias via a
+  // union. The union is wrapped in `cub::Uninitialized<>` so callers can place `ScratchStorage`
+  // in `__shared__` despite the alternatives' non-trivial ctors / dtors.
   //
-  // When *both* children publish an empty ScratchStorage, the aggregate is empty too;
-  // collapse to `empty_storage_t` rather than wrap-in-Uninitialized so consumers see
-  // the empty signal across class boundaries.
+  // When both children publish an empty ScratchStorage, collapse to `empty_storage_t` so
+  // consumers see the empty signal across class boundaries.
 
 private:
   static constexpr bool _scratch_storage_is_empty =
@@ -457,24 +403,17 @@ private:
 public:
   using ScratchStorage = ::cuda::std::conditional_t<_scratch_storage_is_empty, empty_storage_t, _ScratchStorageWrapped>;
 
-  // Tagged-union load handles. Only the arm matching `pick_b` is ever
-  // initialized -- the inactive arm's bytes stay uninitialized. The runtime
-  // tag is constant within a kernel launch (set once by the agent), so the
-  // compiler eliminates the dead branch.
+  // Tagged-union load handles. Only the arm matching `pick_b` is ever initialized; the runtime
+  // tag is constant within a launch, so the compiler eliminates the dead branch.
   //
-  // The handles use a union with no-op ctor/dtor so the alternatives don't
-  // have to be default-constructible. `async_to_shared_data_source`'s handle
-  // carries a `loader_t::CommitToken` whose default ctor is intentionally
-  // inaccessible and whose copy ctor is deleted (move-only). The handle is
-  // therefore:
+  // The union has no-op ctor/dtor so the arms need not be default-constructible, and the handle
+  // manages the active arm's lifetime explicitly:
   //   - Not default-constructible (would leave both arms unbuilt).
-  //   - Not copy-constructible (matches the move-only nature of async's token).
-  //   - Move-constructible via an explicit ctor that placement-news the
-  //     active arm into the destination based on `other.pick_b`.
-  // Construction goes through tagged ctors (`from_a_t{}` / `from_b_t{}`),
-  // each of which placement-news exactly one arm; `submit_load` returns a
-  // prvalue via these ctors so the call site gets C++17 mandatory copy
-  // elision (NRVO fallback would otherwise need a move).
+  //   - Not copy-constructible.
+  //   - Move-constructible via an explicit ctor that placement-news the active arm.
+  // Construction goes through tagged ctors (`from_a_t{}` / `from_b_t{}`), each of which
+  // placement-news exactly one arm; `submit_load` returns a prvalue so the call site gets
+  // C++17 mandatory copy elision.
   struct from_a_t
   {};
   struct from_b_t
@@ -624,48 +563,35 @@ public:
     }
   };
 
-  // Take both child sources by reference. The agent owns the underlying
-  // objects -- the multi-source just borrows for delegation. This composes
-  // with non-copyable / non-movable children (the proposal's headline
-  // future-async support) without forcing the by-value ctor path that would
-  // hit a deleted copy ctor for `async_to_shared_data_source`.
+  // Take both child sources by reference. The agent owns the underlying objects; the
+  // multi-source just borrows for delegation. This composes with non-copyable / non-movable
+  // children without forcing a by-value ctor path.
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE multi_source_data_source(SourceA& a, SourceB& b, bool pick_b)
       : source_a(a)
       , source_b(b)
       , pick_source_b(pick_b)
   {}
 
-  // Copy/move construction is implicitly available (memberwise copy of the
-  // two references + the `bool`). For future non-copyable / non-movable
-  // children (e.g. `async_to_shared_data_source` via `BlockLoadToShared`)
-  // this remains safe -- the multi-source copies only the *references*,
-  // never the child itself, so the child's deleted copy ctor is never
-  // reached.
+  // Copy/move construction is implicitly available (memberwise copy of the two references +
+  // the `bool`); only the references are copied, never the children.
   //
-  // Copy/move *assignment* is implicitly deleted because reference members
-  // can't be re-bound after construction. The explicit `= delete` below is
-  // documentation only -- it locks the assumption that "rebinding the
-  // multi-source to a different pair of children" is not part of the API
-  // (the segment-boundary refresh in `agent_batched_topk_last_filter::run`
-  // uses destroy-then-construct via placement-new for that reason).
+  // Copy/move *assignment* is implicitly deleted because reference members can't be re-bound
+  // after construction. The explicit `= delete` below is documentation only: rebinding the
+  // multi-source to a different pair of children is not part of the API.
   multi_source_data_source& operator=(const multi_source_data_source&) = delete;
   multi_source_data_source& operator=(multi_source_data_source&&)      = delete;
 
-  // Both sources alive -- propagate `set_tile_base` to both. Per-tile cost
-  // is one extra register store (cheap) and matches the OLD codegen shape
-  // that ptxas optimises well (uniform-register hoisting, no branch).
+  // Both sources alive -- propagate `set_tile_base` to both.
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_tile_base(OffsetT tile_base)
   {
     source_a.set_tile_base(tile_base);
     source_b.set_tile_base(tile_base);
   }
 
-  // Re-target both child sources to new inputs and switch the active arm, without reconstructing
-  // them. Crucially this leaves any persistent child state (e.g. an async source's mbarrier)
-  // initialized, so a long-lived multi-source can be re-pointed at a new segment's
-  // iterators/buffer instead of being rebuilt (which would re-init the mbarrier). The child
-  // references are mutated through, not rebound, so the deleted assignment / non-movable contract
-  // is unaffected.
+  // Re-target both child sources to new inputs and switch the active arm without reconstructing
+  // them, so a long-lived multi-source can be re-pointed at a new segment's iterators/buffer.
+  // The child references are mutated through, not rebound, so the deleted-assignment contract is
+  // unaffected.
   template <typename InputItA, typename InputItB>
   _CCCL_DEVICE _CCCL_FORCEINLINE void set_inputs(InputItA input_a, InputItB input_b, bool pick_b)
   {
@@ -674,13 +600,10 @@ public:
     pick_source_b = pick_b;
   }
 
-  // Each `return` is a prvalue invocation of one of the tagged ctors --
-  // C++17 mandatory copy elision constructs the handle directly in the
-  // caller's slot, no copy / move at the return. When the aggregate
-  // `ScratchStorage` is `empty_storage_t` (both children empty), the union
-  // doesn't exist; the children's `submit_load` doesn't touch the scratch in
-  // that case anyway, so we pass them stack-local stubs the compiler folds
-  // away.
+  // Each `return` is a prvalue invocation of a tagged ctor, so C++17 mandatory copy elision
+  // builds the handle directly in the caller's slot. When the aggregate `ScratchStorage` is
+  // `empty_storage_t` (both children empty) the union doesn't exist, so we pass stack-local
+  // stubs the compiler folds away.
   _CCCL_DEVICE _CCCL_FORCEINLINE full_load_handle submit_load(ScratchStorage& s)
   {
     if constexpr (_scratch_storage_is_empty)
@@ -727,22 +650,15 @@ public:
     }
   }
 
-  // On-demand single-item gather. Dispatches to whichever underlying source is
-  // active (`pick_source_b` is set once at construction, so the branch is constant
-  // within a kernel launch and ptxas eliminates the dead arm).
+  // On-demand single-item gather. Dispatches to whichever source is active; `pick_source_b`
+  // is constant within a launch, so the dead arm is eliminated.
   _CCCL_DEVICE _CCCL_FORCEINLINE value_t gather_one(int item_idx) const
   {
     return pick_source_b ? source_b.gather_one(item_idx) : source_a.gather_one(item_idx);
   }
 
-  // Propagate the (optional) mbarrier-reset step to both arms. Required by
-  // any TMA-style source (e.g. `async_to_shared_data_source`) before the
-  // underlying smem TempStorage is reused: their dtor is a no-op by design,
-  // so the agent must explicitly invalidate before destroy-then-construct
-  // (or per-tile reconstruction). For direct / sync_block_load sources the
-  // delegated call is a no-op. We call both arms because both children are
-  // alive in our shape -- even the inactive arm's ctor initialized its
-  // mbarrier and must be invalidated before reuse.
+  // Propagate the (optional) reset step to both arms. A no-op for direct / sync_block_load
+  // sources; called on both arms because both children are alive.
   _CCCL_DEVICE _CCCL_FORCEINLINE void invalidate()
   {
     source_a.invalidate();
@@ -756,12 +672,12 @@ private:
 };
 
 //---------------------------------------------------------------------
-// 5. `make_tile_data_source` factory (architecture §7.5).
+// 5. `make_tile_data_source` factory.
 //
 // Picks the concrete TileDataSource for the given `tile_load_kind`. Generative iterators
 // (today: `cuda::counting_iterator`) are statically downgraded to `direct_data_source`
-// regardless of the configured kind -- coalescing/TMA buy nothing for an iterator that
-// doesn't live in memory.
+// regardless of the configured kind -- coalescing buys nothing for an iterator that does
+// not live in memory.
 //---------------------------------------------------------------------
 
 // Tag-dispatch helper: factory_impl<Kind, IsGen> picks the data source type.
