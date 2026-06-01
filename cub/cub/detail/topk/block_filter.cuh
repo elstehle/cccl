@@ -25,9 +25,8 @@
 //!     primitives' `epilogue()` is a no-op. The accumulating variant's `epilogue()`
 //!     performs a terminal flush of any remaining buffered items.
 //!
-//! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` in
-//! `block_filter_accumulating.cuh`, which maps a `block_filter_strategy` enum value
-//! to one of the three classes here (or to the accumulating sister class).
+//! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` below. The
+//! default tuning uses only `block_filter_atomics`.
 
 #pragma once
 
@@ -62,11 +61,10 @@ CUB_NAMESPACE_BEGIN
 namespace detail::topk
 {
 //---------------------------------------------------------------------
-// Strategy selector for the filter primitives. Mirrors `block_partition_strategy`:
-// picks the *filtering* shape; the orthogonal `InlinedClassify` axis is a
-// separate template / policy bool that every non-accumulating primitive accepts.
-// The mapping from a strategy enum value to a class is performed by
-// `strategy_to_filter_class_t<...>` in `block_filter_accumulating.cuh`.
+// Strategy selector for the filter primitives. Mirrors `block_partition_strategy`: the default
+// tuning uses only `atomics` (`block_filter_atomics`). The enum retains the other (currently
+// unimplemented) values for policy/ABI compatibility; `strategy_to_filter_class_t` maps every
+// strategy to `block_filter_atomics` in this build.
 //---------------------------------------------------------------------
 enum class block_filter_strategy
 {
@@ -74,14 +72,6 @@ enum class block_filter_strategy
   staged,
   shared_mem,
   accumulating_filter,
-  // SpeculativeFilter accumulates the selected stream in a fixed-size smem
-  // buffer, but uses a *speculative* slot reservation: items whose atomicAdd
-  // index lands within the buffer go to smem, items beyond capacity fall back
-  // to per-item global atomics (Atomics-equivalent). The trade is one extra
-  // per-thread uint32 bitmask and one extra `__syncthreads()` per partition()
-  // call in exchange for keeping `positions[]` cross-iteration-dead, which
-  // restores register parity with `Atomics` while preserving the cooperative
-  // batched flush on sparse streams. See `block_filter_speculative.cuh`.
   speculative_filter,
 };
 

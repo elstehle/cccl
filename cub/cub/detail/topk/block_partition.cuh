@@ -38,9 +38,8 @@
 //! "filter" path (where the classifier collapsed `candidate -> selected`) lives in
 //! the dedicated `BlockFilter*` primitives in `block_filter.cuh`.
 //!
-//! Strategy selection is done by `strategy_to_partition_class_t<Strategy, ...>` in
-//! `block_partition_accumulating.cuh`, which maps a `block_partition_strategy` enum
-//! value to one of the three classes here (or to the accumulating sister class).
+//! Strategy selection is done by `strategy_to_partition_class_t<Strategy, ...>` below. The
+//! default tuning uses only `block_partition_atomics`.
 
 #pragma once
 
@@ -86,32 +85,11 @@ enum class candidate_class
   rejected,
 };
 
-// Strategy selector for the partition primitives. Picks the *partitioning* shape;
-// the orthogonal `InlinedClassify` axis is a separate template / policy bool that
-// every non-accumulating primitive accepts. The mapping from a strategy enum value
-// to a class is performed by `strategy_to_partition_class_t<...>` in
-// `block_partition_accumulating.cuh`.
-//
-//   Atomics                -- block_partition_atomics. No smem; per-non-rejected-item
-//                             global atomic + scatter.
-//   Staged                 -- block_partition_staged. Smem scatter into a keys arena +
-//                             cooperative coalesced store; per-channel values run
-//                             sequentially after the keys phase.
-//   SharedMem              -- block_partition_shared_mem. Typed `keys[]` + per-channel
-//                             `values[]` packed into the same arena; a single
-//                             coalesced store per stream.
-//   AccumulatingCandidates -- block_partition_accumulating_candidates: candidate stream
-//                             buffered in smem and accumulated across multiple tiles;
-//                             selected stream goes direct-to-global. Used by the
-//                             agent's `buffered`-mode pass.
-//   SpeculativeBoth        -- block_partition_speculative: both candidate and selected
-//                             streams accumulate in smem, but with speculative slot
-//                             reservation -- items overflowing the buffer fall back
-//                             to per-item global atomics. Trades one bit-mask uint32
-//                             per stream + one sync for register parity with
-//                             `Atomics`. Setting the selected-stream capacity to 0
-//                             via the agent policy degrades that stream to pure
-//                             atomics (useful when the selected stream is dense).
+// Strategy selector for the partition primitives. The default tuning uses only `atomics`
+// (`block_partition_atomics`: no smem; per-non-rejected-item global atomic + scatter). The
+// orthogonal `InlinedClassify` axis is a separate template / policy bool. The enum retains the
+// other (currently unimplemented) values for policy/ABI compatibility; in this build
+// `strategy_to_partition_class_t` maps every strategy to `block_partition_atomics`.
 enum class block_partition_strategy
 {
   atomics,
