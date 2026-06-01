@@ -78,9 +78,7 @@ template <int ThreadsPerBlock,
           int ItemsPerThread,
           int BitsPerPass,
           BlockScanAlgorithm ScanAlgorithm,
-          tile_load_kind KeysTileLoadKind       = tile_load_kind::block_load_vectorize,
-          int AccumulatingBufferCapacity        = 256,
-          int SpeculativeSelectedBufferCapacity = 128>
+          tile_load_kind KeysTileLoadKind = tile_load_kind::block_load_vectorize>
 struct AgentTopKPolicy
 {
   static constexpr int block_threads                 = ThreadsPerBlock;
@@ -89,9 +87,7 @@ struct AgentTopKPolicy
   static constexpr BlockScanAlgorithm scan_algorithm = ScanAlgorithm;
   // Picks a TileDataSource specialization for the keys stream. Defaults to the
   // `BLOCK_LOAD_VECTORIZE` mapping.
-  static constexpr tile_load_kind keys_tile_load_kind       = KeysTileLoadKind;
-  static constexpr int accumulating_buffer_capacity         = AccumulatingBufferCapacity;
-  static constexpr int speculative_selected_buffer_capacity = SpeculativeSelectedBufferCapacity;
+  static constexpr tile_load_kind keys_tile_load_kind = KeysTileLoadKind;
 };
 
 template <typename KeyT, bool CanTwiddle = detail::radix::can_twiddle<KeyT>>

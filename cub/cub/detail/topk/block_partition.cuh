@@ -16,8 +16,7 @@
 //!     parameters. Keys-only callers pass `cub::NullType` for all value-related parameters and
 //!     gate their value-paths on an internal `keys_only` constexpr derived from `ValueT`.
 //!
-//! The single-stream "filter" path lives in `block_filter.cuh`. Strategy selection is done by
-//! `strategy_to_partition_class_t<Strategy, ...>` below.
+//! The single-stream "filter" path lives in `block_filter.cuh`.
 
 #pragma once
 
@@ -61,20 +60,6 @@ enum class candidate_class
   selected,
   candidate,
   rejected,
-};
-
-// Strategy selector for the partition primitives. The default tuning uses only `atomics`
-// (`block_partition_atomics`: no smem; per-non-rejected-item global atomic + scatter). The
-// orthogonal `InlinedClassify` axis is a separate template / policy bool. The enum retains the
-// other (currently unimplemented) values for policy/ABI compatibility; in this build
-// `strategy_to_partition_class_t` maps every strategy to `block_partition_atomics`.
-enum class block_partition_strategy
-{
-  atomics,
-  staged,
-  shared_mem,
-  accumulating_candidates,
-  speculative_both,
 };
 
 //---------------------------------------------------------------------
@@ -211,7 +196,7 @@ _CCCL_DEVICE _CCCL_FORCEINLINE int compute_num_thread_items(int num_items)
 // `block_partition_atomics` -- per-non-rejected-item global atomic + scatter, no smem.
 // `InlinedClassify` selects between the precomputed-classes form (larger live register set
 // for `classes[]`) and the inlined-classify form (recomputes classification at each scatter
-// use-site, freeing those registers). Mapped from `block_partition_strategy::atomics`.
+// use-site, freeing those registers).
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -555,46 +540,6 @@ private:
   // so the `may_grant_less=false` path pays nothing.
   bool cand_reserve_open = true;
 };
-
-// Maps a `block_partition_strategy` to its partition class. The default tuning only uses
-// `atomics`; the strategy / buffer-capacity template parameters are retained for call-site
-// compatibility but ignored here.
-template <block_partition_strategy Strategy,
-          int BlockThreads,
-          int ItemsPerThread,
-          int AccumulatingBufferCapacity,
-          int SpeculativeSelectedBufferCapacity,
-          typename KeyT,
-          typename SelectedOffsetT,
-          typename CandidateOffsetT,
-          typename SelectedReserveOp,
-          typename CandidateReserveOp,
-          typename SelectedKeyOutIt,
-          typename CandidateKeyOutIt,
-          typename IdentifyCandidatesOp,
-          typename CandidateCallbackOp,
-          typename ValueChannelSinksT,
-          typename ValueT,
-          typename ValueDataSourceScratchT,
-          bool LazyValueLoad,
-          bool InlinedClassify>
-using strategy_to_partition_class_t = block_partition_atomics<
-  BlockThreads,
-  ItemsPerThread,
-  InlinedClassify,
-  KeyT,
-  SelectedOffsetT,
-  CandidateOffsetT,
-  SelectedReserveOp,
-  CandidateReserveOp,
-  SelectedKeyOutIt,
-  CandidateKeyOutIt,
-  IdentifyCandidatesOp,
-  CandidateCallbackOp,
-  ValueChannelSinksT,
-  ValueT,
-  ValueDataSourceScratchT,
-  LazyValueLoad>;
 } // namespace detail::topk
 
 CUB_NAMESPACE_END

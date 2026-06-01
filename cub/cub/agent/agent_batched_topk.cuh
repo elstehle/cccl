@@ -909,10 +909,8 @@ template <typename AgentTopKPolicyT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
           typename OutOffsetT,
-          detail::topk::block_partition_strategy BufferedPartStrat = detail::topk::block_partition_strategy::atomics,
-          detail::topk::block_filter_strategy EarlyStopFilterStrat = detail::topk::block_filter_strategy::atomics,
-          bool LazyValueLoad                                       = false,
-          bool InlinedClassify                                     = false,
+          bool LazyValueLoad   = false,
+          bool InlinedClassify = false,
           // `run()` processes only full tiles; each segment's partial tile is processed by
           // `device_segmented_topk_finalize_filter_kernel` via `process_partial_for_segment(queue_idx, pass)`
           // before its prefix-sum + bucket-finder runs.
@@ -996,12 +994,10 @@ struct agent_batched_topk_filter_partition
   // per-tile binning and lifecycle. Only the buffered / unbuffered (non-early_stop) modes use it.
   using tile_histogram_t = detail::batched_topk::tile_histogram<block_threads, num_buckets, OffsetT, ExtractBinOpT>;
 
-  using buffered_partition_t = detail::topk::strategy_to_partition_class_t<
-    BufferedPartStrat,
+  using buffered_partition_t = detail::topk::block_partition_atomics<
     block_threads,
     items_per_thread,
-    AgentTopKPolicyT::accumulating_buffer_capacity,
-    AgentTopKPolicyT::speculative_selected_buffer_capacity,
+    InlinedClassify,
     key_t,
     selected_offset_t,
     candidate_offset_t,
@@ -1014,14 +1010,12 @@ struct agent_batched_topk_filter_partition
     buffered_value_channel_sinks_t,
     agent_value_t,
     agent_value_data_source_scratch_t,
-    effective_lazy_value_load,
-    InlinedClassify>;
+    effective_lazy_value_load>;
 
-  using early_stop_filter_t = detail::topk::strategy_to_filter_class_t<
-    EarlyStopFilterStrat,
+  using early_stop_filter_t = detail::topk::block_filter_atomics<
     block_threads,
     items_per_thread,
-    AgentTopKPolicyT::accumulating_buffer_capacity,
+    InlinedClassify,
     key_t,
     selected_offset_t,
     selected_reserve_op_t,
@@ -1030,8 +1024,7 @@ struct agent_batched_topk_filter_partition
     early_stop_value_channel_sinks_t,
     agent_value_t,
     agent_value_data_source_scratch_t,
-    effective_lazy_value_load,
-    InlinedClassify>;
+    effective_lazy_value_load>;
 
   // Same `empty_prefix_sum_t` placeholder pattern as the single-problem agent.
   struct empty_prefix_sum_t
@@ -1771,9 +1764,8 @@ template <typename AgentTopKPolicyT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
           typename OutOffsetT,
-          detail::topk::block_partition_strategy PartStrat = detail::topk::block_partition_strategy::atomics,
-          bool LazyValueLoad                               = false,
-          bool InlinedClassify                             = false>
+          bool LazyValueLoad   = false,
+          bool InlinedClassify = false>
 struct agent_batched_topk_last_filter
 {
   using keys_in_it_t    = it_value_t<KeyInputItItT>;
@@ -1831,12 +1823,10 @@ struct agent_batched_topk_last_filter
   using selected_reserve_op_t  = detail::topk::atomic_reserve_range_op<selected_offset_t>;
   using candidate_reserve_op_t = detail::topk::back_grow_capped_reserve_op<candidate_offset_t>;
 
-  using partition_t = detail::topk::strategy_to_partition_class_t<
-    PartStrat,
+  using partition_t = detail::topk::block_partition_atomics<
     block_threads,
     items_per_thread,
-    AgentTopKPolicyT::accumulating_buffer_capacity,
-    AgentTopKPolicyT::speculative_selected_buffer_capacity,
+    InlinedClassify,
     key_t,
     selected_offset_t,
     candidate_offset_t,
@@ -1849,8 +1839,7 @@ struct agent_batched_topk_last_filter
     value_channel_sinks_or_null_t,
     agent_value_t,
     agent_value_data_source_scratch_t,
-    effective_lazy_value_load,
-    InlinedClassify>;
+    effective_lazy_value_load>;
 
   struct empty_prefix_sum_t
   {};

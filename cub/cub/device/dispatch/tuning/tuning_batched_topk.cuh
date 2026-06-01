@@ -108,23 +108,6 @@ struct multi_worker_policy
   // Scan algorithm used to prefix-sum the histogram bins when finding the k-th bucket.
   BlockScanAlgorithm scan_algorithm;
 
-  // Partition / filter strategies used for each of the three scenarios.
-  // Strategy used for writing candidates to the temp buffer and selected to the user-provided iterator.
-  detail::topk::block_partition_strategy buffered_partition_strategy;
-  // Strategy used for writing both candidates and selected items to the user-provided iterator
-  detail::topk::block_filter_strategy early_stop_filter_strategy;
-  // During the last pass, a capped number of candidates (tied keys) goes back-to-front to the user-iterator, while
-  // selected are appended front-to-back.
-  detail::topk::block_partition_strategy last_filter_partition_strategy;
-
-  // Per-stream smem buffer capacity for the accumulating partition / filter variants.
-  // TODO (elstehle): Remove from initial version
-  int accumulating_buffer_capacity;
-
-  // Selected-stream smem buffer capacity for the speculative partition variant.
-  // TODO (elstehle): Remove from initial version
-  int speculative_selected_buffer_capacity;
-
   // Whether to materialize values into the temp storage or use indexed top-k with an on-the-fly gather.
   value_materialization_mode value_materialization;
 
@@ -166,11 +149,6 @@ struct multi_worker_policy
         && lhs.bits_per_pass == rhs.bits_per_pass //
         && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind //
         && lhs.scan_algorithm == rhs.scan_algorithm //
-        && lhs.buffered_partition_strategy == rhs.buffered_partition_strategy //
-        && lhs.early_stop_filter_strategy == rhs.early_stop_filter_strategy //
-        && lhs.last_filter_partition_strategy == rhs.last_filter_partition_strategy //
-        && lhs.accumulating_buffer_capacity == rhs.accumulating_buffer_capacity //
-        && lhs.speculative_selected_buffer_capacity == rhs.speculative_selected_buffer_capacity //
         && lhs.value_materialization == rhs.value_materialization //
         && lhs.lazy_value_load == rhs.lazy_value_load //
         && lhs.inlined_classify == rhs.inlined_classify //
@@ -193,11 +171,6 @@ struct multi_worker_policy
         << ", .bits_per_pass = " << p.bits_per_pass //
         << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind) //
         << ", .scan_algorithm = " << p.scan_algorithm //
-        << ", .buffered_partition_strategy = " << static_cast<int>(p.buffered_partition_strategy) //
-        << ", .early_stop_filter_strategy = " << static_cast<int>(p.early_stop_filter_strategy) //
-        << ", .last_filter_partition_strategy = " << static_cast<int>(p.last_filter_partition_strategy) //
-        << ", .accumulating_buffer_capacity = " << p.accumulating_buffer_capacity //
-        << ", .speculative_selected_buffer_capacity = " << p.speculative_selected_buffer_capacity //
         << ", .value_materialization = " << static_cast<int>(p.value_materialization) //
         << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false") //
         << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false") //
@@ -289,11 +262,6 @@ struct policy_selector
         /*.bits_per_pass                        =*/multi_bits_per_pass,
         /*.keys_tile_load_kind                  =*/detail::topk::tile_load_kind::block_load_vectorize,
         /*.scan_algorithm                       =*/BLOCK_SCAN_WARP_SCANS,
-        /*.buffered_partition_strategy          =*/detail::topk::block_partition_strategy::atomics,
-        /*.early_stop_filter_strategy           =*/detail::topk::block_filter_strategy::atomics,
-        /*.last_filter_partition_strategy       =*/detail::topk::block_partition_strategy::atomics,
-        /*.accumulating_buffer_capacity         =*/256,
-        /*.speculative_selected_buffer_capacity =*/128,
         /*.value_materialization                =*/value_materialization_mode::indexed,
         /*.lazy_value_load                      =*/true,
         /*.inlined_classify                     =*/true,

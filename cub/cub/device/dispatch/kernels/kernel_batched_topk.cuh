@@ -280,14 +280,8 @@ struct multi_worker_agent_policy_lift
 {
   static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
   static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
-  using type                              = detail::batched_topk::AgentTopKPolicy<
-                                 mw.threads_per_block,
-                                 mw.items_per_thread,
-                                 mw.bits_per_pass,
-                                 mw.scan_algorithm,
-                                 mw.keys_tile_load_kind,
-                                 mw.accumulating_buffer_capacity,
-                                 mw.speculative_selected_buffer_capacity>;
+  using type                              = detail::batched_topk::
+    AgentTopKPolicy<mw.threads_per_block, mw.items_per_thread, mw.bits_per_pass, mw.scan_algorithm, mw.keys_tile_load_kind>;
 };
 
 // Lift `multi_worker_per_segment_policy.tiles_per_chunk` to a compile-time constant for the
@@ -615,12 +609,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
-  static constexpr batched_topk_policy bp                                      = current_policy<PolicySelector>();
-  static constexpr multi_worker_policy mw                                      = bp.multi_worker_per_segment_policy;
-  static constexpr detail::topk::block_partition_strategy buffered_part_strat  = mw.buffered_partition_strategy;
-  static constexpr detail::topk::block_filter_strategy early_stop_filter_strat = mw.early_stop_filter_strategy;
-  static constexpr bool lazy_value_load                                        = mw.lazy_value_load;
-  static constexpr bool inlined_classify                                       = mw.inlined_classify;
+  static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
+  static constexpr bool lazy_value_load   = mw.lazy_value_load;
+  static constexpr bool inlined_classify  = mw.inlined_classify;
   // Compile-time switch for the "filter walks full tiles only" mode: the agent drops the slow-path
   // `dispatch_tile<false>` call; each segment's trailing partial tile is processed by
   // `device_segmented_topk_finalize_filter_kernel` via `agent.process_partial_for_segment`.
@@ -646,8 +638,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     LargeSegmentTileOffsetT,
     OffsetT,
     OutOffsetT,
-    buffered_part_strat,
-    early_stop_filter_strat,
     lazy_value_load,
     inlined_classify,
     full_tiles_only_filter>;
@@ -764,12 +754,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // Partial-tile processing instantiates the same filter agent the filter kernel uses --
   // same `extract_bin_op_t` / `identify_candidates_op_t`, same partition primitives, same
   // smem layout. Only the entry method differs (`process_partial_for_segment` vs `run`).
-  static constexpr batched_topk_policy bp                                      = current_policy<PolicySelector>();
-  static constexpr multi_worker_policy mw                                      = bp.multi_worker_per_segment_policy;
-  static constexpr detail::topk::block_partition_strategy buffered_part_strat  = mw.buffered_partition_strategy;
-  static constexpr detail::topk::block_filter_strategy early_stop_filter_strat = mw.early_stop_filter_strategy;
-  static constexpr bool lazy_value_load                                        = mw.lazy_value_load;
-  static constexpr bool inlined_classify                                       = mw.inlined_classify;
+  static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
+  static constexpr bool lazy_value_load   = mw.lazy_value_load;
+  static constexpr bool inlined_classify  = mw.inlined_classify;
 
   using extract_bin_op_t =
     detail::batched_topk::extract_bin_op_t<KeyT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
@@ -791,8 +779,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     LargeSegmentTileOffsetT,
     OffsetT,
     OutOffsetT,
-    buffered_part_strat,
-    early_stop_filter_strat,
     lazy_value_load,
     inlined_classify,
     /*FullTilesOnly=*/process_partial>;
@@ -968,11 +954,10 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     static_cast<narrow_segment_count_t<NumSegmentsParameterT>>(*large_segments_count_it);
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
-  static constexpr batched_topk_policy bp                            = current_policy<PolicySelector>();
-  static constexpr multi_worker_policy mw                            = bp.multi_worker_per_segment_policy;
-  static constexpr detail::topk::block_partition_strategy part_strat = mw.last_filter_partition_strategy;
-  static constexpr bool lazy_value_load                              = mw.lazy_value_load;
-  static constexpr bool inlined_classify                             = mw.inlined_classify;
+  static constexpr batched_topk_policy bp = current_policy<PolicySelector>();
+  static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
+  static constexpr bool lazy_value_load   = mw.lazy_value_load;
+  static constexpr bool inlined_classify  = mw.inlined_classify;
 
   using identify_candidates_op_t = detail::batched_topk::
     identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
@@ -992,7 +977,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     LargeSegmentTileOffsetT,
     OffsetT,
     OutOffsetT,
-    part_strat,
     lazy_value_load,
     inlined_classify>;
 

@@ -12,8 +12,6 @@
 //!   - All sinks (reserve op, output iterator, value-channel sink) AND the
 //!     `identify_selected_op` predicate are captured by ctor and stored as members. Per-call
 //!     args reduce to per-tile data plus the live value `TileDataSource`.
-//!
-//! Strategy selection is done by `strategy_to_filter_class_t<Strategy, ...>` below.
 
 #pragma once
 
@@ -47,21 +45,6 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail::topk
 {
-//---------------------------------------------------------------------
-// Strategy selector for the filter primitives. Mirrors `block_partition_strategy`: the default
-// tuning uses only `atomics` (`block_filter_atomics`). The enum retains the other (currently
-// unimplemented) values for policy/ABI compatibility; `strategy_to_filter_class_t` maps every
-// strategy to `block_filter_atomics` in this build.
-//---------------------------------------------------------------------
-enum class block_filter_strategy
-{
-  atomics,
-  staged,
-  shared_mem,
-  accumulating_filter,
-  speculative_filter,
-};
-
 //---------------------------------------------------------------------
 // Per-channel value-sink bundle for the single-stream filter primitives.
 // Sibling of `value_channel_sinks_t` in `block_partition.cuh`, holding only
@@ -153,7 +136,7 @@ struct precomputed_filter_classifier
 // `block_filter_atomics` -- per-kept-item global atomic + scatter, no smem.
 // `InlinedClassify` selects between the precomputed-classes form (materializes a `kept[]`
 // register array up front) and the inlined-classify form (recomputes the predicate at each
-// scatter use-site, freeing those registers). Mapped from `block_filter_strategy::atomics`.
+// scatter use-site, freeing those registers).
 //---------------------------------------------------------------------
 template <int BlockThreads,
           int ItemsPerThread,
@@ -355,37 +338,6 @@ private:
   ValueChannelSinksT sinks;
   IdentifySelectedOp& identify_op;
 };
-
-// Maps a `block_filter_strategy` to its filter class. The default tuning only uses `atomics`;
-// the strategy / buffer-capacity template parameters are retained for call-site compatibility
-// but ignored here.
-template <block_filter_strategy Strategy,
-          int BlockThreads,
-          int ItemsPerThread,
-          int AccumulatingBufferCapacity,
-          typename KeyT,
-          typename SelectedOffsetT,
-          typename SelectedReserveOp,
-          typename SelectedKeyOutIt,
-          typename IdentifySelectedOp,
-          typename ValueChannelSinksT,
-          typename ValueT,
-          typename ValueDataSourceScratchT,
-          bool LazyValueLoad,
-          bool InlinedClassify>
-using strategy_to_filter_class_t = block_filter_atomics<
-  BlockThreads,
-  ItemsPerThread,
-  InlinedClassify,
-  KeyT,
-  SelectedOffsetT,
-  SelectedReserveOp,
-  SelectedKeyOutIt,
-  IdentifySelectedOp,
-  ValueChannelSinksT,
-  ValueT,
-  ValueDataSourceScratchT,
-  LazyValueLoad>;
 } // namespace detail::topk
 
 CUB_NAMESPACE_END
