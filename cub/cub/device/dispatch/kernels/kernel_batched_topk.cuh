@@ -87,8 +87,7 @@ private:
 
 public:
   // -1 when no covering+fitting policy exists.
-  static constexpr int selected_index = raw_selected_index;
-  static constexpr bool found         = (raw_selected_index >= 0);
+  static constexpr bool found = (raw_selected_index >= 0);
 
   // Only meaningful when `found == true`.
   static constexpr policy_t policy = {
@@ -155,8 +154,7 @@ private:
   static constexpr int safe_index         = raw_selected_index >= 0 ? raw_selected_index : 0;
 
 public:
-  static constexpr int selected_index = raw_selected_index;
-  static constexpr bool found         = (raw_selected_index >= 0);
+  static constexpr bool found = (raw_selected_index >= 0);
 
   static constexpr policy_t policy = {
     active_policy.worker_per_segment_policies[safe_index], active_policy.multi_worker_per_segment_policy};
@@ -354,7 +352,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     SegmentIdProviderT,
     LargeSegmentTileOffsetT,
     OffsetT,
-    OutOffsetT,
     LargeSegmentsCountItT,
     SegmentCountT>;
 

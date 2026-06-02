@@ -239,11 +239,6 @@ struct alignas(128) counter : counter_cross_pass_state<OffsetT, OutOffsetT>
   // Used to determine the write-offset into `out_buf`. Reset by the buffered-pass epilogue.
   alignas(128) OffsetT num_candidates_written;
 
-  // Used to count the number of retired thread blocks. The counter is used to determine the last
-  // block to retire and execute the `block_identify_kth_bucket` epilogue (prefix sum + bucket
-  // selection). Wraps each pass via `atomicInc`.
-  alignas(128) unsigned int finished_block_cnt;
-
   // ----- (3) Cross-pass cumulative atomics -----
 
   // Used to determine the write-offset for selected items into the user-provided output

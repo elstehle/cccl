@@ -89,7 +89,6 @@ struct agent_batched_topk_worker_per_segment
   using value_t = it_value_t<values_in_it_t>;
 
   using segment_size_val_t = typename SegmentSizeParameterT::value_type;
-  using num_segments_val_t = typename NumSegmentsParameterT::value_type;
   // Narrowed (32-bit when the segment count fits) so the enqueue `atomicAdd` on `large_segments_count` and the
   // `d_large_segments_ids` writes are 32-bit (also warp-aggregate eligible); matches the dispatch's `SegmentCountT`.
   using counters_t = batched_topk_counters<narrow_segment_count_t<NumSegmentsParameterT>>;
@@ -436,7 +435,6 @@ template <typename AgentTopKPolicyT,
           typename SegmentIdProviderT,
           typename LargeSegmentTileOffsetT,
           typename OffsetT,
-          typename OutOffsetT,
           typename LargeSegmentsCountItT,
           typename SegmentCountT,
           typename FilterOpT = detail::batched_topk::topk_pass_through_filter_op>
