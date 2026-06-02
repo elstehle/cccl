@@ -10,14 +10,8 @@
 #endif
 
 #include "cuda/__iterator/constant_iterator.h"
-// `device_topk.cuh` (single-problem) and `dispatch_batched_topk.cuh` (batched) both define
-// symbols in `cub::detail::topk` (e.g. `candidate_class`), so they cannot coexist in one TU.
-// Pull in only the path this build dispatches to.
-#if CUB_BENCH_TOPK_USE_BATCHED
-#  include <cub/device/dispatch/dispatch_batched_topk.cuh>
-#else
-#  include <cub/device/device_topk.cuh>
-#endif
+#include <cub/device/device_topk.cuh>
+#include <cub/device/dispatch/dispatch_batched_topk.cuh>
 
 #include <cuda/__execution/determinism.h>
 #include <cuda/__execution/output_ordering.h>
