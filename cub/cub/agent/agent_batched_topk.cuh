@@ -439,9 +439,6 @@ template <typename AgentTopKPolicyT,
           typename OutOffsetT,
           typename LargeSegmentsCountItT,
           typename SegmentCountT,
-          // When `true`, `run()` processes only full tiles; each segment's trailing partial tile is handled by
-          // `device_segmented_topk_finalize_histogram_kernel`.
-          bool FullTilesOnly = false,
           typename FilterOpT = detail::batched_topk::topk_pass_through_filter_op>
 struct agent_batched_topk_histogram
 {
@@ -810,11 +807,7 @@ template <typename AgentTopKPolicyT,
           typename OffsetT,
           typename OutOffsetT,
           bool LazyValueLoad   = false,
-          bool InlinedClassify = false,
-          // `run()` processes only full tiles; each segment's partial tile is processed by
-          // `device_segmented_topk_finalize_filter_kernel` via `process_partial_for_segment(queue_idx, pass)`
-          // before its prefix-sum + bucket-finder runs.
-          bool FullTilesOnly = false>
+          bool InlinedClassify = false>
 struct agent_batched_topk_filter_partition
 {
   using keys_in_it_t    = it_value_t<KeyInputItItT>;

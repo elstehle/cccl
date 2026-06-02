@@ -346,11 +346,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // array flow into the agent, which dereferences them inside `run` / `resolve_queue_idx`.
   using agent_topk_policy_t = typename topk_seg_kernel_detail::multi_worker_agent_policy_lift<PolicySelector>::type;
 
-  // Compile-time switch for the "histogram walks full tiles only" mode: the agent drops the
-  // partial-tile path; the trailing partial of each segment is handled by
-  // `device_segmented_topk_finalize_histogram_kernel`.
-  static constexpr bool full_tiles_only = topk_seg_kernel_detail::full_tiles_only_histogram<PolicySelector>::value;
-
   using agent_t = agent_batched_topk_histogram<
     agent_topk_policy_t,
     KeyInputItItT,
@@ -361,8 +356,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OffsetT,
     OutOffsetT,
     LargeSegmentsCountItT,
-    SegmentCountT,
-    full_tiles_only>;
+    SegmentCountT>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
 
@@ -613,11 +607,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr multi_worker_policy mw = bp.multi_worker_per_segment_policy;
   static constexpr bool lazy_value_load   = mw.lazy_value_load;
   static constexpr bool inlined_classify  = mw.inlined_classify;
-  // Compile-time switch for the "filter walks full tiles only" mode: the agent drops the slow-path
-  // `dispatch_tile<false>` call; each segment's trailing partial tile is processed by
-  // `device_segmented_topk_finalize_filter_kernel` via `agent.process_partial_for_segment`.
-  static constexpr bool full_tiles_only_filter = topk_seg_kernel_detail::full_tiles_only_filter<PolicySelector>::value;
-
   using extract_bin_op_t =
     detail::batched_topk::extract_bin_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
   using identify_candidates_op_t = detail::batched_topk::
@@ -639,8 +628,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OffsetT,
     OutOffsetT,
     lazy_value_load,
-    inlined_classify,
-    full_tiles_only_filter>;
+    inlined_classify>;
 
   __shared__ typename agent_t::TempStorage temp_storage;
   const extract_bin_op_t extract_bin_op{pass, total_bits, decomposer};
@@ -780,8 +768,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     OffsetT,
     OutOffsetT,
     lazy_value_load,
-    inlined_classify,
-    /*FullTilesOnly=*/process_partial>;
+    inlined_classify>;
 
   // Union the agent's per-tile smem (~9 KB for the buffered arm: smem histogram + keys
   // source state + partition arena) with the prefix-sum scratch. Partial processing
