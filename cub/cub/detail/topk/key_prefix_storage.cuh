@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 //! @file
-//! Storage for the already-resolved high bits of the running k-th key. Shared by the
-//! single-problem and batched top-k implementations (it backs each segment's / problem's
-//! per-pass `kth_key_bits` counter field). Two shapes, selected by whether the key type can be
-//! twiddled into a single unsigned word.
+//! Radix key-prefix helpers shared by the single-problem and batched top-k implementations:
+//!   - `key_prefix_storage_t` -- storage for the already-resolved high bits of the running k-th
+//!     key (it backs each problem's / segment's per-pass `kth_key_bits` counter field); two
+//!     shapes, selected by whether the key type twiddles into a single unsigned word.
+//!   - `calc_start_bit` -- the start bit (LSB-indexed) processed by a given radix pass.
 
 #pragma once
 
@@ -61,6 +62,30 @@ struct key_prefix_storage_t<KeyT, false>
     words[0] = (words[0] << shift) | value;
   }
 };
+// Calculates the starting bit for a given pass (bit 0 is the least significant (rightmost) bit).
+// We process the input from the most to the least significant bit. This way, we can skip some passes in the end.
+template <typename T, int BitsPerPass>
+[[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int calc_start_bit(const int pass)
+{
+  int start_bit = int{sizeof(T)} * 8 - (pass + 1) * BitsPerPass;
+  if (start_bit < 0)
+  {
+    start_bit = 0;
+  }
+  return start_bit;
+}
+
+template <int BitsPerPass>
+[[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int calc_start_bit(const int total_bits, const int pass)
+{
+  int start_bit = total_bits - (pass + 1) * BitsPerPass;
+  if (start_bit < 0)
+  {
+    start_bit = 0;
+  }
+  return start_bit;
+}
+
 } // namespace detail::topk
 
 CUB_NAMESPACE_END

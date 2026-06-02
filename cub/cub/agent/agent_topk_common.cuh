@@ -96,30 +96,6 @@ template <int BitsPerPass>
   return ::cuda::ceil_div<int>(total_bits, BitsPerPass);
 }
 
-// Calculates the starting bit for a given pass (bit 0 is the least significant (rightmost) bit).
-// We process the input from the most to the least significant bit. This way, we can skip some passes in the end.
-template <typename T, int BitsPerPass>
-[[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int calc_start_bit(const int pass)
-{
-  int start_bit = int{sizeof(T)} * 8 - (pass + 1) * BitsPerPass;
-  if (start_bit < 0)
-  {
-    start_bit = 0;
-  }
-  return start_bit;
-}
-
-template <int BitsPerPass>
-[[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int calc_start_bit(const int total_bits, const int pass)
-{
-  int start_bit = total_bits - (pass + 1) * BitsPerPass;
-  if (start_bit < 0)
-  {
-    start_bit = 0;
-  }
-  return start_bit;
-}
-
 // Template parameters are ordered with `BitsPerPass` first so callers only have
 // to spell the non-deducible compile-time constant; `KeyT` is deduced from the
 // `key_prefix_storage_t<KeyT>&` argument.

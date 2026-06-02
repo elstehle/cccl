@@ -605,7 +605,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr bool inlined_classify  = mw.inlined_classify;
   using extract_bin_op_t =
     detail::batched_topk::extract_bin_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
-  using identify_candidates_op_t = detail::batched_topk::
+  using identify_candidates_op_t = detail::topk::
     identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
 
   using agent_t = agent_batched_topk_filter_partition<
@@ -743,7 +743,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
 
   using extract_bin_op_t =
     detail::batched_topk::extract_bin_op_t<KeyT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
-  using identify_candidates_op_t = detail::batched_topk::
+  using identify_candidates_op_t = detail::topk::
     identify_candidates_op_t<KeyT, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
 
   using filter_agent_t = agent_batched_topk_filter_partition<
@@ -940,7 +940,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   static constexpr bool lazy_value_load   = mw.lazy_value_load;
   static constexpr bool inlined_classify  = mw.inlined_classify;
 
-  using identify_candidates_op_t = detail::batched_topk::
+  using identify_candidates_op_t = detail::topk::
     identify_candidates_op_t<key_t, SelectDirection, agent_topk_policy_t::bits_per_pass, DecomposerT>;
 
   using agent_t = agent_batched_topk_last_filter<
