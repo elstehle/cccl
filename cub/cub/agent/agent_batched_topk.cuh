@@ -234,16 +234,8 @@ struct agent_batched_topk_worker_per_segment
     else
     {
       // Process small segment
-      const auto k         = (::cuda::std::min) (k_param.get_param(segment_id),
+      const auto k = (::cuda::std::min) (k_param.get_param(segment_id),
                                          static_cast<decltype(k_param.get_param(segment_id))>(segment_size));
-      const auto direction = select_directions.get_param(segment_id);
-
-      // Determine padding key based on direction
-      const key_t padding_key =
-        (direction == detail::topk::select::max)
-          ? ::cuda::std::numeric_limits<key_t>::lowest()
-          : ::cuda::std::numeric_limits<key_t>::max();
-
       // Dereference iterator-of-iterators to get the segment specific iterator
       auto block_keys_in = d_key_segments_it[segment_id];
 
@@ -455,7 +447,6 @@ struct agent_batched_topk_histogram
 {
   using keys_in_it_t = it_value_t<KeyInputItItT>;
   using key_t        = it_value_t<keys_in_it_t>;
-  using counter_t    = detail::batched_topk::counter<key_t, OffsetT, OutOffsetT>;
 
   static constexpr int block_threads    = AgentTopKPolicyT::block_threads;
   static constexpr int items_per_thread = AgentTopKPolicyT::items_per_thread;
@@ -482,7 +473,6 @@ struct agent_batched_topk_histogram
     LargeSegmentTileOffsetT segment_end;
 
     // Per-segment tile-shape state.
-    OffsetT num_items;
     OffsetT num_full_tiles;
     OffsetT partial_items;
 
@@ -564,7 +554,6 @@ private:
 
       temp_storage.active_segment.slab_base         = slab_base;
       temp_storage.active_segment.segment_end       = slab_base + static_cast<LargeSegmentTileOffsetT>(seg_tile_count);
-      temp_storage.active_segment.num_items         = num_items;
       temp_storage.active_segment.num_full_tiles    = num_full_tiles;
       temp_storage.active_segment.partial_items     = partial_items;
       temp_storage.active_segment.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
@@ -777,95 +766,6 @@ public:
     // the early-return above already filtered out CTAs with no work, so we've entered at least one segment.
     __syncthreads();
     flush_active_segment();
-  }
-
-  // Monolithic alternative to `run()`: a single while-loop over `chunk_cursor` with no fast/slow peel, a
-  // `kNoActiveSegment` sentinel that gates the first-time `enter_segment` inside the loop, and per-stretch full
-  // tiles in one straight `for` (no power-of-two bit decomposition). Kept for a future policy to opt into when the
-  // split's register cost outweighs its throughput gains. Uncalled, so it costs nothing in the default build.
-  template <int TilesPerChunk>
-  _CCCL_DEVICE _CCCL_FORCEINLINE void run2()
-  {
-    const LargeSegmentTileOffsetT* const d_total_large_tiles =
-      &d_large_segments_tile_offsets[static_cast<SegmentCountT>(*large_segments_count_it)];
-
-    // Sentinel meaning "no segment loaded yet"; flips to the segment's queue_idx the first
-    // time this CTA touches a tile and never reverts.
-    constexpr LargeSegmentTileOffsetT kNoActiveSegment = static_cast<LargeSegmentTileOffsetT>(-1);
-    LargeSegmentTileOffsetT active_queue_idx           = kNoActiveSegment;
-
-    constexpr LargeSegmentTileOffsetT chunk_size_v = static_cast<LargeSegmentTileOffsetT>(TilesPerChunk);
-    const LargeSegmentTileOffsetT stride           = static_cast<LargeSegmentTileOffsetT>(gridDim.x) * chunk_size_v;
-
-    for (LargeSegmentTileOffsetT chunk_start = static_cast<LargeSegmentTileOffsetT>(blockIdx.x) * chunk_size_v;
-         chunk_start < *d_total_large_tiles;
-         chunk_start += stride)
-    {
-      const LargeSegmentTileOffsetT chunk_end =
-        (chunk_start + chunk_size_v < *d_total_large_tiles) ? chunk_start + chunk_size_v : *d_total_large_tiles;
-
-      LargeSegmentTileOffsetT chunk_cursor = chunk_start;
-      while (chunk_cursor < chunk_end)
-      {
-        // Segment-state refresh -- only when the cached segment doesn't cover `chunk_cursor`. The first refresh
-        // uses `enter_segment` (no smem-histogram to flush yet); later ones use `switch_to_segment` (flushes first).
-        if (active_queue_idx == kNoActiveSegment)
-        {
-          enter_segment(chunk_cursor);
-          // Mark "have an active segment" -- the queue_idx isn't read again (everything is read from
-          // `temp_storage.active_segment`); the sentinel toggle just gates the flush-vs-no-flush refresh choice.
-          active_queue_idx = LargeSegmentTileOffsetT{0};
-        }
-        else if (chunk_cursor >= temp_storage.active_segment.segment_end)
-        {
-          switch_to_segment(chunk_cursor);
-        }
-
-        // Tile-space bounds of this segment-stretch inside the chunk.
-        const LargeSegmentTileOffsetT slab_base          = temp_storage.active_segment.slab_base;
-        const OffsetT local_tile_start                   = static_cast<OffsetT>(chunk_cursor - slab_base);
-        const LargeSegmentTileOffsetT remaining_in_chunk = chunk_end - chunk_cursor;
-        const OffsetT num_full_tiles                     = temp_storage.active_segment.num_full_tiles;
-        const OffsetT full_tiles_remaining_in_seg =
-          (local_tile_start < num_full_tiles) ? (num_full_tiles - local_tile_start) : OffsetT{0};
-        const OffsetT full_tiles_to_process =
-          (::cuda::std::min) (static_cast<OffsetT>(remaining_in_chunk), full_tiles_remaining_in_seg);
-
-        // At-most-one trailing partial slot, reached iff the full-tile loop ends at the segment's partial-tile slot
-        // AND the segment has a partial AND chunk budget remains. The partial load + bin is owned by the
-        // finalize-histogram kernel; here the slot is only "consumed" so the chunk walk doesn't stall on it.
-        const OffsetT next_local_tile = local_tile_start + full_tiles_to_process;
-        const bool reaches_partial_slot =
-          (next_local_tile == num_full_tiles) && (temp_storage.active_segment.partial_items > 0)
-          && (full_tiles_to_process + OffsetT{1} <= static_cast<OffsetT>(remaining_in_chunk));
-
-        // Construct the per-segment-stretch keys-source view once, reused across the full-tile loop.
-        keys_source_t keys_source{temp_storage.active_segment.d_keys_in, temp_storage.keys_source_state};
-
-        // Inner: full-tile loop.
-        for (OffsetT i = 0; i < full_tiles_to_process; ++i)
-        {
-          process_full_tile_at(keys_source, local_tile_start + i);
-        }
-
-        // Advance past the partial-tile slot too (consumed but not processed here -- the finalize-histogram kernel
-        // owns the partial load + bin).
-        const OffsetT tiles_consumed = full_tiles_to_process + (reaches_partial_slot ? OffsetT{1} : OffsetT{0});
-        if (tiles_consumed == OffsetT{0})
-        {
-          break;
-        }
-        chunk_cursor += static_cast<LargeSegmentTileOffsetT>(tiles_consumed);
-      }
-    }
-
-    // Final flush: merge the last active segment-stretch's smem histogram into its global
-    // slab. Skipped only when this CTA had no work at all.
-    if (active_queue_idx != kNoActiveSegment)
-    {
-      __syncthreads();
-      flush_active_segment();
-    }
   }
 };
 
@@ -1201,9 +1101,6 @@ private:
     // `identify_candidates_op_t` has no default ctor for some `T`, so cache its ctor inputs here and build it on
     // demand in the per-mode tile body (cheap: a `key_prefix_storage_t*` copy + an `int` shift).
     int pass;
-
-    OutOffsetT current_k;
-    OffsetT current_len;
     OffsetT input_length_actual;
     OffsetT num_full_tiles;
     OffsetT partial_items;
@@ -1250,8 +1147,6 @@ private:
     s.segment_counter   = d_segment_counters + queue_idx;
     s.segment_histogram = d_segment_histograms + queue_idx * num_buckets;
 
-    s.current_k                        = s.segment_counter->k;
-    s.current_len                      = s.segment_counter->num_candidates_out;
     const OffsetT counter_input_length = s.segment_counter->num_candidates_in;
     s.load_from_candidates_buffer      = s.segment_counter->load_from_candidates_buffer;
 
@@ -1266,9 +1161,11 @@ private:
     const OffsetT segment_num_items = static_cast<OffsetT>(segment_sizes.get_param(segment_id));
     s.input_length_actual           = counter_input_length;
 
-    const bool early_stop  = (s.current_len == static_cast<OffsetT>(s.current_k));
-    const bool will_buffer = !early_stop && (s.current_len <= candidate_buffer_length)
-                          && (s.current_len <= segment_num_items / candidate_buffer_coefficient);
+    const OutOffsetT current_k = s.segment_counter->k;
+    const OffsetT current_len  = s.segment_counter->num_candidates_out;
+    const bool early_stop      = (current_len == static_cast<OffsetT>(current_k));
+    const bool will_buffer     = !early_stop && (current_len <= candidate_buffer_length)
+                          && (current_len <= segment_num_items / candidate_buffer_coefficient);
     s.mode = early_stop  ? segment_processing_mode::early_stop
            : will_buffer ? segment_processing_mode::buffered
                          : segment_processing_mode::unbuffered;
