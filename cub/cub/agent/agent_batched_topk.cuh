@@ -926,14 +926,10 @@ struct agent_batched_topk_filter_partition
     agent_value_data_source_scratch_t,
     effective_lazy_value_load>;
 
-  // Same `empty_prefix_sum_t` placeholder pattern as the single-problem agent.
-  struct empty_prefix_sum_t
-  {};
-
-  using buffered_storage_layout_t = detail::topk::
-    partition_storage_layout_for_t<buffered_partition_t, typename keys_source_t::ScratchStorage, empty_prefix_sum_t>;
-  using early_stop_storage_layout_t = detail::topk::
-    partition_storage_layout_for_t<early_stop_filter_t, typename keys_source_t::ScratchStorage, empty_prefix_sum_t>;
+  using buffered_storage_layout_t =
+    detail::topk::partition_storage_layout_for_t<buffered_partition_t, typename keys_source_t::ScratchStorage>;
+  using early_stop_storage_layout_t =
+    detail::topk::partition_storage_layout_for_t<early_stop_filter_t, typename keys_source_t::ScratchStorage>;
 
   // The per-segment prefix-sum + kth-bucket scan lives in `device_segmented_topk_finalize_filter_kernel`, so smem
   // here is just the per-mode arms used during the tile body. `keys_source_t` (multi-source) doesn't publish its own
@@ -1738,11 +1734,8 @@ struct agent_batched_topk_last_filter
     agent_value_data_source_scratch_t,
     effective_lazy_value_load>;
 
-  struct empty_prefix_sum_t
-  {};
-
   using storage_layout_t =
-    detail::topk::partition_storage_layout_for_t<partition_t, typename keys_source_t::ScratchStorage, empty_prefix_sum_t>;
+    detail::topk::partition_storage_layout_for_t<partition_t, typename keys_source_t::ScratchStorage>;
 
   // Per-child persistent state. `keys_source_t` (multi-source) doesn't publish a `TempStorage`, so the agent holds
   // one `TempStorage` per child source.
