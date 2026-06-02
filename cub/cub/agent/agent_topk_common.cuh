@@ -10,9 +10,8 @@
 //!   - `AgentTopKPolicy`                  — pure NTTP policy knobs.
 //!   - `key_prefix_storage_t` and helpers — kth-key bit accumulator and start-bit math.
 //!   - `counter`                          — device-side coordination state for the top-k passes.
-//!   - `init_histogram` / `merge_histogram` / `finalize_pass` — block/grid histogram primitives.
+//!   - `init_histogram` / `merge_histogram` — block/grid histogram primitives.
 //!   - `block_identify_kth_bucket`        — last-block prefix-sum + bucket-finder.
-//!   - `sink_mode` enum                   — filter-partition agent's runtime sink selector.
 //!   - Filter / callback adapter ops      — predicates and callbacks consumed by the block primitives.
 //!
 //! Nothing in this header is single-problem-specific: every type and free function takes either
@@ -99,13 +98,6 @@ struct key_prefix_storage_t<KeyT, true>
   using bits_t = typename Traits<KeyT>::UnsignedBits;
   bits_t bits;
 };
-
-// Calculates the number of passes needed for a type T with BitsPerPass bits processed per pass.
-template <typename T>
-[[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr int calc_num_passes(int bits_per_pass)
-{
-  return ::cuda::ceil_div<int>(sizeof(T) * 8, bits_per_pass);
-}
 
 template <int BitsPerPass>
 [[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int calc_num_passes(const int total_bits)
@@ -337,33 +329,6 @@ _CCCL_DEVICE _CCCL_FORCEINLINE void load_histogram(DstCounterT* dst, const SrcCo
 }
 
 //---------------------------------------------------------------------
-// Last-block coordination primitive.
-// Fences pending writes, atomically detects the last-finishing block via `retired_block_counter`, and invokes
-// `epilogue_op` exactly once on that block. The epilogue owns whatever smem it needs and decides what "finalization"
-// means (top-k uses it to run `block_identify_kth_bucket::find_kth_bucket` plus any per-mode counter bookkeeping).
-// `expected_block_count` is the number of blocks expected to retire (e.g., `gridDim.x`.
-//---------------------------------------------------------------------
-template <typename BlockCountT, typename EpilogueOpT>
-_CCCL_DEVICE _CCCL_FORCEINLINE void
-finalize_pass(BlockCountT* retired_block_counter, unsigned int expected_block_count, EpilogueOpT epilogue_op)
-{
-  __threadfence();
-
-  bool is_last_block = false;
-  if (threadIdx.x == 0)
-  {
-    const unsigned int wrap_at = expected_block_count - 1u;
-    const unsigned int retired = atomicInc(retired_block_counter, wrap_at);
-    is_last_block              = (retired == wrap_at);
-  }
-
-  if (__syncthreads_or(is_last_block))
-  {
-    epilogue_op();
-  }
-}
-
-//---------------------------------------------------------------------
 // Computes the prefix-sum over bins and finds the k-th item bucket. The `find_kth_bucket()`
 // entry point invokes `on_kth_bucket` exactly once, on the single thread owning that bucket.
 // Steps: load per-bin counts into a blocked arrangement; `BlockScan::InclusiveSum`; exchange
@@ -568,19 +533,6 @@ struct topk_candidate_filter_op
 //---------------------------------------------------------------------
 // agent_topk_filter_partition & agent_topk_last_filter helpers
 //---------------------------------------------------------------------
-
-//---------------------------------------------------------------------
-// sink_mode: compile-time selector for agent_topk_filter_partition, driving a runtime switch in
-// DeviceTopKFilterKernel. `early_stop` is the final collapsed pass; `buffered` writes output and
-// stages remaining candidates into a back buffer. The histogram-only "scout" pass is handled
-// separately by `AgentTopKHistogram` with a candidate filter, so it is not a mode here.
-//---------------------------------------------------------------------
-
-enum class sink_mode
-{
-  early_stop, // selected + candidate -> d_keys_out front; no histogram
-  buffered, // selected -> d_keys_out; candidate -> out_buf; histogram over candidates
-};
 
 // No-op candidate callback. Used by `agent_topk_last_filter` (no histogram is
 // accumulated on the last filter pass; the partition primitive still requires

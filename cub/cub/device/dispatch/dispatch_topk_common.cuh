@@ -47,23 +47,6 @@ struct topk_index_gather_op
   }
 };
 
-// Picks the value-channel iterator types passed to the kernels based on the resolved `value_materialization_mode`.
-template <bool Indexed, typename ValueInputIteratorT, typename ValueOutputIteratorT, typename OffsetT>
-struct effective_value_iterators
-{
-  using in_t = ValueInputIteratorT;
-  using out_t = ValueOutputIteratorT;
-  using value_t = it_value_t<ValueInputIteratorT>;
-};
-
-template <typename ValueInputIteratorT, typename ValueOutputIteratorT, typename OffsetT>
-struct effective_value_iterators<true, ValueInputIteratorT, ValueOutputIteratorT, OffsetT>
-{
-  using in_t = ::cuda::counting_iterator<OffsetT>;
-  using out_t = ::cuda::transform_output_iterator<topk_index_gather_op<ValueInputIteratorT>, ValueOutputIteratorT>;
-  using value_t = OffsetT;
-};
-
 //---------------------------------------------------------------------
 // Helpers for extracting bins (histogram computation) and classifying items (selected, candidate, rejected)
 //---------------------------------------------------------------------
@@ -86,16 +69,11 @@ struct extract_bin_op_t;
 template <typename T, select SelectDirection, int BitsPerPass, typename DecomposerT>
 struct extract_bin_op_t<T, SelectDirection, BitsPerPass, DecomposerT, true>
 {
-  static constexpr bool is_descending = SelectDirection != select::min;
-  using bit_ordered_type              = typename Traits<T>::UnsignedBits;
-
-  int pass{};
   int start_bit{};
   unsigned mask{};
 
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE extract_bin_op_t(int pass, int /*total_bits*/, DecomposerT /*decomposer*/)
-      : pass(pass)
-      , start_bit(calc_start_bit<T, BitsPerPass>(pass))
+      : start_bit(calc_start_bit<T, BitsPerPass>(pass))
       , mask(calc_mask<T, BitsPerPass>(pass))
   {}
 

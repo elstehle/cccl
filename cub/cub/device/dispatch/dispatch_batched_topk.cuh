@@ -128,22 +128,18 @@ template <::cuda::std::int64_t MinNumItems = 1,
 struct total_num_items_guarantee
 {
   using value_type                                 = ::cuda::std::int64_t;
-  static constexpr value_type static_min_num_items = MinNumItems;
   static constexpr value_type static_max_num_items = MaxNumItems;
 
-  value_type min_num_items = MinNumItems;
   value_type max_num_items = MaxNumItems;
 
   total_num_items_guarantee() = default;
 
   _CCCL_HOST_DEVICE total_num_items_guarantee(value_type num_items)
-      : min_num_items(num_items)
-      , max_num_items(num_items)
+      : max_num_items(num_items)
   {}
 
-  _CCCL_HOST_DEVICE total_num_items_guarantee(value_type min_items, value_type max_items)
-      : min_num_items(min_items)
-      , max_num_items(max_items)
+  _CCCL_HOST_DEVICE total_num_items_guarantee(value_type /*min_items*/, value_type max_items)
+      : max_num_items(max_items)
   {}
 };
 

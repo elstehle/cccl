@@ -135,11 +135,7 @@ enum class tile_load_kind
 {
   direct,
   block_load_direct,
-  block_load_striped,
   block_load_vectorize,
-  block_load_transpose,
-  block_load_warp_transpose,
-  block_load_warp_transpose_timesliced,
 };
 
 // Mapping from `tile_load_kind` to `cub::BlockLoadAlgorithm`, used by the data source factory.
@@ -152,29 +148,9 @@ struct sync_block_load_algo<tile_load_kind::block_load_direct>
   static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_DIRECT;
 };
 template <>
-struct sync_block_load_algo<tile_load_kind::block_load_striped>
-{
-  static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_STRIPED;
-};
-template <>
 struct sync_block_load_algo<tile_load_kind::block_load_vectorize>
 {
   static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_VECTORIZE;
-};
-template <>
-struct sync_block_load_algo<tile_load_kind::block_load_transpose>
-{
-  static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_TRANSPOSE;
-};
-template <>
-struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose>
-{
-  static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_WARP_TRANSPOSE;
-};
-template <>
-struct sync_block_load_algo<tile_load_kind::block_load_warp_transpose_timesliced>
-{
-  static constexpr CUB_NS_QUALIFIER::BlockLoadAlgorithm value = CUB_NS_QUALIFIER::BLOCK_LOAD_WARP_TRANSPOSE_TIMESLICED;
 };
 
 //---------------------------------------------------------------------
@@ -687,32 +663,28 @@ struct factory_impl;
 template <tile_load_kind Kind>
 struct factory_impl<Kind, /*IsGenerative=*/true>
 {
-  template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT, ::cuda::std::size_t /*GmemAlign*/>
+  template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT>
   using data_source_t = direct_data_source<It, BlockThreads, ItemsPerThread, OffsetT>;
 };
 
 template <>
 struct factory_impl<tile_load_kind::direct, /*IsGenerative=*/false>
 {
-  template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT, ::cuda::std::size_t /*GmemAlign*/>
+  template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT>
   using data_source_t = direct_data_source<It, BlockThreads, ItemsPerThread, OffsetT>;
 };
 
-#define _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(Kind)                                                                        \
-  template <>                                                                                                         \
-  struct factory_impl<Kind, /*IsGenerative=*/false>                                                                   \
-  {                                                                                                                   \
-    template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT, ::cuda::std::size_t /*GmemAlign*/> \
-    using data_source_t =                                                                                             \
-      sync_block_load_data_source<It, BlockThreads, ItemsPerThread, sync_block_load_algo<Kind>::value, OffsetT>;      \
+#define _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(Kind)                                                                   \
+  template <>                                                                                                    \
+  struct factory_impl<Kind, /*IsGenerative=*/false>                                                              \
+  {                                                                                                              \
+    template <typename It, int BlockThreads, int ItemsPerThread, typename OffsetT>                               \
+    using data_source_t =                                                                                        \
+      sync_block_load_data_source<It, BlockThreads, ItemsPerThread, sync_block_load_algo<Kind>::value, OffsetT>; \
   }
 
 _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_direct);
-_CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_striped);
 _CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_vectorize);
-_CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_transpose);
-_CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_warp_transpose);
-_CUB_DETAIL_TOPK_SYNC_BL_FACTORY(tile_load_kind::block_load_warp_transpose_timesliced);
 
 #undef _CUB_DETAIL_TOPK_SYNC_BL_FACTORY
 
@@ -723,24 +695,21 @@ template <typename It,
           tile_load_kind ConfiguredKind,
           int BlockThreads,
           int ItemsPerThread,
-          typename OffsetT              = ::cuda::std::int64_t,
-          ::cuda::std::size_t GmemAlign = alignof(CUB_NS_QUALIFIER::detail::it_value_t<It>)>
+          typename OffsetT = ::cuda::std::int64_t>
 using tile_data_source_t =
   typename factory_impl<ConfiguredKind,
                         CUB_NS_QUALIFIER::detail::is_generative_iterator_v<::cuda::std::remove_cv_t<It>>>::
-    template data_source_t<It, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>;
+    template data_source_t<It, BlockThreads, ItemsPerThread, OffsetT>;
 
 template <typename It,
           tile_load_kind ConfiguredKind,
           int BlockThreads,
           int ItemsPerThread,
-          typename OffsetT              = ::cuda::std::int64_t,
-          ::cuda::std::size_t GmemAlign = alignof(CUB_NS_QUALIFIER::detail::it_value_t<It>)>
+          typename OffsetT = ::cuda::std::int64_t>
 _CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto make_tile_data_source(
-  It it,
-  typename tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>::TempStorage& state)
+  It it, typename tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT>::TempStorage& state)
 {
-  using data_source_t = tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT, GmemAlign>;
+  using data_source_t = tile_data_source_t<It, ConfiguredKind, BlockThreads, ItemsPerThread, OffsetT>;
   return data_source_t{it, state};
 }
 } // namespace topk

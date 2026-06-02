@@ -61,20 +61,6 @@ struct value_channel_sinks_filter_t
 // that the filter class's nested `ScratchStorage` / classify paths compose from.
 //---------------------------------------------------------------------
 
-// Single-stream counter + broadcast slot. Phase 1 uses a 32-bit smem atomic (`counter`);
-// phase 2 reuses the same word as the global base via the union (separated by
-// `__syncthreads()`). `granted_selected` stays outside the union (broadcast across threads).
-template <typename SelectedOffsetT>
-struct filter_counters
-{
-  union
-  {
-    int counter;
-    SelectedOffsetT global_base;
-  };
-  SelectedOffsetT granted_selected;
-};
-
 // Adapter so the atomics fused scatter can be a single function template over an
 // "indexed classifier" `(KeyT, int j) -> bool`; encapsulates the partial-tile `is_valid` check.
 template <bool IsFull, typename Op>

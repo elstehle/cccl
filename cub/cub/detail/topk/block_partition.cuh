@@ -82,26 +82,6 @@ struct value_channel_sinks_t
 // partition class's nested `ScratchStorage` / classify paths compose from.
 //---------------------------------------------------------------------
 
-// Two-phase counters: the union is written as `int counters[2]` (smem atomics) in phase 1,
-// then reused as the offset-typed `global_bases` in phase 2 -- safe because the phases are
-// separated by `__syncthreads()`. `granted_*` stay outside the union (broadcast-only, written
-// by thread 0) so they cannot corrupt `global_bases`.
-template <typename SelectedOffsetT, typename CandidateOffsetT>
-struct partition_counters
-{
-  union
-  {
-    int counters[2];
-    struct
-    {
-      SelectedOffsetT selected;
-      CandidateOffsetT candidate;
-    } global_bases;
-  };
-  SelectedOffsetT granted_selected;
-  CandidateOffsetT granted_candidate;
-};
-
 // Adapter so `partition_atomics_fused_scatter` can be a single function template over an
 // "indexed classifier" `(KeyT, int j) -> candidate_class`. Holds a reference to the
 // `IdentifyCandidatesOp` and encapsulates the partial-tile `is_valid` check.
