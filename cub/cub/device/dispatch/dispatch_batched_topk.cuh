@@ -939,7 +939,6 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
                       large_segments_count_it,
                       pass,
                       total_bits,
-                      reset_histogram,
                       decomposer)))
         {
           return error;

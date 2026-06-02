@@ -584,7 +584,6 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
     const LargeSegmentsCountItT large_segments_count_it,
     const int pass,
     const int total_bits,
-    const bool reset_histogram,
     const DecomposerT decomposer)
 {
   using key_t = it_value_t<it_value_t<KeyInputItItT>>;
@@ -659,9 +658,7 @@ __launch_bounds__(int(current_policy<PolicySelector>().multi_worker_per_segment_
   // Grid-stride loop lives inside `agent.run<TilesPerChunk>(pass)`; the kernel materialises the
   // policy's `tiles_per_chunk` knob and hands off. The per-segment epilogue (counter update +
   // prefix-sum + bucket-finder + optional histogram reset) is done by
-  // `device_segmented_topk_finalize_filter_kernel`, launched on the same stream right after this
-  // kernel; `reset_histogram` flows to that kernel rather than this one.
-  (void) reset_histogram;
+  // `device_segmented_topk_finalize_filter_kernel`, launched on the same stream right after this kernel.
   (void) d_total_large_tiles;
   static constexpr int tiles_per_chunk = topk_seg_kernel_detail::tiles_per_chunk<PolicySelector>::value;
   agent.template run<tiles_per_chunk>(pass);
