@@ -36,6 +36,7 @@
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/detail/topk/block_partition.cuh>
 #include <cub/detail/topk/empty_storage.cuh>
+#include <cub/detail/topk/key_prefix_storage.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
 
@@ -89,16 +90,6 @@ struct AgentTopKPolicy
   static constexpr tile_load_kind keys_tile_load_kind = KeysTileLoadKind;
 };
 
-template <typename KeyT, bool CanTwiddle = detail::radix::can_twiddle<KeyT>>
-struct key_prefix_storage_t;
-
-template <typename KeyT>
-struct key_prefix_storage_t<KeyT, true>
-{
-  using bits_t = typename Traits<KeyT>::UnsignedBits;
-  bits_t bits;
-};
-
 template <int BitsPerPass>
 [[nodiscard]] _CCCL_HOST_DEVICE _CCCL_FORCEINLINE int calc_num_passes(const int total_bits)
 {
@@ -128,30 +119,6 @@ template <int BitsPerPass>
   }
   return start_bit;
 }
-
-// Bit-vector for accumulating prefix digits via funnel shift. Each pass shifts the existing
-// contents left by BitsPerPass and ORs the new bucket at the bottom. Sized to hold all
-// decomposed bits of KeyT plus headroom for the shift padding of the last pass.
-template <typename KeyT>
-struct key_prefix_storage_t<KeyT, false>
-{
-  static constexpr int num_words = ::cuda::ceil_div<int>(sizeof(KeyT) * 8 + 31, 32);
-  unsigned int words[num_words];
-
-  // Funnel-shifts the entire bit-vector left by `shift` positions and inserts `value` into the
-  // vacated low bits. Each word receives carry bits from its lower neighbor (high-to-low order
-  // so each word reads its neighbor's original value). The final word is filled from `value`.
-  _CCCL_DEVICE _CCCL_FORCEINLINE void shift_or(int shift, unsigned int value)
-  {
-    _CCCL_ASSERT(shift > 0 && shift < 32, "shift_or requires 0 < shift < 32");
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int i = num_words - 1; i > 0; --i)
-    {
-      words[i] = __funnelshift_l(words[i - 1], words[i], shift);
-    }
-    words[0] = (words[0] << shift) | value;
-  }
-};
 
 // Template parameters are ordered with `BitsPerPass` first so callers only have
 // to spell the non-deducible compile-time constant; `KeyT` is deduced from the

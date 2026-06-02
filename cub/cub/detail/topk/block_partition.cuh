@@ -30,6 +30,7 @@
 #  pragma system_header
 #endif // no system header
 
+#include <cub/detail/topk/candidate_class.cuh>
 #include <cub/detail/topk/empty_storage.cuh>
 #include <cub/detail/topk/tile_data_source.cuh>
 #include <cub/util_type.cuh>
@@ -51,16 +52,6 @@ namespace detail::topk
 //---------------------------------------------------------------------
 // Shared types
 //---------------------------------------------------------------------
-
-// The three classes emitted by top-k's classifier. `rejected` is also the
-// out-of-bounds marker; the partial-tile path forces OOB items to `rejected` inside
-// the primitives' `partition()` calls.
-enum class candidate_class
-{
-  selected,
-  candidate,
-  rejected,
-};
 
 //---------------------------------------------------------------------
 // Per-channel value-sink bundle (captured at ctor; lifetime = class instance).
