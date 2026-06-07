@@ -67,6 +67,8 @@
 #include <cuda/__cmath/round_up.h>
 #include <cuda/std/__algorithm/max.h>
 #include <cuda/std/__algorithm/min.h>
+#include <cuda/std/__type_traits/conditional.h>
+#include <cuda/std/__type_traits/is_same.h>
 #include <cuda/std/cstdint>
 #include <cuda/std/inplace_vector>
 #include <cuda/std/limits>
@@ -172,6 +174,16 @@ struct agent_batched_topk_cluster
   using index_t    = it_value_t<index_it_t>;
   // Whether the selected keys' source indices are written to a second output.
   static constexpr bool has_indices = !::cuda::std::is_same_v<index_t, cub::NullType>;
+
+  // Zero-size stand-in for the index-output iterator on the keys-only path. Storing the iterator-of-iterators member
+  // unconditionally would enlarge the agent's (locally materialized) object and perturb the keys-only SASS, so the
+  // member collapses to this empty type (combined with `_CCCL_NO_UNIQUE_ADDRESS`) whenever no indices are emitted.
+  struct empty_index_output_it
+  {
+    empty_index_output_it() = default;
+    _CCCL_DEVICE_API _CCCL_FORCEINLINE empty_index_output_it(IndexOutputItItT) {}
+  };
+  using index_output_storage_t = ::cuda::std::conditional_t<has_indices, IndexOutputItItT, empty_index_output_it>;
 
   using segment_size_val_t = typename SegmentSizeParameterT::value_type;
   using num_segments_val_t = typename NumSegmentsParameterT::value_type;
@@ -438,7 +450,7 @@ struct agent_batched_topk_cluster
   _TempStorage& temp_storage;
   KeyInputItItT d_key_segments_it;
   KeyOutputItItT d_key_segments_out_it;
-  IndexOutputItItT d_index_segments_out_it;
+  _CCCL_NO_UNIQUE_ADDRESS index_output_storage_t d_index_segments_out_it;
   SegmentSizeParameterT segment_sizes;
   KParameterT k_param;
   SelectDirectionParameterT select_directions;
