@@ -82,11 +82,13 @@ CUB_RUNTIME_FUNCTION static cudaError_t batched_topk_keys(
   if constexpr (selected_backend == topk_backend::cluster)
   {
     (void) h_segment_sizes;
+    // Keys-only: pass `cub::NullType**` to disable index output (see dispatch_batched_topk_cluster.cuh).
     return cub::detail::batched_topk_cluster::dispatch(
       d_temp_storage,
       temp_storage_bytes,
       d_keys_in,
       d_keys_out,
+      static_cast<cub::NullType**>(nullptr),
       segment_sizes,
       k,
       select_directions,

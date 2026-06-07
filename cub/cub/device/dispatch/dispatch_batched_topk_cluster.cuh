@@ -105,6 +105,7 @@ template <int ThreadsPerBlock,
           int BitsPerPass,
           typename KeyInputItItT,
           typename KeyOutputItItT,
+          typename IndexOutputItItT,
           typename SegmentSizeParameterT,
           typename KParameterT,
           typename SelectDirectionParameterT,
@@ -116,7 +117,11 @@ __launch_bounds__(ThreadsPerBlock) _CCCL_KERNEL_ATTRIBUTES void device_segmented
   KParameterT k_param,
   SelectDirectionParameterT select_directions,
   NumSegmentsParameterT num_segments,
-  ::cuda::std::uint32_t block_tile_capacity)
+  ::cuda::std::uint32_t block_tile_capacity,
+  // Appended last on purpose: keeping the leading parameters at their original constant-bank offsets makes the
+  // keys-only instantiation (`IndexOutputItItT == cub::NullType**`) generate byte-identical SASS to the pre-index
+  // kernel; the unused trailing parameter emits no loads.
+  IndexOutputItItT d_index_segments_out_it)
 {
   using agent_t = agent_batched_topk_cluster<
     ThreadsPerBlock,
@@ -127,6 +132,7 @@ __launch_bounds__(ThreadsPerBlock) _CCCL_KERNEL_ATTRIBUTES void device_segmented
     BitsPerPass,
     KeyInputItItT,
     KeyOutputItItT,
+    IndexOutputItItT,
     SegmentSizeParameterT,
     KParameterT,
     SelectDirectionParameterT,
@@ -149,6 +155,7 @@ __launch_bounds__(ThreadsPerBlock) _CCCL_KERNEL_ATTRIBUTES void device_segmented
     temp_storage,
     d_key_segments_it,
     d_key_segments_out_it,
+    d_index_segments_out_it,
     segment_sizes,
     k_param,
     select_directions,
@@ -170,6 +177,7 @@ template <int ThreadsPerBlock,
           int BitsPerPass,
           typename KeyInputItItT,
           typename KeyOutputItItT,
+          typename IndexOutputItItT,
           typename SegmentSizeParameterT,
           typename KParameterT,
           typename SelectDirectionParameterT,
@@ -182,7 +190,9 @@ __launch_bounds__(ThreadsPerBlock) __cluster_dims__(max_portable_cluster_blocks,
     KParameterT k_param,
     SelectDirectionParameterT select_directions,
     NumSegmentsParameterT num_segments,
-    ::cuda::std::uint32_t block_tile_capacity)
+    ::cuda::std::uint32_t block_tile_capacity,
+    // Appended last to preserve keys-only constant-bank offsets (see the dynamic kernel for the rationale).
+    IndexOutputItItT d_index_segments_out_it)
 {
   using agent_t = agent_batched_topk_cluster<
     ThreadsPerBlock,
@@ -193,6 +203,7 @@ __launch_bounds__(ThreadsPerBlock) __cluster_dims__(max_portable_cluster_blocks,
     BitsPerPass,
     KeyInputItItT,
     KeyOutputItItT,
+    IndexOutputItItT,
     SegmentSizeParameterT,
     KParameterT,
     SelectDirectionParameterT,
@@ -215,6 +226,7 @@ __launch_bounds__(ThreadsPerBlock) __cluster_dims__(max_portable_cluster_blocks,
     temp_storage,
     d_key_segments_it,
     d_key_segments_out_it,
+    d_index_segments_out_it,
     segment_sizes,
     k_param,
     select_directions,
@@ -260,7 +272,11 @@ struct force_emit_kernel<Kernel>
 // -----------------------------------------------------------------------------
 // Dispatch
 // -----------------------------------------------------------------------------
-// Keys-only; every segment must fit in one cluster_tile. Host picks
+// Keys-only or keys+indices: when `IndexOutputItItT` is an iterator-of-iterators
+// whose value type is not `cub::NullType`, the source index (segment-relative)
+// of each selected key is written to `d_index_segments_out_it[segment]`; pass
+// `cub::NullType**` to disable index output (keys-only code generation is then
+// unchanged). Every segment must fit in one cluster_tile. Host picks
 // `(cluster_blocks, dynamic_smem_bytes)` at runtime from a finite table; CDP
 // uses the static kernel at `max_portable_cluster_blocks` and portable SMEM.
 
@@ -279,6 +295,7 @@ struct force_emit_kernel<Kernel>
       BitsPerPass,                                                                      \
       KeyInputItItT,                                                                    \
       KeyOutputItItT,                                                                   \
+      IndexOutputItItT,                                                                 \
       SegmentSizeParameterT,                                                            \
       KParameterT,                                                                      \
       SelectDirectionParameterT,                                                        \
@@ -293,7 +310,8 @@ struct force_emit_kernel<Kernel>
                   k_param,                                                              \
                   select_directions,                                                    \
                   num_segments,                                                         \
-                  block_tile_capacity)))                                                \
+                  block_tile_capacity,                                                  \
+                  d_index_segments_out_it)))                                            \
     {                                                                                   \
       return error;                                                                     \
     }
@@ -301,6 +319,7 @@ struct force_emit_kernel<Kernel>
 
 template <typename KeyInputItItT,
           typename KeyOutputItItT,
+          typename IndexOutputItItT,
           typename SegmentSizeParameterT,
           typename KParameterT,
           typename SelectDirectionParameterT,
@@ -312,6 +331,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
   size_t& temp_storage_bytes,
   KeyInputItItT d_key_segments_it,
   KeyOutputItItT d_key_segments_out_it,
+  IndexOutputItItT d_index_segments_out_it,
   SegmentSizeParameterT segment_sizes,
   KParameterT k_param,
   SelectDirectionParameterT select_directions,
@@ -342,6 +362,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
      BitsPerPass,
      KeyInputItItT,
      KeyOutputItItT,
+     IndexOutputItItT,
      SegmentSizeParameterT,
      KParameterT,
      SelectDirectionParameterT,
@@ -406,6 +427,7 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
     BitsPerPass,
     KeyInputItItT,
     KeyOutputItItT,
+    IndexOutputItItT,
     SegmentSizeParameterT,
     KParameterT,
     SelectDirectionParameterT,
@@ -630,7 +652,8 @@ CUB_RUNTIME_FUNCTION _CCCL_FORCEINLINE cudaError_t dispatch(
             k_param,
             select_directions,
             num_segments,
-            block_tile_capacity)))
+            block_tile_capacity,
+            d_index_segments_out_it)))
       {
         return error;
       }

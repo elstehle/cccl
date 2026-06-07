@@ -152,6 +152,7 @@ template <int ThreadsPerBlock,
           int BitsPerPass,
           typename KeyInputItItT,
           typename KeyOutputItItT,
+          typename IndexOutputItItT,
           typename SegmentSizeParameterT,
           typename KParameterT,
           typename SelectDirectionParameterT,
@@ -163,6 +164,14 @@ struct agent_batched_topk_cluster
   // ---------------------------------------------------------------------------
   using key_it_t = it_value_t<KeyInputItItT>;
   using key_t    = it_value_t<key_it_t>;
+
+  // Per-segment index-output iterator and its value type. Keys-only callers pass
+  // `cub::NullType**`, which makes `index_t == cub::NullType` and disables every
+  // index code path below; the keys-only code generation is therefore unchanged.
+  using index_it_t = it_value_t<IndexOutputItItT>;
+  using index_t    = it_value_t<index_it_t>;
+  // Whether the selected keys' source indices are written to a second output.
+  static constexpr bool has_indices = !::cuda::std::is_same_v<index_t, cub::NullType>;
 
   using segment_size_val_t = typename SegmentSizeParameterT::value_type;
   using num_segments_val_t = typename NumSegmentsParameterT::value_type;
@@ -365,6 +374,61 @@ struct agent_batched_topk_cluster
     });
   }
 
+  // Index-aware counterpart of `for_each_chunk_key`. Invokes `f(key, segment_index)` where `segment_index` is the
+  // key's position within the segment (`base_offset` is the chunk's segment-relative offset). Only instantiated on the
+  // index-output (pairs) path, so the keys-only code generation is unaffected.
+  template <typename F>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void
+  for_each_chunk_key_with_index(::cuda::std::span<key_t> chunk_keys, offset_t base_offset, F&& f) const
+  {
+    const int chunk_count = span_size(chunk_keys);
+    const int iterations  = ::cuda::ceil_div(chunk_count, threads_per_block);
+    detail::transform::unrolled_for<UnrollFactor>(iterations, [&](int j) {
+      const int local = j * threads_per_block + static_cast<int>(threadIdx.x);
+      if (local < chunk_count)
+      {
+        f(::cuda::std::data(chunk_keys)[local], base_offset + static_cast<offset_t>(local));
+      }
+    });
+  }
+
+  // Index-aware walk over this rank's resident keys. The resident region holds the rank's chunks in load order
+  // (`chunk_idx = cluster_rank + p * cluster_size`); in the BlockLoadToShared path they are packed contiguously, so we
+  // re-derive each chunk's segment offset by replaying `get_chunk`. Only instantiated on the index-output path.
+  template <typename F>
+  _CCCL_DEVICE _CCCL_FORCEINLINE void for_each_resident_key_with_index(
+    ::cuda::std::span<key_t> resident_keys,
+    offset_t my_resident_chunks,
+    offset_t segment_size_u32,
+    offset_t head_items,
+    unsigned int cluster_rank,
+    unsigned int cluster_size,
+    F&& f) const
+  {
+    if constexpr (use_block_load_to_shared)
+    {
+      offset_t running = 0;
+      for (offset_t p = 0; p < my_resident_chunks; ++p)
+      {
+        const offset_t chunk_idx = static_cast<offset_t>(cluster_rank) + p * static_cast<offset_t>(cluster_size);
+        const auto chunk         = get_chunk(chunk_idx, segment_size_u32, head_items);
+        for_each_chunk_key_with_index(
+          {::cuda::std::data(resident_keys) + running, static_cast<::cuda::std::size_t>(chunk.count)}, chunk.offset, f);
+        running += static_cast<offset_t>(chunk.count);
+      }
+    }
+    else
+    {
+      for (offset_t p = 0; p < my_resident_chunks; ++p)
+      {
+        const offset_t chunk_idx = static_cast<offset_t>(cluster_rank) + p * static_cast<offset_t>(cluster_size);
+        const auto chunk         = get_chunk(chunk_idx, segment_size_u32, head_items);
+        key_t* const chunk_keys  = slot_keys_unpadded(static_cast<int>(p));
+        for_each_chunk_key_with_index({chunk_keys, static_cast<::cuda::std::size_t>(chunk.count)}, chunk.offset, f);
+      }
+    }
+  }
+
   struct TempStorage : Uninitialized<_TempStorage>
   {};
 
@@ -374,6 +438,7 @@ struct agent_batched_topk_cluster
   _TempStorage& temp_storage;
   KeyInputItItT d_key_segments_it;
   KeyOutputItItT d_key_segments_out_it;
+  IndexOutputItItT d_index_segments_out_it;
   SegmentSizeParameterT segment_sizes;
   KParameterT k_param;
   SelectDirectionParameterT select_directions;
@@ -385,6 +450,7 @@ struct agent_batched_topk_cluster
     TempStorage& temp_storage_,
     KeyInputItItT d_key_segments_it_,
     KeyOutputItItT d_key_segments_out_it_,
+    IndexOutputItItT d_index_segments_out_it_,
     SegmentSizeParameterT segment_sizes_,
     KParameterT k_param_,
     SelectDirectionParameterT select_directions_,
@@ -394,6 +460,7 @@ struct agent_batched_topk_cluster
       : temp_storage(temp_storage_.Alias())
       , d_key_segments_it(d_key_segments_it_)
       , d_key_segments_out_it(d_key_segments_out_it_)
+      , d_index_segments_out_it(d_index_segments_out_it_)
       , segment_sizes(segment_sizes_)
       , k_param(k_param_)
       , select_directions(select_directions_)
@@ -618,8 +685,11 @@ private:
       slot_chunk[stage] = overflow_idx;
     }
 
-    // Apply `f` to every overflow key once, in the current ping-pong direction.
-    template <typename F>
+    // Apply `f` to every overflow key once, in the current ping-pong direction. With `WithIndex`, the callback is
+    // invoked as `f(key, segment_index)` instead of `f(key)`; the extra `get_chunk` replays needed to recover the
+    // segment offset are compiled out for the default (`WithIndex == false`) keys-only path, leaving its code
+    // generation unchanged.
+    template <bool WithIndex = false, typename F>
     _CCCL_DEVICE _CCCL_FORCEINLINE void process_pass(F&& f)
     {
       if (overflow_chunks == 0)
@@ -659,7 +729,15 @@ private:
             tokens[stage].reset();
           }
           _CCCL_ASSERT(slot_chunk[stage] == o, "overflow streamer slot/chunk mapping diverged");
-          agent.for_each_chunk_key(pending[stage], f);
+          if constexpr (WithIndex)
+          {
+            const auto chunk = agent.get_chunk(chunk_index_of(o), segment_size, head_items);
+            agent.for_each_chunk_key_with_index(pending[stage], chunk.offset, f);
+          }
+          else
+          {
+            agent.for_each_chunk_key(pending[stage], f);
+          }
 
           // Prefetch the chunk `p_eff` visits ahead in this direction. It maps
           // to the slot we just finished, so a barrier is required before the
@@ -688,9 +766,16 @@ private:
             const int local = j * threads_per_block + static_cast<int>(threadIdx.x);
             if (local < chunk.count)
             {
-              const key_t key =
-                block_keys_in[static_cast<segment_size_val_t>(chunk.offset + static_cast<offset_t>(local))];
-              f(key);
+              const offset_t key_idx = chunk.offset + static_cast<offset_t>(local);
+              const key_t key        = block_keys_in[static_cast<segment_size_val_t>(key_idx)];
+              if constexpr (WithIndex)
+              {
+                f(key, key_idx);
+              }
+              else
+              {
+                f(key);
+              }
             }
           });
         }
@@ -1168,71 +1253,132 @@ private:
     }
     __syncthreads();
 
-    auto write_selected = [&](const key_t& key) {
-      const auto res = identify_op(key);
-      if (res == detail::topk::candidate_class::selected)
-      {
-        const out_offset_t pos = fwd_base + atomicAdd_block(&temp_storage.block_out_cnt, out_offset_t{1});
-        block_keys_out[pos]    = key;
-      }
-      else if (res == detail::topk::candidate_class::candidate)
-      {
-        const out_offset_t back_pos = back_base + atomicAdd_block(&temp_storage.block_out_back_cnt, out_offset_t{1});
-        if (back_pos < num_kth)
-        {
-          const out_offset_t pos = k - 1 - back_pos;
-          block_keys_out[pos]    = key;
-        }
-      }
-    };
-    if constexpr (use_block_load_to_shared)
+    if constexpr (has_indices)
     {
-      for_each_chunk_key(resident_keys, write_selected);
+      // Index-output variant of the block-aggregated write phase (see keys-only branch below for the layout rationale).
+      auto block_indices_out = d_index_segments_out_it[segment_id];
+      auto write_selected    = [&](const key_t& key, offset_t key_idx) {
+        const auto res = identify_op(key);
+        if (res == detail::topk::candidate_class::selected)
+        {
+          const out_offset_t pos = fwd_base + atomicAdd_block(&temp_storage.block_out_cnt, out_offset_t{1});
+          block_keys_out[pos]    = key;
+          block_indices_out[pos] = static_cast<index_t>(key_idx);
+        }
+        else if (res == detail::topk::candidate_class::candidate)
+        {
+          const out_offset_t back_pos = back_base + atomicAdd_block(&temp_storage.block_out_back_cnt, out_offset_t{1});
+          if (back_pos < num_kth)
+          {
+            const out_offset_t pos = k - 1 - back_pos;
+            block_keys_out[pos]    = key;
+            block_indices_out[pos] = static_cast<index_t>(key_idx);
+          }
+        }
+      };
+      for_each_resident_key_with_index(
+        resident_keys, my_resident_chunks, segment_size_u32, head_items, cluster_rank, cluster_size, write_selected);
+      streamer.template process_pass<true>(write_selected);
     }
     else
     {
-      for (offset_t p = 0; p < my_resident_chunks; ++p)
+      auto write_selected = [&](const key_t& key) {
+        const auto res = identify_op(key);
+        if (res == detail::topk::candidate_class::selected)
+        {
+          const out_offset_t pos = fwd_base + atomicAdd_block(&temp_storage.block_out_cnt, out_offset_t{1});
+          block_keys_out[pos]    = key;
+        }
+        else if (res == detail::topk::candidate_class::candidate)
+        {
+          const out_offset_t back_pos = back_base + atomicAdd_block(&temp_storage.block_out_back_cnt, out_offset_t{1});
+          if (back_pos < num_kth)
+          {
+            const out_offset_t pos = k - 1 - back_pos;
+            block_keys_out[pos]    = key;
+          }
+        }
+      };
+      if constexpr (use_block_load_to_shared)
       {
-        const offset_t chunk_idx = static_cast<offset_t>(cluster_rank) + p * static_cast<offset_t>(cluster_size);
-        const auto chunk         = get_chunk(chunk_idx, segment_size_u32, head_items);
-        key_t* const chunk_keys  = slot_keys_unpadded(static_cast<int>(p));
-        for_each_chunk_key({chunk_keys, static_cast<::cuda::std::size_t>(chunk.count)}, write_selected);
+        for_each_chunk_key(resident_keys, write_selected);
       }
+      else
+      {
+        for (offset_t p = 0; p < my_resident_chunks; ++p)
+        {
+          const offset_t chunk_idx = static_cast<offset_t>(cluster_rank) + p * static_cast<offset_t>(cluster_size);
+          const auto chunk         = get_chunk(chunk_idx, segment_size_u32, head_items);
+          key_t* const chunk_keys  = slot_keys_unpadded(static_cast<int>(p));
+          for_each_chunk_key({chunk_keys, static_cast<::cuda::std::size_t>(chunk.count)}, write_selected);
+        }
+      }
+      streamer.process_pass(write_selected);
     }
-    streamer.process_pass(write_selected);
 #  else
-    auto write_selected = [&](const key_t& key) {
-      const auto res = identify_op(key);
-      if (res == detail::topk::candidate_class::selected)
-      {
-        const out_offset_t pos = atomicAdd(&leader_state->out_cnt, out_offset_t{1});
-        block_keys_out[pos]    = key;
-      }
-      else if (res == detail::topk::candidate_class::candidate)
-      {
-        const out_offset_t back_pos = atomicAdd(&leader_state->out_back_cnt, out_offset_t{1});
-        if (back_pos < num_kth)
-        {
-          const out_offset_t pos = k - 1 - back_pos;
-          block_keys_out[pos]    = key;
-        }
-      }
-    };
-    if constexpr (use_block_load_to_shared)
+    if constexpr (has_indices)
     {
-      for_each_chunk_key(resident_keys, write_selected);
+      // Index-output variant: alongside each written key, store its source index within the segment. Only this branch
+      // is instantiated when an index output is requested; the keys-only branch below is left byte-for-byte identical.
+      auto block_indices_out = d_index_segments_out_it[segment_id];
+      auto write_selected    = [&](const key_t& key, offset_t key_idx) {
+        const auto res = identify_op(key);
+        if (res == detail::topk::candidate_class::selected)
+        {
+          const out_offset_t pos = atomicAdd(&leader_state->out_cnt, out_offset_t{1});
+          block_keys_out[pos]    = key;
+          block_indices_out[pos] = static_cast<index_t>(key_idx);
+        }
+        else if (res == detail::topk::candidate_class::candidate)
+        {
+          const out_offset_t back_pos = atomicAdd(&leader_state->out_back_cnt, out_offset_t{1});
+          if (back_pos < num_kth)
+          {
+            const out_offset_t pos = k - 1 - back_pos;
+            block_keys_out[pos]    = key;
+            block_indices_out[pos] = static_cast<index_t>(key_idx);
+          }
+        }
+      };
+      for_each_resident_key_with_index(
+        resident_keys, my_resident_chunks, segment_size_u32, head_items, cluster_rank, cluster_size, write_selected);
+      streamer.template process_pass<true>(write_selected);
     }
     else
     {
-      for (offset_t p = 0; p < my_resident_chunks; ++p)
+      auto write_selected = [&](const key_t& key) {
+        const auto res = identify_op(key);
+        if (res == detail::topk::candidate_class::selected)
+        {
+          const out_offset_t pos = atomicAdd(&leader_state->out_cnt, out_offset_t{1});
+          block_keys_out[pos]    = key;
+        }
+        else if (res == detail::topk::candidate_class::candidate)
+        {
+          const out_offset_t back_pos = atomicAdd(&leader_state->out_back_cnt, out_offset_t{1});
+          if (back_pos < num_kth)
+          {
+            const out_offset_t pos = k - 1 - back_pos;
+            block_keys_out[pos]    = key;
+          }
+        }
+      };
+      if constexpr (use_block_load_to_shared)
       {
-        const offset_t chunk_idx = static_cast<offset_t>(cluster_rank) + p * static_cast<offset_t>(cluster_size);
-        const auto chunk         = get_chunk(chunk_idx, segment_size_u32, head_items);
-        key_t* const chunk_keys  = slot_keys_unpadded(static_cast<int>(p));
-        for_each_chunk_key({chunk_keys, static_cast<::cuda::std::size_t>(chunk.count)}, write_selected);
+        for_each_chunk_key(resident_keys, write_selected);
       }
+      else
+      {
+        for (offset_t p = 0; p < my_resident_chunks; ++p)
+        {
+          const offset_t chunk_idx = static_cast<offset_t>(cluster_rank) + p * static_cast<offset_t>(cluster_size);
+          const auto chunk         = get_chunk(chunk_idx, segment_size_u32, head_items);
+          key_t* const chunk_keys  = slot_keys_unpadded(static_cast<int>(p));
+          for_each_chunk_key({chunk_keys, static_cast<::cuda::std::size_t>(chunk.count)}, write_selected);
+        }
+      }
+      streamer.process_pass(write_selected);
     }
-    streamer.process_pass(write_selected);
 #  endif
 
     // Final cluster barrier: hold every block in the cluster until all DSMEM
