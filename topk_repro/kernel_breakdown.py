@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Aggregate per-kernel time from nsys SQLite traces into a Markdown breakdown.
+
+For each pattern, reads ``<sqlite_dir>/pat_<pattern>.sqlite`` (an nsys export of a
+steady-state benchmark run) and averages each kernel launch's duration over all
+steady-state iterations. The radix-select launch sequence is data-independent
+(worker -> histogram -> finalize_histogram -> filter x2 -> finalize_filter x2 ->
+last_filter), so we average per launch-position. nvbench's L2-flush memset (~132 MB)
+and harness kernels are excluded; the 3 small dispatch memsets are summed per
+iteration.
+
+Usage:
+  kernel_breakdown.py --sqlite-dir DIR --totals totals.json --out out.md \
+      [--patterns a,b,c] [--ns 32 --seg 1048576 --k 2048]
+"""
+import argparse
+import json
+import os
+import sqlite3
+from collections import defaultdict
+
+ORDER = [
+    "memsets", "worker", "histogram", "finalize_histogram",
+    "filter#1", "finalize_filter#1", "filter#2", "finalize_filter#2", "last_filter",
+]
+
+PRETTY = {
+    "memsets": "memsets (counters + histogram init)",
+    "worker": "`device_segmented_topk_kernel` — worker/enqueue",
+    "histogram": "`histogram_kernel`",
+    "finalize_histogram": "`finalize_histogram_kernel`",
+    "filter#1": "`filter_kernel` #1 — pass 1",
+    "finalize_filter#1": "`finalize_filter_kernel` #1",
+    "filter#2": "`filter_kernel` #2 — pass 2",
+    "finalize_filter#2": "`finalize_filter_kernel` #2",
+    "last_filter": "`last_filter_kernel` — final select",
+}
+
+EXPECTED = {
+    "worker", "histogram", "finalize_histogram",
+    "filter#1", "finalize_filter#1", "filter#2", "finalize_filter#2", "last_filter",
+}
+
+
+def classify(nm):
+    if nm is None:
+        return None
+    if ("device_segmented_topk" not in nm) and ("batched_topk" not in nm):
+        return None
+    if "finalize_histogram" in nm:
+        return "finalize_histogram"
+    if "finalize_filter" in nm:
+        return "finalize_filter"
+    if "last_filter" in nm:
+        return "last_filter"
+    if "histogram" in nm:
+        return "histogram"
+    if "filter" in nm:
+        return "filter"
+    return "worker"  # device_segmented_topk_kernel (worker/enqueue)
+
+
+def analyze(path, warmup=3):
+    con = sqlite3.connect(path)
+    cur = con.cursor()
+    names = {i: v for i, v in cur.execute("SELECT id,value FROM StringIds")}
+    kern = cur.execute(
+        "SELECT start,end,shortName,gridX FROM CUPTI_ACTIVITY_KIND_KERNEL ORDER BY start"
+    ).fetchall()
+    has_ms = cur.execute(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='CUPTI_ACTIVITY_KIND_MEMSET'"
+    ).fetchone()[0]
+    ms = cur.execute(
+        "SELECT start,end,bytes FROM CUPTI_ACTIVITY_KIND_MEMSET ORDER BY start"
+    ).fetchall() if has_ms else []
+    con.close()
+
+    evs = [(s, e, classify(names.get(n, "")), "K", 0, g) for s, e, n, g in kern]
+    evs += [(s, e, "memset", "M", b, 0) for s, e, b in ms]
+    evs.sort(key=lambda x: x[0])
+
+    anchors = [i for i, ev in enumerate(evs) if ev[3] == "K" and ev[2] == "worker"]
+    dur = defaultdict(list)
+    grid = {}
+    niter = 0
+    bad = 0
+    for ai in range(warmup, len(anchors) - 1):
+        lo, hi = anchors[ai], anchors[ai + 1]
+        occ = defaultdict(int)
+        memset_sum = 0
+        labels = []
+        for (s, e, lab, k, b, g) in evs[lo:hi]:
+            if k == "M":
+                if b is not None and b < 1_000_000:  # exclude nvbench L2-flush (~132 MB)
+                    memset_sum += (e - s)
+                continue
+            if lab is None:
+                continue
+            occ[lab] += 1
+            key = lab if lab not in ("filter", "finalize_filter") else f"{lab}#{occ[lab]}"
+            dur[key].append(e - s)
+            grid[key] = g
+            labels.append(key)
+        dur["memsets"].append(memset_sum)
+        if set(labels) != EXPECTED:
+            bad += 1
+        niter += 1
+
+    res = {}
+    for k in ORDER:
+        if k in dur and dur[k]:
+            res[k] = {"us": sum(dur[k]) / len(dur[k]) / 1000.0, "grid": grid.get(k)}
+    res["_niter"] = niter
+    res["_bad"] = bad
+    return res
+
+
+def load_totals(path):
+    totals = {}
+    if not path or not os.path.exists(path):
+        return totals
+    td = json.load(open(path))
+    for bench in td["benchmarks"]:
+        for s in bench["states"]:
+            av = {a["name"]: a["value"] for a in s["axis_values"]}
+            gt = [it["value"] for x in s["summaries"] if x["name"] == "GPU Time"
+                  for it in x["data"] if it["name"] == "value"]
+            if gt:
+                totals[av["Pattern"]] = float(gt[0]) * 1e6
+    return totals
+
+
+def fmt(v):
+    return f"{v:.2f}" if v is not None else "–"
+
+
+def build_markdown(data, totals, patterns, ns, seg, k, meta):
+    L = []
+    L.append("# Segmented top-k — per-kernel time breakdown")
+    L.append("")
+    L.append(f"**Fixed configuration:** `NumSegments = {ns}`, `MaxSegmentSize = {seg:,}`, "
+             f"`K = {k}`, `KeyT = float`, selection = `max`.")
+    L.append(f"**Generated by** `topk_repro/run_breakdown.sh`. {meta}")
+    L.append("")
+    L.append("Times are microseconds (µs) per `dispatch()` (one kernel launch per row), averaged "
+             "over all steady-state (cold-L2) benchmark iterations from the nsys CUPTI trace. "
+             "The nvbench L2-flush memset and harness kernels are excluded.")
+    L.append("")
+
+    # iteration counts / sanity
+    counts = ", ".join(f"{p}: {data[p]['_niter']} iters (bad={data[p]['_bad']})" for p in patterns)
+    L.append(f"_Iterations averaged — {counts}_")
+    L.append("")
+
+    # Cross-pattern matrix
+    L.append("## Cross-pattern matrix (µs per dispatch)")
+    L.append("")
+    hdr = "| Kernel (grid) | " + " | ".join(patterns) + " |"
+    sep = "|---|" + "|".join(["--:"] * len(patterns)) + "|"
+    L.append(hdr)
+    L.append(sep)
+    for key in ORDER:
+        grids = {data[p][key]["grid"] for p in patterns if key in data[p] and data[p][key]["grid"]}
+        gtxt = f" (grid {sorted(grids)[0]})" if grids else ""
+        label = PRETTY[key] + gtxt
+        cells = " | ".join(fmt(data[p].get(key, {}).get("us")) for p in patterns)
+        L.append(f"| {label} | {cells} |")
+    # sums
+    sums = {p: sum(data[p][key]["us"] for key in ORDER if key in data[p]) for p in patterns}
+    L.append("| **Σ kernels + memsets** | " + " | ".join(f"**{sums[p]:.2f}**" for p in patterns) + " |")
+    if totals:
+        L.append("| Official nvbench GPU time | " +
+                 " | ".join(fmt(totals.get(p)) for p in patterns) + " |")
+        L.append("| Inter-kernel gaps (total − Σ) | " +
+                 " | ".join(fmt(totals[p] - sums[p]) if p in totals else "–" for p in patterns) + " |")
+    L.append("")
+
+    # Grouped view
+    L.append("## Grouped view (µs)")
+    L.append("")
+    groups = [
+        ("Setup + pass 0 (memsets+worker+histogram+finalize_histogram) — data-independent",
+         ["memsets", "worker", "histogram", "finalize_histogram"]),
+        ("Filter passes (filter#1/#2 + finalize_filter#1/#2)",
+         ["filter#1", "finalize_filter#1", "filter#2", "finalize_filter#2"]),
+        ("Final selection (last_filter)", ["last_filter"]),
+    ]
+    L.append("| Phase | " + " | ".join(patterns) + " |")
+    L.append("|---|" + "|".join(["--:"] * len(patterns)) + "|")
+    for gname, keys in groups:
+        cells = []
+        for p in patterns:
+            v = sum(data[p][kk]["us"] for kk in keys if kk in data[p])
+            pct = (100.0 * v / totals[p]) if (totals and p in totals) else None
+            cells.append(f"{v:.2f}" + (f" ({pct:.0f}%)" if pct is not None else ""))
+        L.append(f"| {gname} | " + " | ".join(cells) + " |")
+    L.append("")
+    return "\n".join(L) + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sqlite-dir", required=True)
+    ap.add_argument("--totals", default="")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--patterns", default="random,quantized_random,relu_quantized,tie_heavy,pivot_tie")
+    ap.add_argument("--ns", type=int, default=32)
+    ap.add_argument("--seg", type=int, default=1048576)
+    ap.add_argument("--k", type=int, default=2048)
+    ap.add_argument("--meta", default="")
+    args = ap.parse_args()
+
+    patterns = args.patterns.split(",")
+    data = {}
+    for p in patterns:
+        sp = os.path.join(args.sqlite_dir, f"pat_{p}.sqlite")
+        if not os.path.exists(sp):
+            raise SystemExit(f"missing sqlite: {sp}")
+        data[p] = analyze(sp)
+    totals = load_totals(args.totals)
+    md = build_markdown(data, totals, patterns, args.ns, args.seg, args.k, args.meta)
+    with open(args.out, "w") as f:
+        f.write(md)
+    print(md)
+
+
+if __name__ == "__main__":
+    main()

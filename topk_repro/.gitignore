@@ -1,0 +1,6 @@
+# Generated benchmark/profiling artifacts
+out/
+*.nsys-rep
+*.qdstrm
+*.sqlite
+*.json
