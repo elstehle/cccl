@@ -168,33 +168,30 @@ int main()
 
   printf("\n=== (2) single-SM throughput vs. warp-parallelism (Little's law saturation) ===\n");
   constexpr int SORTS = 512;
-  printf("  each warp: %d in-place sorts; total sorts = W*%d\n", SORTS, SORTS);
-  double peak = 0;
-  int Ws[]    = {1, 2, 4, 8, 16, 32, 48, 64};
-  for (int wi = 0; wi < 8; ++wi)
+  printf("  each warp: %d in-place (latency-bound) sorts; one block = one SM; W warps = 32*W threads\n", SORTS);
+  const int Ws[] = {1, 2, 4, 8, 16, 24, 32}; // 32 warps = 1024 threads = single-block max
+  const int NW   = 7;
+  double per[NW];
+  long long cyc[NW];
+  for (int wi = 0; wi < NW; ++wi)
   {
-    int W       = Ws[wi];
-    long long cyc;
-    switch (W)
-    {
-      case 1:  cyc = measure(thr_vs_warps<IPT, float, SORTS>, 32);   break;
-      case 2:  cyc = measure(thr_vs_warps<IPT, float, SORTS>, 64);   break;
-      case 4:  cyc = measure(thr_vs_warps<IPT, float, SORTS>, 128);  break;
-      case 8:  cyc = measure(thr_vs_warps<IPT, float, SORTS>, 256);  break;
-      case 16: cyc = measure(thr_vs_warps<IPT, float, SORTS>, 512);  break;
-      case 32: cyc = measure(thr_vs_warps<IPT, float, SORTS>, 1024); break;
-      case 48: cyc = measure(thr_vs_warps<IPT, float, SORTS>, 1536); break;
-      default: cyc = measure(thr_vs_warps<IPT, float, SORTS>, 2048); break;
-    }
-    double sorts   = double(W) * SORTS;
-    double per_cyc = sorts / double(cyc);
-    if (per_cyc > peak)
-    {
-      peak = per_cyc;
-    }
-    printf("  W=%-2d warps  cyc=%-8lld  %.4f sorts/cyc  (%.1f%% of peak)\n", W, cyc, per_cyc, 100.0 * per_cyc / peak);
+    cyc[wi] = measure(thr_vs_warps<IPT, float, SORTS>, Ws[wi] * 32);
+    per[wi] = (double(Ws[wi]) * SORTS) / double(cyc[wi]);
   }
-  printf("  -> single-call latency ~= %.0f cyc; peak throughput ~= %.4f sorts/cyc\n", slope, peak);
-  printf("  -> Little's law warps-to-saturate ~= latency*throughput = %.1f warps\n", slope * peak);
+  double peak = 0;
+  for (int wi = 0; wi < NW; ++wi)
+  {
+    if (per[wi] > peak)
+    {
+      peak = per[wi];
+    }
+  }
+  for (int wi = 0; wi < NW; ++wi)
+  {
+    printf("  W=%-2d warps  cyc=%-8lld  %.5f sorts/cyc  (%5.1f%% of peak)\n",
+           Ws[wi], cyc[wi], per[wi], 100.0 * per[wi] / peak);
+  }
+  printf("  -> steady-state latency ~= %.0f cyc; peak single-SM throughput ~= %.5f sorts/cyc\n", slope, peak);
+  printf("  -> Little's law warps-to-hide-latency ~= latency*throughput = %.1f warps\n", slope * peak);
   return 0;
 }
