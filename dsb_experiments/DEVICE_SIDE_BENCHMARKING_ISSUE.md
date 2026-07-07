@@ -190,18 +190,37 @@ Report all of the following as nvbench summaries so they are tracked over time:
    template so it can be reused/overridden per primitive.
 3. **Occupancy** — `cudaOccupancyMaxActiveBlocksPerMultiprocessor` → achieved warps/SM and % of peak
    for the benchmarked block size.
-4. **Pressure sweep / register budget** — instantiate the primitive kernel under
-   `__launch_bounds__(block, minBlocks)` for increasing `minBlocks` and report the **largest
-   occupancy at which it still compiles with 0 spills** (a single “occupancy-friendliness” number),
-   plus flag any `spill_bytes > 0`.
-5. **(bonus regime) Occupancy-limited performance** — reuse the throughput/latency harness under the
-   `full` launch-bounds mode to report perf *at forced occupancy*, directly connecting resource cost
-   to the performance a user would actually get. This is the most decision-relevant resource metric
-   and generalizes #8607’s `partial`/`full` split.
+4. **Spill detection** — report and flag register spills. Three complementary signals, because no
+   single one is sufficient:
+   * `cudaFuncGetAttributes(...).localSizeBytes` (runtime, no tools) — a *signal*, but it lumps
+     together register spills, genuine local arrays, and ABI stack, so nonzero ≠ "spilled".
+   * `nvcc -Xptxas -v` (compile time) — prints `N bytes spill stores, M bytes spill loads` *separately*
+     from `stack frame`; this is the definitive "the allocator spilled" signal.
+   * `cuobjdump -sass | grep -E ' STL| LDL'` (static) + ncu local ld/st byte metrics (confirms the
+     spill is on the *executed* hot path, not a cold branch).
+5. **Register-budget / occupancy pressure sweep** — the key regime, and the one that also serves as
+   "occupancy-limited performance". Recompile the primitive kernel under a shrinking register budget
+   (`-maxrregcount`, or `__launch_bounds__(block, minBlocks)` for realism) and report, at each budget:
+   `regs`, `spill_bytes`, SASS instruction count, and the **single-warp latency and throughput**.
+   Emit as summaries: the **latency-vs-budget curve**, the **spill threshold** (largest occupancy that
+   still compiles with 0 spills), and the perf at the `full`-occupancy budget. This generalizes
+   #8607's `partial`/`full` split and directly answers "if my kernel squeezes this primitive to N
+   registers for occupancy X, what does it cost?".
+
+> **Why a single "does it spill?" bit is not enough** (validated in `proto_spill.cu`,
+> `WarpBitonicSort<float>` len=512, single warp): register pressure raises latency in *two* regimes.
+> (a) *Pre-spill*: as the budget drops from 48→32 regs with **zero spills** (`localSizeBytes=0`, no
+> `STL/LDL`), latency still rose **+19%** because ptxas rematerializes/reorders and inserts moves —
+> visible as a growing SASS instruction count with no spill traffic. (b) *Spilling*: at 24 regs a
+> 32-byte spill appeared and latency jumped **+50%**. So the resource regime must report the *curve*
+> and the pre-spill instruction-count growth, not just the spill flag. (Note: this is a single-warp
+> latency effect — pure codegen; the separate occupancy→throughput effect never appears here.)
 
 > Note on ballpark-ness: register counts are allocated holistically by the compiler, so (1) will
 > differ from what a real kernel sees; (2) and (5) exist precisely to bound that uncertainty from
 > both sides (isolated footprint vs. footprint-in-context vs. footprint-under-occupancy-constraint).
+> The ptxas register floor is arch-dependent (on sm_100 a light primitive could not be forced below
+> ~24 regs), so spill thresholds must be interpreted per-arch.
 
 ---
 
@@ -258,9 +277,10 @@ Directory: `cub/benchmarks/bench/` (targets auto-register as `cub.bench.<path>.<
    measurements were stable, but worth a note).
 3. **Cross-GPU comparability of cycles.** Cycles are clock-invariant but not micro-architecture
    invariant; the CI reference GPU must be pinned for regression thresholds.
-4. **Launch-bounds pressure sweep is GPU-relative.** On B200 these light primitives never spill even
-   at max occupancy; the “register budget” number is most useful on smaller GPUs or for heavier
-   primitives. Report it, but thresholds should be per-arch.
+4. **Pressure sweep is GPU- and budget-relative.** Via `__launch_bounds__` alone these light
+   primitives never spill on B200 (the ptxas register floor is ~24 regs); forcing spills requires a
+   heavier instance and/or `-maxrregcount`. And latency degrades *before* spilling (see §3C note), so
+   the sweep must report the whole curve, not just a spill flag. Thresholds are per-arch.
 5. **Carrier realism.** The carrier kernel’s surrounding work is synthetic; the Δregs is a proxy.
    Should the carrier be user-overridable per primitive so teams can plug in their real kernel shape?
 6. **nvbench integration for cycles.** Cleanest is a custom summary (we compute cycles in-kernel and
@@ -276,5 +296,9 @@ Directory: `cub/benchmarks/bench/` (targets auto-register as `cub.bench.<path>.<
   (the throughput-robustness ideas adopted here).
 * #8391 — `WarpBitonicSort` (+ Style-2 `Mode` latency/throughput harness).
 * #9281 — `WarpBitonicTopK`.
-* Prototypes: `dsb_experiments/proto_latency.cu`, `proto_resource.cu`, `proto_throughput.cu`
-  (branch `exp/device-side-perf`).
+* Jia et al., "Dissecting the NVIDIA Volta GPU Architecture via Microbenchmarking"
+  (arXiv:1804.06826) — dependency-chain latency, saturation-based throughput, cycle-based timing.
+* Prototypes (branch `exp/device-side-perf`, `dsb_experiments/`): `proto_latency.cu`,
+  `proto_resource.cu`, `proto_throughput.cu`, `proto_paper.cu` (overhead calibration + Little's-law
+  warps-to-saturate), `proto_slope.cu` (chain-length slope method), `proto_fence.cu` (timer fencing +
+  block-level timing), `proto_spill.cu` (register-budget vs. latency/spill sweep).
