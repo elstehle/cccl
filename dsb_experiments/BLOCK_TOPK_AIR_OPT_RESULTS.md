@@ -158,7 +158,38 @@ latency-critical single/few-block uses, and the throughput measurement *improved
 it); pairs TempStorage +4 KB. A `latency_optimized` policy knob (or simply K/bits-compile-time
 specialization) could gate items 4–6 if the footprint matters.
 
-## 5. What was measured and how
+## 5. uint32 keys edition (`proto_topk_u32.cu`)
+
+Same design point with `KeyT = uint32`: the twiddle becomes identity and the −0.0 flip-back
+machinery disappears; float patterns are mapped through the order-preserving twiddle so digit
+distributions match the float runs exactly, plus a native `uniform_u32` pattern and
+`with_zeros`/`all_zero` patterns that exercise the key-0 edge (key 0 collides with the atomic
+prototypes' empty-slot sentinel; `atomic_adaptive` handles it by dropping the `slot != 0` guard
+in the post-hoc histogram — zero-keys then match the trailing zero slots and collapse into one
+rank bin, which is exactly correct; `atomic_iter`'s value-based tiers were already 0-safe).
+All 5 prototypes pass 28/28 runs including the zero-key patterns.
+
+| u32 variant | uniform_u32 | random | tie_heavy | pivot_tie40 | sorted | G elem/s | regs | smem B |
+|---|---|---|---|---|---|---|---|---|
+| air_ref (header) | 1941 | 2035 | 1838 | 3632 | 1974 | 390 | 40 | 4240 |
+| air_fused (v2) | 1824 | 1872 | 1691 | 3279 | 1800 | 415 | 48 | 6368 |
+| **air_pair (v6)** | **1724** | **1771** | **1553** | 3206 | **1696** | **460** | 48 | 8336 |
+| atomic_adaptive | 2170 | 2271 | 1352 | **1882** | 2273 | 416 | 34 | 280 |
+| atomic_iter (break) | 4321 | 4426 | **811** | 1204 | 4428 | 145 | 27 | 204 |
+
+Observations vs the float tables:
+
+* **Everything gets faster without the twiddle, air most of all**: air_ref drops 2499 → 2035 on
+  the same (mapped) random input (−19%) — the float header pays not just the 4 `TwiddleIn`s but
+  the −0.0 normalize/track loop and the per-selected-item untwiddle+flip-restore in the scatter.
+  `atomic_adaptive` only drops 2331 → 2271, since its rounds never touched the twiddle again.
+* **The ranking and crossovers are unchanged**: air_pair leads random-like inputs and
+  throughput; atomic_adaptive leads tie floods; atomic_iter remains the flood specialist.
+  On the native `uniform_u32` pattern air's lead widens (uniform top bits → early pass exits).
+* **v2/v6 gains carry over**: air_ref → air_pair is −14% (uniform) to −16% (random) for u32
+  (vs −26% for float, where the removed work included the twiddle path).
+
+## 6. What was measured and how
 
 * Parity gate: `air_reimpl` mirrors the header stage-for-stage and lands within 3.6% on every
   pattern — the profile attributes real header behavior, not an artifact.
