@@ -189,7 +189,52 @@ Observations vs the float tables:
 * **v2/v6 gains carry over**: air_ref → air_pair is −14% (uniform) to −16% (random) for u32
   (vs −26% for float, where the removed work included the twiddle path).
 
-## 6. What was measured and how
+## 6. Max-tuning sweep: radix width, early finish, original-value scatter (`proto_air_tune.cu`)
+
+`AirTuned<KeyT, RBITS, FINISH>` parameterizes v6 over the radix digit width and an optional
+small-candidate early finish, and additionally scatters the ORIGINAL register value instead of
+untwiddling — which deletes the −0.0 normalize/track/restore machinery outright (a consistent
+refinement of the float order; any valid top-k tie-break permits it). All 12 configurations pass
+correctness (incl. `neg_zero`, `with_zeros`, `all_zero`).
+
+| config | random | tie_heavy | pivot_tie40 | sorted | G elem/s | regs | smem B | blk/SM |
+|---|---|---|---|---|---|---|---|---|
+| f32 header | 2499 | 2316 | 4372 | 2437 | 328 | 31 | 4240 | 8 |
+| **f32 R8 F0 (recommended)** | **1779** | **1570** | 3237 | **1710** | 415 | 54 | 8352 | 4 |
+| f32 R8 F64 (tail-bounded) | 1831 | 1616 | **3115** | 1756 | **432** | 48 | 8608 | 5 |
+| f32 R10 F0 | 2063 | 1854 | 3677 | 2000 | 285 | 71 | 9440 | 3 |
+| f32 R11 F0 (3 passes) | 2404 | 2223 | 3310 | 2330 | 265 | 63 | 18656 | 4 |
+| f32 R12 F0 (3 passes) | 3342 | 3274 | 4640 | 3388 | 167 | 64 | 37088 | 4 |
+| u32 header | 2035 | 1838 | 3631 | 1959 | 389 | 40 | 4240 | 6 |
+| **u32 R8 F0** | **1753** | **1556** | 3171 | **1697** | **458** | 48 | 8352 | 5 |
+| u32 R8 F64 | 1825 | 1609 | **3071** | 1748 | 456 | 48 | 8608 | 5 |
+| u32 R11 F64 | 2781 | 2255 | 3402 | 2374 | 297 | 48 | 18912 | 5 |
+
+Findings:
+
+1. **RadixBits = 8 is decisively optimal** at this design point. Wider digits (10/11/12 bits)
+   lose on *every* axis: the scan grows superlinearly (BPT bins/thread loads + walk), the
+   double-buffered reset grows with bin count inside the histogram phase, smem balloons
+   (18–37 KB), and occupancy drops — and even the promised worst-case win never materializes:
+   R11's 3 passes measure *slower* on pivot_tie40 (3310) than R8's 4 passes (3237), because
+   each of the 3 passes costs ~500 more. The pass count that matters (2, via early exit) is
+   already achieved at R8 for typical inputs.
+2. **Original-value scatter is free money for float: −78 cyc** (1857 → 1779 random) and
+   simplifies the code (no untwiddle, no flip bits). New float best: **1779 cyc, −29% vs the
+   header**; u32 best: 1753, −14%.
+3. **FINISH=64 (warp-bitonic threshold finish) is a tail-bounding knob, not a default**: it
+   caps the worst measured pattern at 3115 (−4% vs R8 F0's 3237, −29% vs the header's 4372)
+   and — via lower register pressure — actually wins float *throughput* (432 G elem/s), but
+   costs ~52 cyc on the common case (the ≤32-candidate sort path is slightly slower than the
+   fused radix pass it replaces). Choose per deployment: F0 for latency-critical common case,
+   F64 where tail latency or throughput matters.
+4. Remaining structure at R8 F0 (random ≈ 1779): ~54 twiddle + 2 × (histogram ~340 + scan ~360
+   + state ~50) + pair epilogue ~250. The two ~350-cyc stages are at their measured floors
+   (histogram: MIO-issue-bound, contention-insensitive; scan: 5-shfl chain + fold + barrier),
+   so material further gains would require changing the algorithm, not the implementation —
+   which is project 1's territory (atomic_adaptive et al.).
+
+## 7. What was measured and how
 
 * Parity gate: `air_reimpl` mirrors the header stage-for-stage and lands within 3.6% on every
   pattern — the profile attributes real header behavior, not an artifact.
