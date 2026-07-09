@@ -1,5 +1,10 @@
 # Block top-K (256 threads, N=1024, K=16, float, B200) — exploration results & recommendation
 
+> **Addendum (follow-up project):** `BLOCK_TOPK_AIR_OPT_RESULTS.md` optimizes the radix-select
+> baseline itself (`block_topk_air`) to 1857 cyc random / 437 G elem/s, overtaking
+> `atomic_adaptive` on random/sorted inputs and throughput. See its §3 for the reconciled
+> per-workload guidance; the tie-flood and 16-bit conclusions below stand.
+
 Companion to `BLOCK_TOPK_LATENCY_SPEC.md`. All numbers measured on **NVIDIA B200 (sm_100)**,
 CUDA 13.1, `-O3 -arch=sm_100`, node `umb-b200-250`. Latency = **chain-length slope** (marginal
 cycles/call, per `DEVICE_SIDE_BENCHMARKING_ISSUE.md` §3B) with single-block `__syncthreads`

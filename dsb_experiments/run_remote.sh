@@ -5,8 +5,8 @@ set -euo pipefail
 FILE="$1"
 shift || true
 BASE="$(basename "$FILE" .cu)"
-NODE=umb-b200-250
-CTR=quizzical_keldysh
+NODE=umb-b200-240
+CTR=elastic_gauss
 DIR=/cccl_fork/cccl/dsb_experiments
 
 scp -q "$(dirname "$0")/$(basename "$FILE")" "$NODE:/tmp/$(basename "$FILE")"
