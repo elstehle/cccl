@@ -270,7 +270,51 @@ Reading:
   multi-key sieve/rank API. (Smem-heavy pieces — pair exchange, double buffering — can be
   policy-gated where the footprint matters.)
 
-## 8. What was measured and how
+## 8. Applying the optimizations INSIDE PR #9066 (`pr9066_tuned/`)
+
+The v2/v6 optimizations were ported into the PR's actual components, keeping its sieve/rank/
+states API fully intact (patched headers in `dsb_experiments/pr9066_tuned/`, applied on a
+`pr9066-tuned` branch of the PR worktree):
+
+* `block_topk_sieve_air`: double-buffered histograms (one prologue init, next-pass buffer zeroed
+  inside the histogram phase) + **fused scan+choose** — which is exactly the PR's own open TODO
+  ("There is no need to write and read the scanned histogram to/from smem") — + an additive
+  `UntwiddleKeys=false` option that skips the flip-back tracking and un-twiddle pass when the
+  caller keeps original keys.
+* `block_topk_rank_atomic`: `prime()` zeroes the ticket counters ahead of time (ordered by the
+  sieve's barriers) and the tied stream uses a computed base (`num_selected + ticket`), removing
+  the rank stage's reset phase and barrier.
+* composed `block_topk_air`: rank counters moved out of the smem union and primed up front;
+  original-value pair scatter (keys+values together, one gather; unranked register slots restored
+  from the kept originals so returned contents match the old behavior).
+
+Result (same harness, all correctness incl. `neg_zero`/`with_zeros`/`all_zero` passing):
+
+| (256, 1024, K=16, pairs) | random | tie_heavy | pivot_tie40 | sorted | G elem/s | regs | smem B | blk/SM |
+|---|---|---|---|---|---|---|---|---|
+| PR9066 float, as submitted | 2605 | 2406 | 4489 | 2548 | 315 | 32 | 4240 | 8 |
+| **PR9066 float + ports** | **1995** | **1764** | **3487** | **1924** | **392** | 40 | 8336 | 6 |
+| PR9066 u32, as submitted | 2117 | 1904 | 3701 | 2043 | 375 | 38 | 4240 | 6 |
+| **PR9066 u32 + ports** | **1988** | **1752** | **3460** | **1901** | **413** | 38 | 8336 | 6 |
+| ours standalone f32 (ref) | 1779 | 1570 | 3237 | 1710 | 415 | 54 | 8352 | 4 |
+| ours standalone u32 (ref) | 1753 | 1556 | 3171 | 1697 | 460 | 48 | 8352 | 5 |
+
+* **Landing point: −23% float / −6% u32 latency and +24%/+10% throughput for the PR**, at
+  +8 registers (float) and +4 KB TempStorage for the pairs variant (keys-only keeps the lean
+  exchange). The remaining ~11-13% gap to our standalone prototype is the measured price of the
+  API's generality (per-item state objects consulted in every histogram pass, the classification
+  loop, runtime pass-loop bit arithmetic) — likely reducible but with diminishing returns.
+* **Per-change bisect (u32/float)**: the fused scan+choose is the dominant win (−555 float /
+  −97 u32 by itself); double-buffering ≈ −40; pair epilogue + prime + untwiddle-skip ≈ −30..−55.
+* **A porting hazard worth recording**: the *packed pass state* — bundled into our v6 — turned
+  out to be a **~+500 cyc regression** inside the PR sieve (bisect S1→S2), and re-testing it
+  isolated in our own standalone code showed it was *neutral* there all along (v6's gain came
+  from the pair epilogue). Three independently-pipelined shared loads beat one load plus a
+  dependent unpack chain in this codebase; the port keeps the three-field state. Lesson:
+  re-measure every micro-optimization in the target structure — they do not transfer blindly,
+  and bundled attributions lie.
+
+## 9. What was measured and how
 
 * Parity gate: `air_reimpl` mirrors the header stage-for-stage and lands within 3.6% on every
   pattern — the profile attributes real header behavior, not an artifact.
