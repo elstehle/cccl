@@ -234,7 +234,43 @@ Findings:
    so material further gains would require changing the algorithm, not the implementation —
    which is project 1's territory (atomic_adaptive et al.).
 
-## 7. What was measured and how
+## 7. Comparison vs PR #9066 (sieve+rank refactor) — `proto_air_pr9066.cu`
+
+PR #9066 (`pauleonix:blockTopKMultiKey`) refactors `block_topk_air` into composable
+`block_topk_sieve_air` + `block_topk_rank_atomic` components (for multi-key workloads) and fixes
+the ±0.0 twiddle handling (#8368). Same `select_pairs` interface, so it drops into our harness
+compiled against the PR worktree. All patterns pass, including `neg_zero`.
+
+| (256, 1024, K=16, pairs) | random | tie_heavy | pivot_tie40 | sorted | G elem/s | regs | smem B | blk/SM |
+|---|---|---|---|---|---|---|---|---|
+| PR9066 float | 2605 | 2406 | 4489 | 2548 | 315 | 32 | 4240 | 8 |
+| current header float (ref) | 2499 | 2316 | 4372 | 2437 | 328 | 31 | 4240 | 8 |
+| **ours float (R8/F0)** | **1779** | **1570** | **3237** | **1710** | **415** | 54 | 8352 | 4 |
+| PR9066 u32 | 2117 | 1904 | 3701 | 2043 | 375 | 38 | 4240 | 6 |
+| current header u32 (ref) | 2035 | 1838 | 3631 | 1959 | 389 | 40 | 4240 | 6 |
+| **ours u32 (R8/F0)** | **1753** | **1556** | **3171** | **1697** | **460** | 48 | 8352 | 5 |
+
+Reading:
+
+* **Latency/throughput**: our tuned variant is −32% latency / +32% throughput vs PR9066 (float)
+  and −17% / +23% (u32) — the throughput win holds despite our lower occupancy, since the
+  per-call critical path dominates even at saturation for this primitive.
+* **Registers/smem**: this is the PR's win. PR9066 keeps the incumbent's lean footprint
+  (32-38 regs, 4240 B, 6-8 blocks/SM); ours spends 48-54 regs and 8352 B (pair exchange +
+  double-buffered histograms) for 4-5 blocks/SM. For occupancy-constrained embedding kernels
+  the PR shape is friendlier; for latency-critical few-block use the trade is clearly worth it.
+* **PR9066 vs today's header**: the refactor currently costs ~4% latency on every pattern
+  (2605 vs 2499 float; 2117 vs 2035 u32) and ~4% throughput — consistent with its open TODO
+  ("compare performance to old implementation"). Useful datum for the PR review.
+* **The two efforts are orthogonal and composable**: our v2/v6 optimizations live below the
+  PR's new API boundary — fused scan+choose and double-buffered histograms belong inside
+  `block_topk_sieve_air`, the packed pass state in its per-pass state exchange, and the pair
+  scatter + preset counters inside `block_topk_rank_atomic`. Applying them to the PR's
+  components should recover the refactor's ~4% and then the further ~30%, while keeping the
+  multi-key sieve/rank API. (Smem-heavy pieces — pair exchange, double buffering — can be
+  policy-gated where the footprint matters.)
+
+## 8. What was measured and how
 
 * Parity gate: `air_reimpl` mirrors the header stage-for-stage and lands within 3.6% on every
   pattern — the profile attributes real header behavior, not an artifact.
