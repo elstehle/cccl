@@ -314,7 +314,62 @@ Result (same harness, all correctness incl. `neg_zero`/`with_zeros`/`all_zero` p
   re-measure every micro-optimization in the target structure — they do not transfer blindly,
   and bundled attributions lie.
 
-## 9. What was measured and how
+## 9. Integration ablation: per-change perf & resource deltas across the type matrix
+
+`proto_air_ablate.cu` (measured on **umb-b200-235**; its L0 reproduces umb-b200-240's reimpl
+within 0.5%) applies the changes cumulatively in integration order to a faithful
+reimplementation of today's `block_topk_air`, across (KeyT, ValueT) combinations. All 30
+instantiations pass correctness on all patterns (incl. `neg_zero` for fp keys).
+
+### f32+i32 pairs — the reference chain (random-pattern latency; Δ vs previous level)
+
+| level | change | random | Δ | pivot_tie40 | G elem/s | regs | smem B | blk/SM |
+|---|---|---|---|---|---|---|---|---|
+| L0 | faithful air | 2601 | — | 4542 | 317 | 37 | 4272 | 6 |
+| L1 | +fused scan+choose | 2466 | **−135** | 4256 | 336 | 37 | 4272 | 6 |
+| L2 | +double-buffered hist | 2256 | **−210** | 3846 | 347 | **32** | 4272 | **8** |
+| L3 | +preset counters | 2203 | **−53** | 3804 | 347 | 32 | 4272 | 8 |
+| L4 | +pair scatter | 2154 | **−49** | 3751 | 366 | 32 | 8368 | 8 |
+| L5 | +orig-value scatter | 2137 | **−17** | 3734 | 383 | 32 | 8368 | 8 |
+| L6 | +unrolled passes | 1817 | **−320** | 3221 | 440 | 48 | 8368 | 5 |
+| L7 | +packed state (diag) | 1823 | +6 | 3264 | 421 | 48 | 8368 | 5 |
+
+Total L0→L6: **−30% latency, +39% throughput**; u32+i32 mirrors it (2514→1808, −28%,
+356→452 G elem/s), f16+i32 −27% (2600→1893), f64+i32 −26% (3517→2588; pivot 8724→6250).
+
+### What each change is, structurally
+
+* **Per-pass savings — scale with the number of executed passes** (verify: each pivot_tie40
+  (4-pass) delta is ≈2× the random (2-pass) delta): L1 fused scan+choose (−135/pass-pair),
+  L2 double-buffering (−210), L6 unrolling (−320). These grow for f64 (8 passes) and tie floods,
+  shrink for f16 (2 passes max).
+* **Fixed epilogue savings** — independent of pass count: L3 preset counters (−23..−53),
+  L4 pair scatter (−49..−87), L5 orig-value scatter (0..−17).
+
+### Per-change verdicts and type applicability
+
+| change | latency | resources | applicability |
+|---|---|---|---|
+| **L1 fused scan+choose** | −106..−135 (random), −220..−290 (4-pass) | none | **all types, keys-only + pairs — unconditional** |
+| **L2 double-buffered hist** | −190..−215 | **−5 regs, occupancy 6→8** (the 2nd buffer unions under the exchange, so smem is unchanged for ≤4B keys; f64 also absorbed) | **all types — unconditional** (and it *improves* resources) |
+| **L3 preset counters** | −23..−53 | +8 B smem (counters leave the union) | **all types — unconditional** |
+| **L4 pair scatter** | −49 (f32+i32), −87 (u32+i32), −32 (f32+i64) | exchange tile·max(sizeof) → tile·sizeof(pair): 4.3→8.4 KB for 4B/4B, **16.6 KB for 8B keys or 8B values** | **pairs only.** Default-on for pair sizes ≤8 B; policy-gate for 16 B pairs (f64 keys or i64 values), where the win shrinks to −32 and smem doubles again |
+| **L5 orig-value scatter** | −17 (f32 pairs), **exactly 0 (integer keys — compiler already elides the identity untwiddle)**, small for f16/f64 pairs | pairs: none; keys-only: **+19 regs, occupancy −2 blk/SM, −31 G elem/s** (control-measured) | **fp pairs only.** Skip for integer keys (no-op) and for keys-only (the register copy costs more than the untwiddle saves). Semantics note: dropping the −0.0 normalization ranks −0.0 just below +0.0 — a valid refinement, but a visible tie-break change; keep the normalization if bit-exact parity with today's ±0 behavior is required |
+| **L6 unrolled passes** | **−320..−513, the single biggest lever** | **+16 regs, occupancy 8→5**; needs compile-time begin/end bits | **all types** in the common (default-bit-range) instantiation. Throughput still rises 27% despite the occupancy drop, but occupancy-sensitive embedders may want it policy-gated; runtime bit ranges keep the rolled loop |
+| **L7 packed pass state** | **+6..+47 here, ~+500 in PR #9066** | none | **rejected everywhere** — three independently-pipelined loads beat a load+unpack dependency chain |
+
+### Suggested integration order
+
+1. **L1 + L2** (fused scan + double-buffer): pure wins for every type and both key/value modes,
+   ~−345 cyc and +30 G elem/s, with *better* register/occupancy numbers. No trade-off at all.
+2. **L3** (preset counters): small pure win, all types.
+3. **L6** (compile-time unroll): the largest single win; costs +16 regs / 3 occupancy slots —
+   worth a policy knob only if occupancy-constrained users complain.
+4. **L4** (pair scatter): pairs with ≤8 B pair size by default; gate 16 B pairs.
+5. **L5** (orig-value scatter): fp pairs only; skip elsewhere; mind the ±0 note.
+6. **L7**: do not integrate.
+
+## 10. What was measured and how
 
 * Parity gate: `air_reimpl` mirrors the header stage-for-stage and lands within 3.6% on every
   pattern — the profile attributes real header behavior, not an artifact.
