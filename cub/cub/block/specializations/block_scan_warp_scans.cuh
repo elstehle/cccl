@@ -380,6 +380,50 @@ struct BlockScanWarpScans
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   ExclusiveScan(T input, T& exclusive_output, ScanOp scan_op, BlockPrefixCallbackOp& block_prefix_callback_op)
   {
+    // AGGREGATE-FIRST prototype (dsb_experiments/BLOCK_TOPK_SCAN_CHOOSE_RESULTS.md): when the
+    // warp aggregate is computable by redux.sync, produce and publish it BEFORE the warp scans.
+    // The block aggregate is then ready one warp-scan earlier, so the prefix callback (e.g. the
+    // decoupled look-back's partial promotion) issues early and its global-memory latency
+    // overlaps all warps' shuffle scans.
+    if constexpr (detail::is_warp_redux_op_supported<ScanOp, T> && (BLOCK_THREADS % WARP_THREADS == 0))
+    {
+      if (const auto warp_aggregate = detail::warp_redux(input, 0xffffffffu, scan_op))
+      {
+        if (lane_id == 0)
+        {
+          detail::uninitialized_copy_single(temp_storage.warp_aggregates + warp_id, *warp_aggregate);
+        }
+        __syncthreads(); // releases as soon as the redux completes, not the scans
+
+        T warp_prefix; // valid for warp_id != 0
+        T block_aggregate = temp_storage.warp_aggregates[0];
+        ApplyWarpAggregates(warp_prefix, scan_op, block_aggregate, constant_v<1>);
+
+        // warp 0 runs the callback immediately; warps 1..N scan in its shadow
+        if (warp_id == 0)
+        {
+          T block_prefix = block_prefix_callback_op(block_aggregate);
+          if (lane_id == 0)
+          {
+            detail::uninitialized_copy_single(&temp_storage.block_prefix, block_prefix);
+          }
+        }
+
+        T inclusive_output;
+        WarpScanT(temp_storage.warp_scan[warp_id]).Scan(input, inclusive_output, exclusive_output, scan_op);
+        __syncthreads();
+
+        const T block_prefix = temp_storage.block_prefix;
+        const T prefix       = (warp_id == 0) ? block_prefix : scan_op(block_prefix, warp_prefix);
+        exclusive_output     = scan_op(prefix, exclusive_output);
+        if (lane_id == 0)
+        {
+          exclusive_output = prefix;
+        }
+        return;
+      }
+    }
+
     // Compute block-wide exclusive scan.  The exclusive output from tid0 is invalid.
     T block_aggregate;
     ExclusiveScan(input, exclusive_output, scan_op, block_aggregate);
@@ -488,6 +532,41 @@ struct BlockScanWarpScans
   _CCCL_DEVICE _CCCL_FORCEINLINE void
   InclusiveScan(T input, T& exclusive_output, ScanOp scan_op, BlockPrefixCallbackOp& block_prefix_callback_op)
   {
+    // AGGREGATE-FIRST prototype: see the exclusive callback overload above.
+    if constexpr (detail::is_warp_redux_op_supported<ScanOp, T> && (BLOCK_THREADS % WARP_THREADS == 0))
+    {
+      if (const auto warp_aggregate = detail::warp_redux(input, 0xffffffffu, scan_op))
+      {
+        if (lane_id == 0)
+        {
+          detail::uninitialized_copy_single(temp_storage.warp_aggregates + warp_id, *warp_aggregate);
+        }
+        __syncthreads();
+
+        T warp_prefix; // valid for warp_id != 0
+        T block_aggregate = temp_storage.warp_aggregates[0];
+        ApplyWarpAggregates(warp_prefix, scan_op, block_aggregate, constant_v<1>);
+
+        if (warp_id == 0)
+        {
+          T block_prefix = block_prefix_callback_op(block_aggregate);
+          if (lane_id == 0)
+          {
+            detail::uninitialized_copy_single(&temp_storage.block_prefix, block_prefix);
+          }
+        }
+
+        T warp_inclusive;
+        WarpScanT(temp_storage.warp_scan[warp_id]).InclusiveScan(input, warp_inclusive, scan_op);
+        __syncthreads();
+
+        const T block_prefix = temp_storage.block_prefix;
+        const T prefix       = (warp_id == 0) ? block_prefix : scan_op(block_prefix, warp_prefix);
+        exclusive_output     = scan_op(prefix, warp_inclusive);
+        return;
+      }
+    }
+
     T block_aggregate;
     InclusiveScan(input, exclusive_output, scan_op, block_aggregate);
 
