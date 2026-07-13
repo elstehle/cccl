@@ -207,7 +207,7 @@ struct SmemStamp
 };
 
 // ------------------------------------------------------------------ the leveled template
-template <typename KeyT, typename ValueT, int LVL, bool ORIG = (LVL >= 5)>
+template <typename KeyT, typename ValueT, int LVL, bool ORIG = (LVL >= 5), bool AFSCAN = false>
 struct AirAblate
 {
   using key_t                     = KeyT;
@@ -264,6 +264,7 @@ struct AirAblate
     unsigned st_packed;
     unsigned st_sel, st_cands, st_bucket;
     unsigned cntA, cntB; // L>=3 preset ticket counters (never aliased)
+    unsigned agg[8];     // AFSCAN warp aggregates
   };
 
   // One radix pass; returns true when all remaining candidates are selected (early exit).
@@ -311,7 +312,40 @@ struct AirAblate
       // fused scan + choose
       const unsigned cnt = cur[threadIdx.x];
       unsigned incl;
-      block_scan_t(sh.stage.passes.scan_temp).InclusiveSum(cnt, incl);
+      if constexpr (AFSCAN)
+      {
+        // aggregate-first: redux posts the warp aggregate before the scan; the early barrier
+        // lets the cross-warp fold overlap the in-warp shuffle chain (see proto_scan_choose.cu)
+        const int lane      = threadIdx.x & 31;
+        const int warp      = threadIdx.x >> 5;
+        const unsigned wsum = __reduce_add_sync(kFull, cnt);
+        if (lane == 0)
+        {
+          sh.agg[warp] = wsum;
+        }
+        __syncthreads();
+        unsigned base = 0;
+#pragma unroll
+        for (int w = 0; w < 7; ++w)
+        {
+          base += (w < warp) ? sh.agg[w] : 0u;
+        }
+        unsigned wincl = cnt;
+#pragma unroll
+        for (int d = 1; d < 32; d <<= 1)
+        {
+          const unsigned o = __shfl_up_sync(kFull, wincl, d);
+          if (lane >= d)
+          {
+            wincl += o;
+          }
+        }
+        incl = base + wincl;
+      }
+      else
+      {
+        block_scan_t(sh.stage.passes.scan_temp).InclusiveSum(cnt, incl);
+      }
       const unsigned excl = incl - cnt;
       if (excl < (unsigned) k && incl >= (unsigned) k)
       {
@@ -627,6 +661,14 @@ AB(F32K_L6, float, KeysOnly, 6, "f32 keys L6 +unrolled passes")
 struct F32K_L6NO : AirAblate<float, KeysOnly, 6, false>
 {
   static constexpr const char* name = "f32 keys L6 w/o orig-scatter (ctrl)";
+};
+struct F32P_L6AF : AirAblate<float, int, 6, true, true>
+{
+  static constexpr const char* name = "f32+i32  L6 + aggregate-first scan";
+};
+struct U32P_L6AF : AirAblate<unsigned, int, 6, true, true>
+{
+  static constexpr const char* name = "u32+i32  L6 + aggregate-first scan";
 };
 
 AB(U32P_L0, unsigned, int, 0, "u32+i32  L0 faithful air")
@@ -1331,6 +1373,8 @@ void run_prof()
   X(F32K_L5)             \
   X(F32K_L6)             \
   X(F32K_L6NO)           \
+  X(F32P_L6AF)           \
+  X(U32P_L6AF)           \
   X(U32P_L0)             \
   X(U32P_L1)             \
   X(U32P_L2)             \

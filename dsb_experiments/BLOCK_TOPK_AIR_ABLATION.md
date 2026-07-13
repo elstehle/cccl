@@ -260,6 +260,58 @@ general porting lesson: bundled micro-optimizations must be re-measured per stru
 
 ---
 
+## L8 (exploratory, branch `exp/scan-choose-opt`) — aggregate-first scan+choose
+
+The phase profile above leaves the scan as the dominant invariant (~377/pass, 42% of L6).
+`proto_scan_choose.cu` attacks its structure. In `BLOCK_SCAN_WARP_SCANS`, the cross-warp
+aggregate is the *last* output of the ~150-cyc shuffle chain, so the barrier releases late and
+the 8-aggregate fold is a pure serial tail. But the aggregate does not need the scan:
+`redux.sync.add` produces it in ~22 cyc. Posting it immediately moves the barrier ~120 cyc
+earlier, and the fold's independent loads/adds then hide inside the shuffle chain's stall slots:
+
+```cpp
+const unsigned cnt  = hist[tid];
+const unsigned wsum = __reduce_add_sync(0xffffffffu, cnt);  // aggregate WITHOUT the scan
+if (lane == 0) { agg[warp] = wsum; }
+__syncthreads();                                            // early release
+unsigned base = 0;                                          // fold: independent of the scan,
+#pragma unroll                                              // scheduler interleaves it into
+for (int w = 0; w < 7; ++w) { base += (w < warp) ? agg[w] : 0u; } // the shuffles' stall slots
+unsigned incl = cnt;                                        // 5-shfl in-warp inclusive scan
+#pragma unroll
+for (int d = 1; d < 32; d <<= 1) { unsigned o = __shfl_up_sync(~0u, incl, d); if (lane >= d) incl += o; }
+incl += base;                                               // fused crossing test as in L1
+```
+
+Measured, scan+choose in isolation (slope cyc/call; "floor" = LDS + state + barrier only):
+
+| impl | 256 bins | net of floor | 2048 bins (8 padded bins/thr) | net |
+|---|---|---|---|---|
+| cub WARP_SCANS fused (incumbent) | 403 | 280 | 558 | 377 |
+| **aggregate-first** | **334** | **211 (−25%)** | **525** | **344 (−9%)** |
+| cub RAKING fused | 477 | 354 | 720 | 539 |
+| 1-warp serial scan | 428 | 305 | — | — |
+| floor probe | 123 | — | 181 | — |
+
+The 2048-bin gain is smaller because the local 8-bin tree-sum gates both the aggregate and the
+scan, shrinking the hideable window; RAKING and the 1-warp scan lose at both widths.
+
+End-to-end (`AirAblate<..., AFSCAN=true>`, all correctness runs pass):
+
+| config | random | tie_heavy | pivot_tie40 | sorted | G elem/s | regs | smem B |
+|---|---|---|---|---|---|---|---|
+| f32+i32 L6 | 1817 | 1601 | 3221 | 1751 | 440 | 48 | 8368 |
+| **f32+i32 L6+AF** | **1689** | **1486** | **2952** | **1639** | 426 | 48 | 8400 |
+| u32+i32 L6 | 1809 | 1594 | 3237 | 1738 | 450 | 48 | 8368 |
+| **u32+i32 L6+AF** | **1637** | **1430** | **2907** | **1580** | 439 | 48 | 8400 |
+
+Verdict: **−64..−82 cyc per pass end-to-end (f32 −7%, u32 −9.5% random; pivot −270..−330)** at
++32 B smem and unchanged registers/occupancy — but throughput at full saturation dips ~2-3%
+(the redux adds issue pressure that latency runs hide but saturated SMs pay). Applicability:
+same as L1 (all types/modes; per-pass scaling); needs sm_80+ for `redux.sync`. Recommendation:
+integrate as the latency-policy scan (or accept the small throughput trade as the default —
+new float best 1689, u32 1637).
+
 ## Applicability matrix
 
 | change | f32 pairs | int pairs | f16 pairs | f64 pairs | 8 B values | keys-only |
