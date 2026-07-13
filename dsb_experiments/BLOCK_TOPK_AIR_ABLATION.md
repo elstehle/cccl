@@ -30,6 +30,49 @@ Other configurations, L0→L6 (random): u32+i32 2514→1808 (−28%, 356→452 G
 f32 keys-only 2525→1813 (−28%); f16+i32 2600→1893 (−27%, worst pattern 2636→1909);
 f64+i32 3517→2588 (−26%, worst pattern 8724→6250); f32+i64 → 1856.
 
+## Where the cycles went — per-phase profile, L0 vs L6 (f32+i32)
+
+`./proto_air_ablate prof` stamps `clock64` at every phase boundary of both versions (same
+technique as `BLOCK_TOPK_AIR_OPT_RESULTS.md` §1; min across 24 reps × 4 chained calls; totals
+agree with the slope measurements within ~2%). A `~0` means the optimizations *eliminated* the
+phase:
+
+| stage | L0 random | L6 random | Δ | L0 pivot40 | L6 pivot40 | Δ |
+|---|---|---|---|---|---|---|
+| prologue (twiddle/init/preset) | 68 | 28 | −40 | 68 | 28 | −40 |
+| p0 init / state-update | 29 | 33 | +4 | 29 | 33 | +4 |
+| **p0 histogram** | 339 | **30** | **−309** | 339 | **30** | **−309** |
+| p0 scan (+choose) | 377 | 397 | +20 | 377 | 382 | +5 |
+| p0 choose | 85 | ~0 | −83 | 86 | ~0 | −84 |
+| p1 init / state-update | 103 | 74 | −29 | 103 | 74 | −29 |
+| **p1 histogram** | 415 | **234** | **−181** | 407 | 234 | −173 |
+| p1 scan (+choose) | 377 | 377 | ±0 | 378 | 381 | +3 |
+| p1 choose | 89 | ~0 | −81 | 87 | ~0 | −81 |
+| p2/p3 (pivot only): histogram / choose each | — | — | — | ~408 / ~87 | ~235 / ~0 | ~−173 / ~−83 |
+| post-loop bar + scatter setup | 117 | 89 | −28 | 121 | 74 | −47 |
+| scatter | 245 | 213 | −32 | 459 | 442 | −17 |
+| gather keys/pairs | 212 | 207 | −5 | 42 | 32 | −10 |
+| scatter values | 84 | **6** | **−78** | 84 | **6** | **−78** |
+| gather values + out | 105 | 93 | −12 | 101 | 89 | −12 |
+| **TOTAL** | **2645** | **1791** | **−854** | **4633** | **3227** | **−1406** |
+
+Reading (random / pivot40):
+
+1. **The largest win by far is the histogram phases: −490 / −828** — more than half of the
+   total. Two mechanisms: (a) pass 0's histogram all but vanishes (339→30) because with the
+   unrolled, fused structure the compiler software-pipelines the pass-0 atomics into the
+   prologue — pass 0 has no filter dependency, so its digit computation and `ATOMS.ADD` issue
+   can start immediately; the runtime loop + phase barriers of L0 prevented that hoisting.
+   (b) later passes drop ~175 each from the shortened state-broadcast→filter dependency chain
+   and the init fold (double-buffering).
+2. **Choose elimination: −164 / −331.** The ~87-cyc choose phase per pass goes to ~0, with only
+   +0..+20 reappearing on the scan phase — the fusion is nearly free.
+3. **Epilogue: −155 / −164**, dominated by the value-scatter trip collapsing (84→6, pair
+   scatter), plus setup (−24) and scatter/gather trims.
+4. **What does not move: the scan, ~377/pass, in both versions** — now 42% of the optimized
+   call. This is the measured floor from §1 (5-step shuffle chain + cross-warp fold + barrier);
+   further gains here mean changing the algorithm, not the implementation.
+
 Two structurally different kinds of savings (verified: the 4-pass `pivot_tie40` deltas of the
 first kind are ≈2× their 2-pass `random` deltas):
 

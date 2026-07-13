@@ -174,6 +174,38 @@ struct AKey<double>
   }
 };
 
+// ------------------------------------------------------------------ phase stamping (prof mode)
+// A no-op by default; SmemStamp records clock64 at every phase boundary so the L0 vs L6 phase
+// breakdown can be compared directly. Eliminated phases stamp a zero-length interval, which
+// shows up as 0 in the table (i.e. "this phase no longer exists").
+constexpr int kStamps = 24;
+
+struct NoStamp
+{
+  __device__ __forceinline__ void operator()(int) const {}
+  __device__ __forceinline__ void passes(int) const {}
+};
+
+struct SmemStamp
+{
+  long long* t;
+  int* np;
+  __device__ __forceinline__ void operator()(int i) const
+  {
+    if (threadIdx.x == 0)
+    {
+      t[i] = clock64();
+    }
+  }
+  __device__ __forceinline__ void passes(int p) const
+  {
+    if (threadIdx.x == 0)
+    {
+      *np = p;
+    }
+  }
+};
+
 // ------------------------------------------------------------------ the leveled template
 template <typename KeyT, typename ValueT, int LVL, bool ORIG = (LVL >= 5)>
 struct AirAblate
@@ -235,6 +267,7 @@ struct AirAblate
   };
 
   // One radix pass; returns true when all remaining candidates are selected (early exit).
+  template <class Stamp = NoStamp>
   __device__ __forceinline__ static bool pass_step(
     Smem& sh,
     const ord_t (&uk)[4],
@@ -244,7 +277,8 @@ struct AirAblate
     ord_t& kth_prefix,
     ord_t& pmask,
     int pass,
-    int pass_begin)
+    int pass_begin,
+    Stamp stamp = {})
   {
     unsigned(&cur)[256] = sh.stage.passes.hist[(LVL >= 2) ? (pass & 1) : 0];
     if constexpr (LVL < 2)
@@ -252,6 +286,7 @@ struct AirAblate
       cur[threadIdx.x] = 0;
       __syncthreads();
     }
+    stamp(2 + pass * 4 + 0); // init phase end (zero-length when double-buffered)
 #pragma unroll
     for (int i = 0; i < 4; ++i)
     {
@@ -269,6 +304,7 @@ struct AirAblate
       }
     }
     __syncthreads();
+    stamp(2 + pass * 4 + 1); // histogram phase end
 
     if constexpr (LVL >= 1)
     {
@@ -291,6 +327,8 @@ struct AirAblate
         }
       }
       __syncthreads();
+      stamp(2 + pass * 4 + 2); // fused scan+choose end
+      stamp(2 + pass * 4 + 3); // choose phase eliminated (zero-length)
     }
     else
     {
@@ -299,6 +337,7 @@ struct AirAblate
       block_scan_t(sh.stage.passes.scan_temp).InclusiveSum(tb, tb);
       cur[threadIdx.x] = tb;
       __syncthreads();
+      stamp(2 + pass * 4 + 2); // scan + writeback end
       {
         const unsigned prev = (threadIdx.x == 0) ? 0 : cur[threadIdx.x - 1];
         const unsigned c    = cur[threadIdx.x];
@@ -310,7 +349,9 @@ struct AirAblate
         }
       }
       __syncthreads();
+      stamp(2 + pass * 4 + 3); // choose phase end
     }
+    stamp.passes(pass + 1);
 
     unsigned sel, cands, bucket;
     if constexpr (LVL >= 7)
@@ -335,9 +376,11 @@ struct AirAblate
     return num_candidates == k;
   }
 
+  template <class Stamp = NoStamp>
   __device__ __forceinline__ static void
-  run(const KeyT (&v)[4], const int (&idx)[4], Smem& sh, KeyT* out_v, int* out_i)
+  run(const KeyT (&v)[4], const int (&idx)[4], Smem& sh, KeyT* out_v, int* out_i, Stamp stamp = {})
   {
+    stamp(0);
     value_t vals[4];
     if constexpr (!keys_only)
     {
@@ -380,6 +423,7 @@ struct AirAblate
       sh.stage.passes.hist[1][threadIdx.x] = 0;
       __syncthreads();
     }
+    stamp(1); // prologue end (twiddle [+ hist init + counter preset])
 
     ord_t kth_prefix = 0, pmask = 0;
     int k              = kK;
@@ -390,7 +434,8 @@ struct AirAblate
 #pragma unroll
       for (int pass = 0; pass < NPASS; ++pass)
       {
-        if (pass_step(sh, uk, k, total_selected, num_candidates, kth_prefix, pmask, pass, AK::key_bits - 8 * (pass + 1)))
+        if (pass_step(
+              sh, uk, k, total_selected, num_candidates, kth_prefix, pmask, pass, AK::key_bits - 8 * (pass + 1), stamp))
         {
           break;
         }
@@ -402,7 +447,7 @@ struct AirAblate
       for (int pass = 0; pass < NPASS; ++pass)
       {
         const int pass_begin = AK::key_bits - 8 * (pass + 1);
-        if (pass_step(sh, uk, k, total_selected, num_candidates, kth_prefix, pmask, pass, pass_begin))
+        if (pass_step(sh, uk, k, total_selected, num_candidates, kth_prefix, pmask, pass, pass_begin, stamp))
         {
           break;
         }
@@ -414,12 +459,19 @@ struct AirAblate
     if constexpr (LVL < 3)
     {
       __syncthreads(); // repurpose shared memory (post-loop)
+      stamp(18);
       if (threadIdx.x == 0)
       {
         sh.stage.select.sel_off[0] = 0;
         sh.stage.select.sel_off[1] = (unsigned) total_selected;
       }
       __syncthreads(); // setup
+      stamp(19);
+    }
+    else
+    {
+      stamp(18); // post-loop barrier eliminated (zero-length)
+      stamp(19); // setup phase eliminated (zero-length)
     }
     [[maybe_unused]] int scatter_idx[4] = {-1, -1, -1, -1};
 #pragma unroll
@@ -470,6 +522,7 @@ struct AirAblate
       }
     }
     __syncthreads();
+    stamp(20); // scatter phase end
     KeyT outk[4]     = {};
     value_t outv[4]  = {};
     if constexpr (use_pair)
@@ -485,6 +538,8 @@ struct AirAblate
           outv[i]        = p.v;
         }
       }
+      stamp(21); // pair gather end
+      stamp(22); // value scatter phase eliminated (zero-length)
     }
     else if constexpr (keys_only)
     {
@@ -497,6 +552,8 @@ struct AirAblate
           outk[i] = sh.stage.select.exch.k[bi];
         }
       }
+      stamp(21);
+      stamp(22);
     }
     else
     {
@@ -510,6 +567,7 @@ struct AirAblate
         }
       }
       __syncthreads(); // repurpose exchange for values
+      stamp(21); // key gather end
 #pragma unroll
       for (int i = 0; i < 4; ++i)
       {
@@ -519,6 +577,7 @@ struct AirAblate
         }
       }
       __syncthreads();
+      stamp(22); // value scatter end
 #pragma unroll
       for (int i = 0; i < 4; ++i)
       {
@@ -539,6 +598,7 @@ struct AirAblate
       }
     }
     __syncthreads();
+    stamp(23); // value gather + out end
   }
 };
 
@@ -685,6 +745,84 @@ __global__ void __launch_bounds__(kBlock) lat_kernel(const typename P::key_t* in
   if (box.out_i[0] == -12345)
   {
     g_sink = box.out_i[0];
+  }
+}
+
+// prof: chained calls; per-stage deltas, min across calls & reps (steady state)
+template <class P>
+__global__ void __launch_bounds__(kBlock) prof_kernel(const typename P::key_t* in, long long* d_acc, int* d_passes)
+{
+  using K = typename P::key_t;
+  __shared__ Box<P> box;
+  __shared__ long long ts[kStamps];
+  __shared__ long long acc[kStamps];
+  K v0[4];
+  int idx[4];
+#pragma unroll
+  for (int i = 0; i < 4; ++i)
+  {
+    idx[i] = threadIdx.x * 4 + i;
+    v0[i]  = in[idx[i]];
+  }
+  if (threadIdx.x == 0)
+  {
+    for (int i = 0; i < kStamps; ++i)
+    {
+      acc[i] = LLONG_MAX;
+    }
+  }
+  P::run(v0, idx, box.s, box.out_v, box.out_i); // warmup (NoStamp)
+#pragma unroll 1
+  for (int rep = 0; rep < kLatReps; ++rep)
+  {
+    __syncthreads();
+#pragma unroll 1
+    for (int n = 0; n < 4; ++n)
+    {
+      if (threadIdx.x == 0)
+      {
+#pragma unroll 1
+        for (int i = 0; i < kStamps; ++i)
+        {
+          ts[i] = -1; // sentinel: stamp not written (early-exited pass)
+        }
+      }
+      __syncthreads();
+      K v[4];
+      v[0] = chain_link(v0[0], box.out_v[0]);
+      v[1] = v0[1];
+      v[2] = v0[2];
+      v[3] = v0[3];
+      P::run(v, idx, box.s, box.out_v, box.out_i, SmemStamp{ts, d_passes});
+      if (threadIdx.x == 0)
+      {
+        // forward-fill unwritten stamps so skipped phases contribute zero-length intervals
+#pragma unroll 1
+        for (int i = 1; i < kStamps; ++i)
+        {
+          if (ts[i] < 0)
+          {
+            ts[i] = ts[i - 1];
+          }
+        }
+#pragma unroll 1
+        for (int i = 0; i + 1 < kStamps; ++i)
+        {
+          const long long d = ts[i + 1] - ts[i];
+          if (d >= 0 && d < acc[i])
+          {
+            acc[i] = d;
+          }
+        }
+      }
+    }
+  }
+  if (threadIdx.x == 0)
+  {
+    for (int i = 0; i < kStamps; ++i)
+    {
+      d_acc[i] = acc[i];
+    }
   }
 }
 
@@ -1082,6 +1220,101 @@ void run_res()
          occ);
 }
 
+static const char* stage_names[kStamps - 1] = {
+  "prologue",      "p0 init",       "p0 histogram", "p0 scan(+cho)", "p0 choose",
+  "p1 init",       "p1 histogram",  "p1 scan(+cho)", "p1 choose",
+  "p2 init",       "p2 histogram",  "p2 scan(+cho)", "p2 choose",
+  "p3 init",       "p3 histogram",  "p3 scan(+cho)", "p3 choose",
+  "post-loop bar", "scatter setup", "scatter",       "gather keys/p", "scatter vals",  "gather+out"};
+
+template <class P>
+void prof_one(const char* pat, long long acc[kStamps], int& passes)
+{
+  using K = typename P::key_t;
+  K* d_in;
+  long long* d_acc;
+  int* d_passes;
+  CHECK(cudaMalloc(&d_in, kN * sizeof(K)));
+  CHECK(cudaMalloc(&d_acc, kStamps * sizeof(long long)));
+  CHECK(cudaMalloc(&d_passes, sizeof(int)));
+  auto in = gen_pattern<K>(pat, 0);
+  CHECK(cudaMemcpy(d_in, in.data(), kN * sizeof(K), cudaMemcpyHostToDevice));
+  prof_kernel<P><<<1, kBlock>>>(d_in, d_acc, d_passes);
+  CHECK(cudaDeviceSynchronize());
+  CHECK(cudaMemcpy(acc, d_acc, kStamps * sizeof(long long), cudaMemcpyDeviceToHost));
+  CHECK(cudaMemcpy(&passes, d_passes, sizeof(int), cudaMemcpyDeviceToHost));
+  cudaFree(d_in);
+  cudaFree(d_acc);
+  cudaFree(d_passes);
+}
+
+void run_prof()
+{
+  const char* pats[2] = {"random", "pivot_tie40"};
+  long long acc[4][kStamps];
+  int passes[4];
+  prof_one<F32P_L0>(pats[0], acc[0], passes[0]);
+  prof_one<F32P_L6>(pats[0], acc[1], passes[1]);
+  prof_one<F32P_L0>(pats[1], acc[2], passes[2]);
+  prof_one<F32P_L6>(pats[1], acc[3], passes[3]);
+  printf("\n=== per-phase cycles, f32+i32: L0 (faithful air) vs L6 (all changes) ===\n");
+  printf("  (0 = phase eliminated by the optimizations; min across %d reps x 4 calls)\n\n", kLatReps);
+  printf("  %-15s %10s %10s %8s   %10s %10s %8s\n",
+         "stage", "L0 random", "L6 random", "delta", "L0 pivot", "L6 pivot", "delta");
+  long long tot[4] = {};
+  for (int s = 0; s < kStamps - 1; ++s)
+  {
+    const int pass_of_stage = (s >= 1 && s < 17) ? (s - 1) / 4 : -1;
+    long long v[4];
+    bool live = false;
+    for (int c = 0; c < 4; ++c)
+    {
+      const bool executed = (pass_of_stage < 0) || (pass_of_stage < passes[c]);
+      v[c]                = (executed && acc[c][s] != LLONG_MAX) ? acc[c][s] : -1;
+      if (v[c] > 0)
+      {
+        live = true;
+      }
+      if (v[c] >= 0)
+      {
+        tot[c] += v[c];
+      }
+    }
+    if (!live)
+    {
+      continue; // skip rows that are 0/absent everywhere
+    }
+    auto cell = [](long long x, char* buf) {
+      if (x < 0)
+      {
+        snprintf(buf, 16, "-");
+      }
+      else
+      {
+        snprintf(buf, 16, "%lld", x);
+      }
+    };
+    char b0[16], b1[16], b2[16], b3[16];
+    cell(v[0], b0);
+    cell(v[1], b1);
+    cell(v[2], b2);
+    cell(v[3], b3);
+    char d0[16] = "-", d1[16] = "-";
+    if (v[0] >= 0 && v[1] >= 0)
+    {
+      snprintf(d0, 16, "%+lld", v[1] - v[0]);
+    }
+    if (v[2] >= 0 && v[3] >= 0)
+    {
+      snprintf(d1, 16, "%+lld", v[3] - v[2]);
+    }
+    printf("  %-15s %10s %10s %8s   %10s %10s %8s\n", stage_names[s], b0, b1, d0, b2, b3, d1);
+  }
+  printf("  %-15s %10lld %10lld %8lld   %10lld %10lld %8lld\n",
+         "TOTAL(sum)", tot[0], tot[1], tot[1] - tot[0], tot[2], tot[3], tot[3] - tot[2]);
+  printf("  %-15s %10d %10d %8s   %10d %10d\n", "passes", passes[0], passes[1], "", passes[2], passes[3]);
+}
+
 #define FOREACH_PROTO(X) \
   X(F32P_L0)             \
   X(F32P_L1)             \
@@ -1131,6 +1364,10 @@ int main(int argc, char** argv)
     printf("\n=== latency: slope cyc/call ===\n");
 #define RUNL(P) run_lat<P>();
     FOREACH_PROTO(RUNL)
+  }
+  if (mode == "prof" || mode == "all")
+  {
+    run_prof();
   }
   if (mode == "thr" || mode == "all")
   {
