@@ -164,5 +164,54 @@ keep the `BlockScan` path. A natural implementation shape upstream is a
 Updated best-known latency for (256 threads, N=1024, K=16, pairs, B200):
 **f32 1689 cyc / u32 1637 cyc** — 35-37% below the shipping header (2601/2514 on this node).
 
+## 8. Should this be a new `BlockScanAlgorithm` specialization?
+
+Yes — as an **explicit, opt-in policy** (e.g. `BLOCK_SCAN_WARP_SCANS_AGGREGATE_FIRST`), not as a
+silent change to `BLOCK_SCAN_WARP_SCANS`. The reasoning:
+
+**Why it fits the BlockScan policy model.**
+* The `BlockScanAlgorithm` enum exists precisely to encode structure/trade-off variants
+  (RAKING vs RAKING_MEMOIZE vs WARP_SCANS); AF is a fourth point on that frontier
+  (latency-optimal for redux-eligible scans).
+* All the machinery the specialization needs already exists in CUB:
+  `is_warp_redux_op_supported<ScanOp, T>` and `cub::detail::warp_redux`
+  (`warp_redux.cuh`, already used by `WarpReduce` and `WarpReduceBatched`), and
+  `BlockScanWarpScans`' `warp_aggregates[WARPS]` storage — AF reorders who writes it and when,
+  with **no TempStorage growth** (unlike in the top-k prototype, where the +32 B bought a
+  storage array BlockScan already has).
+* Bonus for some callers: the **block aggregate becomes available early** (right after the
+  first barrier) instead of after the full scan — `ExclusiveSum(..., block_aggregate)` users
+  on a latency path get that for free.
+
+**Why opt-in, with three hard conditions:**
+1. **Eligibility-gated with graceful fallback.** The restructure only wins when the warp
+   aggregate is much cheaper than the warp scan — i.e. when (ScanOp, T) maps to a `redux.sync`
+   instruction (Sum/Min/Max/And/Or/Xor on 32-bit integers) on sm_80+. For a generic operator
+   the aggregate costs a full 5-shfl warp reduction — as expensive as the scan it would
+   bypass, so nothing is gained. The specialization should `if constexpr`-dispatch on
+   `is_warp_redux_op_supported` (+ arch) and otherwise compile to plain WARP_SCANS. This is
+   exactly the dispatch pattern `warp_reduce_shfl.cuh` already uses.
+2. **Documented as latency-oriented.** At full occupancy the extra redux competes for issue
+   slots and cost ~2-3% throughput in our end-to-end context. CUB's device-wide algorithms
+   (scan, radix-rank, partition) are throughput-tuned around WARP_SCANS — making AF the
+   default inside WARP_SCANS would silently regress them. As a named policy the trade is the
+   caller's informed choice, mirroring how `BLOCK_SCAN_RAKING_MEMOIZE` documents its own trade.
+3. **Bit-exactness holds on the eligible set by construction.** Integer Sum/Min/Max are
+   associative and commutative, so the redux-computed aggregate equals the scan's last lane
+   exactly; float never qualifies (`redux.sync` has no float variants), so no
+   summation-order-changes-rounding hazard can arise.
+
+**Scope notes for the implementation:** the full BlockScan surface (exclusive/inclusive,
+block-aggregate out, `BlockPrefixCallbackOp`, ITEMS_PER_THREAD > 1) composes with the reorder
+without structural issues; for ITEMS_PER_THREAD > 1 the thread-local reduction gates both paths
+and the gain decays (measured at the 2048-bin/8-items point: −9% net vs −25%), which the docs
+should state. Test cost is the standard new-algorithm matrix.
+
+**Suggested staging:** land the win first as a `detail::` scan inside `block_topk_air` /
+`block_topk_sieve_air` (smallest blast radius, covers the motivating users including PR #9066's
+sieve), then promote to the public `BLOCK_SCAN_WARP_SCANS_AGGREGATE_FIRST` policy — the
+promotion is mechanical given the enum and the existing redux-eligibility infrastructure, and
+the top-k usage becomes a one-line policy switch.
+
 Reproduce: `./run_remote.sh proto_scan_choose.cu` and
 `./proto_air_ablate [correct|lat|thr|res]` on branch `exp/scan-choose-opt`.
