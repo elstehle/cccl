@@ -262,6 +262,8 @@ general porting lesson: bundled micro-optimizations must be re-measured per stru
 
 ## L8 (exploratory, branch `exp/scan-choose-opt`) — aggregate-first scan+choose
 
+> Full analysis, design-space discussion, and methodology: **`BLOCK_TOPK_SCAN_CHOOSE_RESULTS.md`**.
+
 The phase profile above leaves the scan as the dominant invariant (~377/pass, 42% of L6).
 `proto_scan_choose.cu` attacks its structure. In `BLOCK_SCAN_WARP_SCANS`, the cross-warp
 aggregate is the *last* output of the ~150-cyc shuffle chain, so the barrier releases late and
