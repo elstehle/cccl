@@ -316,6 +316,9 @@ Result (same harness, all correctness incl. `neg_zero`/`with_zeros`/`all_zero` p
 
 ## 9. Integration ablation: per-change perf & resource deltas across the type matrix
 
+> The full integration guide — with before/after code snippets per change — is in
+> **`BLOCK_TOPK_AIR_ABLATION.md`**; this section is the condensed version.
+
 `proto_air_ablate.cu` (measured on **umb-b200-235**; its L0 reproduces umb-b200-240's reimpl
 within 0.5%) applies the changes cumulatively in integration order to a faithful
 reimplementation of today's `block_topk_air`, across (KeyT, ValueT) combinations. All 30
