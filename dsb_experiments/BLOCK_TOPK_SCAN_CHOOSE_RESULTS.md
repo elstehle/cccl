@@ -213,5 +213,50 @@ sieve), then promote to the public `BLOCK_SCAN_WARP_SCANS_AGGREGATE_FIRST` polic
 promotion is mechanical given the enum and the existing redux-eligibility infrastructure, and
 the top-k usage becomes a one-line policy switch.
 
+## 9. Integration into decoupled look-back (DeviceScan / DeviceSelect / ReduceByKey)
+
+Since decoupled look-back "promotes" each tile's aggregate to the tile state — and downstream
+tiles wait on it — an earlier aggregate could shorten the cross-tile chain. Prototype: the AF
+restructure was applied to `BlockScanWarpScans`' two **prefix-callback overloads** (the path
+all look-back agents funnel through), gated on `is_warp_redux_op_supported<ScanOp, T>` +
+full-warp blocks, with the original code as compile-time/arch fallback. Crucially, warp 0 runs
+the callback (partial promotion + look-back) *right after* the early aggregate fold and
+*before* its own warp scan, so the look-back's global-memory latency overlaps all warps'
+shuffle scans. Commit `276edd8412` (baseline = parent `23bebac88b`).
+
+**Correctness**: dedicated gate (`proto_lookback_check.cu`) — DeviceScan Exclusive/InclusiveSum
+(I32 + I64-fallback control) and DeviceSelect::If over sizes 1 … 2²⁴+12345 × seeds: ALL PASS.
+**Activation**: DeviceScan and DeviceSelect tunings select `BLOCK_SCAN_WARP_SCANS`; the patched
+scan benchmark binary contains 132 `REDUX` SASS sites — the AF path is definitively compiled
+into the eligible kernels.
+
+**Result: no measurable end-to-end change on B200** (`cub.bench.*` with the standard nvbench
+entropy-criterion flags, baseline vs patched):
+
+| benchmark | eligible rows (AF active) | delta | fallback rows (control) | delta |
+|---|---|---|---|---|
+| select.if (Entropy 0.544) | OffsetT=I32, all T × 2¹⁶..2²⁸ | −1.0%..+1.2% (noise) | OffsetT=I64 | ±0.5% (noise) |
+| scan.exclusive.sum | T=I16/I32 × 2¹⁶..2³² | −0.6%..+0.6% (noise) | I64/F32/F64/I128 | ±0.3% |
+| reduce.by_key | none (pair scan-op ineligible) | — | all | ±0.2% ✓ |
+
+**Why the block-level win doesn't propagate here.** CUB's look-back is *windowed*: a full warp
+inspects 32 predecessor tile states at once and sums PARTIALs, so the cross-tile dependency
+spine is wide, not a linked chain — per-tile publish earliness (~100-150 cyc ≈ 0.05-0.1 µs) is
+absorbed by the window. And the ends of the size range are bound elsewhere: large sizes run at
+~90% of peak DRAM bandwidth (the scan compute, look-back included, hides entirely under memory),
+small sizes are launch/wave-bound with shallow chains. The aggregate-promotion timing is simply
+not the limiting resource for these device-wide algorithms on a 148-SM part.
+
+**Verdict**: AF's value is confined to genuinely latency-bound block-scope contexts (the block
+top-k call chain, single/few-block kernels, megakernel phases) — it is *not* a win for the
+device-wide look-back algorithms on B200, and does not justify touching their default path.
+It may still be worth a look on parts with far fewer SMs (deeper wave chains) if such a
+platform becomes a target; the prototype patch is arch- and op-gated and costs nothing when
+ineligible. This measured boundary is also useful for the BlockScan-policy proposal (§8): the
+policy's documentation can state precisely where it helps and where it measurably does not.
+
+Artifacts: `proto_lookback_check.cu` (correctness gate), `run_lookback_bench.sh` +
+`compare_lookback.py` (benchmark workflow), patched `block_scan_warp_scans.cuh` on this branch.
+
 Reproduce: `./run_remote.sh proto_scan_choose.cu` and
 `./proto_air_ablate [correct|lat|thr|res]` on branch `exp/scan-choose-opt`.
