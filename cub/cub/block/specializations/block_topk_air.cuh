@@ -28,6 +28,15 @@ CUB_NAMESPACE_BEGIN
 
 namespace detail
 {
+// How select_topk delivers its results (experimental output-convention study; see
+// dsb_experiments/BLOCK_TOPK_AIR_ABLATION.md)
+enum class topk_output_mode
+{
+  blocked, // gather to registers, blocked arrangement (classic contract)
+  striped, // gather to registers, striped arrangement (thread t holds positions t, t+BlockDim, ...)
+  shared // no gather: results stay in the shared-memory exchange, exposed to the caller
+};
+
 template <typename SortKeyT>
 struct compare_key_prefix_op
 {
@@ -460,7 +469,7 @@ private:
     }
   }
 
-  template <detail::topk::select SelectDirection, bool IsFullTile>
+  template <detail::topk::select SelectDirection, bool IsFullTile, topk_output_mode OutputMode = topk_output_mode::blocked>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_topk(
     KeyT (&keys)[items_per_thread],
     ValueT (&values)[items_per_thread],
@@ -651,13 +660,21 @@ private:
     // Ensure all threads have finished writing to shared memory
     __syncthreads();
 
+    if constexpr (OutputMode == topk_output_mode::shared)
+    {
+      // Results are complete in the shared-memory exchange; the caller reads them there.
+      return;
+    }
+
     // Gather selected items into thread registers for return.
     if constexpr (fuse_exchange)
     {
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
-        const int buffer_idx = linear_tid * items_per_thread + i;
+        const int buffer_idx = (OutputMode == topk_output_mode::striped)
+                               ? linear_tid + i * threads_per_block
+                               : linear_tid * items_per_thread + i;
         if (buffer_idx < k)
         {
           const key_value_pair_ pair = storage.stage.exchange.pairs[buffer_idx];
@@ -676,7 +693,9 @@ private:
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
-        const int buffer_idx = linear_tid * items_per_thread + i;
+        const int buffer_idx = (OutputMode == topk_output_mode::striped)
+                               ? linear_tid + i * threads_per_block
+                               : linear_tid * items_per_thread + i;
         if (buffer_idx < k)
         {
           keys[i] = storage.stage.exchange.u.keys[buffer_idx];
@@ -708,7 +727,9 @@ private:
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int i = 0; i < items_per_thread; ++i)
         {
-          const int buffer_idx = linear_tid * items_per_thread + i;
+          const int buffer_idx = (OutputMode == topk_output_mode::striped)
+                                 ? linear_tid + i * threads_per_block
+                                 : linear_tid * items_per_thread + i;
           if (buffer_idx < k)
           {
             values[i] = storage.stage.exchange.u.values[buffer_idx];
@@ -719,6 +740,8 @@ private:
   }
 
 public:
+  using pair_t = key_value_pair_;
+
   struct TempStorage : Uninitialized<TempStorage_>
   {};
 
@@ -745,6 +768,42 @@ public:
     int end_bit   = sizeof(KeyT) * 8)
   {
     select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items, begin_bit, end_bit);
+  }
+
+  //! Experimental: like select_pairs, but returns results in striped register arrangement
+  //! (thread t holds output positions t, t + BlockDim, ...): the gather spreads across k
+  //! threads (one element each for k <= BlockDim) instead of serializing k/ItemsPerThread
+  //! loads in the first few threads.
+  template <detail::topk::select SelectDirection, bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_pairs_striped(
+    KeyT (&keys)[items_per_thread],
+    ValueT (&values)[items_per_thread],
+    int k,
+    int valid_items,
+    int begin_bit = 0,
+    int end_bit   = sizeof(KeyT) * 8)
+  {
+    select_topk<SelectDirection, IsFullTile, topk_output_mode::striped>(
+      keys, values, k, valid_items, begin_bit, end_bit);
+  }
+
+  //! Experimental: like select_pairs, but skips the register gather entirely; the selected
+  //! (key, value) pairs remain at positions [0, k) of the returned shared-memory array, valid
+  //! until the next use of TempStorage. Requires the fused key-value exchange. This is the
+  //! lowest-latency delivery for consumers that read results from shared memory anyway.
+  template <detail::topk::select SelectDirection, bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE const key_value_pair_* select_pairs_shared(
+    KeyT (&keys)[items_per_thread],
+    ValueT (&values)[items_per_thread],
+    int k,
+    int valid_items,
+    int begin_bit = 0,
+    int end_bit   = sizeof(KeyT) * 8)
+  {
+    static_assert(fuse_exchange, "select_pairs_shared requires the fused key-value exchange");
+    select_topk<SelectDirection, IsFullTile, topk_output_mode::shared>(
+      keys, values, k, valid_items, begin_bit, end_bit);
+    return storage.stage.exchange.pairs;
   }
 };
 } // namespace detail
