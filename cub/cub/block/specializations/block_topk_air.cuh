@@ -238,15 +238,20 @@ private:
     }
   }
 
-  // Compute histogram over keys
-  template <detail::topk::select SelectDirection, bool IsFullTile, typename DigitExtractorT, typename FilterOpT>
+  // Compute histogram over keys. EXPERIMENTAL: the digit is extracted with plain C++ shift+mask
+  // instead of cub::BFE — the inline-PTX bfe.u32 is opaque to the compiler and blocks the
+  // strength reduction of (num_buckets-1-digit)*sizeof(counter) into the atomic's addressing
+  // (SASS showed an IMAD x(-4) + constant re-materialization per item with BFE).
+  template <detail::topk::select SelectDirection, bool IsFullTile, typename FilterOpT>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void compute_histograms(
     const bit_ordered_type (&unsigned_keys)[items_per_thread],
     int valid_items,
-    DigitExtractorT digit_extractor,
+    int pass_begin_bit,
+    int pass_bits,
     FilterOpT filter_op,
     histo_counter_t (&histogram)[num_buckets])
   {
+    const bit_ordered_type digit_mask = (bit_ordered_type{1} << pass_bits) - 1;
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
@@ -254,7 +259,7 @@ private:
       const bit_ordered_type key = unsigned_keys[i];
       if ((IsFullTile || item_index < valid_items) && filter_op(key))
       {
-        const auto digit  = static_cast<int>(digit_extractor.Digit(key));
+        const auto digit  = static_cast<int>((key >> pass_begin_bit) & digit_mask);
         const auto bucket = (SelectDirection == detail::topk::select::min) ? digit : (num_buckets - 1 - digit);
         atomicAdd(&histogram[bucket], histo_counter_t{1});
       }
@@ -337,9 +342,8 @@ private:
 
     // Compute histogram over the current pass's bits, pre-filtered for keys matching the previous pass's prefix mask
     auto filter_op = compare_key_prefix_op<bit_ordered_type>{prefix_mask, kth_key_prefix};
-    auto digit_extractor =
-      traits::template digit_extractor<fundamental_digit_extractor_t>(pass_begin_bit, pass_bits, decomposer);
-    compute_histograms<SelectDirection, IsFullTile>(unsigned_keys, valid_items, digit_extractor, filter_op, histogram);
+    compute_histograms<SelectDirection, IsFullTile>(
+      unsigned_keys, valid_items, pass_begin_bit, pass_bits, filter_op, histogram);
     if (zero_next_histogram)
     {
       // Re-zero the other buffer for the next pass; its last read preceded the previous pass's
