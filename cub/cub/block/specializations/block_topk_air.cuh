@@ -156,7 +156,12 @@ private:
   using bit_ordered_type       = typename traits::bit_ordered_type;
   using bit_ordered_conversion = typename traits::bit_ordered_conversion_policy;
 
-  using fundamental_digit_extractor_t = BFEDigitExtractor<KeyT>;
+  // ShiftDigitExtractor rather than BFEDigitExtractor: the BFE path is inline-PTX (and bfe.u32
+  // has no native SASS on supported architectures anyway), which blocks the compiler from
+  // strength-reducing (num_buckets - 1 - digit) * sizeof(counter) into the histogram atomic's
+  // addressing and from hoisting the atomic addresses above the candidate-filter branches.
+  // Plain shift+mask fuses fully (measured -35..-63 cycles/call on B200 at k=16).
+  using fundamental_digit_extractor_t = ShiftDigitExtractor<KeyT>;
 
   struct key_value_pair_
   {
