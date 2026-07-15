@@ -140,7 +140,8 @@ template <typename KeyT,
           int RadixBits                 = 8,
           bool UnrollBitPasses          = true,
           bool FuseKeyValueExchange     = (sizeof(KeyT) + sizeof(ValueT) <= 8),
-          BlockScanAlgorithm ScanAlgorithm = BLOCK_SCAN_WARP_REDUCE_THEN_SCAN>
+          BlockScanAlgorithm ScanAlgorithm = BLOCK_SCAN_WARP_REDUCE_THEN_SCAN,
+          bool EagerTieCutoff           = false>
 class block_topk_air
 {
 private:
@@ -212,6 +213,15 @@ private:
     // Outside the aliased union: preset before the radix passes (ordered by their barriers),
     // so the partitioning stage needs no setup phase or barrier of its own.
     histo_counter_t selected_offset[2];
+
+    // EXPERIMENTAL tie cutoff (atomic-free): during pass p's histogram phase every candidate
+    // racy-stores its unexamined key bits to tie_ref[p%2] (benign race: any winner is a valid
+    // reference since we only test for global equality); during the scan phase candidates
+    // compare against the reference and racy-store a constant 1 to tie_mismatch[p%2] if they
+    // differ. mismatch == 0 after the state barrier => all surviving candidates are exact ties
+    // and the remaining passes can be skipped (any k - total_selected of them are a valid fill).
+    bit_ordered_type tie_ref[2];
+    histo_counter_t tie_mismatch[2];
   };
 
   /// Shared storage reference
@@ -344,6 +354,26 @@ private:
     auto filter_op = compare_key_prefix_op<bit_ordered_type>{prefix_mask, kth_key_prefix};
     compute_histograms<SelectDirection, IsFullTile>(
       unsigned_keys, valid_items, pass_begin_bit, pass_bits, filter_op, histogram);
+    // EXPERIMENTAL tie cutoff, armed from pass 1 (pass 0's full tile cannot realistically be
+    // all-ties): candidates racy-store their bits below the previous prefix as the reference.
+    [[maybe_unused]] const bit_ordered_type below_prev_mask =
+      (bit_ordered_type{1} << (pass_begin_bit + pass_bits)) - 1;
+    if constexpr (EagerTieCutoff)
+    {
+      if (pass > 0)
+      {
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
+        {
+          const auto item_index      = linear_tid * items_per_thread + i;
+          const bit_ordered_type key = unsigned_keys[i];
+          if ((IsFullTile || item_index < valid_items) && filter_op(key))
+          {
+            storage.tie_ref[pass & 1] = key & below_prev_mask; // benign race: any candidate's value
+          }
+        }
+      }
+    }
     if (zero_next_histogram)
     {
       // Re-zero the other buffer for the next pass; its last read preceded the previous pass's
@@ -352,6 +382,29 @@ private:
     }
     __syncthreads();
 
+    // Riding the scan phase: reset the other mismatch flag for pass p+1 (its last read preceded
+    // this pass's histogram barrier), and compare candidates against the tie reference
+    if constexpr (EagerTieCutoff)
+    {
+      if (linear_tid == 0)
+      {
+        storage.tie_mismatch[(pass + 1) & 1] = 0;
+      }
+      if (pass > 0)
+      {
+        const bit_ordered_type ref = storage.tie_ref[pass & 1];
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
+        {
+          const auto item_index      = linear_tid * items_per_thread + i;
+          const bit_ordered_type key = unsigned_keys[i];
+          if ((IsFullTile || item_index < valid_items) && filter_op(key) && (key & below_prev_mask) != ref)
+          {
+            storage.tie_mismatch[pass & 1] = 1; // benign race: constant value
+          }
+        }
+      }
+    }
     // Compute prefix sum over buckets and identify the bucket that the k-th item falls into
     scan_and_choose_bucket(histogram, static_cast<histo_counter_t>(k));
     __syncthreads();
@@ -370,8 +423,18 @@ private:
     kth_key_prefix |= bit_ordered_type(kth_key_digit) << pass_begin_bit;
     prefix_mask |= pass_mask;
 
-    // Short-circuit if all candidates are amongst the top-k
-    return num_candidates == k;
+    // Short-circuit if all candidates are amongst the top-k, or if every surviving candidate is
+    // an exact tie (min == max over all unexamined bits): further passes cannot change anything,
+    // and the partitioning stage fills the remaining slots from ties (dropping the surplus).
+    bool all_ties = false;
+    if constexpr (EagerTieCutoff)
+    {
+      if (pass > 0)
+      {
+        all_ties = storage.tie_mismatch[pass & 1] == 0;
+      }
+    }
+    return num_candidates == k || all_ties;
   }
 
   template <typename detail::topk::select SelectDirection, bool IsFullTile, typename DecomposerT>
@@ -518,6 +581,10 @@ private:
     {
       storage.selected_offset[0] = 0;
       storage.selected_offset[1] = 0;
+      if constexpr (EagerTieCutoff)
+      {
+        storage.tie_mismatch[1] = 0; // pass 1 posts into slot [1]
+      }
     }
 
     // For key-value selection, keep a register copy of the original keys: the selected keys are
