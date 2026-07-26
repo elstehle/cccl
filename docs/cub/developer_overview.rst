@@ -9,6 +9,7 @@ Developer Overview
    developer/warp_level
    developer/block_scope
    developer/device_scope
+   developer/tile_prefix_abstraction
    developer/nvtx
    developer/test_overview
 
