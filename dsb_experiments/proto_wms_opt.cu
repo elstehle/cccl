@@ -222,9 +222,76 @@ serial_merge(const float* sh, int k1b, int k2b, int k1c, int k2c, float (&out)[I
   }
 }
 
+// Prefetched merge: after MergePath fixes the partition, this thread consumes at most IPT elements
+// from each run, at KNOWN contiguous addresses. So load IPT from each side with INDEPENDENT loads
+// (they pipeline -> one shared-latency for the whole batch) and merge in registers, instead of the
+// serial chain of IPT dependent, address-carried shared loads. Breaks the SerialMerge latency chain.
+template <int IPT, int PAD>
+__device__ __forceinline__ void
+merge_prefetch(const float* sh, int k1b, int k2b, int k1c, int k2c, float (&out)[IPT], float oob)
+{
+  float A[IPT];
+  float B[IPT];
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    A[i] = (i < k1c) ? sh[sidx<PAD>(k1b + i)] : oob; // independent -> pipelined
+    B[i] = (i < k2c) ? sh[sidx<PAD>(k2b + i)] : oob;
+  }
+  int ai = 0, bi = 0;
+#pragma unroll
+  for (int item = 0; item < IPT; ++item)
+  {
+    const bool p = (bi < k2c) && ((ai >= k1c) || (B[bi] < A[ai]));
+    out[item]    = p ? B[bi] : A[ai];
+    if (p)
+    {
+      ++bi;
+    }
+    else
+    {
+      ++ai;
+    }
+  }
+}
+
+// Prefetch + branchless shift-down (the top-k removal trick): keep the two run heads at index 0
+// and, each step, shift the chosen run down with STATIC-indexed predicated moves. Avoids the
+// dynamic register indexing that spills merge_prefetch, so A/B stay in registers. O(IPT^2) cheap
+// ALU moves trade against the baseline's IPT dependent shared loads.
+template <int IPT, int PAD>
+__device__ __forceinline__ void
+merge_pfshift(const float* sh, int k1b, int k2b, int k1c, int k2c, float (&out)[IPT], float oob)
+{
+  float A[IPT];
+  float B[IPT];
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    A[i] = (i < k1c) ? sh[sidx<PAD>(k1b + i)] : oob;
+    B[i] = (i < k2c) ? sh[sidx<PAD>(k2b + i)] : oob;
+  }
+  int na = k1c < IPT ? k1c : IPT;
+  int nb = k2c < IPT ? k2c : IPT;
+#pragma unroll
+  for (int item = 0; item < IPT; ++item)
+  {
+    const bool takeB = (nb > 0) && ((na == 0) || (B[0] < A[0]));
+    out[item]        = takeB ? B[0] : A[0];
+#pragma unroll
+    for (int i = 0; i < IPT - 1; ++i)
+    {
+      A[i] = takeB ? A[i] : A[i + 1];
+      B[i] = takeB ? B[i + 1] : B[i];
+    }
+    na -= takeB ? 0 : 1;
+    nb -= takeB ? 1 : 0;
+  }
+}
+
 // ------------------------------------------------------------------ the templated mirror
 // Rounds are compile-time recursion so `size` (= IPT * 2^round) can parameterize the static search.
-template <int IPT, int MP, int NET, int PAD, int ROUND>
+template <int IPT, int MP, int NET, int PAD, int SM, int ROUND>
 __device__ __forceinline__ void do_round(float (&keys)[IPT], float* sh)
 {
   if constexpr (ROUND < kRounds)
@@ -259,13 +326,26 @@ __device__ __forceinline__ void do_round(float (&keys)[IPT], float* sh)
     }
     const int k1b_loc = k1b + pdiag;
     const int k2b_loc = k2b + diag - pdiag;
-    serial_merge<IPT, PAD>(sh, k1b_loc, k2b_loc, (k1b + size) - k1b_loc, (k2b + size) - k2b_loc, keys, keys[0]);
+    const int k1c_loc = (k1b + size) - k1b_loc;
+    const int k2c_loc = (k2b + size) - k2b_loc;
+    if constexpr (SM == 1)
+    {
+      merge_prefetch<IPT, PAD>(sh, k1b_loc, k2b_loc, k1c_loc, k2c_loc, keys, keys[0]);
+    }
+    else if constexpr (SM == 2)
+    {
+      merge_pfshift<IPT, PAD>(sh, k1b_loc, k2b_loc, k1c_loc, k2c_loc, keys, keys[0]);
+    }
+    else
+    {
+      serial_merge<IPT, PAD>(sh, k1b_loc, k2b_loc, k1c_loc, k2c_loc, keys, keys[0]);
+    }
 
-    do_round<IPT, MP, NET, PAD, ROUND + 1>(keys, sh);
+    do_round<IPT, MP, NET, PAD, SM, ROUND + 1>(keys, sh);
   }
 }
 
-template <int IPT, int MP, int NET, int PAD>
+template <int IPT, int MP, int NET, int PAD, int SM>
 __device__ __forceinline__ void mirror(float (&keys)[IPT], float* sh)
 {
   if constexpr (NET)
@@ -276,7 +356,7 @@ __device__ __forceinline__ void mirror(float (&keys)[IPT], float* sh)
   {
     net_oddeven(keys);
   }
-  do_round<IPT, MP, NET, PAD, 0>(keys, sh);
+  do_round<IPT, MP, NET, PAD, SM, 0>(keys, sh);
 }
 
 // shared size: blocked TILE, padded TILE + TILE/32, +1 guard for the "read one past" in SerialMerge
@@ -288,7 +368,7 @@ struct ShWords
 };
 
 // ------------------------------------------------------------------ kernels
-template <int IPT, int MP, int NET, int PAD>
+template <int IPT, int MP, int NET, int PAD, int SM>
 __global__ void __launch_bounds__(kWarp) correct_k(const float* in, float* out)
 {
   __shared__ float sh[ShWords<IPT, PAD>::N];
@@ -299,7 +379,7 @@ __global__ void __launch_bounds__(kWarp) correct_k(const float* in, float* out)
   {
     k[i] = in[lane * IPT + i];
   }
-  mirror<IPT, MP, NET, PAD>(k, sh);
+  mirror<IPT, MP, NET, PAD, SM>(k, sh);
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
@@ -309,7 +389,7 @@ __global__ void __launch_bounds__(kWarp) correct_k(const float* in, float* out)
 
 constexpr int kLatReps = 32;
 
-template <int IPT, int MP, int NET, int PAD, int DO>
+template <int IPT, int MP, int NET, int PAD, int SM, int DO>
 __global__ void __launch_bounds__(kWarp) lat_k(unsigned seed0, int chain, long long* out)
 {
   __shared__ float sh[ShWords<IPT, PAD>::N];
@@ -323,7 +403,7 @@ __global__ void __launch_bounds__(kWarp) lat_k(unsigned seed0, int chain, long l
   }
   if (DO)
   {
-    mirror<IPT, MP, NET, PAD>(k, sh);
+    mirror<IPT, MP, NET, PAD, SM>(k, sh);
   }
   long long best = LLONG_MAX;
 #pragma unroll 1
@@ -343,7 +423,7 @@ __global__ void __launch_bounds__(kWarp) lat_k(unsigned seed0, int chain, long l
       }
       if (DO)
       {
-        mirror<IPT, MP, NET, PAD>(k, sh);
+        mirror<IPT, MP, NET, PAD, SM>(k, sh);
       }
     }
 #pragma unroll
@@ -387,7 +467,7 @@ static void fit(const double* x, const double* y, int m, double& a, double& b)
   a = (sy - b * sx) / m;
 }
 
-template <int IPT, int MP, int NET, int PAD>
+template <int IPT, int MP, int NET, int PAD, int SM>
 bool check_one()
 {
   const int N = kWarp * IPT;
@@ -404,7 +484,7 @@ bool check_one()
   CHECK(cudaMalloc(&d_in, N * sizeof(float)));
   CHECK(cudaMalloc(&d_out, N * sizeof(float)));
   CHECK(cudaMemcpy(d_in, in.data(), N * sizeof(float), cudaMemcpyHostToDevice));
-  correct_k<IPT, MP, NET, PAD><<<1, kWarp>>>(d_in, d_out);
+  correct_k<IPT, MP, NET, PAD, SM><<<1, kWarp>>>(d_in, d_out);
   CHECK(cudaDeviceSynchronize());
   CHECK(cudaMemcpy(out.data(), d_out, N * sizeof(float), cudaMemcpyDeviceToHost));
   bool ok = true;
@@ -421,7 +501,7 @@ bool check_one()
   return ok;
 }
 
-template <int IPT, int MP, int NET, int PAD>
+template <int IPT, int MP, int NET, int PAD, int SM>
 double slope()
 {
   long long* d_out;
@@ -430,13 +510,13 @@ double slope()
   double x[5], yf[5], yg[5];
   for (int i = 0; i < 5; ++i)
   {
-    lat_k<IPT, MP, NET, PAD, 1><<<1, kWarp>>>(12345u, chains[i], d_out);
+    lat_k<IPT, MP, NET, PAD, SM, 1><<<1, kWarp>>>(12345u, chains[i], d_out);
     CHECK(cudaDeviceSynchronize());
     long long c;
     CHECK(cudaMemcpy(&c, d_out, sizeof c, cudaMemcpyDeviceToHost));
     x[i]  = chains[i];
     yf[i] = (double) c;
-    lat_k<IPT, MP, NET, PAD, 0><<<1, kWarp>>>(12345u, chains[i], d_out);
+    lat_k<IPT, MP, NET, PAD, SM, 0><<<1, kWarp>>>(12345u, chains[i], d_out);
     CHECK(cudaDeviceSynchronize());
     CHECK(cudaMemcpy(&c, d_out, sizeof c, cudaMemcpyDeviceToHost));
     yg[i] = (double) c;
@@ -448,34 +528,37 @@ double slope()
   return bf - bg;
 }
 
-// baseline (0,0,0), +MP, +NET, +PAD (each alone), and the winning combo MP+NET (no pad)
+// baseline, then each policy alone (+MP static search, +NET network, +PAD bank-pad, +SM prefetch
+// merge), then the winning combo MP+NET+SM (no pad).
 template <int IPT>
 void row()
 {
-  const double base  = slope<IPT, 0, 0, 0>();
-  const double mp    = slope<IPT, 1, 0, 0>();
-  const double net   = slope<IPT, 0, 1, 0>();
-  const double pad   = slope<IPT, 0, 0, 1>();
-  const double mpnet = slope<IPT, 1, 1, 0>();
+  const double base = slope<IPT, 0, 0, 0, 0>();
+  const double mp   = slope<IPT, 1, 0, 0, 0>();
+  const double net  = slope<IPT, 0, 1, 0, 0>();
+  const double sm1  = slope<IPT, 0, 0, 0, 1>(); // prefetch + 2-pointer (dyn index -> spills)
+  const double sm2  = slope<IPT, 0, 0, 0, 2>(); // prefetch + branchless shift (static index)
+  const double best = slope<IPT, 1, 1, 0, 2>(); // MP + NET + prefetch-shift
   printf(
-    "  %3d (IPT %2d):  base=%6.0f  +MP=%+5.0f  +NET=%+5.0f  +PAD=%+5.0f  |  MP+NET=%6.0f (%+5.0f, %.0f%%)\n",
+    "  %3d (IPT %2d):  base=%6.0f  +MP=%+5.0f  +NET=%+5.0f  +SM(2ptr)=%+6.0f  +SM(shift)=%+6.0f  |  BEST=%6.0f (%+5.0f, %.0f%%)\n",
     kWarp * IPT,
     IPT,
     base,
     mp - base,
     net - base,
-    pad - base,
-    mpnet,
-    mpnet - base,
-    100.0 * (mpnet - base) / base);
+    sm1 - base,
+    sm2 - base,
+    best,
+    best - base,
+    100.0 * (best - base) / base);
 }
 
-template <int IPT, int MP, int NET, int PAD>
+template <int IPT, int MP, int NET, int PAD, int SM>
 void res_one(const char* tag)
 {
   cudaFuncAttributes a;
-  CHECK(cudaFuncGetAttributes(&a, (const void*) lat_k<IPT, MP, NET, PAD, 1>));
-  printf("  size %3d (IPT %2d) %-8s regs=%3d  smem=%5zu B  spill=%zu B\n",
+  CHECK(cudaFuncGetAttributes(&a, (const void*) lat_k<IPT, MP, NET, PAD, SM, 1>));
+  printf("  size %3d (IPT %2d) %-10s regs=%3d  smem=%5zu B  spill=%zu B\n",
          kWarp * IPT,
          IPT,
          tag,
@@ -487,28 +570,31 @@ void res_one(const char* tag)
 template <int IPT>
 void rrow()
 {
-  res_one<IPT, 0, 0, 0>("base");
-  res_one<IPT, 1, 1, 0>("MP+NET");
+  res_one<IPT, 0, 0, 0, 0>("base");
+  res_one<IPT, 0, 0, 0, 1>("SM(2ptr)");
+  res_one<IPT, 1, 1, 0, 2>("BEST(shift)");
 }
 
 template <int IPT>
 void crow()
 {
-  const bool b   = check_one<IPT, 0, 0, 0>();
-  const bool mp  = check_one<IPT, 1, 0, 0>();
-  const bool net = check_one<IPT, 0, 1, 0>();
-  const bool pad = check_one<IPT, 0, 0, 1>();
-  const bool all = check_one<IPT, 1, 1, 1>();
-  const bool ok  = b && mp && net && pad && all;
-  printf("  size %3d (IPT %2d): %s   [base %s +MP %s +NET %s +PAD %s ALL %s]\n",
+  const bool b    = check_one<IPT, 0, 0, 0, 0>();
+  const bool mp   = check_one<IPT, 1, 0, 0, 0>();
+  const bool net  = check_one<IPT, 0, 1, 0, 0>();
+  const bool sm1  = check_one<IPT, 0, 0, 0, 1>();
+  const bool sm2  = check_one<IPT, 0, 0, 0, 2>();
+  const bool best = check_one<IPT, 1, 1, 0, 2>();
+  const bool ok   = b && mp && net && sm1 && sm2 && best;
+  printf("  size %3d (IPT %2d): %s   [base %s +MP %s +NET %s +SM1 %s +SM2 %s BEST %s]\n",
          kWarp * IPT,
          IPT,
          ok ? "PASS" : "FAIL",
          b ? "ok" : "X",
          mp ? "ok" : "X",
          net ? "ok" : "X",
-         pad ? "ok" : "X",
-         all ? "ok" : "X");
+         sm1 ? "ok" : "X",
+         sm2 ? "ok" : "X",
+         best ? "ok" : "X");
 }
 
 #define FOR_SIZES(X) X(1) X(2) X(3) X(4) X(5) X(6) X(8) X(10) X(12)

@@ -27,6 +27,12 @@ network (helps only at large IPT), the mirror gets **−10% (IPT 8) to −32% (I
 
 **Bank-conflict padding is a measured *loss* (−negative, +57..+581 cyc)** in this regime — see §5.
 
+Round 2 (§9-12) adds a merge-sort-preserving win — **prefetch + branchless-shift SerialMerge**,
+which breaks the serial shared-load chain of the merge — taking the best stack to **−13% to −32%**
+(IPT ≤ 10), and documents the ideas that did *not* pan out (partition-monotonicity range
+reduction, guided/gallop search, dynamic-index prefetch) and the algorithmic ceiling (oblivious
+bitonic merge = `WarpBitonicSort`, already ~2-3× faster when the caller can choose it).
+
 ## 1. Baseline latency (real `cub::WarpMergeSort`, slope cyc/call)
 
 | size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
@@ -166,3 +172,94 @@ static-search unroll depth behind a latency-vs-occupancy policy.
 
 Reproduce: build `proto_wms_bench.cu` / `proto_wms_opt.cu` with the standard nvcc line and run
 `[correct|lat|prof]` / `[correct|lat|res]`.
+
+---
+
+# Round 2 — first-principles: what else can we do?
+
+## 9. What information do we actually have, and what does it enable
+
+| fact about the data / problem | what it enables | outcome |
+|---|---|---|
+| the two runs are **sorted** | the merge itself (Merge Path / serial merge) | baseline |
+| run lengths are a **compile-time** bound (`IPT·2^round`, fixed tile) | statically unroll the diagonal search; statically bound the prefetch | **§4 (win), §10 (win)** |
+| after partitioning, each thread's ≤IPT inputs are at **known contiguous addresses** | prefetch them with independent (pipelined) loads instead of a dependent chain | **§10 (win, with a caveat)** |
+| partition points are **monotone** across threads, `p(t+1)−p(t) ∈ [0,IPT]` | bound each thread's search to an IPT-wide window | **§11.1 (does not help — warp-lockstep)** |
+| the merge is a **dependent shared-load chain** | replace it with a data-oblivious network (shuffles) | **§11.4 (that is bitonic sort)** |
+| (if known) input is ~**uniform** | seed the search near `diag/2`, gallop | **§11.2 (reintroduces divergence)** |
+
+## 10. Found: prefetch + branchless-shift SerialMerge (breaks the dependent chain)
+
+`SerialMerge` issues IPT loads from shared where **each load's address depends on the previous
+comparison** — a serial latency chain. But once MergePath fixes the partition, this thread
+consumes at most IPT elements from each run, at *known contiguous addresses*. So: **prefetch IPT
+elements from each side with independent (pipelined) loads** — one shared latency for the whole
+batch — then merge in registers.
+
+The naïve register merge (2-pointer, `A[ai]`/`B[bi]`) **fails**: the dynamic register indices
+force `A`/`B` into local memory (measured spills of 32-96 B, §11.3), turning the independent
+shared loads into a *local*-memory dependent chain — **+460 to +17240 cyc, catastrophic.** The fix
+is the top-k removal trick: keep both run heads at index 0 and **branchlessly shift the chosen run
+down** with static-indexed predicated moves (`A[i] = takeB ? A[i] : A[i+1]`). All-static indices →
+no spill. Measured (`+SM(shift)` alone, Δ vs base):
+
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|---|---|---|
+| Δcyc | −4 | +5 | −53 | −121 | −183 | −234 | −190 | −145 | **+10** |
+
+A modest but real merge-sort-preserving win for **IPT 3-10**, breaking even by IPT=12 where the
+O(IPT²) shift moves and register pressure (up to 102 regs) overtake the saved shared latency.
+Combined **MP + NET + prefetch-shift** (the best per-size stack):
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| best cyc | 1520 | 2031 | 2213 | 2853 | 2949 | 3282 | 4470 | 4549 | **5504\*** |
+| vs base | −31% | −23% | −29% | −21% | −28% | −25% | −13% | −23% | **−17%** |
+
+\*IPT=12: drop the prefetch-shift (it regresses the combo to +6%); use MP+NET only (−17%). So the
+recommended policy is **MP + NET + prefetch-shift for IPT ≤ 10, MP + NET for IPT ≥ 12** — gate the
+prefetch merge on IPT. No spills, no smem change; registers rise (the prefetch doubles the live
+key footprint), the one cost to weigh for a throughput kernel.
+
+## 11. Ideas explored that did **not** help (with the reason)
+
+1. **Range reduction via partition monotonicity.** `p(t+1) ∈ [p(t), p(t)+IPT]`, so a thread that
+   knows its neighbor's partition searches only an IPT-wide window (`log2(IPT)` iters instead of
+   `log2(S)`). But this **cannot lower single-warp latency**: (a) the bound is *circular* — the
+   neighbor's partition itself costs `log2(S)` to compute; (b) any **two-phase** scheme (coarse
+   anchors → refine) runs the phases sequentially, and the warp executes in lockstep, so the time
+   is `log2(S) + log2(window) > log2(S)`; (c) **subsampling** the search array is just
+   `log2(S/IPT) + log2(IPT) = log2(S)` — log is additive. The binary search is already at its
+   `log2(S)` floor; correlation between the 32 answers can't be cashed in under warp lockstep.
+2. **Guided search from an initial guess + galloping** (assume ~uniform data, start near
+   `diag/2`). Worst-case is still `log2(S)`, and the variable gallop distance **reintroduces the
+   divergence** that §4's static unroll just removed. Net negative for the latency regime.
+3. **Prefetch + 2-pointer register merge** (dynamic indexing): spills to local memory (§10);
+   +460..+17240 cyc. Documented as the motivation for the shift variant.
+4. **Data-oblivious bitonic merge via shuffles** — the *correct* way to kill the dependent-load
+   chain: reverse one run, giving a bitonic sequence, then `log2(2S)` fixed compare-exchange
+   stages, partners fetched by `__shfl_xor` (no shared memory, no binary search, no divergence).
+   But applied to every round this **is bitonic sort**, already shipping as `cub::WarpBitonicSort`
+   and already ~2-3× faster than WarpMergeSort in this regime (`DEVICE_SIDE_BENCHMARKING_ISSUE.md`
+   §2: 922 vs 3436 cyc at len 64, 2157 vs 4587 at len 128, 4617 vs 6497 at len 256). The
+   first-principles conclusion: **Merge Path partitioning is the wrong tool for warp-resident
+   latency-critical sorting** — its dependent search/merge chains are exactly what an oblivious
+   network avoids. If the caller can choose the algorithm, bitonic wins; the optimizations here
+   (§4, §10) are for when merge sort is required (stability, arbitrary comparators, larger tiles
+   that exceed the register budget of a full network).
+   *(A harness note: WarpBitonicSort is register/shuffle-only, so a dependency-chain latency probe
+   dead-code-eliminates it without shared-memory side effects; the cited numbers are from the
+   companion doc's proper measurement.)*
+5. **Bank-conflict-free shared layout** — already a measured loss in this regime (§5): latency,
+   not bandwidth, bound.
+
+## 12. Ideas worth a future look (not prototyped)
+
+- **Multi-way (K-way) merge** to cut the round count from `log2(32)=5` to `log_K(32)` (3 rounds
+  for K=4, 2 for K=8), removing whole STS + double-`__syncwarp` barriers — the fixed ~2000-cyc,
+  5-round floor is barrier-dominated. The cost is a harder K-way partition (K-dimensional Merge
+  Path or a small tournament), and more register state; whether it nets out is an open question.
+- **Cross-round partition reuse**: round r+1 merges concatenations of round r's runs; a coarse
+  partition from r might warm-start r+1's search. Speculative — the runs double each round, so the
+  bound is loose.
