@@ -263,3 +263,67 @@ key footprint), the one cost to weigh for a throughput kernel.
 - **Cross-round partition reuse**: round r+1 merges concatenations of round r's runs; a coarse
   partition from r might warm-start r+1's search. Speculative — the runs double each round, so the
   bound is loose.
+
+## 13. Head-to-head: WarpMergeSort vs WarpBitonicSort (`proto_wms_vs_bitonic.cu`)
+
+The §11.4 conclusion — that the data-oblivious bitonic network is the right tool for warp-latency
+sorting — quantified directly. Both keys-only float, single-warp scope, all 9 sizes (WarpBitonicSort
+handles non-power-of-2 IPT via power-of-two decomposition). Latency uses each primitive's correct
+critical-path method (oblivious bitonic → in-place dependency chain; data-dependent merge →
+back-to-back random, gen-subtracted); the merge numbers reproduce §1 and the companion doc within
+~1%. Throughput = one occupancy wave × fixed iterations, `sink()`-guarded, element-normalized.
+
+### Latency (single-warp slope, cyc/call) — there is a crossover
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| **WarpMergeSort** | 2236 | 3460 | 4008 | 4569 | 5161 | 5541 | 6460 | 7376 | 8269 |
+| **WarpBitonicSort** | **660** | **1080** | **1710** | **1964** | **3021** | **3792** | **5468** | 7510 | 8934 |
+| bitonic speedup | 3.4× | 3.2× | 2.3× | 2.3× | 1.7× | 1.5× | 1.2× | 0.98× | 0.93× |
+
+**Bitonic dominates small IPT (3.4× at size 32) but the lines cross at IPT≈10 (size 320)**, beyond
+which merge sort is faster. The reason is asymptotic: bitonic is O(N log²N) data-oblivious
+compare-exchanges, merge is O(N log N). At few items/thread bitonic's cheap shuffles and zero
+divergence win overwhelmingly; as items/thread grow, the extra log factor of oblivious work
+overtakes merge's dependent-but-fewer operations.
+
+**Synthesis with the optimizations (§4/§10).** Optimized merge (MP + NET + prefetch-shift, or
+MP+NET at IPT 12) shifts the crossover *left*:
+
+| size | 128 (IPT4) | 256 (IPT8) | 320 (IPT10) | 384 (IPT12) |
+|---|---|---|---|---|
+| optimized merge | 2853 | **4470** | **4549** | **5504** |
+| WarpBitonicSort | **1964** | 5468 | 7510 | 8934 |
+| winner | bitonic 1.45× | **merge 1.22×** | **merge 1.65×** | **merge 1.62×** |
+
+So the tuned merge sort **overtakes bitonic at IPT≈7-8** instead of ≈10 — it wins the whole
+large-tile half of the range, while bitonic owns the small-tile half. Neither is universally best;
+the crossover is the actionable output.
+
+### Throughput (Gelem/s, one wave, fixed workload)
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| **WarpMergeSort** | 65 | 110 | 134 | 119 | **162** | **162** | 96 | **181** | **148** |
+| **WarpBitonicSort** | **258** | **210** | **176** | **174** | 151 | 151 | **142** | 124 | 124 |
+| bitonic speedup | 4.0× | 1.9× | 1.3× | 1.5× | 0.94× | 0.93× | 1.5× | 0.68× | 0.84× |
+
+Throughput is **occupancy-bound**, not work-bound, so it reads differently from latency:
+WarpBitonicSort is shared-memory-free and its curve is smooth/monotone; WarpMergeSort's shared
+`TempStorage` (grows with IPT) and register footprint drive occupancy in quantized steps, giving a
+non-monotone curve (dips at IPT 4/8, spikes at IPT 5/10 where a block wave happens to pack well).
+Bitonic wins the small sizes decisively (4× at size 32) and the picture is mixed above IPT≈5, where
+merge's better asymptotic work sometimes outweighs its occupancy penalty. Because throughput here
+is dominated by occupancy quantization, exact per-size values are noisier than the latency slopes;
+the robust takeaways are bitonic's large small-size advantage and the absence of a clean winner at
+larger tiles.
+
+### Recommendation
+
+For warp-scope sorting: **WarpBitonicSort for small tiles (≤ ~128 elems / IPT ≤ 4) on both axes**;
+for larger tiles, **the tuned WarpMergeSort (§4/§10) is the latency winner (IPT ≳ 8)** and throughput
+is a wash decided by occupancy. This also motivates a policy that picks the algorithm by tile size,
+and — since bitonic owns exactly the small-IPT regime where the merge sort's fixed 5-round barrier
+floor hurts most — reinforces §12's multi-way-merge idea as the main remaining lever for merge sort.
