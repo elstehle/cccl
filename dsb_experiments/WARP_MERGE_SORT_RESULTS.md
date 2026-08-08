@@ -327,3 +327,83 @@ for larger tiles, **the tuned WarpMergeSort (§4/§10) is the latency winner (IP
 is a wash decided by occupancy. This also motivates a policy that picks the algorithm by tile size,
 and — since bitonic owns exactly the small-IPT regime where the merge sort's fixed 5-round barrier
 floor hurts most — reinforces §12's multi-way-merge idea as the main remaining lever for merge sort.
+
+---
+
+# Round 3 — attacking the diagonal search itself (`proto_wms_mp2.cu`)
+
+Measured on **umb-b200-239, CUDA 13.3.1** (previous rounds: 13.1). Baselines (V0) reproduce the
+13.1 numbers within 1%, but the *tuned* variant (V1: static binary MergePath + Batcher +
+prefetch-shift) measures noticeably worse under the 13.3 compiler (IPT4: 3579 vs 2853; IPT12:
+7203 vs 5504 — at IPT12 now slightly *behind* baseline). Two consequences: within-node deltas
+below are valid, cross-toolkit ones are not, and **the tuned path is compiler-sensitive — it
+should be re-validated per CUDA release before/while upstreaming.**
+
+## 14. Ideas for a faster split-point search — mostly measured negatives
+
+Seeds explored: thread cooperation on split points, hardware intrinsics (redux), remembering
+split points / bounds from other threads or earlier passes. Distilled into three evaluated
+families (all pass correctness on every size):
+
+### 14.1 k-ary static MergePath (multiple independent probes per step) — **negative**
+
+The only way to beat `log2(S)` *latency* per search under warp lockstep is more independent
+probes per step: 3 (4-ary) or 7 (8-ary) interior probes pipeline into ~one shared latency,
+cutting steps to `log4/log8(S)`. Measured (Δ vs V1, random input):
+
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|---|---|---|
+| 4-ary Δ | +381 | +435 | +410 | +817 | +489 | +625 | +838 | +2380 | +2574 |
+| 8-ary Δ | worse still (up to +3400) | | | | | | | | |
+
+Why it loses despite the sound asymptotics: the tile's merge rounds mostly search **small
+ranges** (`S = IPT·2^round`; three of five rounds have S ≤ 4·IPT), where binary already needs
+only 3-5 steps, while 4-ary's per-step cost — 6 loads instead of 2, clamps, a select cascade,
+and +25-30 registers (up to 102) — applies to *every* step. The step reduction only matters in
+the last 1-2 rounds, and even there it doesn't amortize. k-ary would deserve a re-look only for
+much larger runs (block-wide tiles, S in the thousands).
+
+### 14.2 Rank-and-scatter merge (no diagonal search, no serial merge) — **negative for IPT ≥ 2**
+
+The "remember split points" seed mutated into the strongest-looking idea: skip partitioning
+entirely — each thread ranks its own IPT register-resident sorted elements in the *other* run
+(IPT searches that should pipeline to ~one search's latency; stability via lower/upper-bound
+asymmetry) and scatters to `own_index + rank`, eliminating SerialMerge as a phase. Three
+structural arrangements were built and measured, because each failure suggested a specific fix:
+
+| arrangement | IPT 1 | IPT 4 | IPT 12 | failure mechanism |
+|---|---|---|---|---|
+| search-major (one full search per item) | **1592 (−12% — the one win)** | 9487 | 32533 | ptxas register-minimizing allocation **serializes** the "independent" chains (visible as suspiciously low reg counts) |
+| step-major, fully unrolled (all IPT probes batched per step) | 1686 | 7863 | 39684 | batching helps a little, but STEPS×IPT unrolled probe bodies explode code size |
+| step-major, rolled step loop | 2485 | 10263 | 33302 | compact code, but the loop overhead (branch + trip count) lands **on the dependent chain**, ~+25 cyc/step |
+| V1 reference | 1810 | 3579 | 7203 | — |
+
+The premise — "IPT independent dependent-chains pipeline for free" — **does not survive contact
+with the compiler**: whichever way the loops are arranged, the measured cost stays ~IPT× a single
+search rather than ~1×. The single genuine result is **IPT = 1** (size 32), where there is one
+search, no serial merge, and no partitioning: rank-and-scatter is the fastest merge-sort variant
+measured for that size (1592, −12% vs V1). Given bitonic owns size 32 anyway (660, §13), this is
+documented rather than recommended.
+
+### 14.3 Cooperation, redux, remembered bounds — analysis (no prototype justified)
+
+* **Hierarchical split cooperation** (find median split, then quarter splits in halved ranges):
+  levels are sequential under warp lockstep, so latency is `Σ_j log2(S/2^j) > log2(S)` — strictly
+  worse than the 32 already-parallel independent searches. The information-sharing idea has no
+  latency channel to pay into.
+* **`redux`/warp intrinsics**: computes one warp-wide scalar; the 32 split points are distinct
+  values, so it cannot carry the search. Its niche is a presorted fast path (`max(A) ≤ min(B)`
+  ⇒ the round is a concatenation, skip search+merge): ~2 loads + ballot per round of insurance,
+  data-dependent payoff only — worthless on random input, potentially large on nearly-sorted.
+  Left as a policy idea for callers with known input structure.
+* **Bounds remembered from other threads / previous passes**: neighbor bounds are circular
+  (computing them costs the same search) and two-phase schemes add latencies (§11.1); previous-
+  pass split points don't bound the doubled-run diagonals tightly enough to save even one step.
+
+### 14.4 Conclusion
+
+The statically-unrolled **binary** MergePath of §4 remains the best split-point search across
+all attacks: at these tile sizes its dependent chain (2 loads + fold per step, ~30 total steps
+across rounds) is the empirical local optimum on this hardware/toolchain. The remaining levers
+for warp-merge-sort latency are algorithmic, not search-local: bitonic for small tiles (§13) and
+multi-way merge to cut the round count (§12).
