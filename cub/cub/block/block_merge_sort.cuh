@@ -223,10 +223,14 @@ private:
 
 #ifndef _CCCL_DOXYGEN_INVOKED // Do not document
   /// Shared memory type required by this thread block.
-  /// The tile is padded by ItemsPerThread elements: the serial merge prefetches one element past
-  /// the end of a run, and when merging a partial tile it may walk (but never use) up to
-  /// ItemsPerThread - 1 positions past a run that ended early. The padding slots are written
-  /// before every merge round so that no read within the storage is uninitialized.
+  /// The tile is padded by ItemsPerThread elements because the serial merge reads ahead of its two
+  /// runs without using the values: it prefetches one element past the end of a run, and when
+  /// merging a partial tile it may walk up to ItemsPerThread - 1 positions past a run that ended
+  /// early. Padding the reads is cheaper than guarding them inside the merge loop. The padding
+  /// values never influence the result, but the slots are still given defined values before every
+  /// merge round (they cannot persist across rounds: the items exchange of a pairs sort aliases
+  /// the same storage), so that none of these reads is of uninitialized memory, e.g. for
+  /// compute-sanitizer initcheck when the temporary storage is virtualized to global memory.
   union _TempStorage
   {
     KeyT keys_shared[ITEMS_PER_TILE + ItemsPerThread];
