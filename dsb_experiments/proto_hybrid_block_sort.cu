@@ -155,8 +155,9 @@ serial_merge(const float* sk, int b1, int b2, int c1, int c2, float (&out)[IPT],
 }
 
 // ------------------------------------------------------------------ one block merge round
-// TARGET = threads per merging group; STRIPED_STORE: registers are warp-striped (hybrid entry)
-template <int IPT, bool PAIRS, bool STAT, int TARGET, bool STRIPED_STORE, int TILE>
+// TARGET = threads per merging group; SEGL_STORE != 0: registers are striped over SEGL_STORE-lane
+// segments (bootstrap-phase exit), 0: blocked
+template <int IPT, bool PAIRS, bool STAT, int TARGET, int SEGL_STORE, int TILE>
 __device__ __forceinline__ void block_round(float (&k)[IPT], int (&v)[IPT], float* tk, int* tv)
 {
   const int tid = threadIdx.x;
@@ -164,7 +165,11 @@ __device__ __forceinline__ void block_round(float (&k)[IPT], int (&v)[IPT], floa
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
-    const int idx = STRIPED_STORE ? ((tid & ~31) * IPT + (tid & 31) + i * 32) : (IPT * tid + i);
+    const int l   = tid & 31;
+    const int idx = SEGL_STORE
+                    ? ((tid & ~31) * IPT + (l / SEGL_STORE) * (SEGL_STORE * IPT) + (l & (SEGL_STORE - 1))
+                       + i * SEGL_STORE)
+                    : (IPT * tid + i);
     tk[idx]       = k[i];
   }
   if (tid == 0)
@@ -194,7 +199,11 @@ __device__ __forceinline__ void block_round(float (&k)[IPT], int (&v)[IPT], floa
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      const int idx = STRIPED_STORE ? ((tid & ~31) * IPT + (tid & 31) + i * 32) : (IPT * tid + i);
+      const int l   = tid & 31;
+      const int idx = SEGL_STORE
+                      ? ((tid & ~31) * IPT + (l / SEGL_STORE) * (SEGL_STORE * IPT) + (l & (SEGL_STORE - 1))
+                         + i * SEGL_STORE)
+                      : (IPT * tid + i);
       tv[idx]       = v[i];
     }
     __syncthreads();
@@ -207,40 +216,42 @@ __device__ __forceinline__ void block_round(float (&k)[IPT], int (&v)[IPT], floa
 }
 
 // compile-time round recursion: TARGET, TARGET*2, ..., kBlock
-template <int IPT, bool PAIRS, bool STAT, int TARGET, bool FIRST_STRIPED, int TILE>
+template <int IPT, bool PAIRS, bool STAT, int TARGET, int FIRST_SEGL, int TILE>
 __device__ __forceinline__ void rounds_from(float (&k)[IPT], int (&v)[IPT], float* tk, int* tv)
 {
-  block_round<IPT, PAIRS, STAT, TARGET, FIRST_STRIPED, TILE>(k, v, tk, tv);
+  block_round<IPT, PAIRS, STAT, TARGET, FIRST_SEGL, TILE>(k, v, tk, tv);
   if constexpr (TARGET < kBlock)
   {
-    rounds_from<IPT, PAIRS, STAT, TARGET * 2, false, TILE>(k, v, tk, tv);
+    rounds_from<IPT, PAIRS, STAT, TARGET * 2, 0, TILE>(k, v, tk, tv);
   }
 }
 
-// ------------------------------------------------------------------ stable warp bitonic sort
-// striped arrangement: (lane l, item i) holds position l + 32*i of the warp's 32*IPT elements;
-// stability via static input-rank tiebreak (ranks strict-total-order the network)
-template <int IPT, bool PAIRS>
-__device__ __forceinline__ void warp_stable_bitonic(float (&sk)[IPT], int (&sr)[IPT], int (&sv)[IPT])
+// ------------------------------------------------------------------ stable segment bitonic sort
+// striped arrangement over a SEGL-lane segment: (sub-lane s, item i) holds position s + SEGL*i of
+// the segment's SEGL*IPT elements; stability via static input-rank tiebreak (ranks make the
+// network's order strict). SEGL = 32 sorts the whole warp tile; SEGL < 32 sorts 32/SEGL
+// independent segments concurrently (xor partners stay within a power-of-two segment).
+template <int SEGL, int IPT, bool PAIRS>
+__device__ __forceinline__ void seg_stable_bitonic(float (&sk)[IPT], int (&sr)[IPT], int (&sv)[IPT])
 {
-  const int l     = threadIdx.x & 31;
-  constexpr int N = 32 * IPT;
+  const int l     = threadIdx.x & (SEGL - 1); // sub-lane within segment
+  constexpr int N = SEGL * IPT;
 #pragma unroll
   for (int stage = 2; stage <= N; stage <<= 1)
   {
 #pragma unroll
     for (int j = stage >> 1; j >= 1; j >>= 1)
     {
-      if (j >= 32)
+      if (j >= SEGL)
       {
-        const int jb = j / 32; // register-local exchange between items i and i|jb
+        const int jb = j / SEGL; // register-local exchange between items i and i|jb
 #pragma unroll
         for (int i = 0; i < IPT; ++i)
         {
           if ((i & jb) == 0 && (i | jb) < IPT)
           {
             const int i2   = i | jb;
-            const int p    = l + 32 * i;
+            const int p    = l + SEGL * i;
             const bool asc = (p & stage) == 0 || stage == N;
             const bool sw  = (sk[i2] < sk[i]) || (sk[i2] == sk[i] && sr[i2] < sr[i]); // partner-less
             if (sw == asc) // put min at the lower position iff ascending
@@ -260,7 +271,7 @@ __device__ __forceinline__ void warp_stable_bitonic(float (&sk)[IPT], int (&sr)[
           const float pk = __shfl_xor_sync(~0u, sk[i], j);
           const int pr   = __shfl_xor_sync(~0u, sr[i], j);
           const int pv   = PAIRS ? __shfl_xor_sync(~0u, sv[i], j) : 0;
-          const int p    = l + 32 * i;
+          const int p    = l + SEGL * i;
           const bool lower = (p & j) == 0;
           const bool asc   = (p & stage) == 0 || stage == N;
           const bool pless = (pk < sk[i]) || (pk == sk[i] && pr < sr[i]);
@@ -281,28 +292,32 @@ __device__ __forceinline__ void warp_stable_bitonic(float (&sk)[IPT], int (&sr)[
 }
 
 // ------------------------------------------------------------------ full tile sort, all variants
-// VARIANT: 0 = merge+dyn, 1 = merge+static, 2 = hybrid+dyn, 3 = hybrid+static
+// VARIANT: 0 = merge+dyn, 1 = merge+static, 2 = hybrid+dyn (bootstrap = whole warp tile),
+//          3 = hybrid+static, 4 = capped hybrid (bootstrap = 64-element chunks) + dyn
 template <int IPT, int VARIANT, bool PAIRS>
 __device__ __forceinline__ void sort_tile(float (&k)[IPT], int (&v)[IPT], float* tk, int* tv)
 {
   constexpr int TILE  = kBlock * IPT;
-  constexpr bool STAT = (VARIANT & 1) != 0;
+  constexpr bool STAT = (VARIANT & 1) != 0 && VARIANT < 4;
   if constexpr (VARIANT < 2)
   {
     thread_odd_even<IPT, PAIRS>(k, v);
-    rounds_from<IPT, PAIRS, STAT, 2, false, TILE>(k, v, tk, tv);
+    rounds_from<IPT, PAIRS, STAT, 2, 0, TILE>(k, v, tk, tv);
   }
   else
   {
-    // warp phase: blocked -> striped via the warp's own smem section (warp-local sync only)
-    const int tid   = threadIdx.x;
-    const int l     = tid & 31;
-    const int wbase = (tid & ~31) * IPT; // warp's section of the tile
+    // bootstrap phase: sorted runs of CAP elements via a stable segment network
+    constexpr int CAP  = (VARIANT == 4) ? (IPT == 1 ? 32 : 64) : 32 * IPT; // bootstrap run length
+    constexpr int SEGL = CAP / IPT;                                       // lanes per segment
+    const int tid  = threadIdx.x;
+    const int l    = tid & 31;
+    const int subl = l & (SEGL - 1);
+    const int base = (tid & ~31) * IPT + (l / SEGL) * CAP; // segment's tile offset
     __syncthreads(); // tile buffer handoff between chained calls
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      tk[IPT * tid + i] = k[i];
+      tk[IPT * tid + i] = k[i]; // blocked -> striped-in-segment via the warp's own smem section
     }
     __syncwarp();
     float sk[IPT];
@@ -310,8 +325,8 @@ __device__ __forceinline__ void sort_tile(float (&k)[IPT], int (&v)[IPT], float*
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      sk[i] = tk[wbase + l + 32 * i];
-      sr[i] = l + 32 * i; // static input rank within the warp tile -> stability
+      sk[i] = tk[base + subl + SEGL * i];
+      sr[i] = subl + SEGL * i; // static input rank within the segment -> stability
     }
     if (PAIRS)
     {
@@ -325,11 +340,11 @@ __device__ __forceinline__ void sort_tile(float (&k)[IPT], int (&v)[IPT], float*
 #pragma unroll
       for (int i = 0; i < IPT; ++i)
       {
-        sv[i] = tv[wbase + l + 32 * i];
+        sv[i] = tv[base + subl + SEGL * i];
       }
     }
-    warp_stable_bitonic<IPT, PAIRS>(sk, sr, sv);
-    // cross-warp rounds; first store converts striped -> blocked for free
+    seg_stable_bitonic<SEGL, IPT, PAIRS>(sk, sr, sv);
+    // merge rounds from run length CAP; first store converts segment-striped -> blocked for free
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
@@ -339,7 +354,7 @@ __device__ __forceinline__ void sort_tile(float (&k)[IPT], int (&v)[IPT], float*
         v[i] = sv[i];
       }
     }
-    rounds_from<IPT, PAIRS, STAT, 64, true, TILE>(k, v, tk, tv);
+    rounds_from<IPT, PAIRS, STAT, 2 * CAP / IPT, SEGL, TILE>(k, v, tk, tv);
   }
 }
 
@@ -557,8 +572,10 @@ static void run_correct()
   const bool v1 = check_variant<IPT, 1>();
   const bool v2 = check_variant<IPT, 2>();
   const bool v3 = check_variant<IPT, 3>();
-  printf("  tile %4d (IPT %d):  V0 %s  V1 %s  V2 %s  V3 %s   (incl. stability, heavy ties)\n",
-         kBlock * IPT, IPT, v0 ? "PASS" : "FAIL", v1 ? "PASS" : "FAIL", v2 ? "PASS" : "FAIL", v3 ? "PASS" : "FAIL");
+  const bool v4 = check_variant<IPT, 4>();
+  printf("  tile %4d (IPT %d):  V0 %s  V1 %s  V2 %s  V3 %s  V4 %s   (incl. stability, heavy ties)\n",
+         kBlock * IPT, IPT, v0 ? "PASS" : "FAIL", v1 ? "PASS" : "FAIL", v2 ? "PASS" : "FAIL",
+         v3 ? "PASS" : "FAIL", v4 ? "PASS" : "FAIL");
 }
 
 template <int IPT, int VARIANT, bool PAIRS, int DO>
@@ -591,9 +608,10 @@ static void run_lat()
   const double v1  = slope_raw<IPT, 1, PAIRS, 1>() - gen;
   const double v2  = slope_raw<IPT, 2, PAIRS, 1>() - gen;
   const double v3  = slope_raw<IPT, 3, PAIRS, 1>() - gen;
-  printf("  %s tile %4d (IPT %d):  V0=%8.1f  V1(stat)=%8.1f  V2(hyb)=%8.1f  V3(hyb+stat)=%8.1f   best vs V0: %+.1f%%\n",
-         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3,
-         100.0 * (std::min(std::min(v1, v2), v3) - v0) / v0);
+  const double v4  = slope_raw<IPT, 4, PAIRS, 1>() - gen;
+  printf("  %s tile %4d (IPT %d):  V0=%8.1f  V1(stat)=%8.1f  V2(hyb)=%8.1f  V3(h+s)=%8.1f  V4(cap64)=%8.1f   best vs V0: %+.1f%%\n",
+         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3, v4,
+         100.0 * (std::min(std::min(std::min(v1, v2), v3), v4) - v0) / v0);
 }
 
 template <int IPT, int VARIANT, bool PAIRS>
@@ -631,8 +649,9 @@ static void run_thr(int num_SMs)
   const double v1 = thr_gelems<IPT, 1, PAIRS>(num_SMs);
   const double v2 = thr_gelems<IPT, 2, PAIRS>(num_SMs);
   const double v3 = thr_gelems<IPT, 3, PAIRS>(num_SMs);
-  printf("  %s tile %4d (IPT %d):  V0=%6.1f  V1=%6.1f  V2=%6.1f  V3=%6.1f  Gelem/s\n",
-         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3);
+  const double v4 = thr_gelems<IPT, 4, PAIRS>(num_SMs);
+  printf("  %s tile %4d (IPT %d):  V0=%6.1f  V1=%6.1f  V2=%6.1f  V3=%6.1f  V4=%6.1f  Gelem/s\n",
+         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3, v4);
 }
 
 template <int IPT, int VARIANT, bool PAIRS>
@@ -654,10 +673,12 @@ static void run_res()
   res_one<IPT, 1, false>();
   res_one<IPT, 2, false>();
   res_one<IPT, 3, false>();
+  res_one<IPT, 4, false>();
   res_one<IPT, 0, true>();
   res_one<IPT, 1, true>();
   res_one<IPT, 2, true>();
   res_one<IPT, 3, true>();
+  res_one<IPT, 4, true>();
 }
 
 #define FOR_IPT(X) X(1) X(2) X(4) X(8)
