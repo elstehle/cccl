@@ -11,8 +11,13 @@
 //   V1: V0 with statically-unrolled MergePath                        (the SEARCH_STATIC switch)
 //   V2: stable warp bitonic phase + 3 cross-warp rounds, dynamic search
 //   V3: V2 with statically-unrolled MergePath                        (the full stack)
+//   V4: capped hybrid (bootstrap = 64-element chunks via own network) + dyn
+//   V5: capped hybrid like V4, but the bootstrap is the REAL cub WarpBitonicSort
+//       (exp/sub-warp-bitonic-sort) on sub-warp segments with the bit-twiddled
+//       (key32 << 32) | rank u64 stable pack (single integer compare) — the production shape
 // All variants: stable, blocked in/out, full tiles. KeyT float, ValueT int (PAIRS variant).
-// Self-contained mirror (no cub includes); earlier mirrors tracked cub within ~1%.
+// The merge machinery is a self-contained mirror (earlier mirrors tracked cub within ~1%);
+// V5 requires the branch headers: -I<branch>/cub -I<branch>/libcudacxx/include -I<branch>/thrust.
 //
 // Methodology per DEVICE_SIDE_BENCHMARKING_ISSUE.md: latency = single block, back-to-back random
 // input, chain serialized on previous output, generate-only control subtracted, chain-length
@@ -20,6 +25,8 @@
 // vs std::stable_sort on (key, index) with heavy-tie patterns.
 //
 // Modes: ./proto_hybrid_block_sort [correct|lat|thr|res|all]
+
+#include <cub/warp/warp_bitonic_sort.cuh>
 
 #include <algorithm>
 #include <climits>
@@ -30,6 +37,26 @@
 #include <vector>
 
 constexpr int kBlock = 256;
+
+// order-preserving float <-> u32 twiddle (ascending unsigned order; NaN-free data)
+__device__ __forceinline__ unsigned twiddle_in(float f)
+{
+  const unsigned u = __float_as_uint(f);
+  return u ^ ((u >> 31) ? 0xFFFFFFFFu : 0x80000000u);
+}
+__device__ __forceinline__ float twiddle_out(unsigned u)
+{
+  u ^= ((u >> 31) ? 0x80000000u : 0xFFFFFFFFu);
+  return __uint_as_float(u);
+}
+
+struct LessU
+{
+  __device__ __forceinline__ bool operator()(unsigned long long a, unsigned long long b) const
+  {
+    return a < b;
+  }
+};
 
 __device__ int g_dcesink[16];
 
@@ -307,8 +334,8 @@ __device__ __forceinline__ void sort_tile(float (&k)[IPT], int (&v)[IPT], float*
   else
   {
     // bootstrap phase: sorted runs of CAP elements via a stable segment network
-    constexpr int CAP  = (VARIANT == 4) ? (IPT == 1 ? 32 : 64) : 32 * IPT; // bootstrap run length
-    constexpr int SEGL = CAP / IPT;                                       // lanes per segment
+    constexpr int CAP  = (VARIANT >= 4) ? (IPT == 1 ? 32 : 64) : 32 * IPT; // bootstrap run length
+    constexpr int SEGL = CAP / IPT;                                        // lanes per segment
     const int tid  = threadIdx.x;
     const int l    = tid & 31;
     const int subl = l & (SEGL - 1);
@@ -343,7 +370,37 @@ __device__ __forceinline__ void sort_tile(float (&k)[IPT], int (&v)[IPT], float*
         sv[i] = tv[base + subl + SEGL * i];
       }
     }
-    seg_stable_bitonic<SEGL, IPT, PAIRS>(sk, sr, sv);
+    if constexpr (VARIANT == 5)
+    {
+      // real WarpBitonicSort on SEGL-lane logical warps, stable via the twiddle-packed u64 key
+      unsigned long long a[IPT];
+#pragma unroll
+      for (int i = 0; i < IPT; ++i)
+      {
+        a[i] = ((unsigned long long) twiddle_in(sk[i]) << 32) | (unsigned) sr[i];
+      }
+      if constexpr (PAIRS)
+      {
+        using BS = cub::detail::WarpBitonicSort<unsigned long long, IPT, SEGL, int>;
+        typename BS::TempStorage ts;
+        BS(ts).Sort(a, sv, LessU{});
+      }
+      else
+      {
+        using BS = cub::detail::WarpBitonicSort<unsigned long long, IPT, SEGL>;
+        typename BS::TempStorage ts;
+        BS(ts).Sort(a, LessU{});
+      }
+#pragma unroll
+      for (int i = 0; i < IPT; ++i)
+      {
+        sk[i] = twiddle_out((unsigned) (a[i] >> 32));
+      }
+    }
+    else
+    {
+      seg_stable_bitonic<SEGL, IPT, PAIRS>(sk, sr, sv);
+    }
     // merge rounds from run length CAP; first store converts segment-striped -> blocked for free
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
@@ -573,9 +630,10 @@ static void run_correct()
   const bool v2 = check_variant<IPT, 2>();
   const bool v3 = check_variant<IPT, 3>();
   const bool v4 = check_variant<IPT, 4>();
-  printf("  tile %4d (IPT %d):  V0 %s  V1 %s  V2 %s  V3 %s  V4 %s   (incl. stability, heavy ties)\n",
+  const bool v5 = check_variant<IPT, 5>();
+  printf("  tile %4d (IPT %d):  V0 %s  V1 %s  V2 %s  V3 %s  V4 %s  V5 %s   (incl. stability, heavy ties)\n",
          kBlock * IPT, IPT, v0 ? "PASS" : "FAIL", v1 ? "PASS" : "FAIL", v2 ? "PASS" : "FAIL",
-         v3 ? "PASS" : "FAIL", v4 ? "PASS" : "FAIL");
+         v3 ? "PASS" : "FAIL", v4 ? "PASS" : "FAIL", v5 ? "PASS" : "FAIL");
 }
 
 template <int IPT, int VARIANT, bool PAIRS, int DO>
@@ -609,9 +667,10 @@ static void run_lat()
   const double v2  = slope_raw<IPT, 2, PAIRS, 1>() - gen;
   const double v3  = slope_raw<IPT, 3, PAIRS, 1>() - gen;
   const double v4  = slope_raw<IPT, 4, PAIRS, 1>() - gen;
-  printf("  %s tile %4d (IPT %d):  V0=%8.1f  V1(stat)=%8.1f  V2(hyb)=%8.1f  V3(h+s)=%8.1f  V4(cap64)=%8.1f   best vs V0: %+.1f%%\n",
-         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3, v4,
-         100.0 * (std::min(std::min(std::min(v1, v2), v3), v4) - v0) / v0);
+  const double v5  = slope_raw<IPT, 5, PAIRS, 1>() - gen;
+  printf("  %s tile %4d (IPT %d):  V0=%8.1f  V1(stat)=%8.1f  V2(hyb)=%8.1f  V3(h+s)=%8.1f  V4(cap64)=%8.1f  V5(cub)=%8.1f   best vs V0: %+.1f%%\n",
+         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3, v4, v5,
+         100.0 * (std::min(std::min(std::min(std::min(v1, v2), v3), v4), v5) - v0) / v0);
 }
 
 template <int IPT, int VARIANT, bool PAIRS>
@@ -650,8 +709,9 @@ static void run_thr(int num_SMs)
   const double v2 = thr_gelems<IPT, 2, PAIRS>(num_SMs);
   const double v3 = thr_gelems<IPT, 3, PAIRS>(num_SMs);
   const double v4 = thr_gelems<IPT, 4, PAIRS>(num_SMs);
-  printf("  %s tile %4d (IPT %d):  V0=%6.1f  V1=%6.1f  V2=%6.1f  V3=%6.1f  V4=%6.1f  Gelem/s\n",
-         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3, v4);
+  const double v5 = thr_gelems<IPT, 5, PAIRS>(num_SMs);
+  printf("  %s tile %4d (IPT %d):  V0=%6.1f  V1=%6.1f  V2=%6.1f  V3=%6.1f  V4=%6.1f  V5=%6.1f  Gelem/s\n",
+         PAIRS ? "pairs" : "keys ", kBlock * IPT, IPT, v0, v1, v2, v3, v4, v5);
 }
 
 template <int IPT, int VARIANT, bool PAIRS>
@@ -674,11 +734,13 @@ static void run_res()
   res_one<IPT, 2, false>();
   res_one<IPT, 3, false>();
   res_one<IPT, 4, false>();
+  res_one<IPT, 5, false>();
   res_one<IPT, 0, true>();
   res_one<IPT, 1, true>();
   res_one<IPT, 2, true>();
   res_one<IPT, 3, true>();
   res_one<IPT, 4, true>();
+  res_one<IPT, 5, true>();
 }
 
 #define FOR_IPT(X) X(1) X(2) X(4) X(8)

@@ -16,25 +16,32 @@ patterns) at every size; V4 reproduces V2 exactly at IPT 1–2 (built-in cross-c
 
 | | tile 256 | 512 | 1024 | 2048 |
 |---|---|---|---|---|
-| keys V0 (stock) | 4986 | **5851** | **7814** | **11684** |
+| keys V0 (stock) | 4986 | 5851 | 7814 | **11684** |
 | keys V1 (static) | 4524 | 6269 | 9111 | 13199 |
-| keys V2 (hybrid) | **4141** | 6808 | 13600 | 29575 |
+| keys V2 (hybrid) | 4141 | 6808 | 13600 | 29575 |
 | keys V3 (hyb+stat) | 4146 | 7344 | 14569 | 31009 |
-| keys V4 (cap 64) | **4141** | 6808 | 12104 | 21887 |
-| pairs V0 | 4882 | **6262** | **8860** | **14795** |
-| pairs V2 (hybrid) | **4111** | 7016 | 14194 | 31301 |
-| pairs V4 (cap 64) | **4111** | 7015 | 12726 | 24201 |
+| keys V4 (cap 64, own net) | 4141 | 6808 | 12104 | 21887 |
+| keys **V5 (cap 64, cub+packed)** | **3065 (−38%)** | **4260 (−27%)** | **7479 (−4%)** | 13084 (+12%) |
+| pairs V0 | 4882 | 6262 | 8860 | **14795** |
+| pairs V2 (hybrid) | 4111 | 7016 | 14194 | 31301 |
+| pairs V4 (cap 64, own net) | 4111 | 7015 | 12726 | 24201 |
+| pairs **V5 (cap 64, cub+packed)** | **3158 (−35%)** | **4816 (−23%)** | **8662 (−2%)** | 15472 (+5%) |
 
 ## Throughput (one occupancy wave, Gelem/s) and resources
 
 | | tile 256 | 512 | 1024 | 2048 |
 |---|---|---|---|---|
-| keys V0 | 36.2 | **59.6** | **83.3** | **85.3** |
-| keys V2 | **47.1** | 51.3 | 49.4 | 46.7 |
-| keys V4 | **47.1** | 51.3 | 56.9 | 63.0 |
-| pairs V0 | 34.4 | **53.8** | **62.4** | **57.7** |
-| pairs V2 | **41.8** | 47.3 | 45.4 | 40.3 |
-| pairs V4 | **41.7** | 47.3 | 50.6 | 48.2 |
+| keys V0 | 36.2 | 59.5 | **83.4** | **85.3** |
+| keys V2 | 47.2 | 51.3 | 49.5 | 46.7 |
+| keys V4 | 47.1 | 51.3 | 56.9 | 63.0 |
+| keys **V5** | **56.1 (+55%)** | **69.6 (+17%)** | 76.5 (−8%) | 76.2 (−11%) |
+| pairs V0 | 34.4 | 53.7 | **62.5** | **57.7** |
+| pairs V2 | 41.7 | 47.3 | 45.4 | 40.3 |
+| pairs V4 | 41.8 | 47.3 | 50.6 | 48.2 |
+| pairs **V5** | **47.2 (+37%)** | **55.4 (+3%)** | 55.5 (−11%) | 50.6 (−12%) |
+
+V5 is also the **leanest** variant where it wins: 31–32 regs / 8 blk/SM at IPT ≤ 2 vs stock's
+46–57 regs / 4–5 blk/SM. No spills anywhere.
 
 Registers/occupancy at IPT 1 (thr kernels): V0 = 46 regs / 5 blk/SM; **V2 = 32 regs / 8 blk/SM**.
 V1 (static) = 78-80 regs / 3 blk/SM at all sizes. No spills anywhere.
@@ -68,25 +75,34 @@ V1 (static) = 78-80 regs / 3 blk/SM at all sizes. No spills anywhere.
    rounds left, the search is a small fraction and the register cost dominates.
 5. **Capping the bootstrap at 64 elements (V4) strictly improves the hybrid at IPT ≥ 4** —
    −11% (IPT 4) and −26% (IPT 8) latency vs the whole-tile bootstrap, +15%/+35% throughput —
-   confirming the "network only in its sweet spot, merge path from there" structure. It still
-   loses to stock at IPT ≥ 2 with THIS network, but the cost decomposition (bootstrap ≈ 8.2k of
-   V4's 12.1k at IPT 4; the naive network is ~3× a cub-quality one) projects: **IPT 2 and 4 flip
-   to wins and IPT 8 to a wash once the warp phase is cub-`WarpBitonicSort`-quality.** The
-   architecture question is settled in favor of the capped hybrid; the remaining blocker is
-   network implementation quality only.
+   confirming the "network only in its sweet spot, merge path from there" structure.
+6. **V5 (capped bootstrap via the real `WarpBitonicSort` + u64 twiddle-pack, sub-warp logical
+   warps of 64/IPT lanes) is the definitive design** (`STABLE_WRAP_RESULTS.md` has the
+   component study). Final verdict vs stock:
+   * **IPT 1: −38% latency, +55% throughput, 31 vs 46 regs, occupancy 8 vs 5** — a triple win
+     larger than any single optimization measured in this project.
+   * **IPT 2: −27% latency, +17% throughput, 32 vs 57 regs** — clear win on all axes.
+   * IPT 4: ≈neutral (−4%/−2% latency, −8%/−11% throughput) — a latency-vs-throughput policy
+     point, not a default.
+   * IPT 8: stock wins (+12%/+5% latency, −11% throughput) — keep merge rounds.
+   The earlier projection (−32/−24/−14) was too optimistic at IPT ≥ 4: sub-warp segment network
+   cost does not scale down as favorably as the full-warp standalone numbers suggested.
 
 ## Recommendation
 
-* Productize the **capped hybrid (V4 structure)**, today gated at IPT = 1 (tile ≤ 256 at 256
-  threads: latency −17%, throughput +30%, 32 vs 46 regs — a three-way win), with the gate
-  expected to widen to IPT ≤ 4 once the warp phase is real. Larger IPT keeps the existing merge
-  rounds.
-* Before any PR: implement the bootstrap as a **stable mode on cub's `WarpBitonicSort`**
-  (`STABLE` template parameter; equivalently the user-side (key, rank) wrapper — identical data
-  movement and comparator-call count for arbitrary comparators; native additionally enables a
-  packed single-compare fast path for radix-twiddleable keys and fixes the striped-rank-order
-  footgun), re-measure the V4 crossover with it, and reconcile the static-search mirror anomaly
-  on real headers on this node.
+* Productize the **capped hybrid in its V5 form, gated at IPT ≤ 2** (unconditional win on
+  latency, throughput, and registers), with IPT 4 available as a latency-leaning policy option
+  and IPT ≥ 8 unchanged. Components: `WarpBitonicSort` (sub-warp branch) + a stable wrapper
+  helper (twiddle-pack for radix-twiddleable keys + builtin comparators, (key, rank) struct +
+  two-call comparator otherwise — a `STABLE` template parameter is sugar over this dispatch).
+* PR sequencing: (1) `WarpBitonicSort` stable wrapper/mode + the keys-only-on-ValueT
+  static_assert hardening, on top of the sub-warp branch; (2) hybrid `BlockMergeSort` policy
+  using it; (3) the `MERGE_SORT_SEARCH_STATIC` switch stands separately on its real-header
+  numbers (the mirror anomaly at IPT ≥ 2 remains logged; decisions there rest on
+  `WMS_STATIC_SWITCH_RESULTS.md`).
+* Non-float KeyT coverage (twiddle for ints/doubles, struct fallback for custom types) and
+  partial-tile handling (the oob-flag comparator design note below) are the two open items for
+  the productization pass.
 * Design note carried from the analysis (untested): partial tiles in the hybrid can be handled
   without a sentinel by a static out-of-bounds flag that dominates the comparator
   (`(is_oob, key, rank)` lexicographic; comp is never invoked on out-of-range data) — cleaner
