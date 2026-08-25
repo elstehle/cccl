@@ -732,7 +732,7 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
     // Determine which one-worker-per-segment policy covers the segment-size range and k. Resolve from the handed
     // resolved-CC `PolicyGetter` (not `PolicySelector`) so the host picks the same baseline policy the device kernel
     // instantiates for the resolved CC -- they would otherwise diverge once baseline tuning becomes CC-dependent.
-    constexpr auto policy = find_smallest_covering_policy_for_getter<
+    constexpr auto policy = resolve_worker_policy_for_getter<
       PolicyGetter,
       SegmentSizeParameterT,
       KeyInputItItT,
