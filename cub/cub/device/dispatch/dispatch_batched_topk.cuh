@@ -148,7 +148,11 @@ struct policy_selector_from_types
   // the matching CC. That also removes the invariant below, since coverage and the returned baseline would then derive
   // from the same cc.
 
-  // note: the baseline policy passed to baseline_can_cover_v must be the same as returned from operator(cc) below
+  // note: the baseline policy passed to baseline_can_cover_v must agree with the one returned from operator(cc) below
+  // in its `worker_per_segment_policies`. Its `multi_worker_per_segment_policy` intentionally differs: that sub-policy
+  // is key-size and CC dependent (see `make_multi_worker_policy`) while this member is CC-independent. That is sound
+  // because coverage instantiates only the *worker* agent, whose `TempStorage` does not depend on the multi-worker
+  // sub-policy, so no multi-worker tuning can shift the coverage result.
   static constexpr baseline_topk_policy baseline_policy = make_baseline_policy();
 
   struct policy_getter_17 // TODO(bgruber): remove in C++20 and pass policy by value
@@ -194,7 +198,9 @@ struct policy_selector_from_types
       const bool beneficial = StaticMaxSegSize >= cluster_beneficial_min_segment_size;
       backend               = (cluster_capable(cc) && beneficial) ? topk_algorithm::cluster : topk_algorithm::baseline;
     }
-    return topk_policy{backend, baseline_policy, make_cluster_policy()};
+    // Resolve the baseline sub-policy for this CC, so the multi-CTA-per-segment tuning the device kernels instantiate
+    // matches the one the host dispatch sizes its launches and per-segment tile offsets from.
+    return topk_policy{backend, make_baseline_policy(int{sizeof(KeyT)}, cc), make_cluster_policy()};
   }
 };
 

@@ -16,12 +16,16 @@
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_scan.cuh>
 #include <cub/block/block_store.cuh>
+#include <cub/detail/topk/tile_data_source.cuh>
+#include <cub/device/dispatch/tuning/tuning_topk.cuh>
 #include <cub/util_device.cuh>
 
 #include <cuda/__cmath/pow2.h>
 #include <cuda/__device/compute_capability.h>
 #include <cuda/__execution/determinism.h>
 #include <cuda/__execution/tie_break.h>
+#include <cuda/std/__algorithm/clamp.h>
+#include <cuda/std/__algorithm/max.h>
 #include <cuda/std/__host_stdlib/ostream>
 #include <cuda/std/array>
 #include <cuda/std/cstdint>
@@ -29,6 +33,22 @@
 CUB_NAMESPACE_BEGIN
 namespace detail::batched_topk
 {
+//! Whether the multi-CTA-per-segment path's candidate buffer stores value indices (gathered lazily from the input
+//! iterator at write time) or full value items. Indexed shrinks the temporary-storage footprint whenever values are
+//! wider than the internal offset type; materialized avoids the gather.
+enum class value_materialization_mode
+{
+  indexed, //!< candidate buffer stores `OffsetT` indices
+  materialized //!< candidate buffer stores full `value_t` items
+};
+
+#if _CCCL_HOSTED()
+[[nodiscard]] inline ::std::ostream& operator<<(::std::ostream& os, value_materialization_mode mode)
+{
+  return os << (mode == value_materialization_mode::indexed ? "indexed" : "materialized");
+}
+#endif // _CCCL_HOSTED()
+
 //! Sub-policy for the compaction epilogue shared by the baseline @ref DeviceBatchedTopK workers: it scans the radix
 //! histogram and writes out the selected keys.
 struct epilogue_policy
@@ -93,15 +113,56 @@ struct worker_policy
 };
 
 //! Sub-policy for the baseline backend's multiple-blocks-per-segment worker path, used for segments too large for a
-//! single worker block.
+//! single worker block. Drives the multi-CTA-per-segment histogram / filter / last-filter kernels.
 struct multi_worker_policy
 {
   int threads_per_block; //!< Number of threads in a CUDA block.
   int items_per_thread; //!< Keys each thread loads/processes per tile.
+  int bits_per_pass; //!< Radix digit width per pass; each pass' histogram spans `1 << bits_per_pass` buckets.
+
+  //! Algorithm used to load each tile of keys.
+  detail::topk::tile_load_kind keys_tile_load_kind;
+
+  //! Scan algorithm used to prefix-sum the histogram bins when finding the k-th bucket.
+  BlockScanAlgorithm scan_algorithm;
+
+  //! Whether the per-segment candidate buffer holds value indices or materialized values.
+  value_materialization_mode value_materialization;
+
+  bool lazy_value_load; //!< When `true`, the partitioning loop skips loading the full tile of values up front.
+
+  bool inlined_classify; //!< When `true`, the per-pass classification is computed at the scatter use-site rather than
+                         //!< materialized into a `classes[]` array up front.
+
+  int tiles_per_chunk; //!< Number of consecutive tiles a single CTA processes before grid-striding to the next chunk
+                       //!< (`gridDim.x * tiles_per_chunk` apart). Amortizes per-segment setup across same-segment
+                       //!< tiles: the histogram / filter kernels initialize and merge the per-segment shared-memory
+                       //!< histogram once per chunk (re-initializing at segment boundaries), and last_filter amortizes
+                       //!< the per-segment state resolution (binary search plus counter / iterator dereferences). Set
+                       //!< to `1` for one tile per grid stride.
+
+  bool full_tiles_only_histogram; //!< Splits the partial-tile responsibility off the histogram kernel. When `false` the
+                                  //!< histogram kernel walks all tiles (full plus each segment's trailing partial) and
+                                  //!< the finalize-histogram kernel does only the prefix-sum plus bucket-finder
+                                  //!< epilogue. When `true` the histogram kernel processes only full tiles and each
+                                  //!< segment's trailing partial is loaded and binned by the finalize-histogram kernel
+                                  //!< (one CTA per segment) right before that epilogue, keeping the histogram kernel's
+                                  //!< inner loop a pure full-tile load.
+
+  bool full_tiles_only_filter; //!< Same split as @p full_tiles_only_histogram, for the filter kernels. When `true` the
+                               //!< filter agent skips its partial-tile slow path and each segment's trailing partial
+                               //!< is processed by the finalize-filter kernel (one CTA per segment) before the finalize
+                               //!< prefix-sum plus bucket-finder; each filter mode handles its own partial there.
 
   _CCCL_HOST_DEVICE_API friend constexpr bool operator==(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
   {
-    return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread;
+    return lhs.threads_per_block == rhs.threads_per_block && lhs.items_per_thread == rhs.items_per_thread
+        && lhs.bits_per_pass == rhs.bits_per_pass && lhs.keys_tile_load_kind == rhs.keys_tile_load_kind
+        && lhs.scan_algorithm == rhs.scan_algorithm && lhs.value_materialization == rhs.value_materialization
+        && lhs.lazy_value_load == rhs.lazy_value_load && lhs.inlined_classify == rhs.inlined_classify
+        && lhs.tiles_per_chunk == rhs.tiles_per_chunk
+        && lhs.full_tiles_only_histogram == rhs.full_tiles_only_histogram
+        && lhs.full_tiles_only_filter == rhs.full_tiles_only_filter;
   }
 
   _CCCL_HOST_DEVICE_API friend constexpr bool operator!=(const multi_worker_policy& lhs, const multi_worker_policy& rhs)
@@ -112,11 +173,56 @@ struct multi_worker_policy
 #if _CCCL_HOSTED()
   friend ::std::ostream& operator<<(::std::ostream& os, const multi_worker_policy& p)
   {
+    // `keys_tile_load_kind` prints numerically: its streaming operator belongs with the enum in
+    // cub/detail/topk/tile_data_source.cuh, which has no host-only streaming section today.
     return os << "multi_worker_policy { .threads_per_block = " << p.threads_per_block
-              << ", .items_per_thread = " << p.items_per_thread << " }";
+              << ", .items_per_thread = " << p.items_per_thread << ", .bits_per_pass = " << p.bits_per_pass
+              << ", .keys_tile_load_kind = " << static_cast<int>(p.keys_tile_load_kind)
+              << ", .scan_algorithm = " << p.scan_algorithm
+              << ", .value_materialization = " << p.value_materialization
+              << ", .lazy_value_load = " << (p.lazy_value_load ? "true" : "false")
+              << ", .inlined_classify = " << (p.inlined_classify ? "true" : "false")
+              << ", .tiles_per_chunk = " << p.tiles_per_chunk << ", .full_tiles_only_histogram = "
+              << (p.full_tiles_only_histogram ? "true" : "false")
+              << ", .full_tiles_only_filter = " << (p.full_tiles_only_filter ? "true" : "false") << " }";
   }
 #endif // _CCCL_HOSTED()
 };
+
+// Default multi-worker sub-policy. Unlike the worker policies, this one depends on the key size and the compute
+// capability: it mirrors the single-problem `tuning_topk.cuh` computation of `items_per_thread` (target 16 B per thread
+// on Hopper+, no upper cap; clamped to `nominal_4b_items_per_thread` on older architectures) and derives
+// `bits_per_pass` from the key size. The remaining knobs are currently architecture-independent.
+[[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto
+make_multi_worker_policy(int key_size, ::cuda::compute_capability cc) -> multi_worker_policy
+{
+  constexpr int nominal_4b_items_per_thread = 4;
+  const int items_per_thread =
+    (cc >= ::cuda::compute_capability{9, 0})
+      ? ::cuda::std::max(1, nominal_4b_items_per_thread * 4 / key_size)
+      : ::cuda::std::clamp(nominal_4b_items_per_thread * 4 / key_size, 1, nominal_4b_items_per_thread);
+  return multi_worker_policy{
+    /*threads_per_block=*/512,
+    /*items_per_thread=*/items_per_thread,
+    /*bits_per_pass=*/detail::topk::calc_bits_per_pass(key_size),
+    /*keys_tile_load_kind=*/detail::topk::tile_load_kind::block_load_vectorize,
+    /*scan_algorithm=*/BLOCK_SCAN_WARP_SCANS,
+    /*value_materialization=*/value_materialization_mode::indexed,
+    /*lazy_value_load=*/true,
+    /*inlined_classify=*/true,
+    /*tiles_per_chunk=*/8,
+    /*full_tiles_only_histogram=*/true,
+    /*full_tiles_only_filter=*/true};
+}
+
+// Hard constraints a multi-worker sub-policy must satisfy, mirroring `is_valid_cluster_policy` below: a bad policy
+// (e.g. from a `tune` override) trips a static_assert with a clear message instead of dividing by zero in the
+// dispatch's tile math or spinning on a zero-length chunk loop in the agents.
+[[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto is_valid_multi_worker_policy(multi_worker_policy policy) -> bool
+{
+  return policy.threads_per_block > 0 && policy.threads_per_block % warp_threads == 0 && policy.items_per_thread > 0
+      && policy.bits_per_pass >= 1 && policy.bits_per_pass <= 16 && policy.tiles_per_chunk >= 1;
+}
 
 //! Sub-policy for the baseline (worker-per-segment) backend of @ref DeviceBatchedTopK.
 struct baseline_topk_policy
@@ -156,8 +262,17 @@ struct baseline_topk_policy
 #endif // _CCCL_HOSTED()
 };
 
-// Default baseline sub-policy. Tuning is currently CC-independent.
-[[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto make_baseline_policy() -> baseline_topk_policy
+// Default baseline sub-policy. The worker-per-segment policies are CC-independent; only the
+// `multi_worker_per_segment_policy` varies with the key size and CC (see `make_multi_worker_policy`).
+//
+// Both parameters default so the many call sites that only read the worker array -- e.g.
+// `baseline_max_covered_segment_size`, and the tests / benchmarks that build a `topk_policy` to force a backend -- keep
+// working unchanged. `baseline_can_cover_v` is one of those: it instantiates only the *worker* agent, whose
+// `TempStorage` does not depend on the multi-worker sub-policy (see the note in
+// `agent_batched_topk_worker_per_segment`), so a per-CC multi-worker policy cannot shift the backend coverage decision.
+[[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto
+make_baseline_policy(int key_size = int{sizeof(::cuda::std::uint32_t)},
+                     ::cuda::compute_capability cc = ::cuda::compute_capability{}) -> baseline_topk_policy
 {
   constexpr auto load_alg  = BLOCK_LOAD_WARP_TRANSPOSE;
   constexpr auto store_alg = BLOCK_STORE_WARP_TRANSPOSE;
@@ -172,8 +287,10 @@ struct baseline_topk_policy
       worker_policy{256, 4, load_alg, store_alg, epilogue},
       worker_policy{128, 2, load_alg, store_alg, epilogue},
     }},
-    multi_worker_policy{256, 64}};
+    make_multi_worker_policy(key_size, cc)};
 }
+
+static_assert(is_valid_multi_worker_policy(make_baseline_policy().multi_worker_per_segment_policy));
 
 // Largest maximum segment size (in keys) the baseline (worker-per-segment) backend can cover: the largest worker tile
 // (threads_per_block * items_per_thread) in `policy`. A larger statically-known maximum segment size makes the baseline
