@@ -2195,4 +2195,142 @@ CUB_TEST("DeviceBatchedTopK::MaxKeys treats zero segments as no work (determinis
 
   REQUIRE(keys_out == thrust::device_vector<int>(k, sentinel));
 }
+
+// Segments past `cluster_max_competitive_segment_size` (2^21). This range was rejected outright at the public entry
+// before the baseline backend's multi-CTA-per-segment path existed, and it routes there on *every* architecture --
+// including SM90+, where the cluster backend is available but no longer competitive at this size. Non-deterministic
+// only: the entry still caps a deterministic request at 2^21, since only the cluster backend can serve one.
+CUB_TEST("DeviceBatchedTopK::{Min,Max}Keys work with segments past the cluster backend's range",
+         "[keys][segmented][topk][device][multi-cta]",
+         CUB_SMALL)
+{
+  using key_t           = float;
+  using segment_size_t  = cuda::std::int64_t;
+  using segment_index_t = cuda::std::int64_t;
+
+  // 3 Mi > 2^21. Kept just past the boundary, and the segment count small, because the per-segment candidate buffers
+  // are sized from this bound (segment_size / 128 keys, double-buffered) for every potential queue entry.
+  constexpr segment_size_t static_max_segment_size = 3 * 1024 * 1024;
+  constexpr segment_size_t static_max_k            = 1024;
+
+  constexpr auto direction = cub::detail::topk::select::max;
+  // An exact multiple of the multi-CTA tile size, and one that leaves a trailing partial tile: the partial is handled
+  // by the finalize kernels under the default `full_tiles_only_*` tuning, so both need covering.
+  const segment_size_t segment_size =
+    GENERATE_COPY(values({static_max_segment_size, static_max_segment_size - 1237}));
+  const segment_size_t k             = GENERATE_COPY(values({segment_size_t{1}, static_max_k}));
+  constexpr segment_index_t num_segments = 2;
+
+  CAPTURE(static_max_segment_size, static_max_k, segment_size, k, num_segments, direction);
+
+  c2h::device_vector<key_t> keys_in_buffer(num_segments * segment_size, thrust::no_init);
+  c2h::device_vector<key_t> keys_out_buffer(num_segments * k, thrust::no_init);
+  c2h::gen(C2H_SEED(1), keys_in_buffer);
+
+  auto d_keys_in_ptr  = thrust::raw_pointer_cast(keys_in_buffer.data());
+  auto d_keys_out_ptr = thrust::raw_pointer_cast(keys_out_buffer.data());
+  auto d_keys_in      = cuda::make_strided_iterator(cuda::make_counting_iterator(d_keys_in_ptr), segment_size);
+  auto d_keys_out     = cuda::make_strided_iterator(cuda::make_counting_iterator(d_keys_out_ptr), k);
+
+  c2h::device_vector<key_t> expected_keys(keys_in_buffer);
+
+  const auto seg_arg =
+    cuda::args::immediate{segment_size, cuda::args::bounds<segment_size_t{1}, static_max_segment_size>()};
+  const auto k_arg  = cuda::args::immediate{k, cuda::args::bounds<segment_size_t{1}, static_max_k>()};
+  const auto ns_arg = cuda::args::immediate{num_segments};
+  batched_topk_keys<direction>(d_keys_in, d_keys_out, seg_arg, k_arg, ns_arg);
+
+  fixed_size_segmented_sort_keys(expected_keys, num_segments, segment_size, direction);
+  compact_sorted_keys_to_topk(expected_keys, segment_size, k);
+  fixed_size_segmented_sort_keys(keys_out_buffer, num_segments, k, direction);
+
+  REQUIRE(expected_keys == keys_out_buffer);
+}
+
+// The two boundary values of `num_large_segments` that the worker-per-segment epilogue's scan and the multi-CTA
+// kernels' loop bound have to handle. Both hinge on the sentinel slot the epilogue publishes
+// (`d_large_segments_tile_offsets[num_large_segments]`), which is where the multi-CTA kernels read the total tile
+// count from:
+//
+//   * 0 -> every segment is small. The epilogue scans [0, 1) inputs: the lone iteration loads zero valid items,
+//          sums to 0, and stores that single zero into the sentinel slot. The multi-CTA kernels then read
+//          total_large_tiles == 0 and retire on the grid-stride guard without touching any output.
+//   * 1 -> exactly one segment is large. The epilogue scans [0, 2) inputs, so the inclusive total lands in slot [1]
+//          and the multi-CTA kernels do exactly that segment's tile count of work.
+//
+// A static maximum of 1 Mi keeps `only_small_segments` false so the multi-CTA pipeline is compiled, while the runtime
+// shape pins the large count. 64-item small segments sit well below the smallest worker tile (128*2), so they always
+// take the worker-per-segment path.
+CUB_TEST("DeviceBatchedTopK::{Min,Max}Keys handle boundary large-segment counts",
+         "[keys][segmented][topk][device][multi-cta]",
+         CUB_SMALL)
+{
+  using key_t           = cuda::std::uint32_t;
+  using segment_size_t  = cuda::std::int64_t;
+  using segment_index_t = cuda::std::int64_t;
+
+  constexpr segment_size_t static_max_segment_size = 1024 * 1024;
+  constexpr segment_size_t static_max_k            = 32;
+  constexpr segment_size_t small_segment_size      = 64;
+  constexpr segment_index_t num_small_segments     = 8;
+
+  constexpr auto direction   = cub::detail::topk::select::max;
+  const int num_large_segments = GENERATE(0, 1);
+  const segment_size_t k       = GENERATE_COPY(values({segment_size_t{1}, static_max_k}));
+
+  c2h::host_vector<segment_size_t> h_segment_offsets;
+  h_segment_offsets.push_back(segment_size_t{0});
+  for (segment_index_t i = 0; i < num_small_segments; ++i)
+  {
+    h_segment_offsets.push_back(h_segment_offsets.back() + small_segment_size);
+  }
+  if (num_large_segments == 1)
+  {
+    h_segment_offsets.push_back(h_segment_offsets.back() + static_max_segment_size);
+  }
+  c2h::device_vector<segment_size_t> segment_offsets = h_segment_offsets;
+
+  const segment_index_t num_segments = static_cast<segment_index_t>(h_segment_offsets.size() - 1);
+  const segment_size_t num_items     = h_segment_offsets.back();
+
+  CAPTURE(num_large_segments, k, num_items, num_segments, direction);
+
+  auto segment_offsets_it = thrust::raw_pointer_cast(segment_offsets.data());
+  auto segment_size_it    = cuda::make_transform_iterator(
+    cuda::make_counting_iterator(segment_index_t{0}), segment_size_op<segment_size_t*>{segment_offsets_it});
+
+  auto compacted_output_sizes_it = cuda::make_transform_iterator(
+    cuda::make_counting_iterator(segment_index_t{0}),
+    get_output_size_op{segment_offsets.cbegin(), cuda::constant_iterator(k), num_segments});
+  c2h::device_vector<segment_size_t> compacted_offsets(num_segments + 1, thrust::no_init);
+  thrust::exclusive_scan(
+    compacted_output_sizes_it, compacted_output_sizes_it + num_segments + 1, compacted_offsets.begin());
+  const segment_size_t total_output_size = compacted_offsets.back();
+
+  c2h::device_vector<key_t> keys_in_buffer(num_items, thrust::no_init);
+  c2h::device_vector<key_t> keys_out_buffer(total_output_size, thrust::no_init);
+  c2h::gen(C2H_SEED(1), keys_in_buffer);
+
+  auto d_keys_in_ptr  = thrust::raw_pointer_cast(keys_in_buffer.data());
+  auto d_keys_out_ptr = thrust::raw_pointer_cast(keys_out_buffer.data());
+  auto d_keys_in =
+    cuda::make_permutation_iterator(cuda::make_counting_iterator(d_keys_in_ptr), segment_offsets.cbegin());
+  auto d_keys_out =
+    cuda::make_permutation_iterator(cuda::make_counting_iterator(d_keys_out_ptr), compacted_offsets.cbegin());
+
+  c2h::device_vector<key_t> expected_keys(keys_in_buffer);
+
+  const auto seg_arg =
+    cuda::args::deferred_sequence{segment_size_it, cuda::args::bounds<segment_size_t{1}, static_max_segment_size>()};
+  const auto k_arg  = cuda::args::immediate{k, cuda::args::bounds<segment_size_t{1}, static_max_k>()};
+  const auto ns_arg = cuda::args::immediate{num_segments};
+  batched_topk_keys<direction>(d_keys_in, d_keys_out, seg_arg, k_arg, ns_arg);
+
+  segmented_sort_keys(expected_keys, num_segments, segment_offsets.cbegin(), segment_offsets.cbegin() + 1, direction);
+  expected_keys = compact_to_topk_batched(expected_keys, segment_offsets, k);
+  segmented_sort_keys(
+    keys_out_buffer, num_segments, compacted_offsets.cbegin(), compacted_offsets.cbegin() + 1, direction);
+
+  REQUIRE(expected_keys == keys_out_buffer);
+}
 #endif // TEST_TYPES == 0 && TEST_LAUNCH == 0

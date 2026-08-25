@@ -46,25 +46,22 @@ inline bool batched_topk_cluster_backend_unavailable(bool needs_cluster)
 }
 
 // True when the batched top-k configuration cannot run in the current build (see
-// batched_topk_cluster_backend_unavailable). The request needs the cluster backend if it is deterministic / has a
-// concrete tie-break, or if `static_max_segment_size` exceeds the baseline backend's coverage. Deriving the size
-// decision here (rather than a precomputed `oversize` bool) keeps the threshold in one place. Pass the same maximum
-// segment size the test hands to the dispatch: its `cuda::args::bounds<...>` upper bound (or, for an un-annotated
-// narrow type, that type's maximum; a type whose maximum exceeds 2^21 no longer compiles without a bound). Note that
-// `oversize` uses only the tile-size bound `baseline_max_covered_segment_size`; the dispatch's `baseline_can_cover_v`
-// additionally checks the agent's shared-memory fit, so a borderline size the bound deems baseline-coverable could
-// still route to the cluster backend (such a case would fail rather than skip if the cluster backend is unavailable).
+// batched_topk_cluster_backend_unavailable). Only a deterministic result set / concrete tie-break requires the cluster
+// backend: that is the one guarantee the baseline backend cannot make, because its multi-CTA-per-segment path scatters
+// through atomics and fixes no ordering.
+//
+// Segment size no longer enters this decision. A size exceeding the worker-per-segment coverage used to force the
+// cluster backend; it now stays on the baseline backend, which escalates those segments to its multi-CTA-per-segment
+// path on every architecture. `static_max_segment_size` is therefore unused, and is kept only so the many call sites
+// need not change -- and as the place a reader looks for this rule.
 template <cuda::execution::determinism::__determinism_t Determinism =
             cuda::execution::determinism::__determinism_t::__not_guaranteed,
           cuda::execution::tie_break::__tie_break_t TieBreak = cuda::execution::tie_break::__tie_break_t::__unspecified>
-bool batched_topk_backend_unavailable(cuda::std::int64_t static_max_segment_size)
+bool batched_topk_backend_unavailable([[maybe_unused]] cuda::std::int64_t static_max_segment_size)
 {
   constexpr bool deterministic = Determinism != cuda::execution::determinism::__determinism_t::__not_guaranteed
                               || TieBreak != cuda::execution::tie_break::__tie_break_t::__unspecified;
-  const bool oversize =
-    static_max_segment_size
-    > cub::detail::batched_topk::baseline_max_covered_segment_size(cub::detail::batched_topk::make_baseline_policy());
-  return batched_topk_cluster_backend_unavailable(deterministic || oversize);
+  return batched_topk_cluster_backend_unavailable(deterministic);
 }
 
 // Runs the two-phase direct-API dispatch `dispatch(d_temp_storage, temp_storage_bytes)` (temp-size query, then launch)

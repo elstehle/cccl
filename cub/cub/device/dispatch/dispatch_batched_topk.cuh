@@ -1725,8 +1725,14 @@ _CCCL_HOST_API cudaError_t dispatch(
         // a hard compile error by default, deferred to a runtime cudaErrorNotSupported only under the escape hatches.
 #if !defined(CUB_DEFINE_RUNTIME_POLICIES) && !_CCCL_COMPILER(NVRTC) \
   && !defined(CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT)
+        // The condition is written against `active_policy` rather than as plain `!deterministic` so that it *depends on
+        // this lambda's* template parameter. `deterministic` derives only from `dispatch`'s parameters, which are
+        // already fixed here, so a non-dependent `static_assert(!deterministic)` is evaluated even when this branch is
+        // the discarded arm of the enclosing `if constexpr` -- firing for every deterministic request regardless of the
+        // backend actually selected. (That is only invisible on the tested paths because CUB's own top-k tests define
+        // CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT, which compiles this assert out.)
         static_assert(
-          !deterministic,
+          active_policy.backend != topk_algorithm::baseline || !deterministic,
           "cub::DeviceBatchedTopK: a tuned policy selector forced the baseline backend for a deterministic "
           "/ tie-break request it cannot serve (only the SM 9.0+ cluster backend is deterministic). Drop "
           "the override, relax the determinism / tie-break requirement, or define "

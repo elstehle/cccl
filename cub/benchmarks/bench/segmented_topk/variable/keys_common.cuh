@@ -147,14 +147,20 @@ struct topk_backend_selector
 #  elif TUNE_BLOCK_LOAD_ALGORITHM == 2
     constexpr auto load_alg = cub::BLOCK_LOAD_VECTORIZE;
 #  endif
-    const auto baseline = cub::detail::batched_topk::baseline_topk_policy{{{
-      cub::detail::batched_topk::worker_policy{TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg},
-      cub::detail::batched_topk::worker_policy{TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg},
-      cub::detail::batched_topk::worker_policy{TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg},
-      cub::detail::batched_topk::worker_policy{TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg},
-      cub::detail::batched_topk::worker_policy{TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg},
-      cub::detail::batched_topk::worker_policy{TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg},
-    }}};
+    // Start from the default policy and override only the swept worker knobs. Brace-initializing the whole
+    // `baseline_topk_policy` here would leave each `worker_policy::epilogue` and the
+    // `multi_worker_per_segment_policy` zero-initialized, which breaks any sweep whose segments do not all fit one
+    // worker CTA: the epilogue scan and the multi-CTA-per-segment kernels read those sub-policies (a zeroed
+    // `bits_per_pass` gives a one-bucket histogram, a zeroed `tiles_per_chunk` a zero-length chunk loop).
+    const auto baseline = [&] {
+      auto policy = cub::detail::batched_topk::make_baseline_policy(int{sizeof(KeyT)});
+      for (auto& worker : policy.worker_per_segment_policies)
+      {
+        worker = cub::detail::batched_topk::worker_policy{
+          TUNE_THREADS_PER_BLOCK, TUNE_ITEMS_PER_THREAD, load_alg, store_alg, worker.epilogue};
+      }
+      return policy;
+    }();
 #else
     const auto baseline = cub::detail::batched_topk::make_baseline_policy();
 #endif

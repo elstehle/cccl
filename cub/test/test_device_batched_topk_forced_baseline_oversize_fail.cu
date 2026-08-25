@@ -16,40 +16,31 @@
 
 #include <iostream>
 
-// Verifies the strict forced-baseline-oversize diagnostic in cub::DeviceBatchedTopK (the static_assert in
-// launch_baseline_arm, cub/device/dispatch/dispatch_batched_topk.cuh). The automatic selector never routes an oversize
-// segment to the baseline backend; only a trusted `tune`d override can. Here an explicitly non-deterministic request
-// (so it takes the baseline arm, not the deterministic-forced-baseline path) forces the baseline backend with the
-// default policy -- largest worker tile 16384 keys -- against a 2^20-key static maximum segment size that no baseline
-// worker policy covers. In strict (default) mode this must fail to compile rather than defer to a runtime
-// cudaErrorNotSupported; built *without* CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT to exercise that path. A
-// forced-baseline selector never resolves to `unsupported`, so the arch-unsupported static_assert does not pre-empt it.
-struct forced_baseline_oversize_selector
-{
-  [[nodiscard]] _CCCL_HOST_DEVICE constexpr auto operator()(cuda::compute_capability) const
-    -> cub::detail::batched_topk::topk_policy
-  {
-    return cub::detail::batched_topk::topk_policy{
-      cub::detail::batched_topk::topk_algorithm::baseline,
-      cub::detail::batched_topk::make_baseline_policy(),
-      cub::detail::batched_topk::make_cluster_policy()};
-  }
-};
-
+// Verifies the strict oversize-segment diagnostic for a *deterministic* request in cub::DeviceBatchedTopK (the
+// segment-size static_assert in cub/device/device_batched_topk.cuh).
+//
+// This test used to pin the opposite behaviour: that forcing the baseline backend on a segment no worker tile covers is
+// a compile error. It no longer is -- the baseline backend escalates such segments to its multi-CTA-per-segment path,
+// which is now the supported route for them. What remains a compile error is asking for a segment size past the cluster
+// backend's competitive range (2^21) *while also* requiring a deterministic result set: only the cluster backend is
+// deterministic, so no backend can serve that combination. Built without CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT to
+// exercise the strict path.
 int main()
 {
   namespace ex = cuda::execution;
 
-  int** d_keys_in    = nullptr;
-  int** d_keys_out   = nullptr;
-  auto segment_sizes = cuda::args::constant<(1 << 20)>{};
+  int** d_keys_in  = nullptr;
+  int** d_keys_out = nullptr;
+  // 2^22 exceeds the cluster backend's competitive range (2^21), which is the cap that still applies once a
+  // deterministic result set is requested.
+  auto segment_sizes = cuda::args::constant<(1 << 22)>{};
   auto k_arg         = cuda::args::constant<3>{};
   auto num_segments  = cuda::args::immediate{cuda::std::int64_t{2}};
 
   auto requirements =
-    ex::require(ex::determinism::not_guaranteed, ex::tie_break::unspecified, ex::output_ordering::unsorted);
-  auto env = cuda::std::execution::env{requirements, cuda::execution::tune(forced_baseline_oversize_selector{})};
-  // expected-error {{"cannot cover the static maximum segment size"}}
+    ex::require(ex::determinism::gpu_to_gpu, ex::tie_break::prefer_smaller_index, ex::output_ordering::unsorted);
+  auto env = cuda::std::execution::env{requirements};
+  // expected-error {{"exceeds the maximum supported segment size"}}
 
   cuda::std::size_t temp_storage_bytes = 0;
   auto error                           = cub::DeviceBatchedTopK::MaxKeys(
