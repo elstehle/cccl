@@ -498,6 +498,26 @@ inline constexpr int cluster_min_cc_major = 9;
 //! is the backend crossover threshold and is intentionally part of the selector -- not a tunable policy field -- so
 //! that tuning the cluster policy (e.g. its single-CTA threshold) does not silently shift which backend is chosen.
 inline constexpr ::cuda::std::int64_t cluster_beneficial_min_segment_size = 8 * 1024;
+//! Largest statically-known maximum segment size the cluster backend is still competitive at. Beyond this the cluster
+//! backend streams the overflow from global memory and loses to the baseline backend's multi-CTA-per-segment path,
+//! which grid-strides over a flat tile space and so scales with the segment size instead. Together with
+//! @ref cluster_beneficial_min_segment_size this bounds the cluster backend's competitive band from both sides; both
+//! are selector constants rather than tunable policy fields, for the same reason.
+inline constexpr ::cuda::std::int64_t cluster_max_competitive_segment_size = ::cuda::std::int64_t{1} << 21;
+static_assert(cluster_beneficial_min_segment_size <= cluster_max_competitive_segment_size,
+              "the cluster backend's competitive band must be non-empty");
+
+//! Largest statically-known maximum segment size the baseline backend's multi-CTA-per-segment path accepts. Unlike the
+//! two crossover constants above this is a *representability* limit, not a performance one: the per-segment tile-offset
+//! table and the internal item offsets are sized from this bound.
+//!
+//! Note this bounds a *single* segment. The aggregate tile count across all segments must also fit the tile-offset type,
+//! which is a runtime quantity (it scales with the segment count) and so cannot be checked here; the dispatch's
+//! temporary-storage sizing rejects the batches that would overflow in practice, since the per-segment candidate
+//! buffers grow with this same bound.
+inline constexpr ::cuda::std::int64_t multi_cta_max_supported_segment_size = ::cuda::std::int64_t{1} << 32;
+static_assert(cluster_max_competitive_segment_size <= multi_cta_max_supported_segment_size,
+              "the multi-CTA path must cover everything past the cluster backend's competitive band");
 
 [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr bool cluster_capable([[maybe_unused]] ::cuda::compute_capability cc)
 {

@@ -38,8 +38,10 @@
 #include <cuda/__cmath/round_up.h>
 #include <cuda/__execution/determinism.h>
 #include <cuda/__execution/tie_break.h>
+#include <cuda/__iterator/constant_iterator.h>
 #include <cuda/__iterator/counting_iterator.h>
 #include <cuda/__iterator/transform_iterator.h>
+#include <cuda/__iterator/transform_output_iterator.h>
 #include <cuda/__numeric/narrow.h>
 #include <cuda/argument>
 #include <cuda/std/__algorithm/clamp.h>
@@ -97,6 +99,14 @@ template <typename SelectDirectionT>
   return params::static_discrete_param<detail::topk::select, detail::topk::select::min>{};
 }
 
+// Compile-time predicate: does this (non-negative) integer value fit in `uint32_t`? The cast through
+// `unsigned long long` avoids narrow-type truncation when comparing arbitrary integral types; negatives (not expected
+// for size/count bounds) wrap large and report `false`.
+template <auto Value>
+inline constexpr bool fits_in_uint32_v =
+  static_cast<unsigned long long>(Value)
+  <= static_cast<unsigned long long>(::cuda::std::numeric_limits<::cuda::std::uint32_t>::max());
+
 // -----------------------------------------------------------------------------
 // Helper: turn a segment ID into the number of large-segment-agent tiles needed
 // to cover that segment. Wrapped in a transform_iterator, this produces the
@@ -108,10 +118,18 @@ struct segment_size_to_tile_count_op
 {
   SegmentSizeParameterT segment_sizes;
   int large_segment_agent_tile_size;
+  // The all-large scan runs over `num_segments + 1` inputs so its trailing slot holds the inclusive total
+  // (`total_large_tiles`), matching the sentinel the mixed path's worker epilogue publishes. This bound makes the op
+  // return 0 at that sentinel index so it never reads past the end of `segment_sizes`.
+  ::cuda::std::int64_t num_segments;
 
   template <typename SegmentIndexT>
   _CCCL_HOST_DEVICE _CCCL_FORCEINLINE constexpr TotalNumItemsValueType operator()(SegmentIndexT segment_id) const
   {
+    if (static_cast<::cuda::std::int64_t>(segment_id) >= num_segments)
+    {
+      return TotalNumItemsValueType{0};
+    }
     return static_cast<TotalNumItemsValueType>(::cuda::ceil_div(
       params::__get_and_clamp_param_to_nonnegative(segment_sizes, segment_id), large_segment_agent_tile_size));
   }
@@ -184,11 +202,25 @@ struct policy_selector_from_types
                                 || (TieBreak != ::cuda::execution::tie_break::__tie_break_t::__unspecified);
 
     topk_algorithm backend = topk_algorithm::unsupported;
-    if (deterministic || !baseline_can_cover)
+    if (deterministic)
     {
-      // A deterministic result set / concrete tie-break preference, or a segment too large for the single-block
-      // baseline, is served only by the cluster backend (SM 9.0+); otherwise the request cannot run here.
+      // A deterministic result set / concrete tie-break preference is served only by the cluster backend (SM 9.0+).
+      // The baseline backend's multi-CTA path scatters through atomics and guarantees no ordering, so it cannot stand
+      // in here even for segments it could otherwise size.
       backend = cluster_capable(cc) ? topk_algorithm::cluster : topk_algorithm::unsupported;
+    }
+    else if (StaticMaxSegSize > cluster_max_competitive_segment_size)
+    {
+      // Past the cluster backend's competitive band the baseline backend's multi-CTA-per-segment path is the only
+      // strategy that keeps scaling, on every architecture. Nothing is regressed by routing here: this range was
+      // rejected outright at the public entry before the multi-CTA path existed.
+      backend = topk_algorithm::baseline;
+    }
+    else if (!baseline_can_cover)
+    {
+      // Segments too large for a single worker CTA. Prefer the cluster backend where it exists and is competitive;
+      // otherwise stay on the baseline backend, which escalates the oversize segments to its multi-CTA path.
+      backend = cluster_capable(cc) ? topk_algorithm::cluster : topk_algorithm::baseline;
     }
     else
     {
@@ -657,6 +689,438 @@ _CCCL_HOST_API cudaError_t launch_cluster_arm(
   return CubDebug(detail::DebugSyncStream(stream));
 }
 
+// Helper: per-segment indexed-mode output-iterator builder. In `value_materialization_mode::indexed` the candidate
+// buffer stores `OffsetT` indices, so each segment's value-output iterator is wrapped in a
+// `cuda::transform_output_iterator` with `topk_index_gather_op{user_in[i]}` to turn "write index" into
+// "values_out[pos] = values_in[idx]". `operator()(segment_id)` yields that per-segment iterator; the captured
+// iterators must be trivially copyable since they travel by value into the kernel argument area.
+template <typename ValueInputItItT, typename ValueOutputItItT>
+struct per_segment_indexed_out_op
+{
+  ValueInputItItT d_value_segments_it;
+  ValueOutputItItT d_value_segments_out_it;
+
+  template <typename SegmentIndexT>
+  _CCCL_HOST_DEVICE _CCCL_FORCEINLINE auto operator()(SegmentIndexT segment_id) const
+  {
+    using values_in_it_t = it_value_t<ValueInputItItT>;
+    return ::cuda::make_transform_output_iterator(d_value_segments_out_it[segment_id],
+                                                  topk_index_gather_op<values_in_it_t>{d_value_segments_it[segment_id]});
+  }
+};
+
+// Multi-CTA-per-segment arm (host-only). Runs after the producer has filled the large-segment queue: either the worker
+// kernel's enqueue plus its epilogue scan (mixed), or the transform-scan over all segment sizes (all-large). At this
+// point `d_large_segments_tile_offsets` holds an exclusive prefix sum of per-segment tile counts with
+// `[num_large_segments]` holding the inclusive total, which the kernels read in lieu of a device-side counter.
+//
+// Runs the same three-stage radix top-k as the single-problem dispatch, but with per-segment arrays throughout:
+// pass 0 is histogram + finalize, passes 1..n-1 are filter + finalize, then a final last-filter pass. Every launch,
+// memset and occupancy query goes through `launcher_factory`.
+template <typename PolicySelector,
+          typename LargeSegmentTileOffsetT,
+          typename OffsetT,
+          typename OutOffsetT,
+          typename EffectiveValueT,
+          typename SegCounterT,
+          typename CountersT,
+          bool Indexed,
+          bool KeysOnly,
+          bool AnySmallSegments,
+          int BitsPerPass,
+          int ThreadsPerBlock,
+          int ItemsPerThread,
+          typename KeyInputItItT,
+          typename KeyOutputItItT,
+          typename ValueInputItItT,
+          typename ValueOutputItItT,
+          typename SegmentSizeParameterT,
+          typename KParameterT,
+          typename SelectDirectionParameterT,
+          typename NumSegmentsParameterT,
+          typename NumSegmentsValueT,
+          typename KeyT,
+          typename KernelLauncherFactory>
+_CCCL_HOST_API cudaError_t launch_multi_cta_passes(
+  KeyInputItItT d_key_segments_it,
+  KeyOutputItItT d_key_segments_out_it,
+  ValueInputItItT d_value_segments_it,
+  ValueOutputItItT d_value_segments_out_it,
+  SegmentSizeParameterT segment_sizes,
+  KParameterT k,
+  SelectDirectionParameterT /*select_directions*/,
+  NumSegmentsParameterT num_segments,
+  LargeSegmentTileOffsetT* d_large_segments_tile_offsets,
+  CountersT* d_counters,
+  NumSegmentsValueT* d_large_segments_ids,
+  SegCounterT* d_seg_counters,
+  OffsetT* d_seg_histograms,
+  KeyT* d_seg_key_buf_a,
+  KeyT* d_seg_key_buf_b,
+  EffectiveValueT* d_seg_val_buf_a,
+  EffectiveValueT* d_seg_val_buf_b,
+  OffsetT candidate_buffer_length,
+  OffsetT candidate_buffer_coefficient,
+  cudaStream_t stream,
+  KernelLauncherFactory launcher_factory)
+{
+  using num_segments_val_t = typename ::cuda::args::__traits<NumSegmentsParameterT>::element_type;
+
+  // The selection direction is a compile-time constant on this code path: the public entry only accepts
+  // `cuda::args::constant<Dir>`, which `wrap_select_direction` maps to a value-less `static_discrete_param` whose
+  // `get_param` is `constexpr`. So the runtime direction lowering the standalone prototype needed is unnecessary here.
+  static constexpr detail::topk::select select_dir =
+    ::cuda::std::remove_cv_t<SelectDirectionParameterT>{}.get_param(0);
+
+  const num_segments_val_t num_segments_val = params::get_param(num_segments, 0);
+
+  // Zero the per-segment counter array (establishes `load_from_candidates_buffer == false` at pass 0 for every
+  // segment, mirroring the single-problem dispatch's counter-blob memset).
+  if (const auto error = CubDebug(launcher_factory.MemsetAsync(
+        d_seg_counters, 0, static_cast<size_t>(num_segments_val) * sizeof(SegCounterT), stream)))
+  {
+    return error;
+  }
+  // Zero the per-segment global histograms: the agents' `init_histogram` only clears the shared-memory histogram, so
+  // the global slabs must start at zero before the first `atomicAdd` from the per-block merge.
+  constexpr int num_buckets = 1 << BitsPerPass;
+  if (const auto error = CubDebug(launcher_factory.MemsetAsync(
+        d_seg_histograms,
+        0,
+        static_cast<size_t>(num_segments_val) * static_cast<size_t>(num_buckets) * sizeof(OffsetT),
+        stream)))
+  {
+    return error;
+  }
+
+  // Effective outer value iterators. In `materialized` mode (and keys-only) they alias the user's iterators. In
+  // `indexed` mode the input becomes a `counting_iterator<OffsetT>` so agents stamp indices into the candidate buffer,
+  // and the output wraps each segment's iterator so "write index" becomes "user_out[i][pos] = user_in[i][idx]".
+  auto effective_d_value_segments_it = [&]() {
+    if constexpr (Indexed)
+    {
+      return ::cuda::constant_iterator{::cuda::counting_iterator<OffsetT>{OffsetT{0}}};
+    }
+    else
+    {
+      return d_value_segments_it;
+    }
+  }();
+  auto effective_d_value_segments_out_it = [&]() {
+    if constexpr (Indexed)
+    {
+      using indexed_out_op_t = per_segment_indexed_out_op<ValueInputItItT, ValueOutputItItT>;
+      return ::cuda::transform_iterator{::cuda::counting_iterator<num_segments_val_t>{num_segments_val_t{0}},
+                                        indexed_out_op_t{d_value_segments_it, d_value_segments_out_it}};
+    }
+    else
+    {
+      return d_value_segments_out_it;
+    }
+  }();
+  using effective_value_input_it_it_t  = decltype(effective_d_value_segments_it);
+  using effective_value_output_it_it_t = decltype(effective_d_value_segments_out_it);
+
+  // Segment-id provider: on the mixed path `queue_idx` indexes `d_large_segments_ids` to recover the original
+  // `segment_id`; on the all-large path every segment is large, so `queue_idx == segment_id` and a counting iterator
+  // serves as the identity.
+  auto segment_id_provider = [&]() {
+    if constexpr (AnySmallSegments)
+    {
+      return d_large_segments_ids;
+    }
+    else
+    {
+      return ::cuda::counting_iterator<num_segments_val_t>{num_segments_val_t{0}};
+    }
+  }();
+  using segment_id_provider_t = decltype(segment_id_provider);
+
+  // Iterator producing `num_large_segments` when dereferenced: a raw pointer into
+  // `batched_topk_counters::large_segments_count` on the mixed path (filled by the worker kernel's atomicAdd enqueue),
+  // or a constant iterator over the host-known segment count on the all-large path. The kernels dereference it once at
+  // entry and are agnostic to which produced it.
+  auto large_segments_count_it = [&]() {
+    if constexpr (AnySmallSegments)
+    {
+      return &(d_counters->large_segments_count);
+    }
+    else
+    {
+      return ::cuda::constant_iterator{static_cast<typename CountersT::segment_count_t>(num_segments_val)};
+    }
+  }();
+  using large_segments_count_it_t = decltype(large_segments_count_it);
+
+  // Radix-pass scheduling. `total_bits` / `num_passes` derive from `KeyT` and `BitsPerPass`, uniform across segments.
+  const detail::identity_decomposer_t decomposer{};
+  const int total_bits = detail::radix::traits_t<KeyT>::default_end_bit(decomposer);
+  const int num_passes = calc_num_passes<BitsPerPass>(total_bits);
+
+  // Host-side cap on the multi-CTA grid sizes. The exact total is read on-device from the offset table's trailing slot
+  // and drives each kernel's grid-stride loop, so this only avoids over-launching. Worst case is every segment at the
+  // static maximum size (plus one partial tile each), clamped to the grid-dimension type.
+  static constexpr int multi_cta_tile_size = ThreadsPerBlock * ItemsPerThread;
+  const auto tiles_per_segment_upper_bound =
+    ::cuda::ceil_div(static_cast<::cuda::std::int64_t>(::cuda::args::__traits<SegmentSizeParameterT>::highest),
+                     static_cast<::cuda::std::int64_t>(multi_cta_tile_size));
+  const auto total_large_tiles_upper_bound = static_cast<unsigned int>(
+    (::cuda::std::min) (static_cast<::cuda::std::int64_t>(::cuda::std::numeric_limits<int>::max()),
+                        static_cast<::cuda::std::int64_t>(num_segments_val) * tiles_per_segment_upper_bound
+                          + static_cast<::cuda::std::int64_t>(num_segments_val)));
+
+  int num_sms = 0;
+  if (const auto error = CubDebug(launcher_factory.MultiProcessorCount(num_sms)))
+  {
+    return error;
+  }
+
+  using extract_bin_op_t_ = extract_bin_op_t<KeyT, select_dir, BitsPerPass, detail::identity_decomposer_t>;
+
+  auto histogram_kernel_ptr = device_batched_topk_histogram_kernel<
+    PolicySelector,
+    KeyInputItItT,
+    SegmentSizeParameterT,
+    segment_id_provider_t,
+    LargeSegmentTileOffsetT,
+    large_segments_count_it_t,
+    extract_bin_op_t_,
+    OffsetT,
+    OutOffsetT,
+    queue_segment_count_t>;
+  auto finalize_histogram_kernel_ptr = device_batched_topk_finalize_histogram_kernel<
+    PolicySelector,
+    KeyInputItItT,
+    SegmentSizeParameterT,
+    KParameterT,
+    NumSegmentsParameterT,
+    segment_id_provider_t,
+    large_segments_count_it_t,
+    extract_bin_op_t_,
+    OffsetT,
+    OutOffsetT,
+    KeyT>;
+  auto filter_kernel_ptr = device_batched_topk_filter_kernel<
+    PolicySelector,
+    select_dir,
+    KeyInputItItT,
+    KeyOutputItItT,
+    effective_value_input_it_it_t,
+    effective_value_output_it_it_t,
+    SegmentSizeParameterT,
+    NumSegmentsParameterT,
+    segment_id_provider_t,
+    LargeSegmentTileOffsetT,
+    large_segments_count_it_t,
+    detail::identity_decomposer_t,
+    OffsetT,
+    OutOffsetT>;
+  auto finalize_filter_kernel_ptr = device_batched_topk_finalize_filter_kernel<
+    PolicySelector,
+    select_dir,
+    KeyInputItItT,
+    KeyOutputItItT,
+    effective_value_input_it_it_t,
+    effective_value_output_it_it_t,
+    SegmentSizeParameterT,
+    NumSegmentsParameterT,
+    segment_id_provider_t,
+    LargeSegmentTileOffsetT,
+    large_segments_count_it_t,
+    detail::identity_decomposer_t,
+    OffsetT,
+    OutOffsetT,
+    KeyT>;
+  auto last_filter_kernel_ptr = device_batched_topk_last_filter_kernel<
+    PolicySelector,
+    select_dir,
+    KeyInputItItT,
+    KeyOutputItItT,
+    effective_value_input_it_it_t,
+    effective_value_output_it_it_t,
+    SegmentSizeParameterT,
+    KParameterT,
+    NumSegmentsParameterT,
+    segment_id_provider_t,
+    LargeSegmentTileOffsetT,
+    large_segments_count_it_t,
+    detail::identity_decomposer_t,
+    OffsetT,
+    OutOffsetT>;
+
+  // Max-occupancy grid per kernel, capped: the tile-space kernels at the total-tile bound, the one-CTA-per-segment
+  // finalize kernels at the segment count.
+  const auto grid_for = [&](auto kernel_ptr, unsigned int cap) -> ::cuda::std::expected<unsigned int, cudaError_t> {
+    int blocks_per_sm = 0;
+    if (const auto error = CubDebug(launcher_factory.MaxSmOccupancy(blocks_per_sm, kernel_ptr, ThreadsPerBlock)))
+    {
+      return ::cuda::std::unexpected<cudaError_t>(error);
+    }
+    return (::cuda::std::min) (static_cast<unsigned int>(blocks_per_sm * num_sms), cap);
+  };
+  const auto seg_cap = static_cast<unsigned int>(num_segments_val);
+
+  const auto histogram_grid = grid_for(histogram_kernel_ptr, total_large_tiles_upper_bound);
+  if (!histogram_grid)
+  {
+    return histogram_grid.error();
+  }
+  const auto finalize_histogram_grid = grid_for(finalize_histogram_kernel_ptr, seg_cap);
+  if (!finalize_histogram_grid)
+  {
+    return finalize_histogram_grid.error();
+  }
+  const auto filter_grid = grid_for(filter_kernel_ptr, total_large_tiles_upper_bound);
+  if (!filter_grid)
+  {
+    return filter_grid.error();
+  }
+  const auto finalize_filter_grid = grid_for(finalize_filter_kernel_ptr, seg_cap);
+  if (!finalize_filter_grid)
+  {
+    return finalize_filter_grid.error();
+  }
+  const auto last_filter_grid = grid_for(last_filter_kernel_ptr, total_large_tiles_upper_bound);
+  if (!last_filter_grid)
+  {
+    return last_filter_grid.error();
+  }
+
+  // Pass 0: histogram over the per-segment original inputs, then the per-segment epilogue (prefix-sum, bucket-finder,
+  // counter update, optional histogram reset).
+  {
+    const bool reset_histogram = num_passes != 1;
+    const extract_bin_op_t_ extract_bin_op{0, total_bits, decomposer};
+    if (const auto error =
+          CubDebug(launcher_factory(*histogram_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+                     .doit(histogram_kernel_ptr,
+                           d_key_segments_it,
+                           segment_sizes,
+                           segment_id_provider,
+                           static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
+                           d_seg_histograms,
+                           large_segments_count_it,
+                           extract_bin_op)))
+    {
+      return error;
+    }
+    if (const auto error =
+          CubDebug(launcher_factory(*finalize_histogram_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+                     .doit(finalize_histogram_kernel_ptr,
+                           d_key_segments_it,
+                           segment_sizes,
+                           k,
+                           segment_id_provider,
+                           d_seg_counters,
+                           d_seg_histograms,
+                           large_segments_count_it,
+                           extract_bin_op,
+                           0,
+                           reset_histogram)))
+    {
+      return error;
+    }
+  }
+
+  // Passes 1..num_passes-1: filter (+ histogram, or early-stop) with a per-pass double-buffer flip. The value-buffer
+  // `DoubleBuffer` is templated on `EffectiveValueT` (the materialization mode), not the user's value type.
+  DoubleBuffer<KeyT> key_bufs(d_seg_key_buf_b, d_seg_key_buf_a);
+  DoubleBuffer<EffectiveValueT> val_bufs;
+  if constexpr (!KeysOnly)
+  {
+    val_bufs = DoubleBuffer<EffectiveValueT>(d_seg_val_buf_b, d_seg_val_buf_a);
+  }
+
+  for (int pass = 1; pass < num_passes; ++pass)
+  {
+    const bool reset_histogram = pass != num_passes - 1;
+    if (const auto error =
+          CubDebug(launcher_factory(*filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+                     .doit(filter_kernel_ptr,
+                           d_key_segments_it,
+                           d_key_segments_out_it,
+                           effective_d_value_segments_it,
+                           effective_d_value_segments_out_it,
+                           segment_sizes,
+                           segment_id_provider,
+                           static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
+                           d_seg_counters,
+                           d_seg_histograms,
+                           key_bufs.Current(),
+                           val_bufs.Current(),
+                           key_bufs.Alternate(),
+                           val_bufs.Alternate(),
+                           candidate_buffer_length,
+                           candidate_buffer_coefficient,
+                           large_segments_count_it,
+                           pass,
+                           total_bits,
+                           decomposer)))
+    {
+      return error;
+    }
+    // Per-segment epilogue for this filter pass. Takes the full filter-agent argument list so it can instantiate the
+    // agent and run the trailing-partial-tile work; when `full_tiles_only_filter == false` that body is
+    // `if constexpr`-eliminated and the extra arguments are simply unused.
+    if (const auto error =
+          CubDebug(launcher_factory(*finalize_filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+                     .doit(finalize_filter_kernel_ptr,
+                           d_key_segments_it,
+                           d_key_segments_out_it,
+                           effective_d_value_segments_it,
+                           effective_d_value_segments_out_it,
+                           segment_sizes,
+                           segment_id_provider,
+                           static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
+                           d_seg_counters,
+                           d_seg_histograms,
+                           key_bufs.Current(),
+                           val_bufs.Current(),
+                           key_bufs.Alternate(),
+                           val_bufs.Alternate(),
+                           large_segments_count_it,
+                           candidate_buffer_length,
+                           candidate_buffer_coefficient,
+                           pass,
+                           total_bits,
+                           decomposer,
+                           reset_histogram)))
+    {
+      return error;
+    }
+    key_bufs.selector ^= 1;
+    if constexpr (!KeysOnly)
+    {
+      val_bufs.selector ^= 1;
+    }
+  }
+
+  // Final pass: emit the selected keys (and values) for every segment.
+  if (const auto error =
+        CubDebug(launcher_factory(*last_filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+                   .doit(last_filter_kernel_ptr,
+                         d_key_segments_it,
+                         d_key_segments_out_it,
+                         effective_d_value_segments_it,
+                         effective_d_value_segments_out_it,
+                         segment_sizes,
+                         k,
+                         segment_id_provider,
+                         static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
+                         d_seg_counters,
+                         key_bufs.Current(),
+                         val_bufs.Current(),
+                         candidate_buffer_length,
+                         large_segments_count_it,
+                         num_passes,
+                         total_bits,
+                         decomposer)))
+  {
+    return error;
+  }
+  return cudaSuccess;
+}
+
 // Baseline host-launch arm of the dispatch. Launches the single kernel symbol
 // (`device_batched_topk_kernel`, packing the large-segment bookkeeping into `baseline_kernel_args` and passing an empty
 // `cluster_kernel_args`). `select_directions` arrives already wrapped and the baseline tuning is taken from the
@@ -690,42 +1154,11 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
   cudaStream_t stream,
   KernelLauncherFactory launcher_factory)
 {
-  // Whether some one-worker-per-segment policy covers the static max segment size within the shared-memory limit.
-  // Computed from this call's concrete agent types (a tuning override exposes no `baseline_can_cover` member). The
-  // automatic selector never routes here when this is false; only a trusted `tune`d override forces the baseline
-  // backend on an oversize segment. Strict mode rejects that at compile time (the static_assert below, mirroring the
-  // arch-unsupported one in `dispatch`); deferred mode keeps the two-phase runtime cudaErrorNotSupported path.
-  constexpr bool baseline_can_cover = baseline_can_cover_v<
-    PolicyGetter,
-    SegmentSizeParameterT,
-    KeyInputItItT,
-    KeyOutputItItT,
-    ValueInputItItT,
-    ValueOutputItItT,
-    SegmentSizeParameterT,
-    KParameterT,
-    SelectDirectionParameterT,
-    NumSegmentsParameterT,
-    LargeSegmentTileOffsetT>;
-#if !defined(CUB_DEFINE_RUNTIME_POLICIES) && !_CCCL_COMPILER(NVRTC) \
-  && !defined(CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT)
-  static_assert(
-    baseline_can_cover,
-    "cub::DeviceBatchedTopK: the forced baseline backend cannot cover the static maximum segment size within the "
-    "shared-memory limit. Force the cluster backend, lower the segment-size bound, or define "
-    "CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT to defer the diagnosis to runtime (cudaErrorNotSupported).");
-#endif // !defined(CUB_DEFINE_RUNTIME_POLICIES) && !_CCCL_COMPILER(NVRTC)
-       // && !defined(CUB_DISABLE_TOPK_UNSUPPORTED_ARCH_ASSERT)
-  if constexpr (!baseline_can_cover)
-  {
-    if (d_temp_storage == nullptr)
-    {
-      temp_storage_bytes = 1;
-      return cudaSuccess;
-    }
-    return cudaErrorNotSupported;
-  }
-  else
+  // A segment-size bound that no single worker tile covers is a *supported* configuration on this arm: the worker
+  // enqueues those segments and `launch_multi_cta_passes` below drains the queue. So there is no coverage gate here
+  // any more. The one remaining hard requirement -- that some worker policy fit static shared memory at all -- is
+  // asserted by `resolve_worker_policy_for_getter` below, which also picks the largest fitting tile so as few segments
+  // as possible are escalated.
   {
     using large_segment_tile_offset_t = LargeSegmentTileOffsetT;
 
@@ -754,13 +1187,11 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
     static constexpr bool only_small_segments =
       ::cuda::args::__traits<SegmentSizeParameterT>::highest <= worker_per_segment_tile_size;
 
-    // Allocation layout:
-    //   only_small_segments: [0] dummy.
-    //   any_small_segments && !only_small_segments (mixed): [0] tile offsets, [1] counters struct,
-    //                                                       [2] large-segment ids.
-    //   !any_small_segments (large-only): [0] tile offsets, [1] segment-size transform-scan temp storage.
-    static constexpr int allocations_array_size     = only_small_segments ? 1 : (any_small_segments ? 3 : 2);
-    size_t allocation_sizes[allocations_array_size] = {1};
+    // Derived value-channel types. This dispatch is iterator-of-iterators, so peel the inner iterator type, then
+    // re-derive the inner value type. `keys_only` is the `NullType**` value channel.
+    using key_t                     = it_value_t<it_value_t<KeyInputItItT>>;
+    using value_t                   = it_value_t<it_value_t<ValueInputItItT>>;
+    static constexpr bool keys_only = ::cuda::std::is_same_v<value_t, cub::NullType>;
 
     using num_segments_val_t         = typename ::cuda::args::__traits<NumSegmentsParameterT>::element_type;
     using counters_t                 = batched_topk_counters<num_segments_val_t>;
@@ -769,28 +1200,121 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
       segment_size_to_tile_count_op<SegmentSizeParameterT, large_segment_tile_offset_t>;
     static constexpr auto multi_worker_per_segment_tile_size =
       multi_worker_per_segment_policy.threads_per_block * multi_worker_per_segment_policy.items_per_thread;
-    const segment_size_scan_input_op_t segment_size_scan_input_op{segment_sizes, multi_worker_per_segment_tile_size};
-    // Transform iterator over [0, num_segments) producing the tile-count for each segment.
+
+    // OffsetT: per-segment item offsets and histogram bin counts. Pin `uint32_t` when either the segment-size
+    // argument's static upper bound or its declared element type proves 32 bits suffice, else widen.
+    static constexpr bool offset_fits_u32 =
+      fits_in_uint32_v<::cuda::args::__traits<SegmentSizeParameterT>::highest>
+      || (sizeof(typename ::cuda::args::__traits<SegmentSizeParameterT>::element_type) <= 4);
+    using OffsetT = ::cuda::std::conditional_t<offset_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
+
+    // OutOffsetT: the per-segment `k` counters. Same rule with `KParameterT`; k is bounded by the segment size.
+    static constexpr bool out_offset_fits_u32 =
+      fits_in_uint32_v<::cuda::args::__traits<KParameterT>::highest>
+      || (sizeof(typename ::cuda::args::__traits<KParameterT>::element_type) <= 4);
+    using OutOffsetT = ::cuda::std::conditional_t<out_offset_fits_u32, ::cuda::std::uint32_t, unsigned long long>;
+
+    using seg_counter_t = counter<key_t, OffsetT, OutOffsetT>;
+
+    // Value-channel materialization for the multi-CTA path (mirrors the single-problem dispatch):
+    //   indexed      -- the candidate buffer stores `OffsetT` indices and the value-output iterator is wrapped
+    //                   per-segment so "write index" becomes "values_out[pos] = values_in[idx]". Shrinks the footprint
+    //                   whenever values are wider than offsets.
+    //   materialized -- the candidate buffer stores full `value_t` and the kernels use the user iterators directly.
+    // Forced to `materialized` on the keys-only path so the value-channel types keep pointing at `NullType*`.
+    static constexpr bool indexed =
+      !only_small_segments && !keys_only
+      && multi_worker_per_segment_policy.value_materialization == value_materialization_mode::indexed;
+    using effective_value_t = ::cuda::std::conditional_t<indexed, OffsetT, value_t>;
+
+    const segment_size_scan_input_op_t segment_size_scan_input_op{
+      segment_sizes,
+      multi_worker_per_segment_tile_size,
+      static_cast<::cuda::std::int64_t>(params::get_param(num_segments, 0))};
+    // Transform iterator over [0, num_segments] producing each segment's tile-count, and 0 at the sentinel index. The
+    // extra input makes the scan's output `num_segments + 1` wide, with the trailing slot holding `total_large_tiles`.
     [[maybe_unused]] const auto segment_size_scan_input_it = ::cuda::transform_iterator(
       ::cuda::counting_iterator<num_segments_val_t>{num_segments_val_t{0}}, segment_size_scan_input_op);
+
+    // ---------------------------------------------------------------------
+    // Allocation layout.
+    //
+    //   only_small_segments: [0] dummy.
+    //   mixed (any_small && !only_small): [0] tile offsets (N+1), [1] counters struct, [2] large-segment ids.
+    //   all-large (!any_small):           [0] tile offsets (N+1), [1] segment-size transform-scan temp storage.
+    //
+    // Multi-CTA per-segment slabs, appended in both `!only_small_segments` cases in this order:
+    //   [+0] per-segment counter array   (N * sizeof(seg_counter_t))
+    //   [+1] per-segment histogram slab  (N * num_buckets * sizeof(OffsetT))
+    //   [+2] candidate-key buffer A      (N * candidate_buffer_length * sizeof(key_t))
+    //   [+3] candidate-key buffer B
+    //   [+4] candidate-value buffer A    (only when !keys_only; element `effective_value_t`)
+    //   [+5] candidate-value buffer B
+    //
+    // The tile-offset table is `N + 1` entries wide: its trailing slot holds `total_large_tiles`, published either by
+    // the worker epilogue (mixed) or by the sentinel input of the transform-scan (all-large). Slabs are indexed by
+    // `queue_idx`, not `segment_id`; the agents resolve `queue_idx -> segment_id` through the segment-id provider.
+    // ---------------------------------------------------------------------
+    static constexpr int bits_per_pass                = multi_worker_per_segment_policy.bits_per_pass;
+    [[maybe_unused]] static constexpr int num_buckets = 1 << bits_per_pass;
+    static constexpr int per_seg_allocs               = keys_only ? 4 : 6;
+    static constexpr int pre_multi_cta_allocs         = only_small_segments ? 0 : (any_small_segments ? 3 : 2);
+    static constexpr int allocations_array_size = only_small_segments ? 1 : (pre_multi_cta_allocs + per_seg_allocs);
+
+    [[maybe_unused]] static constexpr int idx_seg_counters_arr   = pre_multi_cta_allocs + 0;
+    [[maybe_unused]] static constexpr int idx_seg_histograms_arr = pre_multi_cta_allocs + 1;
+    [[maybe_unused]] static constexpr int idx_seg_key_buf_a      = pre_multi_cta_allocs + 2;
+    [[maybe_unused]] static constexpr int idx_seg_key_buf_b      = pre_multi_cta_allocs + 3;
+    [[maybe_unused]] static constexpr int idx_seg_val_buf_a      = pre_multi_cta_allocs + 4;
+    [[maybe_unused]] static constexpr int idx_seg_val_buf_b      = pre_multi_cta_allocs + 5;
+
+    size_t allocation_sizes[allocations_array_size] = {1};
+
+    // Per-segment candidate-buffer length: a flat per-slab cap derived from the statically-known maximum segment size.
+    //
+    // TODO(topk): this flat cap is wasteful when the bound is loose or most segments are far smaller than it. Two
+    // independent tightenings are available: size the per-segment buffers individually, and intersect the bound with
+    // the caller's `total_num_items_guarantee` (which also bounds any single segment) -- the latter needs that argument
+    // threaded into this launch arm.
+    static constexpr ::cuda::std::int64_t coefficient_for_candidate_buffer = 128;
+    [[maybe_unused]] const OffsetT candidate_buffer_length                 = static_cast<OffsetT>(
+      (::cuda::std::max) (::cuda::std::int64_t{1},
+                          static_cast<::cuda::std::int64_t>(::cuda::args::__traits<SegmentSizeParameterT>::highest)
+                            / coefficient_for_candidate_buffer));
 
     if constexpr (!only_small_segments)
     {
       const auto num_segments_val = params::get_param(num_segments, 0);
-      // TODO(topk): the baseline large-segment (multi-CTA) path is WIP. Completing it requires: (1) guarding the
-      // `num_segments_val * sizeof(...)` byte counts below against size_t overflow (safe today only because the entry
-      // bounds num_segments_val to <= INT_MAX); (2) making the baseline tunable by populating its `epilogue` and
-      // `multi_worker_per_segment_policy` sub-policies and adding matching knobs to the segmented_topk benchmarks,
-      // which leave them zero-initialized today so baseline sweeps are not yet meaningful.
-      allocation_sizes[0] = num_segments_val * sizeof(large_segment_tile_offset_t);
+
+      // Guard the per-segment byte counts below against `size_t` overflow. `num_segments_val` is already <= INT_MAX
+      // (rejected at the entry) and each per-segment record is a small constant, but the candidate buffers scale with
+      // the segment-size bound as well, so the product is not bounded by the entry check alone. Reject rather than
+      // silently wrap into a too-small allocation.
+      {
+        constexpr size_t max_bytes    = (::cuda::std::numeric_limits<size_t>::max)();
+        const size_t per_segment_bytes = sizeof(seg_counter_t) + static_cast<size_t>(num_buckets) * sizeof(OffsetT)
+                                     + 2 * static_cast<size_t>(candidate_buffer_length) * sizeof(key_t)
+                                     + (keys_only ? size_t{0}
+                                                  : 2 * static_cast<size_t>(candidate_buffer_length)
+                                                      * sizeof(effective_value_t))
+                                     + sizeof(large_segment_tile_offset_t) + sizeof(num_segments_val_t);
+        if (per_segment_bytes != 0
+            && static_cast<size_t>(num_segments_val) > max_bytes / per_segment_bytes / size_t{2})
+        {
+          return cudaErrorInvalidValue;
+        }
+      }
+
+      allocation_sizes[0] = (static_cast<size_t>(num_segments_val) + 1) * sizeof(large_segment_tile_offset_t);
       if constexpr (any_small_segments)
       {
         allocation_sizes[1] = sizeof(counters_t);
-        allocation_sizes[2] = num_segments_val * sizeof(num_segments_val_t);
+        allocation_sizes[2] = static_cast<size_t>(num_segments_val) * sizeof(num_segments_val_t);
       }
       else
       {
-        // Query the temporary storage requirement of the segment-size transform-scan.
+        // Query the temporary storage requirement of the segment-size transform-scan. Runs over `num_segments + 1`
+        // inputs so the trailing slot receives the inclusive total.
         if (const auto error = CubDebug(detail::scan::dispatch(
               nullptr,
               allocation_sizes[1],
@@ -798,7 +1322,7 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
               static_cast<large_segment_tile_offset_t*>(nullptr),
               ::cuda::std::plus<>{},
               detail::InputValue<large_segment_tile_offset_t>(large_segment_tile_offset_t{0}),
-              static_cast<segment_size_scan_offset_t>(num_segments_val),
+              static_cast<segment_size_scan_offset_t>(num_segments_val + 1),
               stream,
               {},
               {},
@@ -806,6 +1330,21 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
         {
           return error;
         }
+      }
+
+      // Multi-CTA per-segment slabs. One slab per potential queue entry, i.e. `num_segments_val`.
+      allocation_sizes[idx_seg_counters_arr] = static_cast<size_t>(num_segments_val) * sizeof(seg_counter_t);
+      allocation_sizes[idx_seg_histograms_arr] =
+        static_cast<size_t>(num_segments_val) * static_cast<size_t>(num_buckets) * sizeof(OffsetT);
+      allocation_sizes[idx_seg_key_buf_a] =
+        static_cast<size_t>(num_segments_val) * static_cast<size_t>(candidate_buffer_length) * sizeof(key_t);
+      allocation_sizes[idx_seg_key_buf_b] = allocation_sizes[idx_seg_key_buf_a];
+      if constexpr (!keys_only)
+      {
+        allocation_sizes[idx_seg_val_buf_a] = static_cast<size_t>(num_segments_val)
+                                            * static_cast<size_t>(candidate_buffer_length)
+                                            * sizeof(effective_value_t);
+        allocation_sizes[idx_seg_val_buf_b] = allocation_sizes[idx_seg_val_buf_a];
       }
     }
 
@@ -871,7 +1410,10 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
     }
     else
     {
-      // No small segments: compute the per-segment tile offsets directly via a transform-scan over all segment sizes.
+      // No small segments: the worker epilogue that would produce the tile offsets never runs, so compute them
+      // directly via a transform-scan over all segment sizes. Runs over `num_segments + 1` inputs (the op returns 0 at
+      // the sentinel index) so the trailing slot holds `total_large_tiles`, exactly as the mixed path's epilogue
+      // publishes it.
       if (const auto error = CubDebug(detail::scan::dispatch(
             allocations[1],
             allocation_sizes[1],
@@ -879,11 +1421,96 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
             static_cast<large_segment_tile_offset_t*>(allocations[0]),
             ::cuda::std::plus<>{},
             detail::InputValue<large_segment_tile_offset_t>(large_segment_tile_offset_t{0}),
-            static_cast<segment_size_scan_offset_t>(params::get_param(num_segments, 0)),
+            static_cast<segment_size_scan_offset_t>(params::get_param(num_segments, 0) + 1),
             stream,
             {},
             {},
             launcher_factory)))
+      {
+        return error;
+      }
+    }
+
+    if constexpr (!only_small_segments)
+    {
+      // Only the mixed layout has the counters / queue-ids slots; in the all-large layout those indices belong to the
+      // scan temp storage and the first multi-CTA slab, so resolve them under `if constexpr` rather than with a runtime
+      // ternary that would still index them.
+      auto* const d_counters_arg = [&]() -> counters_t* {
+        if constexpr (any_small_segments)
+        {
+          return static_cast<counters_t*>(allocations[1]);
+        }
+        else
+        {
+          return nullptr;
+        }
+      }();
+      auto* const d_large_segments_ids_arg = [&]() -> num_segments_val_t* {
+        if constexpr (any_small_segments)
+        {
+          return static_cast<num_segments_val_t*>(allocations[2]);
+        }
+        else
+        {
+          return nullptr;
+        }
+      }();
+      auto* const d_val_buf_a = [&]() -> effective_value_t* {
+        if constexpr (keys_only)
+        {
+          return nullptr;
+        }
+        else
+        {
+          return static_cast<effective_value_t*>(allocations[idx_seg_val_buf_a]);
+        }
+      }();
+      auto* const d_val_buf_b = [&]() -> effective_value_t* {
+        if constexpr (keys_only)
+        {
+          return nullptr;
+        }
+        else
+        {
+          return static_cast<effective_value_t*>(allocations[idx_seg_val_buf_b]);
+        }
+      }();
+
+      if (const auto error = launch_multi_cta_passes<PolicySelector,
+                                                     large_segment_tile_offset_t,
+                                                     OffsetT,
+                                                     OutOffsetT,
+                                                     effective_value_t,
+                                                     seg_counter_t,
+                                                     counters_t,
+                                                     indexed,
+                                                     keys_only,
+                                                     any_small_segments,
+                                                     bits_per_pass,
+                                                     multi_worker_per_segment_policy.threads_per_block,
+                                                     multi_worker_per_segment_policy.items_per_thread>(
+            d_key_segments_it,
+            d_key_segments_out_it,
+            d_value_segments_it,
+            d_value_segments_out_it,
+            segment_sizes,
+            k,
+            select_directions,
+            num_segments,
+            static_cast<large_segment_tile_offset_t*>(allocations[0]),
+            d_counters_arg,
+            d_large_segments_ids_arg,
+            static_cast<seg_counter_t*>(allocations[idx_seg_counters_arr]),
+            static_cast<OffsetT*>(allocations[idx_seg_histograms_arr]),
+            static_cast<key_t*>(allocations[idx_seg_key_buf_a]),
+            static_cast<key_t*>(allocations[idx_seg_key_buf_b]),
+            d_val_buf_a,
+            d_val_buf_b,
+            candidate_buffer_length,
+            static_cast<OffsetT>(coefficient_for_candidate_buffer),
+            stream,
+            launcher_factory))
       {
         return error;
       }

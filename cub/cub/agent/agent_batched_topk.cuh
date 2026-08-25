@@ -59,13 +59,16 @@ struct batched_topk_counters
   alignas(128) unsigned retirement_count;
 };
 
-// Segment-count / queue-index type for the multi-CTA-per-segment agents. Deliberately the same type the worker
-// agent's enqueue produces (`batched_topk_counters::segment_count_t`, i.e. `choose_offset_t` of the segment-count
-// parameter's element type) so the queue's producer and its consumers cannot disagree, and unsigned so the agents'
-// `UpperBound` search bound and offset-table indexing need no sign handling.
-template <typename NumSegmentsParameterT>
-using queue_segment_count_t =
-  detail::choose_offset_t<typename ::cuda::args::__traits<NumSegmentsParameterT>::element_type>;
+// Queue length / queue index type for the multi-CTA-per-segment agents and kernels. Unconditionally 32-bit and
+// unsigned: the public entry rejects `num_segments > INT_MAX` outright (see `dispatch`, which returns
+// cudaErrorInvalidValue), so the queue can never be longer than that. Keeping it 32 bits keeps `resolve_queue_idx`'s
+// `UpperBound` search bound and the offset-table indexing 32-bit, which matters because that binary search sits in the
+// per-tile inner loop of every multi-CTA kernel.
+//
+// This is only the *length / index* type. The queue's element array (`baseline_kernel_args::d_large_segments_ids`) and
+// `batched_topk_counters` keep the segment-count argument's own element type, which is the existing kernel ABI the
+// worker agent's enqueue writes through -- narrowing those would mistype the queue itself.
+using queue_segment_count_t = ::cuda::std::uint32_t;
 
 template <typename PolicyGetter, // TODO(bgruber): pass worker_policy as NTTP in C++20
           typename KeyInputItItT,
@@ -131,7 +134,11 @@ struct agent_batched_topk_worker_per_segment
 
   using block_load_epilogue_t =
     BlockLoad<segment_size_val_t, threads_per_block, epilogue_items_per_thread, active_policy.epilogue.load_algorithm>;
-  using block_scan_epilogue_t = BlockScan<int, threads_per_block, active_policy.epilogue.scan_algorithm>;
+  // Scans the queued per-segment tile counts. Typed on `segment_size_val_t` to match the epilogue's load/store and the
+  // thread-local array: a tile count is bounded by its segment's size, so this is always wide enough, whereas a
+  // hardcoded `int` breaks for any segment-size type wider than `int`.
+  using block_scan_epilogue_t =
+    BlockScan<segment_size_val_t, threads_per_block, active_policy.epilogue.scan_algorithm>;
   using block_store_epilogue_t =
     BlockStore<segment_size_val_t, threads_per_block, epilogue_items_per_thread, active_policy.epilogue.store_algorithm>;
 
@@ -349,7 +356,9 @@ struct agent_batched_topk_worker_per_segment
     }
 
     // Epilogue: Scan queued large segment sizes (in tiles not elements) for load balancing search in the large segment
-    // agent
+    // agent. The scan additionally publishes `total_large_tiles` into the trailing slot, i.e.
+    // `d_large_segments_tile_offsets[num_large_segments]`, which is how the multi-CTA-per-segment kernels learn the
+    // total tile count without a separate device-side counter.
     if constexpr (!only_small_segments)
     {
       // Determine last block trying to retire.
@@ -370,14 +379,20 @@ struct agent_batched_topk_worker_per_segment
       // For tracking the running total across tiles (loop iterations).
       // Caution: The functor is only invoked by the first warp in the block, and the value returned by lane 0 in that
       // warp is used as the initial value.
-      const auto prefix_callback_op =
-        [running_total = segment_size_val_t{0}](segment_size_val_t block_aggregate) mutable {
-          auto old_running_total = running_total;
-          running_total += block_aggregate;
-          return old_running_total;
-        };
+      // Not `const`: `BlockScan::ExclusiveSum` takes the prefix callback by non-const reference and invokes it, which a
+      // `mutable` lambda cannot satisfy through a const object.
+      auto prefix_callback_op = [running_total = segment_size_val_t{0}](segment_size_val_t block_aggregate) mutable {
+        auto old_running_total = running_total;
+        running_total += block_aggregate;
+        return old_running_total;
+      };
+      // Loop one item past `num_large_segments` so the exclusive scan also publishes the total aggregate into the
+      // trailing (sentinel) slot. The trailing iteration's `BlockLoad` keeps `valid_items` capped at
+      // `num_large_segments`, so the out-of-bounds item it would otherwise read from uninitialised memory is
+      // substituted with the default `0`; only the `BlockStore` extends to the sentinel.
+      const int num_large_segments_with_sentinel = static_cast<int>(num_large_segments) + 1;
       _CCCL_PRAGMA_NOUNROLL()
-      for (int large_segment_offset = 0; large_segment_offset < num_large_segments;
+      for (int large_segment_offset = 0; large_segment_offset < num_large_segments_with_sentinel;
            large_segment_offset += epilogue_tile_size)
       {
         segment_size_val_t segment_tile_offsets[epilogue_items_per_thread];
@@ -393,7 +408,7 @@ struct agent_batched_topk_worker_per_segment
         block_store_epilogue_t(temp_storage.store_epilogue)
           .Store(d_large_segments_tile_offsets + large_segment_offset,
                  segment_tile_offsets,
-                 num_large_segments - large_segment_offset);
+                 num_large_segments_with_sentinel - large_segment_offset);
         __syncthreads();
       }
     }
@@ -996,7 +1011,7 @@ struct agent_batched_topk_filter_partition
   OffsetT candidate_buffer_coefficient;
   // Narrowed segment count (32-bit when the count fits) so `resolve_queue_idx`'s `UpperBound` and the
   // offset-table indexing stay 32-bit.
-  queue_segment_count_t<NumSegmentsParameterT> num_large_segments;
+  queue_segment_count_t num_large_segments;
 
   // Owns the smem histogram plus per-tile binning and lifecycle, over the buffered arm's bins.
   // Only the buffered / unbuffered modes touch it (guarded by `segment_uses_smem_histogram`).
@@ -1022,7 +1037,7 @@ struct agent_batched_topk_filter_partition
     DecomposerT decomposer,
     OffsetT candidate_buffer_length,
     OffsetT candidate_buffer_coefficient,
-    queue_segment_count_t<NumSegmentsParameterT> num_large_segments)
+    queue_segment_count_t num_large_segments)
       : storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , d_key_segments_out_it(d_key_segments_out_it)
@@ -1124,7 +1139,11 @@ private:
     // Broadcast lane-0's result and route it through `makeWarpUniform` so ptxas recognises `queue_idx` as warp-
     // uniform; that keeps downstream `queue_idx`-dependent atomics (the `atomicAdd` on
     // `&segment_counter->num_ties_written_to_back` in `back_grow_capped_reserve_op`) eligible for warp-aggregation.
-    return detail::warpspeed::makeWarpUniform(__shfl_sync(0xffffffff, queue_idx_lane0, 0));
+    // Narrow the broadcast to the queue-index type before the call. A queue index is bounded by the queue length, and
+    // hence by `num_segments <= INT_MAX`, so this cannot truncate; it also picks `makeWarpUniform`'s 32-bit overload
+    // unambiguously, which is the one that lowers to a single CREDUX.
+    return static_cast<LargeSegmentTileOffsetT>(
+      detail::warpspeed::makeWarpUniform(static_cast<queue_segment_count_t>(__shfl_sync(0xffffffff, queue_idx_lane0, 0))));
   }
 
   // Build the per-segment cached state for `queue_idx`. Pure function of `queue_idx` and the per-launch agent state.
@@ -1780,7 +1799,7 @@ struct agent_batched_topk_last_filter
   DecomposerT decomposer;
   OffsetT candidate_buffer_length;
   // Narrowed segment count: keeps `resolve_queue_idx`'s `UpperBound` + indexing 32-bit.
-  queue_segment_count_t<NumSegmentsParameterT> num_large_segments;
+  queue_segment_count_t num_large_segments;
 
   _CCCL_DEVICE _CCCL_FORCEINLINE agent_batched_topk_last_filter(
     TempStorage& ts,
@@ -1799,7 +1818,7 @@ struct agent_batched_topk_last_filter
     int total_bits,
     DecomposerT decomposer,
     OffsetT candidate_buffer_length,
-    queue_segment_count_t<NumSegmentsParameterT> num_large_segments)
+    queue_segment_count_t num_large_segments)
       : storage(ts.Alias())
       , d_key_segments_it(d_key_segments_it)
       , d_key_segments_out_it(d_key_segments_out_it)
@@ -1864,7 +1883,11 @@ private:
     // See `agent_batched_topk_filter_partition::resolve_queue_idx`. Routing the broadcast through `makeWarpUniform`
     // restores warp-aggregated atomics on `&segment_counter->num_ties_written_to_back` (used by
     // `back_grow_capped_reserve_op` inside `partition.partition()`).
-    return detail::warpspeed::makeWarpUniform(__shfl_sync(0xffffffff, queue_idx_lane0, 0));
+    // Narrow the broadcast to the queue-index type before the call. A queue index is bounded by the queue length, and
+    // hence by `num_segments <= INT_MAX`, so this cannot truncate; it also picks `makeWarpUniform`'s 32-bit overload
+    // unambiguously, which is the one that lowers to a single CREDUX.
+    return static_cast<LargeSegmentTileOffsetT>(
+      detail::warpspeed::makeWarpUniform(static_cast<queue_segment_count_t>(__shfl_sync(0xffffffff, queue_idx_lane0, 0))));
   }
 
   _CCCL_DEVICE _CCCL_FORCEINLINE per_segment_state_t resolve_segment_state(LargeSegmentTileOffsetT queue_idx)

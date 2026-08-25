@@ -180,25 +180,42 @@ _CCCL_HOST_API static cudaError_t dispatch_batched_topk(
   using k_validation            = detail::params::__validate_uniform_or_per_segment_integral_param<KParameterT>;
   using num_segments_validation = detail::params::__validate_uniform_integral_param<NumSegmentsParameterT>;
 
-  // Only the statically-known *maximum* segment size is constrained: it must not exceed 2^21 (about 2 million). Beyond
-  // that the streaming cluster backend is not competitive; larger segments are future work (a WIP multi-CTA baseline
-  // backend). So a segment-size type or bound whose maximum exceeds 2^21 (e.g. an un-annotated int32/uint32, or an
-  // explicit bound above 2^21) must carry a tighter compile-time `cuda::args::bounds`. The lower bound is left
-  // unconstrained: a negative statically-known lower bound is accepted, and the kernel clamps any negative runtime size
-  // up to 0 (see detail::params::__get_and_clamp_param_to_nonnegative). The *upper* bound, by contrast, must be
-  // non-negative: a wholly negative range carries no representable work yet would drive the unsigned launch-sizing math
-  // with a negative `__highest_`. k carries no such maximum-value bound (on the device an over-large k is clamped to
-  // the segment size and a negative k to 0), only the 64-bit element-type width limit checked below.
+  // Only the statically-known *maximum* segment size is constrained, and the limit depends on the requested
+  // determinism, because the two backends that can serve large segments differ in what they guarantee:
+  //
+  //   * a non-deterministic request may use the baseline backend's multi-CTA-per-segment path, which grid-strides over
+  //     a flat tile space and so scales with the segment size. Its limit is
+  //     `multi_cta_max_supported_segment_size`, a representability bound rather than a performance one.
+  //   * a deterministic result set / concrete tie-break is served only by the cluster backend (the multi-CTA path
+  //     scatters through atomics and guarantees no ordering). Past `cluster_max_competitive_segment_size` the cluster
+  //     backend streams the overflow from global memory and stops being competitive, so that stays the limit there.
+  //
+  // A segment-size type or bound whose maximum exceeds the applicable limit (e.g. an un-annotated int64) must carry a
+  // tighter compile-time `cuda::args::bounds`. The lower bound is left unconstrained: a negative statically-known lower
+  // bound is accepted, and the kernel clamps any negative runtime size up to 0 (see
+  // detail::params::__get_and_clamp_param_to_nonnegative). The *upper* bound, by contrast, must be non-negative: a
+  // wholly negative range carries no representable work yet would drive the unsigned launch-sizing math with a negative
+  // `__highest_`. k carries no such maximum-value bound (on the device an over-large k is clamped to the segment size
+  // and a negative k to 0), only the 64-bit element-type width limit checked below.
+  constexpr bool is_nondeterministic_request =
+    ::cuda::std::is_same_v<requested_determinism_t, ::cuda::execution::determinism::not_guaranteed_t>
+    && ::cuda::std::is_same_v<requested_tie_break_t, ::cuda::execution::tie_break::unspecified_t>;
+  constexpr ::cuda::std::int64_t max_supported_segment_size =
+    is_nondeterministic_request ? detail::batched_topk::multi_cta_max_supported_segment_size
+                               : detail::batched_topk::cluster_max_competitive_segment_size;
+
   if constexpr (segment_sizes_validation::all_ok)
   {
     static_assert(::cuda::std::cmp_greater_equal(segment_sizes_validation::args_traits::highest, 0),
                   "cub::DeviceBatchedTopK: the statically-known maximum segment size is negative. Give a segment-size "
                   "type or a compile-time bound (cuda::args::bounds) whose upper bound is non-negative.");
     static_assert(
-      ::cuda::std::cmp_less_equal(segment_sizes_validation::args_traits::highest, ::cuda::std::int64_t{1} << 21),
-      "cub::DeviceBatchedTopK: the statically-known maximum segment size exceeds the maximum currently supported "
-      "segment size (2^21, about 2 million). Give a segment-size type whose maximum fits, or a compile-time upper "
-      "bound (cuda::args::bounds) not exceeding 2^21.");
+      ::cuda::std::cmp_less_equal(segment_sizes_validation::args_traits::highest, max_supported_segment_size),
+      "cub::DeviceBatchedTopK: the statically-known maximum segment size exceeds the maximum supported segment size "
+      "for the requested determinism. Non-deterministic requests support up to 2^32 items per segment; a deterministic "
+      "result set or a concrete tie-break is served only by the cluster backend and supports up to 2^21 (about 2 "
+      "million). Give a segment-size type whose maximum fits, a compile-time upper bound (cuda::args::bounds) within "
+      "the limit, or relax the determinism requirement.");
   }
 
   // k's value is clamped to the segment size on the device through a 64-bit intermediate, so a wider element type
