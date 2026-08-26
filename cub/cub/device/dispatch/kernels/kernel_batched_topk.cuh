@@ -811,6 +811,16 @@ __launch_bounds__(int(current_policy<PolicySelector>().baseline.multi_worker_per
       block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(segment_histogram, k, on_kth_bucket);
     }
 
+    // The dependent grid needs only this CTA's counter writes, which are complete here. The reset below targets the
+    // slab the next pass will *not* accumulate into (the histograms are double-buffered), so releasing now is safe and
+    // lets the reset overlap with the successor. Guarded to the CTA's final grid-stride iteration: earlier iterations
+    // still have counters to write. `__syncthreads()` first so thread 0's counter stores are CTA-visible.
+    if ((queue_idx + static_cast<queue_idx_t>(gridDim.x)) >= num_large_segments)
+    {
+      __syncthreads();
+      _CCCL_PDL_TRIGGER_NEXT_LAUNCH();
+    }
+
     if (reset_histogram)
     {
       // Zero the per-segment histogram slab so the next pass starts clean. The two
@@ -1161,6 +1171,16 @@ __launch_bounds__(int(current_policy<PolicySelector>().baseline.multi_worker_per
 
       __syncthreads();
       block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(segment_histogram, current_k, on_kth_bucket);
+
+      // The dependent grid needs only this CTA's counter writes, which are complete here. The reset below targets the
+      // slab the next pass will *not* accumulate into (the histograms are double-buffered), so releasing now is safe and
+      // lets the reset overlap with the successor. Guarded to the CTA's final grid-stride iteration: earlier iterations
+      // still have counters to write. `__syncthreads()` first so thread 0's counter stores are CTA-visible.
+      if ((queue_idx + static_cast<queue_idx_t>(gridDim.x)) >= num_large_segments)
+      {
+        __syncthreads();
+        _CCCL_PDL_TRIGGER_NEXT_LAUNCH();
+      }
 
       if (reset_histogram)
       {

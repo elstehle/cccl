@@ -795,8 +795,11 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
                   "counter type must be zeroable as 32-bit words");
     const auto num_counter_words = static_cast<::cuda::std::uint64_t>(num_segments_val)
                                  * (sizeof(SegCounterT) / sizeof(::cuda::std::uint32_t));
-    const auto num_histogram_bins =
-      static_cast<::cuda::std::uint64_t>(num_segments_val) * static_cast<::cuda::std::uint64_t>(num_buckets);
+    // Both slabs of the double buffer (see the allocation comment) must start zeroed: pass 0 accumulates into slab 0
+    // and pass 1 into slab 1, and only from pass 2 onward is a slab guaranteed to have been reset by a finalize.
+    const auto num_histogram_bins = ::cuda::std::uint64_t{2}
+                                  * static_cast<::cuda::std::uint64_t>(num_segments_val)
+                                  * static_cast<::cuda::std::uint64_t>(num_buckets);
     const auto init_items = (::cuda::std::max) (num_counter_words, num_histogram_bins);
     const auto init_grid  = static_cast<unsigned int>(
       (::cuda::std::min) (static_cast<::cuda::std::uint64_t>(::cuda::std::numeric_limits<int>::max()),
@@ -879,6 +882,15 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
     }
   }();
   using large_segments_count_it_t = decltype(large_segments_count_it);
+
+  // Histogram double buffer: pass `p` accumulates into and reads slab `p & 1`, and its finalize resets that same slab
+  // for pass `p + 2`. Because the slab pass `p + 1` uses is therefore untouched by pass `p`'s finalize, that finalize
+  // can release its dependent grid as soon as the counter is written and overlap its reset with the next pass.
+  const auto histogram_slab_stride =
+    static_cast<::cuda::std::uint64_t>(num_segments_val) * static_cast<::cuda::std::uint64_t>(num_buckets);
+  const auto histogram_for_pass = [&](int p) {
+    return d_seg_histograms + ((p & 1) ? histogram_slab_stride : ::cuda::std::uint64_t{0});
+  };
 
   // Radix-pass scheduling. `total_bits` / `num_passes` derive from `KeyT` and `BitsPerPass`, uniform across segments.
   const detail::identity_decomposer_t decomposer{};
@@ -1028,7 +1040,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
                            segment_sizes,
                            segment_id_provider,
                            static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
-                           d_seg_histograms,
+                           histogram_for_pass(0),
                            large_segments_count_it,
                            extract_bin_op)))
     {
@@ -1042,7 +1054,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
                            k,
                            segment_id_provider,
                            d_seg_counters,
-                           d_seg_histograms,
+                           histogram_for_pass(0),
                            large_segments_count_it,
                            extract_bin_op,
                            0,
@@ -1075,7 +1087,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
                            segment_id_provider,
                            static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
                            d_seg_counters,
-                           d_seg_histograms,
+                           histogram_for_pass(pass),
                            key_bufs.Current(),
                            val_bufs.Current(),
                            key_bufs.Alternate(),
@@ -1103,7 +1115,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
                            segment_id_provider,
                            static_cast<const LargeSegmentTileOffsetT*>(d_large_segments_tile_offsets),
                            d_seg_counters,
-                           d_seg_histograms,
+                           histogram_for_pass(pass),
                            key_bufs.Current(),
                            val_bufs.Current(),
                            key_bufs.Alternate(),
@@ -1364,8 +1376,12 @@ _CCCL_HOST_API cudaError_t launch_baseline_arm(
 
       // Multi-CTA per-segment slabs. One slab per potential queue entry, i.e. `num_segments_val`.
       allocation_sizes[idx_seg_counters_arr] = static_cast<size_t>(num_segments_val) * sizeof(seg_counter_t);
+      // Two histogram slabs per segment, not one. Passes alternate between them, which decouples a pass's histogram
+      // reset from the next pass's accumulation: the finalize kernel can release its dependent grid right after
+      // writing the counter and then clear the slab the next pass will not touch. Costs
+      // `num_segments * num_buckets * sizeof(OffsetT)` extra (8 KiB for one segment at 2048 bins).
       allocation_sizes[idx_seg_histograms_arr] =
-        static_cast<size_t>(num_segments_val) * static_cast<size_t>(num_buckets) * sizeof(OffsetT);
+        size_t{2} * static_cast<size_t>(num_segments_val) * static_cast<size_t>(num_buckets) * sizeof(OffsetT);
       allocation_sizes[idx_seg_key_buf_a] =
         static_cast<size_t>(num_segments_val) * static_cast<size_t>(candidate_buffer_length) * sizeof(key_t);
       allocation_sizes[idx_seg_key_buf_b] = allocation_sizes[idx_seg_key_buf_a];
