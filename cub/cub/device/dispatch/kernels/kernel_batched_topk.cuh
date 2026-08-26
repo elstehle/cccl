@@ -486,6 +486,44 @@ device_batched_topk_kernel(
   }
 }
 
+// Zeroes the per-segment counter array and the per-segment global histogram slabs, which the multi-CTA-per-segment
+// passes require to start at 0 (the counters establish `load_from_candidates_buffer == false` at pass 0; the histogram
+// slabs are accumulated into with `atomicAdd`).
+//
+// This replaces two `cudaMemsetAsync` calls with a single kernel for two reasons: it is one device operation instead of
+// two on a pipeline whose cost is dominated by operation count, and unlike a memset it can participate in programmatic
+// dependent launch, letting the histogram kernel that follows load and bin its tiles into shared memory while this one
+// is still running (it only has to wait before merging into the global slabs).
+template <int ThreadsPerBlock, typename SegCounterT, typename OffsetT>
+__launch_bounds__(ThreadsPerBlock) _CCCL_KERNEL_ATTRIBUTES
+  void device_batched_topk_init_kernel(SegCounterT* d_seg_counters,
+                                       OffsetT* d_seg_histograms,
+                                       ::cuda::std::uint64_t num_counter_words,
+                                       ::cuda::std::uint64_t num_histogram_bins)
+{
+  // The counter array is zeroed as raw 32-bit words rather than through its element type: it is a plain trivially
+  // copyable aggregate whose size is a multiple of its 128-byte alignment, so this is both well-defined and lets the
+  // two loops share one grid-stride shape.
+  static_assert(sizeof(SegCounterT) % sizeof(::cuda::std::uint32_t) == 0,
+                "counter type must be zeroable as 32-bit words");
+  auto* const counter_words = reinterpret_cast<::cuda::std::uint32_t*>(d_seg_counters);
+
+  const auto tid    = static_cast<::cuda::std::uint64_t>(blockIdx.x) * ThreadsPerBlock + threadIdx.x;
+  const auto stride = static_cast<::cuda::std::uint64_t>(gridDim.x) * ThreadsPerBlock;
+
+  for (auto i = tid; i < num_counter_words; i += stride)
+  {
+    counter_words[i] = ::cuda::std::uint32_t{0};
+  }
+  for (auto i = tid; i < num_histogram_bins; i += stride)
+  {
+    d_seg_histograms[i] = OffsetT{0};
+  }
+
+  // Release the dependent grid as soon as this CTA's zeroing stores are issued; it has no trailing work.
+  _CCCL_PDL_TRIGGER_NEXT_LAUNCH();
+}
+
 //---------------------------------------------------------------------
 // Segmented multi-CTA-per-segment top-k kernels.
 //

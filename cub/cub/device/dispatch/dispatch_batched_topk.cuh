@@ -774,23 +774,46 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
 
   const num_segments_val_t num_segments_val = params::get_param(num_segments, 0);
 
-  // Zero the per-segment counter array (establishes `load_from_candidates_buffer == false` at pass 0 for every
-  // segment, mirroring the single-problem dispatch's counter-blob memset).
-  if (const auto error = CubDebug(launcher_factory.MemsetAsync(
-        d_seg_counters, 0, static_cast<size_t>(num_segments_val) * sizeof(SegCounterT), stream)))
+  // Programmatic dependent launch is an SM90+ facility; below that the `_CCCL_PDL_*` intrinsics in the kernels compile
+  // out and the launches must not request it (`TripleChevronFactory::__assert_pdl_allowed`).
+  ::cuda::compute_capability launch_cc{};
+  if (const auto error = CubDebug(launcher_factory.PtxComputeCap(launch_cc)))
   {
     return error;
   }
-  // Zero the per-segment global histograms: the agents' `init_histogram` only clears the shared-memory histogram, so
-  // the global slabs must start at zero before the first `atomicAdd` from the per-block merge.
+  const bool use_pdl = launch_cc >= ::cuda::compute_capability{9, 0};
+
+  // Zero the per-segment counter array (establishes `load_from_candidates_buffer == false` at pass 0 for every
+  // segment) and the per-segment global histograms (the agents' `init_histogram` only clears the shared-memory
+  // histogram, so the global slabs must start at zero before the first `atomicAdd` from the per-block merge).
+  //
+  // One init kernel rather than two memsets: this pipeline's cost is dominated by device-operation count, and a memset
+  // cannot carry the programmatic-launch dependency that lets the histogram kernel overlap its loads with this.
   constexpr int num_buckets = 1 << BitsPerPass;
-  if (const auto error = CubDebug(launcher_factory.MemsetAsync(
-        d_seg_histograms,
-        0,
-        static_cast<size_t>(num_segments_val) * static_cast<size_t>(num_buckets) * sizeof(OffsetT),
-        stream)))
   {
-    return error;
+    static_assert(sizeof(SegCounterT) % sizeof(::cuda::std::uint32_t) == 0,
+                  "counter type must be zeroable as 32-bit words");
+    const auto num_counter_words = static_cast<::cuda::std::uint64_t>(num_segments_val)
+                                 * (sizeof(SegCounterT) / sizeof(::cuda::std::uint32_t));
+    const auto num_histogram_bins =
+      static_cast<::cuda::std::uint64_t>(num_segments_val) * static_cast<::cuda::std::uint64_t>(num_buckets);
+    const auto init_items = (::cuda::std::max) (num_counter_words, num_histogram_bins);
+    const auto init_grid  = static_cast<unsigned int>(
+      (::cuda::std::min) (static_cast<::cuda::std::uint64_t>(::cuda::std::numeric_limits<int>::max()),
+                          ::cuda::ceil_div(init_items, static_cast<::cuda::std::uint64_t>(ThreadsPerBlock))));
+    if (init_grid > 0)
+    {
+      if (const auto error = CubDebug(
+            launcher_factory(init_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+              .doit(device_batched_topk_init_kernel<ThreadsPerBlock, SegCounterT, OffsetT>,
+                    d_seg_counters,
+                    d_seg_histograms,
+                    num_counter_words,
+                    num_histogram_bins)))
+      {
+        return error;
+      }
+    }
   }
 
   // Effective outer value iterators. In `materialized` mode (and keys-only) they alias the user's iterators. In
@@ -991,8 +1014,10 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
   {
     const bool reset_histogram = num_passes != 1;
     const extract_bin_op_t_ extract_bin_op{0, total_bits, decomposer};
+    // Depends on the init kernel only for the *global* histogram slabs, which the agent does not touch until its
+    // final merge -- so under PDL its tile loads and shared-memory binning overlap with the zeroing.
     if (const auto error =
-          CubDebug(launcher_factory(*histogram_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+          CubDebug(launcher_factory(*histogram_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/use_pdl)
                      .doit(histogram_kernel_ptr,
                            d_key_segments_it,
                            segment_sizes,

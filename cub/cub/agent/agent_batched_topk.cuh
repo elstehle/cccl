@@ -590,6 +590,12 @@ private:
   // visible.
   _CCCL_DEVICE _CCCL_FORCEINLINE void flush_active_segment()
   {
+    // This is the first and only point at which this kernel touches the global histogram slabs, so it is where the
+    // dependency on the init kernel that zeroed them has to be honored -- everything before it (resolving segments,
+    // loading tiles, binning into shared memory) is independent and overlaps with that kernel under PDL. Same
+    // placement as `agent_radix_sort_histogram`, which syncs only before `AccumulateGlobalHistograms`. Calling this
+    // once per flush is fine: the intrinsic is idempotent, and all threads reach it uniformly.
+    _CCCL_PDL_GRID_DEPENDENCY_SYNC();
     hist.flush(temp_storage.active_segment.segment_histogram);
   }
 
