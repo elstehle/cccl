@@ -1,12 +1,17 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <cub/device/device_batched_topk.cuh>
 #include <cub/device/device_topk.cuh>
 
 #include <cuda/__execution/determinism.h>
 #include <cuda/__execution/output_ordering.h>
 #include <cuda/__execution/require.h>
+#include <cuda/__execution/tie_break.h>
 #include <cuda/__execution/tune.h>
+#include <cuda/argument>
+#include <cuda/iterator>
+#include <cuda/std/cstdint>
 
 #include <nvbench_helper.cuh>
 
@@ -40,6 +45,13 @@ struct policy_selector_t
   }
 };
 #endif // !TUNE_BASE
+
+// See the equivalent comment in keys.cu: the same workload can be routed through cub::DeviceBatchedTopK with a single
+// segment (the runtime "Impl" axis, TUNE_BASE only) so the batched implementation can be compared against the
+// single-problem one. A single segment this large routes to the baseline backend's multi-CTA-per-segment path on every
+// architecture. Keep these bounds in sync with the axis ranges at the bottom of the file.
+constexpr ::cuda::std::int64_t max_elements          = ::cuda::std::int64_t{1} << 28;
+constexpr ::cuda::std::int64_t max_selected_elements = ::cuda::std::int64_t{1} << 23;
 
 template <typename KeyT, typename ValueT, typename OffsetT, typename OutOffsetT>
 void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, OffsetT, OutOffsetT>)
@@ -82,6 +94,66 @@ void topk_pairs(nvbench::state& state, nvbench::type_list<KeyT, ValueT, OffsetT,
 #endif // !TUNE_BASE
   };
 
+#if TUNE_BASE
+  const bool use_batched = state.get_string("Impl") == "batched";
+#else // tuning sweeps the single-problem policy, so keep that the only algorithm under test
+  constexpr bool use_batched = false;
+#endif // TUNE_BASE
+
+  if (use_batched)
+  {
+    // Iterator-of-iterators over a single segment: each outer iterator always yields the same pointer.
+    auto d_keys_in_it    = cuda::constant_iterator{d_keys_in};
+    auto d_keys_out_it   = cuda::constant_iterator{d_keys_out};
+    auto d_values_in_it  = cuda::constant_iterator{d_values_in};
+    auto d_values_out_it = cuda::constant_iterator{d_values_out};
+
+    const auto seg_arg = cuda::args::immediate{static_cast<OffsetT>(elements),
+                                               cuda::args::bounds<OffsetT{0}, static_cast<OffsetT>(max_elements)>()};
+    const auto k_arg =
+      cuda::args::immediate{static_cast<OutOffsetT>(selected_elements),
+                            cuda::args::bounds<OutOffsetT{0}, static_cast<OutOffsetT>(max_selected_elements)>()};
+    const auto ns_arg = cuda::args::immediate{cuda::std::int64_t{1}};
+
+    // The batched entry requires determinism and tie_break to be acknowledged together, so it cannot reuse `env`.
+    auto batched_env = cuda::std::execution::env{
+      cuda::execution::require(cuda::execution::determinism::not_guaranteed,
+                               cuda::execution::tie_break::unspecified,
+                               cuda::execution::output_ordering::unsorted)};
+
+    size_t temp_size{};
+    cub::DeviceBatchedTopK::MaxPairs(
+      nullptr,
+      temp_size,
+      d_keys_in_it,
+      d_keys_out_it,
+      d_values_in_it,
+      d_values_out_it,
+      seg_arg,
+      k_arg,
+      ns_arg,
+      batched_env);
+    thrust::device_vector<nvbench::uint8_t> temp(temp_size, thrust::no_init);
+    auto* temp_storage = thrust::raw_pointer_cast(temp.data());
+
+    state.exec(nvbench::exec_tag::gpu | nvbench::exec_tag::no_batch, [&](nvbench::launch& launch) {
+      auto env_with_stream =
+        cuda::std::execution::env{cuda::stream_ref{launch.get_stream().get_stream()}, batched_env};
+      cub::DeviceBatchedTopK::MaxPairs(
+        temp_storage,
+        temp_size,
+        d_keys_in_it,
+        d_keys_out_it,
+        d_values_in_it,
+        d_values_out_it,
+        seg_arg,
+        k_arg,
+        ns_arg,
+        env_with_stream);
+    });
+    return;
+  }
+
   // Allocate temporary storage
   size_t temp_size{};
   cub::DeviceTopK::MaxPairs(
@@ -117,4 +189,8 @@ NVBENCH_BENCH_TYPES(topk_pairs, NVBENCH_TYPE_AXES(integral_types, integral_types
   .set_type_axes_names({"KeyT{ct}", "ValueT{ct}", "OffsetT{ct}", "OutOffsetT{ct}"})
   .add_int64_power_of_two_axis("Elements{io}", nvbench::range(16, 28, 4))
   .add_int64_power_of_two_axis("SelectedElements", nvbench::range(3, 23, 4))
-  .add_string_axis("Entropy", {"1.000", "0.544", "0.201", "0.000"});
+  .add_string_axis("Entropy", {"1.000", "0.544", "0.201", "0.000"})
+#if TUNE_BASE
+  .add_string_axis("Impl", {"single", "batched"})
+#endif // TUNE_BASE
+  ;
