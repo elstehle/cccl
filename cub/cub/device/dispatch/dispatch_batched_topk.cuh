@@ -803,8 +803,13 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
                           ::cuda::ceil_div(init_items, static_cast<::cuda::std::uint64_t>(ThreadsPerBlock))));
     if (init_grid > 0)
     {
+      // Launched as a dependent grid but containing *no* `_CCCL_PDL_GRID_DEPENDENCY_SYNC()`, deliberately: this kernel
+      // reads nothing. It only zeroes the multi-CTA per-segment slabs, which are disjoint from everything the
+      // producer that precedes it in the stream touches (the worker kernel's enqueue, or the all-large transform-scan,
+      // write the tile-offset table, the queue counters struct and the segment-id array). So the whole kernel can
+      // overlap with that producer's tail rather than costing a serialized device operation.
       if (const auto error = CubDebug(
-            launcher_factory(init_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+            launcher_factory(init_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/use_pdl)
               .doit(device_batched_topk_init_kernel<ThreadsPerBlock, SegCounterT, OffsetT>,
                     d_seg_counters,
                     d_seg_histograms,
