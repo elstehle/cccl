@@ -1030,7 +1030,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
       return error;
     }
     if (const auto error =
-          CubDebug(launcher_factory(*finalize_histogram_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+          CubDebug(launcher_factory(*finalize_histogram_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/use_pdl)
                      .doit(finalize_histogram_kernel_ptr,
                            d_key_segments_it,
                            segment_sizes,
@@ -1088,7 +1088,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
     // agent and run the trailing-partial-tile work; when `full_tiles_only_filter == false` that body is
     // `if constexpr`-eliminated and the extra arguments are simply unused.
     if (const auto error =
-          CubDebug(launcher_factory(*finalize_filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+          CubDebug(launcher_factory(*finalize_filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/use_pdl)
                      .doit(finalize_filter_kernel_ptr,
                            d_key_segments_it,
                            d_key_segments_out_it,

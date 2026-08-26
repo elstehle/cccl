@@ -753,18 +753,22 @@ __launch_bounds__(int(current_policy<PolicySelector>().baseline.multi_worker_per
       // add the trailing partial tile via fast smem atomics, then read into registers for the
       // bucket-finder.
       tile_histogram_t hist{temp_storage.staged_histogram, extract_bin_op};
-      hist.load_from(segment_histogram);
-      __syncthreads();
 
       const OffsetT num_full_tiles = num_items / static_cast<OffsetT>(tile_items);
       const OffsetT partial_items  = num_items - num_full_tiles * static_cast<OffsetT>(tile_items);
+
+      // Load the trailing partial tile into registers *before* touching anything the preceding kernel produced. It
+      // reads this segment's input keys, which that kernel also only reads, so it carries no dependency -- under PDL
+      // this load overlaps with the primary's tail. Ordering it after `load_from` (which reads the global histogram
+      // slab the primary fills) would serialize it behind the whole primary instead.
+      KeyT items[items_per_thread];
+      int num_thread_items = 0;
       if (partial_items > OffsetT{0})
       {
         const auto inner_key_it = d_key_segments_it[segment_id];
         const OffsetT tile_base = num_full_tiles * static_cast<OffsetT>(tile_items);
         // Blocked per-thread load of the trailing partial tile (matches the histogram agent's
         // `add_partial` arrangement); out-of-range lanes load nothing and are not binned.
-        KeyT items[items_per_thread];
         const OffsetT thread_base = tile_base + static_cast<OffsetT>(threadIdx.x) * items_per_thread;
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < items_per_thread; ++j)
@@ -775,10 +779,19 @@ __launch_bounds__(int(current_policy<PolicySelector>().baseline.multi_worker_per
             items[j] = inner_key_it[idx];
           }
         }
-        const int num_thread_items =
+        num_thread_items =
           (thread_base >= num_items)
             ? 0
             : static_cast<int>((::cuda::std::min) (static_cast<OffsetT>(items_per_thread), num_items - thread_base));
+      }
+
+      // First read of the primary's output.
+      _CCCL_PDL_GRID_DEPENDENCY_SYNC();
+      hist.load_from(segment_histogram);
+      __syncthreads();
+
+      if (partial_items > OffsetT{0})
+      {
         hist.add_partial(items, num_thread_items);
         __syncthreads();
       }
@@ -793,6 +806,8 @@ __launch_bounds__(int(current_policy<PolicySelector>().baseline.multi_worker_per
     }
     else
     {
+      // No partial-tile work to hoist here, so the dependency is honored right at the first read.
+      _CCCL_PDL_GRID_DEPENDENCY_SYNC();
       block_identify_kth_bucket_t{temp_storage.prefix_sum}.find_kth_bucket(segment_histogram, k, on_kth_bucket);
     }
 
@@ -1076,6 +1091,12 @@ __launch_bounds__(int(current_policy<PolicySelector>().baseline.multi_worker_per
       static_cast<OffsetT>(params::__get_and_clamp_param_to_nonnegative(segment_sizes, segment_id));
     counter_t* segment_counter = d_segment_counters + queue_idx;
     OffsetT* segment_histogram = d_segment_histograms + queue_idx * num_buckets;
+
+    // Conservative placement, unlike the histogram finalize above: this kernel's partial-tile work runs inside the
+    // filter agent, which touches the counters and the candidate buffers the preceding filter kernel wrote, so there
+    // is no independent prologue to hoist above the dependency. Only the launch and this CTA's index resolution
+    // overlap with the primary.
+    _CCCL_PDL_GRID_DEPENDENCY_SYNC();
 
     const OutOffsetT current_k         = segment_counter->k;
     const OffsetT current_len          = segment_counter->num_candidates_out;
