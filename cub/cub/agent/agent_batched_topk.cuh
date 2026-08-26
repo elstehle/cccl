@@ -1506,6 +1506,11 @@ public:
                   "agent_batched_topk_filter_partition::run<TilesPerChunk> requires "
                   "TilesPerChunk to be a power of two in {2, 4, 8}.");
 
+    // Everything up to the grid-dependency sync below is independent of the finalize kernel that precedes this one:
+    // the tile-offset table (including its trailing total) is published by the producer -- the worker epilogue or the
+    // all-large scan -- not by any finalize pass. So under PDL this CTA's scheduling, its load of `total`, its index
+    // arithmetic and its no-work early-exit all overlap with the primary, which is a single CTA running a
+    // `num_buckets`-wide prefix scan while the rest of the machine is idle.
     const LargeSegmentTileOffsetT* const d_total_large_tiles = &d_large_segments_tile_offsets[num_large_segments];
     const LargeSegmentTileOffsetT total                      = *d_total_large_tiles;
 
@@ -1514,8 +1519,12 @@ public:
 
     if (first_tile >= total)
     {
+      // Exits without syncing: the intrinsic guards dependent *reads*, and this CTA performs none.
       return;
     }
+
+    // The per-segment state resolved below reads each segment's counter, which the preceding finalize kernel writes.
+    _CCCL_PDL_GRID_DEPENDENCY_SYNC();
 
     // Hoist first segment-state resolve + smem-hist init.
     per_segment_state_t state = resolve_segment_state(resolve_queue_idx(first_tile), pass);
@@ -2086,8 +2095,14 @@ public:
 
     if (first_tile >= total)
     {
+      // Exits without syncing: the intrinsic guards dependent *reads*, and this CTA performs none.
       return;
     }
+
+    // As in the filter agent: the tile-offset table read above comes from the producer, not from the finalize kernel
+    // that immediately precedes this launch, so it overlaps. The per-segment state below reads the counters that
+    // finalize wrote.
+    _CCCL_PDL_GRID_DEPENDENCY_SYNC();
 
     // Hoist the first segment-state resolve + partition / keys-source construction out of the loop. Both `partition`
     // and `keys_source` live across tiles of the same segment so per-thread cross-tile state

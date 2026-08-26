@@ -1060,7 +1060,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
   {
     const bool reset_histogram = pass != num_passes - 1;
     if (const auto error =
-          CubDebug(launcher_factory(*filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+          CubDebug(launcher_factory(*filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/use_pdl)
                      .doit(filter_kernel_ptr,
                            d_key_segments_it,
                            d_key_segments_out_it,
@@ -1122,7 +1122,7 @@ _CCCL_HOST_API cudaError_t launch_multi_cta_passes(
 
   // Final pass: emit the selected keys (and values) for every segment.
   if (const auto error =
-        CubDebug(launcher_factory(*last_filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/false)
+        CubDebug(launcher_factory(*last_filter_grid, ThreadsPerBlock, 0, stream, /*dependent_launch=*/use_pdl)
                    .doit(last_filter_kernel_ptr,
                          d_key_segments_it,
                          d_key_segments_out_it,
