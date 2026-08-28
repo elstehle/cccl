@@ -16,6 +16,7 @@
 #include <cub/block/block_scan.cuh>
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/device/dispatch/dispatch_common.cuh>
+#include <cub/util_arch.cuh>
 #include <cub/util_ptx.cuh>
 #include <cub/util_type.cuh>
 
@@ -112,8 +113,12 @@ struct compare_key_prefix_op
 //!   full pass over the items (measured -50..-90 cycles latency, +5% throughput), but the
 //!   exchange grows from tile_items * max(sizeof(KeyT), sizeof(ValueT)) to
 //!   tile_items * sizeof(pair). The default enables it while the pair is at most 8 bytes (e.g.
-//!   4B keys + 4B values), where the measured win is largest; for 16-byte pairs (e.g. 8B keys or
-//!   8B values) the win shrinks to ~-30 cycles while the exchange doubles again — enable it
+//!   4B keys + 4B values), where the measured win is largest, and while the fused exchange plus
+//!   the double-buffered histograms still fit the portable 48 KB shared-memory budget
+//!   (max_smem_per_block), so the default never makes a tile shape require more shared memory
+//!   than a kernel can statically allocate (e.g. an 8192-item tile of 8-byte pairs would need a
+//!   64 KB fused exchange and falls back to the split exchange); for 16-byte pairs (e.g. 8B keys
+//!   or 8B values) the win shrinks to ~-30 cycles while the exchange doubles again — enable it
 //!   there only if the shared-memory budget allows.
 //! @tparam ScanAlgorithm
 //!   <b>[optional]</b> BlockScan algorithm used for the per-pass histogram prefix sum (default:
@@ -130,7 +135,11 @@ template <typename KeyT,
           typename ValueT               = NullType,
           int RadixBits                 = 8,
           bool UnrollBitPasses          = true,
-          bool FuseKeyValueExchange     = (sizeof(KeyT) + sizeof(ValueT) <= 8),
+          bool FuseKeyValueExchange =
+            (sizeof(KeyT) + sizeof(ValueT) <= 8)
+            && (::cuda::std::size_t{ThreadsPerBlock} * ItemsPerThread * (sizeof(KeyT) + sizeof(ValueT))
+                  + 2 * (::cuda::std::size_t{1} << RadixBits) * sizeof(::cuda::std::uint32_t)
+                <= max_smem_per_block),
           BlockScanAlgorithm ScanAlgorithm = BLOCK_SCAN_WARP_REDUCE_THEN_SCAN>
 class block_topk_air
 {
