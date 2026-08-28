@@ -16,6 +16,7 @@
 #include <cub/block/block_scan.cuh>
 #include <cub/block/radix_rank_sort_operations.cuh>
 #include <cub/device/dispatch/dispatch_common.cuh>
+#include <cub/util_arch.cuh>
 #include <cub/util_ptx.cuh>
 #include <cub/util_type.cuh>
 
@@ -104,12 +105,32 @@ struct compare_key_prefix_op
 //!   surrounding kernel is register- or occupancy-constrained, or when code size matters more
 //!   than latency (the unrolled body is emitted once per pass). Calls with a runtime sub-range
 //!   of bits always use the rolled loop, regardless of this parameter.
+//!
+//! @tparam FuseKeyValueExchange
+//!   <b>[optional]</b> Key-value selection only (ignored for keys-only). When true, keys and
+//!   values are scattered through shared memory together as pairs and gathered once, instead of
+//!   two round trips through a key/value-aliased exchange buffer. Removes two barriers and one
+//!   full pass over the items (measured -50..-90 cycles latency, +5% throughput), but the
+//!   exchange grows from tile_items * max(sizeof(KeyT), sizeof(ValueT)) to
+//!   tile_items * sizeof(pair). The default enables it while the pair is at most 8 bytes (e.g.
+//!   4B keys + 4B values), where the measured win is largest, and while the fused exchange plus
+//!   the double-buffered histograms still fit the portable 48 KB shared-memory budget
+//!   (max_smem_per_block), so the default never makes a tile shape require more shared memory
+//!   than a kernel can statically allocate (e.g. an 8192-item tile of 8-byte pairs would need a
+//!   64 KB fused exchange and falls back to the split exchange); for 16-byte pairs (e.g. 8B keys
+//!   or 8B values) the win shrinks to ~-30 cycles while the exchange doubles again — enable it
+//!   there only if the shared-memory budget allows.
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
-          typename ValueT      = NullType,
-          int RadixBits        = 8,
-          bool UnrollBitPasses = true>
+          typename ValueT               = NullType,
+          int RadixBits                 = 8,
+          bool UnrollBitPasses          = true,
+          bool FuseKeyValueExchange =
+            (sizeof(KeyT) + sizeof(ValueT) <= 8)
+            && (::cuda::std::size_t{ThreadsPerBlock} * ItemsPerThread * (sizeof(KeyT) + sizeof(ValueT))
+                  + 2 * (::cuda::std::size_t{1} << RadixBits) * sizeof(::cuda::std::uint32_t)
+                <= max_smem_per_block)>
 class block_topk_air
 {
 private:
@@ -125,6 +146,7 @@ private:
   // Calculate number of buckets processed per thread
   static constexpr int buckets_per_thread = ::cuda::ceil_div(num_buckets, threads_per_block);
   static constexpr bool keys_only         = ::cuda::std::is_same_v<ValueT, NullType>;
+  static constexpr bool fuse_exchange     = FuseKeyValueExchange && !keys_only;
 
   using histo_counter_t = ::cuda::std::uint32_t;
   using block_scan_t    = BlockScan<histo_counter_t, threads_per_block, BLOCK_SCAN_WARP_SCANS>;
@@ -140,7 +162,12 @@ private:
   // Plain shift+mask fuses fully (measured -35..-63 cycles/call on B200 at k=16).
   using fundamental_digit_extractor_t = ShiftDigitExtractor<KeyT>;
 
-  struct exchange_t
+  struct key_value_pair_
+  {
+    KeyT key;
+    ValueT value;
+  };
+  struct classic_exchange_
   {
     union
     {
@@ -148,6 +175,11 @@ private:
       ValueT values[tile_items];
     } u;
   };
+  struct fused_exchange_
+  {
+    key_value_pair_ pairs[tile_items];
+  };
+  using exchange_t = ::cuda::std::conditional_t<fuse_exchange, fused_exchange_, classic_exchange_>;
 
   struct TempStorage_
   {
@@ -554,9 +586,10 @@ private:
       prefix_mask,
       decomposer);
 
-    // Scatter indices of selected items into shared memory (only needed for key-value selection)
+    // Scatter indices of selected items into shared memory (only needed for key-value selection
+    // through the classic key/value-aliased exchange).
     [[maybe_unused]] int scatter_indices[items_per_thread];
-    if constexpr (!keys_only)
+    if constexpr (!keys_only && !fuse_exchange)
     {
       for (int i = 0; i < items_per_thread; ++i)
       {
@@ -595,7 +628,11 @@ private:
       {
         const auto ticket          = atomicAdd(&storage.selected_offset[item_class], histo_counter_t{1});
         const auto selected_offset = (item_class == 1) ? static_cast<histo_counter_t>(total_selected) + ticket : ticket;
-        if constexpr (keys_only)
+        if constexpr (fuse_exchange)
+        {
+          storage.stage.exchange.pairs[selected_offset] = key_value_pair_{original_keys[i], values[i]};
+        }
+        else if constexpr (keys_only)
         {
           if constexpr (::cuda::is_floating_point_v<KeyT>)
           {
@@ -619,45 +656,67 @@ private:
     __syncthreads();
 
     // Gather selected items into thread registers for return.
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int i = 0; i < items_per_thread; ++i)
+    if constexpr (fuse_exchange)
     {
-      const int buffer_idx = linear_tid * items_per_thread + i;
-      if (buffer_idx < k)
-      {
-        keys[i] = storage.stage.exchange.u.keys[buffer_idx];
-      }
-      else if constexpr (!keys_only)
-      {
-        // The register keys are still bit-twiddled; restore from the original copy
-        keys[i] = original_keys[i];
-      }
-    }
-
-    if constexpr (!keys_only)
-    {
-      // Ensure all keys have been loaded from shared memory before we repurpose the exchange buffer for values
-      __syncthreads();
-
-      _CCCL_PRAGMA_UNROLL_FULL()
-      for (int i = 0; i < items_per_thread; ++i)
-      {
-        if (scatter_indices[i] >= 0)
-        {
-          storage.stage.exchange.u.values[scatter_indices[i]] = values[i];
-        }
-      }
-
-      // Ensure all values have been written to shared memory before we read them back in
-      __syncthreads();
-
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
         const int buffer_idx = linear_tid * items_per_thread + i;
         if (buffer_idx < k)
         {
-          values[i] = storage.stage.exchange.u.values[buffer_idx];
+          const key_value_pair_ pair = storage.stage.exchange.pairs[buffer_idx];
+          keys[i]                    = pair.key;
+          values[i]                  = pair.value;
+        }
+        else
+        {
+          // The register keys are still bit-twiddled; restore from the original copy
+          keys[i] = original_keys[i];
+        }
+      }
+    }
+    else
+    {
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int i = 0; i < items_per_thread; ++i)
+      {
+        const int buffer_idx = linear_tid * items_per_thread + i;
+        if (buffer_idx < k)
+        {
+          keys[i] = storage.stage.exchange.u.keys[buffer_idx];
+        }
+        else if constexpr (!keys_only)
+        {
+          // The register keys are still bit-twiddled; restore from the original copy
+          keys[i] = original_keys[i];
+        }
+      }
+
+      if constexpr (!keys_only)
+      {
+        // Ensure all keys have been loaded from shared memory before we repurpose the exchange buffer for values
+        __syncthreads();
+
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
+        {
+          if (scatter_indices[i] >= 0)
+          {
+            storage.stage.exchange.u.values[scatter_indices[i]] = values[i];
+          }
+        }
+
+        // Ensure all values have been written to shared memory before we read them back in
+        __syncthreads();
+
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
+        {
+          const int buffer_idx = linear_tid * items_per_thread + i;
+          if (buffer_idx < k)
+          {
+            values[i] = storage.stage.exchange.u.values[buffer_idx];
+          }
         }
       }
     }
