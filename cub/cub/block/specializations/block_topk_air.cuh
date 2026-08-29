@@ -211,8 +211,6 @@ private:
     bit_ordered_type (&unsigned_keys)[items_per_thread],
     int k,
     int valid_items,
-    int begin_bit,
-    int end_bit,
     int& total_selected,
     int& num_candidates,
     bit_ordered_type& kth_key_prefix,
@@ -220,14 +218,12 @@ private:
     DecomposerT decomposer = DecomposerT{})
   {
     // Preconditions
-    [[maybe_unused]] constexpr int max_bit = int(sizeof(KeyT) * 8);
+    constexpr int max_bit = int(sizeof(KeyT) * 8);
     _CCCL_ASSERT(k > 0 && k <= tile_items, "k must be in (0, tile_items]");
     if constexpr (!IsFullTile)
     {
       _CCCL_ASSERT(valid_items > 0 && valid_items <= tile_items, "valid_items must be in [1, tile_items]");
     }
-    _CCCL_ASSERT(begin_bit >= 0 && begin_bit < max_bit, "begin_bit must be in [0, max_bit)");
-    _CCCL_ASSERT(end_bit > begin_bit && end_bit <= max_bit, "end_bit must be in (begin_bit, max_bit]");
 
     // We only consider candidates identified in the previous pass, i.e., ((sortkey & prefix_mask) == kth_prefix)
     // With each pass, we identify a wider prefix of the splitter key
@@ -237,13 +233,12 @@ private:
     // The total number of selected items
     total_selected = 0;
 
-    const int total_bits = (::cuda::std::max) (end_bit - begin_bit, 0);
-    const int num_passes = ::cuda::ceil_div(total_bits, RadixBits);
+    const int num_passes = ::cuda::ceil_div(max_bit, RadixBits);
     for (int pass = 0; pass < num_passes; ++pass)
     {
       // Bit-range & mask of the current pass
-      const int pass_end_bit           = end_bit - pass * RadixBits;
-      const int pass_begin_bit         = (::cuda::std::max) (pass_end_bit - RadixBits, begin_bit);
+      const int pass_end_bit           = max_bit - pass * RadixBits;
+      const int pass_begin_bit         = (::cuda::std::max) (pass_end_bit - RadixBits, 0);
       const int pass_bits              = pass_end_bit - pass_begin_bit;
       const bit_ordered_type pass_mask = ::cuda::bitmask<bit_ordered_type>(pass_begin_bit, pass_bits);
 
@@ -296,9 +291,7 @@ private:
     KeyT (&keys)[items_per_thread],
     ValueT (&values)[items_per_thread],
     int k,
-    int valid_items,
-    int begin_bit,
-    int end_bit)
+    int valid_items)
   {
     if constexpr (!IsFullTile)
     {
@@ -309,17 +302,6 @@ private:
     if (k <= 0)
     {
       return;
-    }
-
-    // TODO (elstehle): Short-circuit if begin_bit is constrained to be non-negative
-    begin_bit = (::cuda::std::max) (begin_bit, 0);
-
-    // TODO (elstehle): Short-circuit if end_bit is constrained to be less than the maximum number of bits in the key
-    // type
-    const int max_bit = int(sizeof(KeyT) * 8);
-    if (end_bit > max_bit)
-    {
-      end_bit = max_bit;
     }
 
     // TODO (elstehle): Short-circuit if k is greater than the number of items in the tile
@@ -376,8 +358,6 @@ private:
       unsigned_keys,
       k,
       valid_items,
-      begin_bit,
-      end_bit,
       total_selected,
       num_candidates,
       kth_prefix,
@@ -501,10 +481,10 @@ public:
 
   template <detail::topk::select SelectDirection, bool IsFullTile>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void
-  select_keys(KeyT (&keys)[items_per_thread], int k, int valid_items, int begin_bit = 0, int end_bit = sizeof(KeyT) * 8)
+  select_keys(KeyT (&keys)[items_per_thread], int k, int valid_items)
   {
     NullType values[ItemsPerThread];
-    select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items, begin_bit, end_bit);
+    select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items);
   }
 
   template <detail::topk::select SelectDirection, bool IsFullTile>
@@ -512,11 +492,9 @@ public:
     KeyT (&keys)[items_per_thread],
     ValueT (&values)[items_per_thread],
     int k,
-    int valid_items,
-    int begin_bit = 0,
-    int end_bit   = sizeof(KeyT) * 8)
+    int valid_items)
   {
-    select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items, begin_bit, end_bit);
+    select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items);
   }
 };
 } // namespace detail
