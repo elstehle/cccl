@@ -123,7 +123,11 @@ private:
   using bit_ordered_type       = typename traits::bit_ordered_type;
   using bit_ordered_conversion = typename traits::bit_ordered_conversion_policy;
 
-  using fundamental_digit_extractor_t = BFEDigitExtractor<KeyT>;
+  // ShiftDigitExtractor rather than BFEDigitExtractor: the BFE path is inline PTX (bfe.u32 has
+  // no native SASS on current architectures and is emulated by ptxas), which is opaque to the
+  // compiler and keeps it from folding the bucket computation into the histogram atomic's
+  // addressing. The plain shift and mask of ShiftDigitExtractor folds completely.
+  using fundamental_digit_extractor_t = ShiftDigitExtractor<KeyT>;
 
   struct exchange_t
   {
