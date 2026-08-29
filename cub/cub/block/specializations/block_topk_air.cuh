@@ -20,6 +20,7 @@
 #include <cub/util_type.cuh>
 
 #include <cuda/std/__bit/bit_cast.h>
+#include <cuda/std/__type_traits/conditional.h>
 #include <cuda/std/__type_traits/is_unsigned.h>
 #include <cuda/std/cstdint>
 
@@ -48,11 +49,57 @@ struct compare_key_prefix_op
 //! histogram over the current digit is built over candidates only (keys matching the prefix so
 //! far), then a prefix sum identifies the bucket containing the k-th item. Items in earlier
 //! buckets are guaranteed top-k; items in later buckets are discarded; the chosen bucket
-//! becomes the candidate set for the next pass. No data movement occurs during this stage—only
+//! becomes the candidate set for the next pass. No data movement occurs during this stage. Only
 //! the histogram in shared memory is updated. (2) Partitioning scatters the top-k items (key
 //! prefix <= k-th prefix) into shared memory via atomic counters, then each thread reads back
 //! its portion. Supports key-only and key-value selection.
-template <typename KeyT, int ThreadsPerBlock, int ItemsPerThread, typename ValueT = NullType, int RadixBits = 8>
+//!
+//! The implementation keeps the number of phases and block-wide barriers per radix pass small:
+//!  * The per-pass prefix sum is fused with the k-th-bucket selection. The crossing test runs on
+//!    the scan's register results (exclusive = inclusive - count), so the scanned histogram is
+//!    never written back to shared memory and no separate choose phase (with its barrier) is
+//!    needed.
+//!  * The histograms are double-buffered. Both buffers are zeroed once up front and the buffer
+//!    for pass p+1 is re-zeroed during pass p's histogram phase (its last read precedes the
+//!    preceding pass's state barrier), removing the per-pass init phase and its barrier. The
+//!    second buffer unions under the exchange storage, so shared memory usage is unchanged.
+//!  * The partitioning counters are zeroed before the radix passes (they live outside the
+//!    aliased storage union) and the tied-candidate position is computed as
+//!    total_selected + zero-based ticket, removing the partitioning setup phase and its
+//!    barriers.
+//!  * For key-value selection, a register copy of the original keys is kept across the radix
+//!    stage and scattered directly, so no un-twiddling and no -0.0 restoration bitvector is
+//!    needed. The -0.0 -> +0.0 ranking normalization is kept, so selection semantics are
+//!    unchanged. The classic untwiddle path is used for keys-only selection.
+//!
+//! @tparam KeyT
+//!   Key type
+//!
+//! @tparam ThreadsPerBlock
+//!   Number of threads in the block
+//!
+//! @tparam ItemsPerThread
+//!   Number of items per thread
+//!
+//! @tparam ValueT
+//!   <b>[optional]</b> Value type (default: NullType, which indicates keys-only selection)
+//!
+//! @tparam RadixBits
+//!   <b>[optional]</b> Number of radix bits per pass (default: 8). Wider digits reduce the
+//!   number of passes but grow the histograms, their prefix sum, and the buffer resets.
+//!
+//! @tparam UnrollBitPasses
+//!   <b>[optional]</b> When true (default), the radix-pass loop is fully unrolled. The pass
+//!   count is a compile-time constant, so unrolling turns the per-pass shifts, masks, and
+//!   histogram-buffer selections into immediates and lets the compiler schedule across pass
+//!   boundaries, at the cost of a larger code and register footprint. Choose false when the
+//!   surrounding kernel is register- or occupancy-constrained or when code size matters more.
+template <typename KeyT,
+          int ThreadsPerBlock,
+          int ItemsPerThread,
+          typename ValueT      = NullType,
+          int RadixBits        = 8,
+          bool UnrollBitPasses = true>
 class block_topk_air
 {
 private:
@@ -78,32 +125,41 @@ private:
 
   using fundamental_digit_extractor_t = BFEDigitExtractor<KeyT>;
 
+  struct exchange_t
+  {
+    union
+    {
+      KeyT keys[tile_items];
+      ValueT values[tile_items];
+    } u;
+  };
+
   struct TempStorage_
   {
     union
     {
       struct
       {
-        histo_counter_t histogram[num_buckets];
+        // Double-buffered: pass p histograms into buffer p%2 while re-zeroing buffer (p+1)%2
+        histo_counter_t histogram[2][num_buckets];
         typename block_scan_t::TempStorage scan_temp_storage;
-        struct
-        {
-          histo_counter_t selected;
-          histo_counter_t candidates;
-          int bucket;
-        } pass_state;
       } passes;
 
-      struct
-      {
-        histo_counter_t selected_offset[2];
-        union
-        {
-          KeyT keys[tile_items];
-          ValueT values[tile_items];
-        } exchange;
-      } select;
+      exchange_t exchange;
     } stage;
+
+    // Outside the aliased union: written by one thread before the pass barrier and read by all
+    // after it. It must not overlap the exchange writes that follow the final pass.
+    struct
+    {
+      histo_counter_t selected;
+      histo_counter_t candidates;
+      int bucket;
+    } pass_state;
+
+    // Outside the aliased union: preset before the radix passes (ordered by their barriers),
+    // so the partitioning stage needs no setup phase or barrier of its own.
+    histo_counter_t selected_offset[2];
   };
 
   /// Shared storage reference
@@ -112,22 +168,21 @@ private:
   /// Linear thread index
   int linear_tid;
 
-  // Initialize histogram bins to zero
-  _CCCL_DEVICE_API _CCCL_FORCEINLINE void init_histograms()
+  // Zero one histogram buffer
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void zero_histogram(histo_counter_t (&histogram)[num_buckets])
   {
-    // Initialize histogram bin counts to zeros
     int histo_offset = 0;
 
     // Loop unrolling is beneficial for performance here
     _CCCL_PRAGMA_UNROLL_FULL()
     for (; histo_offset + threads_per_block <= num_buckets; histo_offset += threads_per_block)
     {
-      storage.stage.passes.histogram[histo_offset + threadIdx.x] = 0;
+      histogram[histo_offset + linear_tid] = 0;
     }
     // Finish up with guarded initialization if necessary
-    if ((num_buckets % threads_per_block != 0) && (histo_offset + threadIdx.x < num_buckets))
+    if ((num_buckets % threads_per_block != 0) && (histo_offset + linear_tid < num_buckets))
     {
-      storage.stage.passes.histogram[histo_offset + threadIdx.x] = 0;
+      histogram[histo_offset + linear_tid] = 0;
     }
   }
 
@@ -137,7 +192,8 @@ private:
     const bit_ordered_type (&unsigned_keys)[items_per_thread],
     int valid_items,
     DigitExtractorT digit_extractor,
-    FilterOpT filter_op)
+    FilterOpT filter_op,
+    histo_counter_t (&histogram)[num_buckets])
   {
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
@@ -148,15 +204,19 @@ private:
       {
         const auto digit  = static_cast<int>(digit_extractor.Digit(key));
         const auto bucket = (SelectDirection == detail::topk::select::min) ? digit : (num_buckets - 1 - digit);
-        atomicAdd(&storage.stage.passes.histogram[bucket], histo_counter_t{1});
+        atomicAdd(&histogram[bucket], histo_counter_t{1});
       }
     }
   }
 
-  // Compute prefix sum over buckets
-  _CCCL_DEVICE_API _CCCL_FORCEINLINE void compute_bin_offsets()
+  // Fused prefix sum over buckets + identification of the bucket that the k-th item falls into.
+  // The crossing test runs on the scan's register results (exclusive = inclusive - count), so
+  // the scanned histogram is never written back to shared memory and no separate choose phase
+  // (with its barrier) is needed.
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  scan_and_choose_bucket(const histo_counter_t (&histogram)[num_buckets], histo_counter_t k)
   {
-    histo_counter_t thread_buckets[buckets_per_thread]{};
+    histo_counter_t counts[buckets_per_thread]{};
     const int base = linear_tid * buckets_per_thread;
 
     _CCCL_PRAGMA_UNROLL_FULL()
@@ -165,11 +225,17 @@ private:
       const int bin_idx = base + i;
       if (bin_idx < num_buckets)
       {
-        thread_buckets[i] = storage.stage.passes.histogram[bin_idx];
+        counts[i] = histogram[bin_idx];
       }
     }
 
-    block_scan_t(storage.stage.passes.scan_temp_storage).InclusiveSum(thread_buckets, thread_buckets);
+    histo_counter_t inclusive_sums[buckets_per_thread];
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int i = 0; i < buckets_per_thread; ++i)
+    {
+      inclusive_sums[i] = counts[i];
+    }
+    block_scan_t(storage.stage.passes.scan_temp_storage).InclusiveSum(inclusive_sums, inclusive_sums);
 
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < buckets_per_thread; ++i)
@@ -177,33 +243,79 @@ private:
       const int bin_idx = base + i;
       if (bin_idx < num_buckets)
       {
-        storage.stage.passes.histogram[bin_idx] = thread_buckets[i];
-      }
-    }
-  }
+        const histo_counter_t inclusive = inclusive_sums[i];
+        const histo_counter_t exclusive = inclusive - counts[i];
+        // If a bug causes less than k candidates in the histogram, the previous pass' pass_state will persist making
+        // debugging harder. This assert should catch such bugs. Should there ever be a valid use case for less than k
+        // candidates, the pass_state needs to be reset unconditionally.
+        _CCCL_ASSERT((bin_idx != num_buckets - 1) || (inclusive >= k),
+                     "Less than k candidates have participated in the histogram");
 
-  // Identify the bucket that the k-th item falls into
-  _CCCL_DEVICE_API _CCCL_FORCEINLINE void choose_bucket(histo_counter_t k)
-  {
-    const int base = linear_tid * buckets_per_thread;
-
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int i = 0; i < buckets_per_thread; ++i)
-    {
-      const int bin_idx = base + i;
-      if (bin_idx < num_buckets)
-      {
-        const histo_counter_t prev = (bin_idx == 0) ? 0 : storage.stage.passes.histogram[bin_idx - 1];
-        const histo_counter_t cur  = storage.stage.passes.histogram[bin_idx];
-
-        if (prev < k && cur >= k)
+        if (exclusive < k && inclusive >= k)
         {
-          storage.stage.passes.pass_state.bucket     = bin_idx;
-          storage.stage.passes.pass_state.candidates = cur - prev;
-          storage.stage.passes.pass_state.selected   = prev;
+          storage.pass_state.bucket     = bin_idx;
+          storage.pass_state.candidates = inclusive - exclusive;
+          storage.pass_state.selected   = exclusive;
         }
       }
     }
+  }
+
+  // One radix pass: histogram over the surviving candidates (re-zeroing the other buffer in the
+  // same phase), fused scan+choose, and the pass-state update. Returns true when all remaining
+  // candidates are amongst the top-k (early exit).
+  template <detail::topk::select SelectDirection, bool IsFullTile, typename DecomposerT>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE bool run_radix_pass(
+    const bit_ordered_type (&unsigned_keys)[items_per_thread],
+    int valid_items,
+    int& k,
+    int& total_selected,
+    int& num_candidates,
+    bit_ordered_type& kth_key_prefix,
+    bit_ordered_type& prefix_mask,
+    int pass,
+    int pass_begin_bit,
+    int pass_bits,
+    bool zero_next_histogram,
+    DecomposerT decomposer)
+  {
+    const bit_ordered_type pass_mask = ::cuda::bitmask<bit_ordered_type>(pass_begin_bit, pass_bits);
+
+    histo_counter_t(&histogram)[num_buckets] = storage.stage.passes.histogram[pass & 1];
+
+    // Compute histogram over the current pass's bits, pre-filtered for keys matching the previous pass's prefix mask
+    auto filter_op = compare_key_prefix_op<bit_ordered_type>{prefix_mask, kth_key_prefix};
+    auto digit_extractor =
+      traits::template digit_extractor<fundamental_digit_extractor_t>(pass_begin_bit, pass_bits, decomposer);
+    compute_histograms<SelectDirection, IsFullTile>(unsigned_keys, valid_items, digit_extractor, filter_op, histogram);
+    if (zero_next_histogram)
+    {
+      // Re-zero the other buffer for the next pass. Its last read preceded the previous pass's
+      // state barrier, so this shares the histogram phase instead of needing one of its own
+      zero_histogram(storage.stage.passes.histogram[(pass + 1) & 1]);
+    }
+    __syncthreads();
+
+    // Compute prefix sum over buckets and identify the bucket that the k-th item falls into
+    scan_and_choose_bucket(histogram, static_cast<histo_counter_t>(k));
+    __syncthreads();
+
+    // Update the current k and length for the next pass
+    k -= storage.pass_state.selected;
+    num_candidates = storage.pass_state.candidates;
+    total_selected += storage.pass_state.selected;
+
+    // Update the kth_key_prefix and prefix_mask for the next pass
+    // Basically, we will have valid_items candidates with the prefix kth_key_prefix
+    const auto kth_key_digit =
+      (SelectDirection == detail::topk::select::min)
+        ? storage.pass_state.bucket
+        : (num_buckets - 1 - storage.pass_state.bucket);
+    kth_key_prefix |= bit_ordered_type(kth_key_digit) << pass_begin_bit;
+    prefix_mask |= pass_mask;
+
+    // Short-circuit if all candidates are amongst the top-k
+    return num_candidates == k;
   }
 
   template <typename detail::topk::select SelectDirection, bool IsFullTile, typename DecomposerT>
@@ -233,57 +345,57 @@ private:
     // The total number of selected items
     total_selected = 0;
 
-    const int num_passes = ::cuda::ceil_div(max_bit, RadixBits);
-    for (int pass = 0; pass < num_passes; ++pass)
+    // Zero both histogram buffers once. Later passes re-zero the respectively other buffer
+    // inside their histogram phase, so no per-pass init phase (and barrier) is needed
+    zero_histogram(storage.stage.passes.histogram[0]);
+    zero_histogram(storage.stage.passes.histogram[1]);
+    __syncthreads();
+
+    constexpr int num_passes = ::cuda::ceil_div(max_bit, RadixBits);
+    auto run_pass            = [&](int pass) -> bool {
+      const int pass_end_bit   = max_bit - pass * RadixBits;
+      const int pass_begin_bit = (::cuda::std::max) (pass_end_bit - RadixBits, 0);
+      return run_radix_pass<SelectDirection, IsFullTile>(
+        unsigned_keys,
+        valid_items,
+        k,
+        total_selected,
+        num_candidates,
+        kth_key_prefix,
+        prefix_mask,
+        pass,
+        pass_begin_bit,
+        pass_end_bit - pass_begin_bit,
+        pass > 0 && pass + 1 < num_passes,
+        decomposer);
+    };
+
+    if constexpr (UnrollBitPasses)
     {
-      // Bit-range & mask of the current pass
-      const int pass_end_bit           = max_bit - pass * RadixBits;
-      const int pass_begin_bit         = (::cuda::std::max) (pass_end_bit - RadixBits, 0);
-      const int pass_bits              = pass_end_bit - pass_begin_bit;
-      const bit_ordered_type pass_mask = ::cuda::bitmask<bit_ordered_type>(pass_begin_bit, pass_bits);
-
-      // Zero-initialize histograms for the current pass
-      init_histograms();
-      __syncthreads();
-
-      // Compute histogram over the current pass's, bits pre-filtered for keys matching the previous pass's prefix mask
-      auto filter_op = compare_key_prefix_op<bit_ordered_type>{prefix_mask, kth_key_prefix};
-      auto digit_extractor =
-        traits::template digit_extractor<fundamental_digit_extractor_t>(pass_begin_bit, pass_bits, decomposer);
-      compute_histograms<SelectDirection, IsFullTile>(unsigned_keys, valid_items, digit_extractor, filter_op);
-      __syncthreads();
-
-      // Compute prefix sum over buckets
-      compute_bin_offsets();
-      __syncthreads();
-
-      // Identify the bucket that the k-th item falls into
-      choose_bucket(k);
-      __syncthreads();
-
-      // Update the current k and length for the next pass
-      k -= storage.stage.passes.pass_state.selected;
-      num_candidates = storage.stage.passes.pass_state.candidates;
-      total_selected += storage.stage.passes.pass_state.selected;
-
-      // Update the kth_key_prefix and prefix_mask for the next pass
-      // Basically, we will have valid_items candidates with the prefix kth_key_prefix
-      const auto kth_key_digit =
-        (SelectDirection == detail::topk::select::min)
-          ? storage.stage.passes.pass_state.bucket
-          : (num_buckets - 1 - storage.stage.passes.pass_state.bucket);
-      kth_key_prefix |= bit_ordered_type(kth_key_digit) << pass_begin_bit;
-      prefix_mask |= pass_mask;
-
-      // Short-circuit if all candidates are amongst the top-k
-      if (num_candidates == k)
+      // Fully unrolled, the per-pass shifts, masks, and histogram-buffer selections become
+      // immediates and the compiler can schedule across pass boundaries.
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int pass = 0; pass < num_passes; ++pass)
       {
-        break;
+        if (run_pass(pass))
+        {
+          break;
+        }
       }
     }
-
-    // Ensure we can repurpose shared memory after the multi-pass stage
-    __syncthreads();
+    else
+    {
+      _CCCL_PRAGMA_UNROLL(1)
+      for (int pass = 0; pass < num_passes; ++pass)
+      {
+        if (run_pass(pass))
+        {
+          break;
+        }
+      }
+    }
+    // No trailing barrier is needed before repurposing shared memory: the histograms' last
+    // reads precede the final pass's state barrier, and pass_state lives outside the union.
   }
 
   template <detail::topk::select SelectDirection, bool IsFullTile>
@@ -310,11 +422,37 @@ private:
       return;
     }
 
+    // Preset the partitioning counters before the radix passes: they live outside the aliased
+    // storage union and every pass provides ordering barriers, so the partitioning stage below
+    // needs no setup phase or barrier of its own. Tied candidates use a zero-based ticket whose
+    // final position is computed as total_selected + ticket.
+    if (linear_tid == 0)
+    {
+      storage.selected_offset[0] = 0;
+      storage.selected_offset[1] = 0;
+    }
+
+    // For key-value selection, keep a register copy of the original keys: the selected keys are
+    // then scattered from the copy, so the keys neither need to be un-twiddled nor does -0.0
+    // need to be tracked and restored (the -0.0 -> +0.0 ranking normalization below is kept, so
+    // selection semantics are unchanged). The classic path is used for keys-only
+    // selection.
+    [[maybe_unused]] KeyT original_keys[items_per_thread];
+    if constexpr (!keys_only)
+    {
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int i = 0; i < items_per_thread; ++i)
+      {
+        original_keys[i] = keys[i];
+      }
+    }
+
     // TODO (elstehle): Add support for custom decomposers
     identity_decomposer_t decomposer;
 
-    // Get bit-twiddled sortkeys. For float keys, track which were -0.0 (normalized to +0.0 for ranking) so we can
-    // restore -0.0 in the output via a bitvector; no extra key buffer.
+    // Get bit-twiddled sortkeys. For float keys, -0.0 is normalized to +0.0 for ranking. For
+    // keys-only selection, track which keys were -0.0 so we can restore -0.0 in the output via
+    // a bitvector (key-value selection restores from the register copy instead).
     bit_ordered_type(&unsigned_keys)[ItemsPerThread] = reinterpret_cast<bit_ordered_type(&)[ItemsPerThread]>(keys);
     constexpr int flip_back_num_words                = ::cuda::ceil_div(items_per_thread, 32);
     [[maybe_unused]] ::cuda::std::uint32_t flip_back_bits[flip_back_num_words] = {};
@@ -329,7 +467,10 @@ private:
         unsigned_keys[i] = bit_ordered_conversion::to_bit_ordered(decomposer, unsigned_keys[i]);
         if (unsigned_keys[i] == twiddled_minus_zero)
         {
-          flip_back_bits[i / 32] |= (1u << (i % 32));
+          if constexpr (keys_only)
+          {
+            flip_back_bits[i / 32] |= (1u << (i % 32));
+          }
           unsigned_keys[i] = twiddled_zero;
         }
       }
@@ -364,8 +505,7 @@ private:
       prefix_mask,
       decomposer);
 
-    // Scatter indices of selected items into shared memory (only for selecting key-value pairs, using a two-phase
-    // approach to lower shared memory requirements).
+    // Scatter indices of selected items into shared memory (only needed for key-value selection)
     [[maybe_unused]] int scatter_indices[items_per_thread];
     if constexpr (!keys_only)
     {
@@ -381,16 +521,6 @@ private:
     // fill up the remaining slots up to k.
     const bool select_all_candidates = expand_k_to_include_ties || num_candidates + total_selected == k;
 
-    if (linear_tid == 0)
-    {
-      // Write offsets for selected items with key_prefix < kth_prefix
-      storage.stage.select.selected_offset[0] = 0;
-      // Write offsets for tied items across the k-th position, i.e., key_prefix == kth_prefix
-      storage.stage.select.selected_offset[1] = total_selected;
-    }
-    // Ensure atomic selection counter has been reset
-    __syncthreads();
-
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
@@ -403,26 +533,35 @@ private:
       const bool is_candidate = key_prefix == kth_prefix;
 
       // We differentiate between candidates and selected only if not all candidates make it into the top-k items.
-      int item_class = (!select_all_candidates) && is_candidate ? 1 : 0;
+      const int item_class = (!select_all_candidates) && is_candidate ? 1 : 0;
 
-      // Untwiddle the key before storing in shared memory
-      unsigned_keys[i] = bit_ordered_conversion::from_bit_ordered(decomposer, unsigned_keys[i]);
+      // Keys-only: untwiddle the key before storing in shared memory (key-value selection
+      // scatters the original register copy instead)
+      if constexpr (keys_only)
+      {
+        unsigned_keys[i] = bit_ordered_conversion::from_bit_ordered(decomposer, unsigned_keys[i]);
+      }
 
       if (is_valid && (is_selected || is_candidate))
       {
-        const histo_counter_t selected_offset = atomicAdd(&storage.stage.select.selected_offset[item_class], 1);
-        if constexpr (::cuda::is_floating_point_v<KeyT>)
+        const auto ticket          = atomicAdd(&storage.selected_offset[item_class], histo_counter_t{1});
+        const auto selected_offset = (item_class == 1) ? static_cast<histo_counter_t>(total_selected) + ticket : ticket;
+        if constexpr (keys_only)
         {
-          storage.stage.select.exchange.keys[selected_offset] =
-            (flip_back_bits[i / 32] & (1u << (i % 32))) ? KeyT(-0.0) : ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
+          if constexpr (::cuda::is_floating_point_v<KeyT>)
+          {
+            storage.stage.exchange.u.keys[selected_offset] =
+              (flip_back_bits[i / 32] & (1u << (i % 32))) ? KeyT(-0.0) : ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
+          }
+          else
+          {
+            storage.stage.exchange.u.keys[selected_offset] = ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
+          }
         }
         else
         {
-          storage.stage.select.exchange.keys[selected_offset] = ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
-        }
-        if constexpr (!keys_only)
-        {
-          scatter_indices[i] = selected_offset;
+          storage.stage.exchange.u.keys[selected_offset] = original_keys[i];
+          scatter_indices[i]                             = static_cast<int>(selected_offset);
         }
       }
     }
@@ -437,7 +576,12 @@ private:
       const int buffer_idx = linear_tid * items_per_thread + i;
       if (buffer_idx < k)
       {
-        keys[i] = storage.stage.select.exchange.keys[buffer_idx];
+        keys[i] = storage.stage.exchange.u.keys[buffer_idx];
+      }
+      else if constexpr (!keys_only)
+      {
+        // The register keys are still bit-twiddled. Restore them from the original copy
+        keys[i] = original_keys[i];
       }
     }
 
@@ -451,7 +595,7 @@ private:
       {
         if (scatter_indices[i] >= 0)
         {
-          storage.stage.select.exchange.values[scatter_indices[i]] = values[i];
+          storage.stage.exchange.u.values[scatter_indices[i]] = values[i];
         }
       }
 
@@ -464,7 +608,7 @@ private:
         const int buffer_idx = linear_tid * items_per_thread + i;
         if (buffer_idx < k)
         {
-          values[i] = storage.stage.select.exchange.values[buffer_idx];
+          values[i] = storage.stage.exchange.u.values[buffer_idx];
         }
       }
     }
