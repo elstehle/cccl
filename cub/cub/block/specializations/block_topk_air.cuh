@@ -58,17 +58,18 @@ struct compare_key_prefix_op
 //!   <b>[optional]</b> When true (default), the radix-pass loop may be fully unrolled. Unrolling provides better
 //!   throughput and latency but may come at increased register usage.
 //! @tparam ScatterOriginalKeys
-//!   <b>[optional]</b> When true, the partitioning stage scatters a register copy of the original keys, so selected
-//!   keys need no untwiddling and no -0.0 restoration state. When false, keys are untwiddled in place and -0.0 is
-//!   restored through a bitvector. The copy extends the keys' live ranges across the radix passes, which may increase
-//!   register usage. The default enables the copy only for key-value selection.
+//!   <b>[optional]</b> When true (default), the partitioning stage scatters a register copy of the original keys, so
+//!   selected keys need no untwiddling and no -0.0 restoration state. When false, keys are untwiddled in place and
+//!   -0.0 is restored through a bitvector. The copy extends the keys' live ranges across the radix passes, so
+//!   disabling it can reduce register pressure, for example when values are materialized from memory rather than
+//!   generated.
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
           typename ValueT          = NullType,
           int RadixBits            = 8,
           bool UnrollBitPasses     = true,
-          bool ScatterOriginalKeys = !::cuda::std::is_same_v<ValueT, NullType>>
+          bool ScatterOriginalKeys = true>
 class block_topk_air
 {
 private:
