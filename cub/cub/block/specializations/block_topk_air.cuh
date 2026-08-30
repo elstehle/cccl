@@ -54,46 +54,9 @@ struct compare_key_prefix_op
 //! prefix <= k-th prefix) into shared memory via atomic counters, then each thread reads back
 //! its portion. Supports key-only and key-value selection.
 //!
-//! The implementation keeps the number of phases and block-wide barriers per radix pass small:
-//!  * The per-pass prefix sum is fused with the k-th-bucket selection. The crossing test runs on
-//!    the scan's register results (exclusive = inclusive - count), so the scanned histogram is
-//!    never written back to shared memory and no separate choose phase (with its barrier) is
-//!    needed.
-//!  * The histograms are double-buffered. Both buffers are zeroed once up front and the buffer
-//!    for pass p+1 is re-zeroed during pass p's histogram phase (its last read precedes the
-//!    preceding pass's state barrier), removing the per-pass init phase and its barrier. The
-//!    second buffer unions under the exchange storage, so shared memory usage is unchanged.
-//!  * The partitioning counters are zeroed before the radix passes (they live outside the
-//!    aliased storage union) and the tied-candidate position is computed as
-//!    total_selected + zero-based ticket, removing the partitioning setup phase and its
-//!    barriers.
-//!  * For key-value selection, a register copy of the original keys is kept across the radix
-//!    stage and scattered directly, so no un-twiddling and no -0.0 restoration bitvector is
-//!    needed. The -0.0 -> +0.0 ranking normalization is kept, so selection semantics are
-//!    unchanged. The classic untwiddle path is used for keys-only selection.
-//!
-//! @tparam KeyT
-//!   Key type
-//!
-//! @tparam ThreadsPerBlock
-//!   Number of threads in the block
-//!
-//! @tparam ItemsPerThread
-//!   Number of items per thread
-//!
-//! @tparam ValueT
-//!   <b>[optional]</b> Value type (default: NullType, which indicates keys-only selection)
-//!
-//! @tparam RadixBits
-//!   <b>[optional]</b> Number of radix bits per pass (default: 8). Wider digits reduce the
-//!   number of passes but grow the histograms, their prefix sum, and the buffer resets.
-//!
 //! @tparam UnrollBitPasses
-//!   <b>[optional]</b> When true (default), the radix-pass loop is fully unrolled. The pass
-//!   count is a compile-time constant, so unrolling turns the per-pass shifts, masks, and
-//!   histogram-buffer selections into immediates and lets the compiler schedule across pass
-//!   boundaries, at the cost of a larger code and register footprint. Choose false when the
-//!   surrounding kernel is register- or occupancy-constrained or when code size matters more.
+//!   <b>[optional]</b> When true (default), the radix-pass loop may be fully unrolled. Unrolling provides better
+//!   throughput and latency but may come at increased register usage.
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
@@ -123,20 +86,10 @@ private:
   using bit_ordered_type       = typename traits::bit_ordered_type;
   using bit_ordered_conversion = typename traits::bit_ordered_conversion_policy;
 
-  // ShiftDigitExtractor rather than BFEDigitExtractor: the BFE path is inline PTX (bfe.u32 has
-  // no native SASS on current architectures and is emulated by ptxas), which is opaque to the
-  // compiler and keeps it from folding the bucket computation into the histogram atomic's
-  // addressing. The plain shift and mask of ShiftDigitExtractor folds completely.
+  // ShiftDigitExtractor rather than BFEDigitExtractor: the BFE path is inline PTX, which is opaque to the
+  // compiler and keeps it from interleaving the bucket computation into the histogram atomic's
+  // addressing. The plain shift and mask of ShiftDigitExtractor interleaves completely.
   using fundamental_digit_extractor_t = ShiftDigitExtractor<KeyT>;
-
-  struct exchange_t
-  {
-    union
-    {
-      KeyT keys[tile_items];
-      ValueT values[tile_items];
-    } u;
-  };
 
   struct TempStorage_
   {
@@ -149,7 +102,14 @@ private:
         typename block_scan_t::TempStorage scan_temp_storage;
       } passes;
 
-      exchange_t exchange;
+      struct exchange_t
+      {
+        union
+        {
+          KeyT keys[tile_items];
+          ValueT values[tile_items];
+        } u;
+      } exchange;
     } stage;
 
     // Outside the aliased union: written by one thread before the pass barrier and read by all
@@ -214,9 +174,7 @@ private:
   }
 
   // Fused prefix sum over buckets + identification of the bucket that the k-th item falls into.
-  // The crossing test runs on the scan's register results (exclusive = inclusive - count), so
-  // the scanned histogram is never written back to shared memory and no separate choose phase
-  // (with its barrier) is needed.
+  // The crossing test runs on the scan's register results (exclusive = inclusive - count).
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void
   scan_and_choose_bucket(const histo_counter_t (&histogram)[num_buckets], histo_counter_t k)
   {
@@ -403,11 +361,8 @@ private:
   }
 
   template <detail::topk::select SelectDirection, bool IsFullTile>
-  _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_topk(
-    KeyT (&keys)[items_per_thread],
-    ValueT (&values)[items_per_thread],
-    int k,
-    int valid_items)
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  select_topk(KeyT (&keys)[items_per_thread], ValueT (&values)[items_per_thread], int k, int valid_items)
   {
     if constexpr (!IsFullTile)
     {
@@ -500,14 +455,7 @@ private:
 
     // Identify the prefix of the k-th key
     get_kth_key_prefix<SelectDirection, IsFullTile>(
-      unsigned_keys,
-      k,
-      valid_items,
-      total_selected,
-      num_candidates,
-      kth_prefix,
-      prefix_mask,
-      decomposer);
+      unsigned_keys, k, valid_items, total_selected, num_candidates, kth_prefix, prefix_mask, decomposer);
 
     // Scatter indices of selected items into shared memory (only needed for key-value selection)
     [[maybe_unused]] int scatter_indices[items_per_thread];
@@ -540,7 +488,8 @@ private:
       const int item_class = (!select_all_candidates) && is_candidate ? 1 : 0;
 
       // Keys-only: untwiddle the key before storing in shared memory (key-value selection
-      // scatters the original register copy instead)
+      // scatters the original register copy instead, as those registers are available because we have to track scatter
+      // indices)
       if constexpr (keys_only)
       {
         unsigned_keys[i] = bit_ordered_conversion::from_bit_ordered(decomposer, unsigned_keys[i]);
@@ -628,19 +577,15 @@ public:
   {}
 
   template <detail::topk::select SelectDirection, bool IsFullTile>
-  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
-  select_keys(KeyT (&keys)[items_per_thread], int k, int valid_items)
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_keys(KeyT (&keys)[items_per_thread], int k, int valid_items)
   {
     NullType values[ItemsPerThread];
     select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items);
   }
 
   template <detail::topk::select SelectDirection, bool IsFullTile>
-  _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_pairs(
-    KeyT (&keys)[items_per_thread],
-    ValueT (&values)[items_per_thread],
-    int k,
-    int valid_items)
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  select_pairs(KeyT (&keys)[items_per_thread], ValueT (&values)[items_per_thread], int k, int valid_items)
   {
     select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items);
   }
