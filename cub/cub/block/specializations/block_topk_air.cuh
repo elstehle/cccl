@@ -57,12 +57,18 @@ struct compare_key_prefix_op
 //! @tparam UnrollBitPasses
 //!   <b>[optional]</b> When true (default), the radix-pass loop may be fully unrolled. Unrolling provides better
 //!   throughput and latency but may come at increased register usage.
+//! @tparam ScatterOriginalKeys
+//!   <b>[optional]</b> When true, the partitioning stage scatters a register copy of the original keys, so selected
+//!   keys need no untwiddling and no -0.0 restoration state. When false, keys are untwiddled in place and -0.0 is
+//!   restored through a bitvector. The copy extends the keys' live ranges across the radix passes, which may increase
+//!   register usage. The default enables the copy only for key-value selection.
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
-          typename ValueT      = NullType,
-          int RadixBits        = 8,
-          bool UnrollBitPasses = true>
+          typename ValueT          = NullType,
+          int RadixBits            = 8,
+          bool UnrollBitPasses     = true,
+          bool ScatterOriginalKeys = !::cuda::std::is_same_v<ValueT, NullType>>
 class block_topk_air
 {
 private:
@@ -391,13 +397,12 @@ private:
       storage.selected_offset[1] = 0;
     }
 
-    // For key-value selection, keep a register copy of the original keys: the selected keys are
-    // then scattered from the copy, so the keys neither need to be un-twiddled nor does -0.0
-    // need to be tracked and restored (the -0.0 -> +0.0 ranking normalization below is kept, so
-    // selection semantics are unchanged). The classic path is used for keys-only
-    // selection.
+    // Keep a register copy of the original keys: the selected keys are then scattered from the
+    // copy, so the keys neither need to be un-twiddled nor does -0.0 need to be tracked and
+    // restored (the -0.0 -> +0.0 ranking normalization below is kept, so selection semantics
+    // do not depend on ScatterOriginalKeys).
     [[maybe_unused]] KeyT original_keys[items_per_thread];
-    if constexpr (!keys_only)
+    if constexpr (ScatterOriginalKeys)
     {
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
@@ -409,9 +414,9 @@ private:
     // TODO (elstehle): Add support for custom decomposers
     identity_decomposer_t decomposer;
 
-    // Get bit-twiddled sortkeys. For float keys, -0.0 is normalized to +0.0 for ranking. For
-    // keys-only selection, track which keys were -0.0 so we can restore -0.0 in the output via
-    // a bitvector (key-value selection restores from the register copy instead).
+    // Get bit-twiddled sortkeys. For float keys, -0.0 is normalized to +0.0 for ranking. When
+    // not scattering the original keys, track which keys were -0.0 so we can restore -0.0 in
+    // the output via a bitvector.
     bit_ordered_type(&unsigned_keys)[ItemsPerThread] = reinterpret_cast<bit_ordered_type(&)[ItemsPerThread]>(keys);
     constexpr int flip_back_num_words                = ::cuda::ceil_div(items_per_thread, 32);
     [[maybe_unused]] ::cuda::std::uint32_t flip_back_bits[flip_back_num_words] = {};
@@ -426,7 +431,7 @@ private:
         unsigned_keys[i] = bit_ordered_conversion::to_bit_ordered(decomposer, unsigned_keys[i]);
         if (unsigned_keys[i] == twiddled_minus_zero)
         {
-          if constexpr (keys_only)
+          if constexpr (!ScatterOriginalKeys)
           {
             flip_back_bits[i / 32] |= (1u << (i % 32));
           }
@@ -487,10 +492,9 @@ private:
       // We differentiate between candidates and selected only if not all candidates make it into the top-k items.
       const int item_class = (!select_all_candidates) && is_candidate ? 1 : 0;
 
-      // Keys-only: untwiddle the key before storing in shared memory (key-value selection
-      // scatters the original register copy instead, as those registers are available because we have to track scatter
-      // indices)
-      if constexpr (keys_only)
+      // Without the original-key copy, untwiddle the key in place before storing it to shared
+      // memory
+      if constexpr (!ScatterOriginalKeys)
       {
         unsigned_keys[i] = bit_ordered_conversion::from_bit_ordered(decomposer, unsigned_keys[i]);
       }
@@ -499,22 +503,22 @@ private:
       {
         const auto ticket          = atomicAdd(&storage.selected_offset[item_class], histo_counter_t{1});
         const auto selected_offset = (item_class == 1) ? static_cast<histo_counter_t>(total_selected) + ticket : ticket;
-        if constexpr (keys_only)
+        if constexpr (ScatterOriginalKeys)
         {
-          if constexpr (::cuda::is_floating_point_v<KeyT>)
-          {
-            storage.stage.exchange.u.keys[selected_offset] =
-              (flip_back_bits[i / 32] & (1u << (i % 32))) ? KeyT(-0.0) : ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
-          }
-          else
-          {
-            storage.stage.exchange.u.keys[selected_offset] = ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
-          }
+          storage.stage.exchange.u.keys[selected_offset] = original_keys[i];
+        }
+        else if constexpr (::cuda::is_floating_point_v<KeyT>)
+        {
+          storage.stage.exchange.u.keys[selected_offset] =
+            (flip_back_bits[i / 32] & (1u << (i % 32))) ? KeyT(-0.0) : ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
         }
         else
         {
-          storage.stage.exchange.u.keys[selected_offset] = original_keys[i];
-          scatter_indices[i]                             = static_cast<int>(selected_offset);
+          storage.stage.exchange.u.keys[selected_offset] = ::cuda::std::bit_cast<KeyT>(unsigned_keys[i]);
+        }
+        if constexpr (!keys_only)
+        {
+          scatter_indices[i] = static_cast<int>(selected_offset);
         }
       }
     }
@@ -531,7 +535,7 @@ private:
       {
         keys[i] = storage.stage.exchange.u.keys[buffer_idx];
       }
-      else if constexpr (!keys_only)
+      else if constexpr (ScatterOriginalKeys)
       {
         // The register keys are still bit-twiddled. Restore them from the original copy
         keys[i] = original_keys[i];
