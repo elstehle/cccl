@@ -26,7 +26,21 @@ template <typename KeyT, int BlockDimX, int ItemsPerThread, typename ValueT = Nu
 class block_topk
 {
 private:
-  using internal_block_topk_t = block_topk_air<KeyT, BlockDimX, ItemsPerThread, ValueT>;
+  // Configuration of the AIR specialization, see block_topk_air for what each option does
+  static constexpr int air_radix_bits         = 8;
+  static constexpr bool air_unroll_bit_passes = true;
+  static constexpr bool air_memoize_keys      = true;
+  static constexpr bool air_striped_histogram = true;
+
+  using internal_block_topk_t =
+    block_topk_air<KeyT,
+                   BlockDimX,
+                   ItemsPerThread,
+                   ValueT,
+                   air_radix_bits,
+                   air_unroll_bit_passes,
+                   air_memoize_keys,
+                   air_striped_histogram>;
 
 public:
   struct TempStorage
@@ -70,6 +84,38 @@ public:
   {
     internal_block_topk_t(storage.topk_storage)
       .template select_keys<detail::topk::select::min, IsFullTile>(keys, k, num_valid);
+  }
+
+  // The *_striped_to_striped overloads consume and return the tile in a striped arrangement
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  max_pairs_striped_to_striped(KeyT (&keys)[ItemsPerThread], ValueT (&values)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_pairs_striped_to_striped<detail::topk::select::max, IsFullTile>(keys, values, k, num_valid);
+  }
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void max_keys_striped_to_striped(KeyT (&keys)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_keys_striped_to_striped<detail::topk::select::max, IsFullTile>(keys, k, num_valid);
+  }
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  min_pairs_striped_to_striped(KeyT (&keys)[ItemsPerThread], ValueT (&values)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_pairs_striped_to_striped<detail::topk::select::min, IsFullTile>(keys, values, k, num_valid);
+  }
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void min_keys_striped_to_striped(KeyT (&keys)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_keys_striped_to_striped<detail::topk::select::min, IsFullTile>(keys, k, num_valid);
   }
 };
 } // namespace detail

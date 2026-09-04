@@ -159,18 +159,23 @@ struct baseline_topk_policy
 // Default baseline sub-policy. Tuning is currently CC-independent.
 [[nodiscard]] _CCCL_HOST_DEVICE_API constexpr auto make_baseline_policy() -> baseline_topk_policy
 {
-  constexpr auto load_alg  = BLOCK_LOAD_WARP_TRANSPOSE;
-  constexpr auto store_alg = BLOCK_STORE_WARP_TRANSPOSE;
-  constexpr auto scan_alg  = BLOCK_SCAN_WARP_SCANS;
-  constexpr auto epilogue  = epilogue_policy{16, load_alg, store_alg, scan_alg};
+  // The worker tiles are loaded and stored in a striped arrangement (no shared-memory transposes, see
+  // agent_batched_topk_worker_per_segment). The compaction epilogue keeps the transposing algorithms since its
+  // block scan needs a blocked arrangement.
+  constexpr auto tile_load_alg  = BLOCK_LOAD_STRIPED;
+  constexpr auto tile_store_alg = BLOCK_STORE_STRIPED;
+  constexpr auto load_alg       = BLOCK_LOAD_WARP_TRANSPOSE;
+  constexpr auto store_alg      = BLOCK_STORE_WARP_TRANSPOSE;
+  constexpr auto scan_alg       = BLOCK_SCAN_WARP_SCANS;
+  constexpr auto epilogue       = epilogue_policy{16, load_alg, store_alg, scan_alg};
   return baseline_topk_policy{
     {{
-      worker_policy{256, 64, load_alg, store_alg, epilogue},
-      worker_policy{256, 32, load_alg, store_alg, epilogue},
-      worker_policy{256, 16, load_alg, store_alg, epilogue},
-      worker_policy{256, 8, load_alg, store_alg, epilogue},
-      worker_policy{256, 4, load_alg, store_alg, epilogue},
-      worker_policy{128, 2, load_alg, store_alg, epilogue},
+      worker_policy{256, 64, tile_load_alg, tile_store_alg, epilogue},
+      worker_policy{256, 32, tile_load_alg, tile_store_alg, epilogue},
+      worker_policy{256, 16, tile_load_alg, tile_store_alg, epilogue},
+      worker_policy{256, 8, tile_load_alg, tile_store_alg, epilogue},
+      worker_policy{256, 4, tile_load_alg, tile_store_alg, epilogue},
+      worker_policy{128, 2, tile_load_alg, tile_store_alg, epilogue},
     }},
     multi_worker_policy{256, 64}};
 }

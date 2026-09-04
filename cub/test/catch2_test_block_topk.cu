@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 // Block-level tests for `block_topk` / `block_topk_air`: deterministic
-// boundary fixtures (incl. `+/-0.0` ties) and both selection directions.
+// boundary fixtures (incl. `+/-0.0` ties), both selection directions and both tile arrangements.
 
 #include <cub/block/block_load.cuh>
 #include <cub/block/block_topk.cuh>
@@ -37,24 +37,31 @@ __global__ void topk_kernel(cuda::std::span<const KeyT> g_in, cuda::std::span<Ke
   }
   else
   {
-    // TODO (elstehle): block_topk consumes and returns a blocked arrangement. Enable this branch once the striped
-    // *_striped_to_striped overloads land.
-    static_assert(BlockedInput, "block_topk requires the input in a blocked arrangement");
     cub::LoadDirectStriped<BlockDim>(static_cast<int>(threadIdx.x), g_in.data(), keys, num_valid, oob_sentinel);
   }
 
-  if constexpr (SelectMax)
+  if constexpr (BlockedInput && SelectMax)
   {
     topk_t(smem).template max_keys<IsFullTile>(keys, k, num_valid);
   }
-  else
+  else if constexpr (BlockedInput)
   {
     topk_t(smem).template min_keys<IsFullTile>(keys, k, num_valid);
+  }
+  else if constexpr (SelectMax)
+  {
+    topk_t(smem).template max_keys_striped_to_striped<IsFullTile>(keys, k, num_valid);
+  }
+  else
+  {
+    topk_t(smem).template min_keys_striped_to_striped<IsFullTile>(keys, k, num_valid);
   }
 
   for (int i = 0; i < ItemsPerThread; ++i)
   {
-    const int idx = static_cast<int>(threadIdx.x) * ItemsPerThread + i;
+    // The selected items are returned in the tile's first k slots of the input arrangement
+    const int idx =
+      BlockedInput ? static_cast<int>(threadIdx.x) * ItemsPerThread + i : i * BlockDim + static_cast<int>(threadIdx.x);
     if (idx < k)
     {
       g_top[idx] = keys[i];
@@ -151,6 +158,28 @@ CUB_TEST(
     check_topk<key_t, threads_per_block, items_per_thread, is_full_tile, blocked_input, select_max>(
       h_in_partial, to_span(h_ref), k);
   }
+
+  SECTION("full tile, striped input")
+  {
+    static constexpr bool is_full_tile  = true;
+    static constexpr bool blocked_input = false;
+    const int k                         = GENERATE_COPY(values<int>({1, tile_size / 4, tile_size - 1, tile_size}));
+    CAPTURE(k);
+    const auto h_ref = sorted_top_k<select_max>(h_in, k);
+    check_topk<key_t, threads_per_block, items_per_thread, is_full_tile, blocked_input, select_max>(
+      h_in, to_span(h_ref), k);
+  }
+
+  SECTION("partial tile, striped input")
+  {
+    static constexpr bool is_full_tile  = false;
+    static constexpr bool blocked_input = false;
+    const int k                         = GENERATE_COPY(values<int>({1, num_valid / 4, num_valid - 1, num_valid}));
+    CAPTURE(num_valid, k);
+    const auto h_ref = sorted_top_k<select_max>(h_in_partial, k);
+    check_topk<key_t, threads_per_block, items_per_thread, is_full_tile, blocked_input, select_max>(
+      h_in_partial, to_span(h_ref), k);
+  }
 }
 
 CUB_TEST("block_topk::select_* selects the right top-k on a full tile",
@@ -170,8 +199,7 @@ CUB_TEST("block_topk::select_* selects the right top-k on a full tile",
   rng_t rng(static_cast<cuda::std::uint32_t>(C2H_SEED(2).get()));
   const int k = GENERATE_COPY(values<int>({1, tile_size / 4, tile_size / 2, tile_size - 1}));
 
-  static constexpr bool is_full_tile  = true;
-  static constexpr bool blocked_input = true;
+  static constexpr bool is_full_tile = true;
 
   const int overhang = GENERATE_COPY(overhang_generator(tile_size - k <= 1, {0, 1, tile_size - k}));
 
@@ -180,8 +208,8 @@ CUB_TEST("block_topk::select_* selects the right top-k on a full tile",
     c2h::host_vector<key_t> h_in =
       gen_keys_from_boundary_key<select_max>(tile_size, k, overhang, boundary_key, local_rng);
     const auto h_ref = sorted_top_k<select_max>(h_in, k);
-    check_topk<key_t, threads_per_block, items_per_thread, is_full_tile, blocked_input, select_max>(
-      h_in, to_span(h_ref), k);
+    check_topk<key_t, threads_per_block, items_per_thread, is_full_tile, true, select_max>(h_in, to_span(h_ref), k);
+    check_topk<key_t, threads_per_block, items_per_thread, is_full_tile, false, select_max>(h_in, to_span(h_ref), k);
   };
 
   SECTION("fixed boundary_key")
