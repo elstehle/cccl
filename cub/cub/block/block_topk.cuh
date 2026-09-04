@@ -22,11 +22,12 @@ CUB_NAMESPACE_BEGIN
 namespace detail
 {
 // TODO (elstehle): Add documentation
-template <typename KeyT, int BlockDimX, int ItemsPerThread, typename ValueT = NullType>
+template <typename KeyT, int BlockDimX, int ItemsPerThread, typename ValueT = NullType, bool StripedHistogram = true>
 class block_topk
 {
 private:
-  using internal_block_topk_t = block_topk_air<KeyT, BlockDimX, ItemsPerThread, ValueT>;
+  using internal_block_topk_t =
+    block_topk_air<KeyT, BlockDimX, ItemsPerThread, ValueT, 8, true, true, StripedHistogram>;
 
 public:
   struct TempStorage
@@ -70,6 +71,38 @@ public:
   {
     internal_block_topk_t(storage.topk_storage)
       .template select_keys<detail::topk::select::min, IsFullTile>(keys, k, num_valid);
+  }
+
+  // The *_striped_to_striped overloads consume and return the tile in a striped arrangement
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  max_pairs_striped_to_striped(KeyT (&keys)[ItemsPerThread], ValueT (&values)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_pairs_striped_to_striped<detail::topk::select::max, IsFullTile>(keys, values, k, num_valid);
+  }
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void max_keys_striped_to_striped(KeyT (&keys)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_keys_striped_to_striped<detail::topk::select::max, IsFullTile>(keys, k, num_valid);
+  }
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  min_pairs_striped_to_striped(KeyT (&keys)[ItemsPerThread], ValueT (&values)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_pairs_striped_to_striped<detail::topk::select::min, IsFullTile>(keys, values, k, num_valid);
+  }
+
+  template <bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void min_keys_striped_to_striped(KeyT (&keys)[ItemsPerThread], int k, int num_valid)
+  {
+    internal_block_topk_t(storage.topk_storage)
+      .template select_keys_striped_to_striped<detail::topk::select::min, IsFullTile>(keys, k, num_valid);
   }
 };
 } // namespace detail

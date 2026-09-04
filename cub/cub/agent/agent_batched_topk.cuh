@@ -108,6 +108,13 @@ struct agent_batched_topk_worker_per_segment
 
   using block_topk_t = block_topk<key_t, threads_per_block, items_per_thread, value_t>;
 
+  // A striped tile arrangement (direct striped loads and stores, so no shared-memory transposes and no exchange
+  // barriers) is selected through the policy's load algorithm. The block-level top-k then consumes and returns
+  // the tile through its *_striped_to_striped overloads.
+  static constexpr bool striped_arrangement = active_policy.load_algorithm == BLOCK_LOAD_STRIPED;
+  static_assert(striped_arrangement == (active_policy.store_algorithm == BLOCK_STORE_STRIPED),
+                "The tile's load and store algorithms must agree on the striped or blocked arrangement");
+
   // TODO (elstehle): Specialize for the case that we statically know k and we can skip passing num_valid_items to
   // Store()
   using block_store_keys_t = BlockStore<key_t, threads_per_block, items_per_thread, active_policy.store_algorithm>;
@@ -259,7 +266,10 @@ struct agent_batched_topk_worker_per_segment
 
         if constexpr (!is_keys_only)
         {
-          __syncthreads();
+          if constexpr (!striped_arrangement)
+          {
+            __syncthreads();
+          }
           auto block_vals_in = d_value_segments_it[segment_id];
 
           if constexpr (is_full_tile)
@@ -275,7 +285,11 @@ struct agent_batched_topk_worker_per_segment
           }
         }
 
-        __syncthreads();
+        // The transposing loads use shared memory that the block-level top-k aliases, direct striped loads do not
+        if constexpr (!striped_arrangement)
+        {
+          __syncthreads();
+        }
 
         // Perform Block Top-K
         if constexpr (is_keys_only)
@@ -284,11 +298,27 @@ struct agent_batched_topk_worker_per_segment
             select_directions, segment_id, [this, &thread_keys, k, segment_size](auto direction_tag) {
               if constexpr (decltype(direction_tag)::value == detail::topk::select::max)
               {
-                block_topk_t(temp_storage.topk).template max_keys<is_full_tile>(thread_keys, k, segment_size);
+                if constexpr (striped_arrangement)
+                {
+                  block_topk_t(temp_storage.topk)
+                    .template max_keys_striped_to_striped<is_full_tile>(thread_keys, k, segment_size);
+                }
+                else
+                {
+                  block_topk_t(temp_storage.topk).template max_keys<is_full_tile>(thread_keys, k, segment_size);
+                }
               }
               else
               {
-                block_topk_t(temp_storage.topk).template min_keys<is_full_tile>(thread_keys, k, segment_size);
+                if constexpr (striped_arrangement)
+                {
+                  block_topk_t(temp_storage.topk)
+                    .template min_keys_striped_to_striped<is_full_tile>(thread_keys, k, segment_size);
+                }
+                else
+                {
+                  block_topk_t(temp_storage.topk).template min_keys<is_full_tile>(thread_keys, k, segment_size);
+                }
               }
             });
           _CCCL_ASSERT(is_successful_dispatch, "Error: Unsupported select direction");
@@ -300,19 +330,39 @@ struct agent_batched_topk_worker_per_segment
             select_directions, segment_id, [this, &thread_keys, &thread_values, k, segment_size](auto direction_tag) {
               if constexpr (decltype(direction_tag)::value == detail::topk::select::max)
               {
-                block_topk_t(temp_storage.topk)
-                  .template max_pairs<is_full_tile>(thread_keys, thread_values, k, segment_size);
+                if constexpr (striped_arrangement)
+                {
+                  block_topk_t(temp_storage.topk)
+                    .template max_pairs_striped_to_striped<is_full_tile>(thread_keys, thread_values, k, segment_size);
+                }
+                else
+                {
+                  block_topk_t(temp_storage.topk)
+                    .template max_pairs<is_full_tile>(thread_keys, thread_values, k, segment_size);
+                }
               }
               else
               {
-                block_topk_t(temp_storage.topk)
-                  .template min_pairs<is_full_tile>(thread_keys, thread_values, k, segment_size);
+                if constexpr (striped_arrangement)
+                {
+                  block_topk_t(temp_storage.topk)
+                    .template min_pairs_striped_to_striped<is_full_tile>(thread_keys, thread_values, k, segment_size);
+                }
+                else
+                {
+                  block_topk_t(temp_storage.topk)
+                    .template min_pairs<is_full_tile>(thread_keys, thread_values, k, segment_size);
+                }
               }
             });
           _CCCL_ASSERT(is_successful_dispatch, "Error: Unsupported select direction");
         }
 
-        __syncthreads();
+        // The transposing stores use the shared memory the block-level top-k just read, direct striped stores do not
+        if constexpr (!striped_arrangement)
+        {
+          __syncthreads();
+        }
 
         auto block_keys_out = d_key_segments_out_it[segment_id];
 
@@ -324,7 +374,10 @@ struct agent_batched_topk_worker_per_segment
 
         if constexpr (!is_keys_only)
         {
-          __syncthreads();
+          if constexpr (!striped_arrangement)
+          {
+            __syncthreads();
+          }
           auto block_vals_out = d_value_segments_out_it[segment_id];
 
           block_store_vals_t(temp_storage.store_vals).Store(block_vals_out, thread_values, k);

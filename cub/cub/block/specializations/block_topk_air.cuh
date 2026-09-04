@@ -59,10 +59,10 @@ struct compare_key_prefix_op
 //! `valid_items` items. The selected items are returned in the tile's first `min(k, valid_items)` slots. The
 //! contents of the remaining slots are unspecified.
 //!
-//! TODO (elstehle): Support a striped arrangement through `select_*_striped_to_striped` overloads. The blocked
-//! arrangement is assumed by the partial-tile validity checks in `compute_histograms` and `select_topk`, by
-//! `select_topk`'s early return for `k >= valid_items`, and by the slots that `select_topk` gathers the selected
-//! items from.
+//! The `select_*_striped_to_striped` overloads consume and return a striped arrangement instead, i.e., thread `t`
+//! holds the tile's items `t + i * ThreadsPerBlock`. The valid items of a partial tile are still the tile's first
+//! `valid_items` slots and the selected items are returned in the tile's first `min(k, valid_items)` slots, both
+//! in striped order.
 //!
 //! @tparam UnrollBitPasses
 //!   <b>[optional]</b> When true (default), the radix-pass loop may be fully unrolled. Unrolling provides better
@@ -72,13 +72,18 @@ struct compare_key_prefix_op
 //!   scatters from that copy, so selected keys need no untwiddling and no -0.0 restoration state. When false, keys
 //!   are untwiddled in place and -0.0 is restored through a bitvector. The copy extends the keys' live ranges across
 //!   the radix passes, so disabling it can reduce register pressure.
+//! @tparam StripedHistogram
+//!   <b>[optional]</b> When true (default), the histogram bins are stored striped over the threads, so that the
+//!   scan phase's per-thread bin reads are free of bank conflicts at the cost of a slot permutation per histogram
+//!   update. Only takes effect when a thread scans more than one bin.
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
-          typename ValueT      = NullType,
-          int RadixBits        = 8,
-          bool UnrollBitPasses = true,
-          bool MemoizeKeys     = true>
+          typename ValueT       = NullType,
+          int RadixBits         = 8,
+          bool UnrollBitPasses  = true,
+          bool MemoizeKeys      = true,
+          bool StripedHistogram = true>
 class block_topk_air
 {
 private:
@@ -93,7 +98,10 @@ private:
 
   // Calculate number of buckets processed per thread
   static constexpr int buckets_per_thread = ::cuda::ceil_div(num_buckets, threads_per_block);
-  static constexpr bool keys_only         = ::cuda::std::is_same_v<ValueT, NullType>;
+  // Striped histogram slots only pay off (and only work out) when every thread scans the same number of bins > 1
+  static constexpr bool striped_histogram =
+    StripedHistogram && buckets_per_thread > 1 && (num_buckets % threads_per_block == 0);
+  static constexpr bool keys_only = ::cuda::std::is_same_v<ValueT, NullType>;
 
   using histo_counter_t = ::cuda::std::uint32_t;
   using block_scan_t    = BlockScan<histo_counter_t, threads_per_block, BLOCK_SCAN_WARP_SCANS>;
@@ -145,6 +153,27 @@ private:
   /// Linear thread index
   int linear_tid;
 
+  // Tile slot held by this thread's i-th item (blocked: consecutive slots per thread, striped: consecutive threads
+  // per slot). Item validity on partial tiles and the gather of the selected items both index tile slots.
+  template <bool Striped>
+  [[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE int item_slot(int i) const
+  {
+    return Striped ? i * threads_per_block + linear_tid : linear_tid * items_per_thread + i;
+  }
+
+  // Shared-memory slot of a histogram bin
+  [[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE static constexpr int bin_slot(int bin)
+  {
+    if constexpr (striped_histogram)
+    {
+      return (bin % buckets_per_thread) * threads_per_block + bin / buckets_per_thread;
+    }
+    else
+    {
+      return bin;
+    }
+  }
+
   // Zero one histogram buffer
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void zero_histogram(histo_counter_t (&histogram)[num_buckets])
   {
@@ -164,7 +193,7 @@ private:
   }
 
   // Compute histogram over keys
-  template <detail::topk::select SelectDirection, bool IsFullTile, typename DigitExtractorT, typename FilterOpT>
+  template <detail::topk::select SelectDirection, bool IsFullTile, bool Striped, typename DigitExtractorT, typename FilterOpT>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void compute_histograms(
     const bit_ordered_type (&unsigned_keys)[items_per_thread],
     int valid_items,
@@ -175,13 +204,12 @@ private:
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
-      const auto item_index      = linear_tid * items_per_thread + i;
       const bit_ordered_type key = unsigned_keys[i];
-      if ((IsFullTile || item_index < valid_items) && filter_op(key))
+      if ((IsFullTile || item_slot<Striped>(i) < valid_items) && filter_op(key))
       {
         const auto digit  = static_cast<int>(digit_extractor.Digit(key));
         const auto bucket = (SelectDirection == detail::topk::select::min) ? digit : (num_buckets - 1 - digit);
-        atomicAdd_block(&histogram[bucket], histo_counter_t{1});
+        atomicAdd_block(&histogram[bin_slot(bucket)], histo_counter_t{1});
       }
     }
   }
@@ -200,7 +228,7 @@ private:
       const int bin_idx = base + i;
       if (bin_idx < num_buckets)
       {
-        counts[i] = histogram[bin_idx];
+        counts[i] = histogram[bin_slot(bin_idx)];
       }
     }
 
@@ -234,12 +262,11 @@ private:
   // One radix pass: histogram over the surviving candidates (re-zeroing the other buffer in the
   // same phase), fused scan+choose, and the pass-state update. Returns true when all remaining
   // candidates are amongst the top-k (early exit).
-  template <detail::topk::select SelectDirection, bool IsFullTile, typename DecomposerT>
+  template <detail::topk::select SelectDirection, bool IsFullTile, bool Striped, typename DecomposerT>
   [[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE bool run_radix_pass(
     const bit_ordered_type (&unsigned_keys)[items_per_thread],
     int valid_items,
     int& k,
-    int& total_selected,
     int& num_candidates,
     bit_ordered_type& kth_key_prefix,
     bit_ordered_type& prefix_mask,
@@ -257,7 +284,8 @@ private:
     const auto filter_op = compare_key_prefix_op<bit_ordered_type>{prefix_mask, kth_key_prefix};
     const auto digit_extractor =
       traits::template digit_extractor<fundamental_digit_extractor_t>(pass_begin_bit, pass_bits, decomposer);
-    compute_histograms<SelectDirection, IsFullTile>(unsigned_keys, valid_items, digit_extractor, filter_op, histogram);
+    compute_histograms<SelectDirection, IsFullTile, Striped>(
+      unsigned_keys, valid_items, digit_extractor, filter_op, histogram);
     if (zero_next_histogram)
     {
       // Zero the other buffer for the next pass. It is untouched during the first pass and its
@@ -274,7 +302,6 @@ private:
     // Update the current k and length for the next pass
     k -= storage.pass_state.selected;
     num_candidates = storage.pass_state.candidates;
-    total_selected += storage.pass_state.selected;
 
     // Update the kth_key_prefix and prefix_mask for the next pass
     // Basically, we will have valid_items candidates with the prefix kth_key_prefix
@@ -289,7 +316,7 @@ private:
     return num_candidates == k;
   }
 
-  template <typename detail::topk::select SelectDirection, bool IsFullTile, typename DecomposerT>
+  template <detail::topk::select SelectDirection, bool IsFullTile, bool Striped, typename DecomposerT>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void get_kth_key_prefix(
     bit_ordered_type (&unsigned_keys)[items_per_thread],
     int k,
@@ -313,23 +340,20 @@ private:
     kth_key_prefix = 0;
     prefix_mask    = 0;
 
-    // The total number of selected items
-    total_selected = 0;
-
     // Zero the first pass's histogram buffer. Every pass but the last re-zeroes the respectively
     // other buffer inside its histogram phase, so no per-pass init phase (and barrier) is needed
     zero_histogram(storage.stage.passes.histogram[0]);
     __syncthreads();
 
     constexpr int num_passes = ::cuda::ceil_div(max_bit, RadixBits);
+    int k_remaining          = k;
     const auto run_pass      = [&](int pass) -> bool {
       const int pass_end_bit   = max_bit - pass * RadixBits;
       const int pass_begin_bit = (::cuda::std::max) (pass_end_bit - RadixBits, 0);
-      return run_radix_pass<SelectDirection, IsFullTile>(
+      return run_radix_pass<SelectDirection, IsFullTile, Striped>(
         unsigned_keys,
         valid_items,
-        k,
-        total_selected,
+        k_remaining,
         num_candidates,
         kth_key_prefix,
         prefix_mask,
@@ -364,11 +388,15 @@ private:
         }
       }
     }
+    // The passes selected exactly the items by which k and the remaining k differ, so the total needs no
+    // loop-carried counter
+    total_selected = k - k_remaining;
+
     // No trailing barrier is needed before repurposing shared memory: the histograms' last
     // reads precede the final pass's state barrier, and pass_state lives outside the union.
   }
 
-  template <detail::topk::select SelectDirection, bool IsFullTile>
+  template <detail::topk::select SelectDirection, bool IsFullTile, bool Striped>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void
   select_topk(KeyT (&keys)[items_per_thread], ValueT (&values)[items_per_thread], int k, int valid_items)
   {
@@ -464,7 +492,7 @@ private:
     auto num_candidates = IsFullTile ? tile_items : valid_items;
 
     // Identify the prefix of the k-th key
-    get_kth_key_prefix<SelectDirection, IsFullTile>(
+    get_kth_key_prefix<SelectDirection, IsFullTile, Striped>(
       unsigned_keys, k, valid_items, total_selected, num_candidates, kth_prefix, prefix_mask, decomposer);
 
     // Scatter indices of selected items into shared memory (only needed for key-value selection)
@@ -488,7 +516,7 @@ private:
     {
       const bit_ordered_type key_prefix = unsigned_keys[i] & prefix_mask;
 
-      const bool is_valid = (IsFullTile || linear_tid * items_per_thread + i < valid_items);
+      const bool is_valid = (IsFullTile || item_slot<Striped>(i) < valid_items);
       using comparison_t  = ::cuda::std::
         conditional_t<SelectDirection == detail::topk::select::min, ::cuda::std::less<>, ::cuda::std::greater<>>;
       const bool is_selected  = comparison_t{}(key_prefix, kth_prefix);
@@ -540,7 +568,7 @@ private:
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
-      const int buffer_idx = linear_tid * items_per_thread + i;
+      const int buffer_idx = item_slot<Striped>(i);
       if (buffer_idx < k)
       {
         keys[i] = storage.stage.exchange.u.keys[buffer_idx];
@@ -567,7 +595,7 @@ private:
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
-        const int buffer_idx = linear_tid * items_per_thread + i;
+        const int buffer_idx = item_slot<Striped>(i);
         if (buffer_idx < k)
         {
           values[i] = storage.stage.exchange.u.values[buffer_idx];
@@ -585,18 +613,37 @@ public:
       , linear_tid(RowMajorTid(ThreadsPerBlock, 1, 1))
   {}
 
+  //! Selects the top-k keys of a tile held in a blocked arrangement
   template <detail::topk::select SelectDirection, bool IsFullTile>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_keys(KeyT (&keys)[items_per_thread], int k, int valid_items)
   {
     NullType values[ItemsPerThread];
-    select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items);
+    select_topk<SelectDirection, IsFullTile, false>(keys, values, k, valid_items);
   }
 
+  //! Selects the top-k keys of a tile held in a striped arrangement
+  template <detail::topk::select SelectDirection, bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  select_keys_striped_to_striped(KeyT (&keys)[items_per_thread], int k, int valid_items)
+  {
+    NullType values[ItemsPerThread];
+    select_topk<SelectDirection, IsFullTile, true>(keys, values, k, valid_items);
+  }
+
+  //! Selects the top-k key-value pairs of a tile held in a blocked arrangement
   template <detail::topk::select SelectDirection, bool IsFullTile>
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void
   select_pairs(KeyT (&keys)[items_per_thread], ValueT (&values)[items_per_thread], int k, int valid_items)
   {
-    select_topk<SelectDirection, IsFullTile>(keys, values, k, valid_items);
+    select_topk<SelectDirection, IsFullTile, false>(keys, values, k, valid_items);
+  }
+
+  //! Selects the top-k key-value pairs of a tile held in a striped arrangement
+  template <detail::topk::select SelectDirection, bool IsFullTile>
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_pairs_striped_to_striped(
+    KeyT (&keys)[items_per_thread], ValueT (&values)[items_per_thread], int k, int valid_items)
+  {
+    select_topk<SelectDirection, IsFullTile, true>(keys, values, k, valid_items);
   }
 };
 } // namespace detail
