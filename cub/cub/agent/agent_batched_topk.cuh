@@ -69,8 +69,10 @@ struct agent_batched_topk_worker_per_segment
   // Types and Constants
   // -------------------------------------------------------------------------
   // Derive inner types from Iterator of Iterators
-  using key_it_t   = it_value_t<KeyInputItItT>;
-  using value_it_t = it_value_t<ValueInputItItT>;
+  using key_it_t       = it_value_t<KeyInputItItT>;
+  using value_it_t     = it_value_t<ValueInputItItT>;
+  using key_out_it_t   = it_value_t<KeyOutputItItT>;
+  using value_out_it_t = it_value_t<ValueOutputItItT>;
 
   using key_t   = it_value_t<key_it_t>;
   using value_t = it_value_t<value_it_t>;
@@ -239,8 +241,10 @@ struct agent_batched_topk_worker_per_segment
             ? ::cuda::std::numeric_limits<key_t>::lowest()
             : (::cuda::std::numeric_limits<key_t>::max)();
 
-        // Dereference iterator-of-iterators to get the segment specific iterator
-        auto block_keys_in = d_key_segments_it[segment_id];
+        // Dereference iterator-of-iterators to get the segment specific iterator. Declared in the iterator type (not
+        // `auto`) so a proxy reference yielded by the outer iterator (e.g. thrust::device_reference<KeyT*>) is
+        // materialized into the real iterator before it is used.
+        key_it_t block_keys_in = d_key_segments_it[segment_id];
 
         // Load Keys
         key_t thread_keys[items_per_thread];
@@ -262,7 +266,7 @@ struct agent_batched_topk_worker_per_segment
         if constexpr (!is_keys_only)
         {
           __syncthreads();
-          auto block_vals_in = d_value_segments_it[segment_id];
+          value_it_t block_vals_in = d_value_segments_it[segment_id];
 
           if constexpr (is_full_tile)
           {
@@ -316,7 +320,7 @@ struct agent_batched_topk_worker_per_segment
 
         __syncthreads();
 
-        auto block_keys_out = d_key_segments_out_it[segment_id];
+        key_out_it_t block_keys_out = d_key_segments_out_it[segment_id];
 
         block_store_keys_t(temp_storage.store_keys)
           .Store(block_keys_out,
@@ -327,7 +331,7 @@ struct agent_batched_topk_worker_per_segment
         if constexpr (!is_keys_only)
         {
           __syncthreads();
-          auto block_vals_out = d_value_segments_out_it[segment_id];
+          value_out_it_t block_vals_out = d_value_segments_out_it[segment_id];
 
           block_store_vals_t(temp_storage.store_vals).Store(block_vals_out, thread_values, k);
         }

@@ -192,6 +192,10 @@ struct agent_batched_topk_cluster
   using key_t      = it_value_t<key_it_t>;
   using value_it_t = it_value_t<ValueInputItItT>;
   using value_t    = it_value_t<value_it_t>;
+  // Per-segment iterators are always materialized in these types (never `auto`), so an outer iterator whose
+  // operator[] yields a proxy reference (e.g. thrust::device_reference<KeyT*>) converts to the real iterator first.
+  using key_out_it_t   = it_value_t<KeyOutputItItT>;
+  using value_out_it_t = it_value_t<ValueOutputItItT>;
 
   // Keys-only when the value payload type is `cub::NullType` (mirrors the baseline batched top-k agent). The value
   // iterators are then never dereferenced and the final filter's value writes are compiled out.
@@ -1322,7 +1326,7 @@ private:
       identify_candidates_op_t<key_t, SelectDirection, policy.bits_per_pass, decomposer_t, normalize_minus_zero>;
 
     identify_op_t identify_op;
-    it_value_t<KeyOutputItItT> block_keys_out;
+    key_out_it_t block_keys_out;
     out_offset_t num_cluster_tie_winners;
     out_offset_t num_local_selected;
     offset_t selected_prefix;
@@ -1356,9 +1360,9 @@ private:
     {
       _CCCL_ASSERT(pos < k && seg_idx < layout.segment_size,
                    "value write must land in the top-k output and read inside the segment");
-      auto block_vals_in  = d_value_segments_it[segment_id];
-      auto block_vals_out = d_value_segments_out_it[segment_id];
-      block_vals_out[pos] = block_vals_in[static_cast<segment_size_val_t>(seg_idx)];
+      value_it_t block_vals_in      = d_value_segments_it[segment_id];
+      value_out_it_t block_vals_out = d_value_segments_out_it[segment_id];
+      block_vals_out[pos]           = block_vals_in[static_cast<segment_size_val_t>(seg_idx)];
     }
   }
 
@@ -3189,7 +3193,7 @@ private:
     // back. `kth_key_bits_local` already holds the full splitter key (folded
     // from each pass's bucket above), so no broadcast is needed here.
     // -----------------------------------------------------------------------
-    auto block_keys_out = d_key_segments_out_it[segment_id];
+    key_out_it_t block_keys_out = d_key_segments_out_it[segment_id];
 
     // `num_executed_passes` controls how many radix levels of `kth_key_bits_local` are significant. After an early-stop
     // break, only the first `num_executed_passes` digits of the splitter were folded; comparing all bits would treat
@@ -3228,8 +3232,8 @@ private:
     const offset_t cluster_tid = cluster_block_rank * static_cast<offset_t>(policy.threads_per_block) + threadIdx.x;
     const offset_t num_cluster_threads = num_full_cluster_blocks * static_cast<offset_t>(policy.threads_per_block);
     const offset_t step                = num_cluster_threads * static_cast<offset_t>(copy_items);
-    auto keys_in_it                    = d_key_segments_it[segment_id];
-    auto keys_out_it                   = d_key_segments_out_it[segment_id];
+    key_it_t keys_in_it                = d_key_segments_it[segment_id];
+    key_out_it_t keys_out_it           = d_key_segments_out_it[segment_id];
 
     // Full tiles: advance while a whole `step`-sized tile still fits (a grid-stride bound, not a precomputed count), so
     // `base` ends at `round_down(num_cluster_items, step)` with no division. Each tile batches unrolled loads then
@@ -3249,7 +3253,7 @@ private:
       }
       if constexpr (!is_keys_only)
       {
-        auto vals_in_it = d_value_segments_it[segment_id];
+        value_it_t vals_in_it = d_value_segments_it[segment_id];
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < copy_items; ++j)
         {
@@ -3266,7 +3270,7 @@ private:
       }
       if constexpr (!is_keys_only)
       {
-        auto vals_out_it = d_value_segments_out_it[segment_id];
+        value_out_it_t vals_out_it = d_value_segments_out_it[segment_id];
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int j = 0; j < copy_items; ++j)
         {
@@ -3287,9 +3291,9 @@ private:
       keys_out_it[seg_idx] = keys_in_it[seg_idx];
       if constexpr (!is_keys_only)
       {
-        auto vals_in_it      = d_value_segments_it[segment_id];
-        auto vals_out_it     = d_value_segments_out_it[segment_id];
-        vals_out_it[seg_idx] = vals_in_it[seg_idx];
+        value_it_t vals_in_it      = d_value_segments_it[segment_id];
+        value_out_it_t vals_out_it = d_value_segments_out_it[segment_id];
+        vals_out_it[seg_idx]       = vals_in_it[seg_idx];
       }
     }
   }

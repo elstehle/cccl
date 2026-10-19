@@ -566,6 +566,86 @@ CUB_TEST("DeviceBatchedTopK::{Min,Max}Keys route a large baseline-coverable segm
 
   REQUIRE(expected_keys == keys_out_buffer);
 }
+
+// Per-segment pointers held in device memory. Dereferencing such an iterator of iterators yields a proxy reference
+// (thrust::device_reference<KeyT*>) rather than the pointer itself, which the agents must materialize into the segment
+// iterator before offsetting it; the output side used to fail to compile inside BlockStore. Exercised on both backends
+// through the requirement axis (the deterministic request routes to the cluster backend on SM 9.0+, else it is
+// skipped).
+template <typename T>
+c2h::device_vector<T*> make_segment_pointers(T* base, cuda::std::int64_t num_segments, cuda::std::int64_t stride)
+{
+  c2h::host_vector<T*> h_pointers(num_segments);
+  for (cuda::std::int64_t i = 0; i < num_segments; ++i)
+  {
+    h_pointers[i] = base + i * stride;
+  }
+  return c2h::device_vector<T*>(h_pointers);
+}
+
+using proxy_det_tie_combos =
+  c2h::type_list<det_tie<cuda::execution::determinism::__determinism_t::__not_guaranteed,
+                         cuda::execution::tie_break::__tie_break_t::__unspecified>,
+                 det_tie<cuda::execution::determinism::__determinism_t::__gpu_to_gpu,
+                         cuda::execution::tie_break::__tie_break_t::__prefer_smaller_index>>;
+
+CUB_TEST("DeviceBatchedTopK::{Min,Max}Keys accept proxy-reference iterators of segment pointers",
+         "[keys][segmented][topk][device][cluster][determinism]",
+         CUB_SMALL,
+         key_types,
+         select_direction_list,
+         proxy_det_tie_combos)
+{
+  using segment_size_t  = cuda::std::int64_t;
+  using segment_index_t = cuda::std::int64_t;
+  using key_t           = c2h::get<0, TestType>;
+
+  constexpr auto direction          = c2h::get<1, TestType>::value;
+  using combo                       = c2h::get<2, TestType>;
+  static constexpr auto determinism = combo::determinism;
+  static constexpr auto tie_break   = combo::tie_break;
+
+  constexpr segment_size_t static_max_segment_size = 64;
+  const segment_size_t segment_size =
+    GENERATE_COPY(values({segment_size_t{1}, segment_size_t{3}, static_max_segment_size}));
+  const segment_size_t k             = GENERATE_COPY(values({segment_size_t{1}, segment_size}));
+  const segment_index_t num_segments = GENERATE_COPY(values({segment_index_t{1}, segment_index_t{37}}));
+
+  CAPTURE(c2h::type_name<key_t>(), segment_size, k, num_segments, direction, determinism, tie_break);
+
+  c2h::device_vector<key_t> keys_in_buffer(num_segments * segment_size, thrust::no_init);
+  c2h::device_vector<key_t> keys_out_buffer(num_segments * k, thrust::no_init);
+  c2h::gen(C2H_SEED(1), keys_in_buffer);
+
+  // thrust::device_vector<key_t*>::iterator on both sides: operator[] yields thrust::device_reference<key_t*>
+  auto keys_in_pointers =
+    make_segment_pointers(thrust::raw_pointer_cast(keys_in_buffer.data()), num_segments, segment_size);
+  auto keys_out_pointers = make_segment_pointers(thrust::raw_pointer_cast(keys_out_buffer.data()), num_segments, k);
+  auto d_keys_in         = keys_in_pointers.begin();
+  auto d_keys_out        = keys_out_pointers.begin();
+
+  c2h::device_vector<key_t> expected_keys(keys_in_buffer);
+
+  skip_unless_batched_topk_keys_supported<direction, determinism, tie_break>(
+    static_max_segment_size,
+    d_keys_in,
+    d_keys_out,
+    cuda::args::immediate{segment_size, cuda::args::bounds<segment_size_t{1}, static_max_segment_size>()},
+    cuda::args::immediate{k, cuda::args::bounds<segment_size_t{1}, static_max_segment_size>()},
+    cuda::args::immediate{num_segments});
+  batched_topk_keys<direction, determinism, tie_break>(
+    d_keys_in,
+    d_keys_out,
+    cuda::args::immediate{segment_size, cuda::args::bounds<segment_size_t{1}, static_max_segment_size>()},
+    cuda::args::immediate{k, cuda::args::bounds<segment_size_t{1}, static_max_segment_size>()},
+    cuda::args::immediate{num_segments});
+
+  fixed_size_segmented_sort_keys(expected_keys, num_segments, segment_size, direction);
+  compact_sorted_keys_to_topk(expected_keys, segment_size, k);
+  fixed_size_segmented_sort_keys(keys_out_buffer, num_segments, k, direction);
+
+  REQUIRE(expected_keys == keys_out_buffer);
+}
 #endif // TEST_TYPES == 0
 
 #if TEST_TYPES == 2
