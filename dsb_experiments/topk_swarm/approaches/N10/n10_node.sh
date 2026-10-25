@@ -54,3 +54,14 @@ n10_fetch() {
   n10_env
   n10_ssh "tar czf - -C $ROOT/results/$HOLDER ." | tar xzf - -C $SWARM/state/results/$HOLDER && ls -t $SWARM/state/results/$HOLDER | head -12
 }
+# background form: start run.py under nohup on the node, poll with n10_poll <label>
+n10_bg() {
+  n10_env
+  local log=$1; shift
+  n10_ssh "cd $ROOT/work/$HOLDER/harness && export PATH=/usr/local/cuda/bin:\$PATH && nohup bash -c 'python3 run.py --repo $ROOT/cccl --root $ROOT --holder $HOLDER --gpu 0 --node-name $NODE_NAME --arch-name $ARCH --source-commit $(git -C $WT rev-parse --short=10 HEAD) $*; echo exit=\$?' > $ROOT/work/$HOLDER/$log.log 2>&1 < /dev/null & echo started $log"
+}
+n10_poll() {
+  n10_env
+  local log=$1
+  n10_ssh "cd $ROOT/work/$HOLDER && if grep -q '^exit=' $log.log; then echo DONE; grep -c compile_error $log.log; tail -n 5 $log.log | cut -c1-240; else echo RUNNING; tail -n 2 $log.log | cut -c1-200; fi"
+}
