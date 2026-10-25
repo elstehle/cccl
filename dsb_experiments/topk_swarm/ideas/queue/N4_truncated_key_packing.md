@@ -5,11 +5,11 @@ origin: new. Generalizes the bf16 packed word of `atomic_iter_h` (`reference/BLO
 hypothesis: the packed 32-bit word (16-bit key, 16-bit inverted index) is what makes bf16 extraction free of tie machinery and gives prefer_smaller_index inherently. For fp32 pack the top 32 minus ceil(log2 N) bits of the twiddled key with the index: 24 key bits for N at most 256, 20 for N at most 4096, 16 for N at most 65536. Run the W2 or B2 rounds on the packed word. The result is the exact top-k by (truncated key, index). It equals the top-k by full key except inside the tie class of the k-th truncated key, which is tiny on random data (expected other members about N over 2^(key bits minus 9) per binade: 0.5 at N 1024 with 20 bits). One cheap tie pass fixes it exactly: ballot or count the items whose truncated key equals the k-th, compare their full keys, keep the right ones. The pass is branch-free and always runs, so the cost is round-based plus a constant, and the fp32 epilogue of B2 (about 890 cycles at N 1024) and the index pass of W2 disappear.
 cells it should win: every W2 and B2 cell with fp32 keys and N at most 4096, both requirements. fp32 becomes as cheap as bf16 for extraction.
 
-cost model (placeholders July 2026 B200: W2 round 82 + 2 IPT, B2 round 80 + 2 IPT, ballot 23, barrier 28):
+cost model (measured 2026-10-25, `TECHNIQUES.md` T17 and T19: packed W2 list round 26 cycles up to IPT 8, 37 at IPT 16, 89 at IPT 32, dependent ballot 26.7 and 6 per further ballot. July placeholders: B2 round 80 + 2 IPT, barrier 28):
 - Packing: twiddle (3 instructions) plus shift and or with the inverted index, 2 more per item, once.
-- Rounds: unchanged from the packed bf16 path, k (82 + 2 IPT) at warp, k (80 + 2 IPT) at block.
-- Tie pass, warp: IPT ballots (truncated key equals t_k) pipelined, about 23 + 8 IPT, then a full-key compare among the tie members (expected 1 to 3, worst case a sort32 if more than 32) about 50. Block: 1 compare per item, ballot per slot, per-warp atomicAdd, one barrier, then the same small finish, about 150 + 2 IPT.
-- B2 fp32 N 1024 k 16: about 150 + 16 times 88 + 170 = 1730 against `atomic_adaptive` 2331 measured, a 1.35x gain on the model. W2 fp32 N 256 k 8: about 100 + 8 times 98 + 140 = 1020 against value rounds plus index pass about 1100 to 1300.
+- Rounds: unchanged from the packed bf16 path, k round(IPT) at warp (26 up to IPT 8), k (80 + 2 IPT) at block.
+- Tie pass, warp: IPT ballots (truncated key equals t_k) pipelined, about 21 + 6 IPT, then a full-key compare among the tie members (expected 1 to 3, worst case a sort32 if more than 32) about 50. Block: 1 compare per item, ballot per slot, per-warp atomicAdd, one barrier, then the same small finish, about 150 + 2 IPT.
+- B2 fp32 N 1024 k 16: about 150 + 16 times 88 + 170 = 1730 against `atomic_adaptive` 2331 measured, a 1.35x gain on the model. W2 fp32 N 256 k 8: about 100 + 8 times 26 + 120 = 430 against value rounds with the redux.min election (about 75 per round) plus an index pass, about 800 to 900, so N4 is worth about 2x at warp scope.
 - When the tie class exceeds the finish capacity (bf16-like clustered fp32 data, many equal prefixes), fall back to full-key rounds on the class members only. Choose the split by N at compile time, and by the measured tie class on data patterns when N is small but values cluster.
 
 focus cells: 1. block N 1024 k 16 fp32 (both requirements), 2. block N 4096 k 32 fp32, 3. warp N 256 k 8 fp32, 4. warp N 512 k 16 fp32, 5. sub-warp LW 8 N 128 k 8 fp32.
@@ -23,4 +23,4 @@ main risk: fp32 data whose values cluster within a few binades at N 4096 (softma
 
 cheapest kill experiment: host simulation of the tie class size at 20 and 16 key bits on the harness fp32 patterns at N 1024 to 32768, minutes. Then explore item 1. If the tie pass costs more than 300 cycles at block scope or the gain over `atomic_adaptive` is below 15 percent at N 1024 k 16, drop N4 and keep B2's value-rounds epilogue.
 
-references: `reference/BLOCK_TOPK_RESULTS.md` sections 3 and 5 (packed half variant, 16-bit cliff), `ideas/queue/B2_atomics_extraction.md`, `ideas/queue/W2_redux_extraction.md`
+references: `reference/BLOCK_TOPK_RESULTS.md` sections 3 and 5 (packed half variant, 16-bit cliff), `TECHNIQUES.md` T17, T19, `ideas/queue/B2_atomics_extraction.md`, `ideas/queue/W2_redux_extraction.md`

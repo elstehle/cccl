@@ -19,7 +19,7 @@ explore first: (1) host simulation of the candidate count of the lane-maxima bou
 
 determinism and ordering: exact by counting. Ties at the bound are inside the candidate set and resolved by the finish (slot-major ballot order gives prefer_smaller_index, the packed W2 finish gives it inherently). Sorted if the finish sorts.
 
-main risk: the bound costs a sort32 or sort64 before any item is filtered, so W5 cannot win below k 32 at N up to 1024 against the 30-cycle W2 round, and bf16 ties at the bound can push candidates above 32 or 64 on logit-like data. If the overflow rate on realistic bf16 input exceeds a few percent, the fallback cost dominates and W5 keeps fp32 only.
+main risk: the bound costs a sort32 or sort64 before any item is filtered, so W5 cannot win below k 32 at N up to 1024 against the measured 26-cycle W2 round (`TECHNIQUES.md` T19), and bf16 ties at the bound can push candidates above 32 or 64 on logit-like data. If the overflow rate on realistic bf16 input exceeds a few percent, the fallback cost dominates and W5 keeps fp32 only.
 
 cheapest kill experiment: explore item 1, minutes, no GPU. If the 99th percentile exceeds 64 candidates at k 32 on bf16 logits at N 512, W5 is dead for bf16. Then one GPU cell: W5 against W2 packed at N 512 k 64 bf16.
 
