@@ -98,7 +98,7 @@ static Meta g_meta;
 
 // B2-shaped straight-line body: ROUNDS rounds of 32 dependent IMADs, one fire-and-forget shared atomicMax
 // into slot[round mod 16] (uniform address, so ptxas aggregates it, see T10), barrier, read of the slot.
-template <int ROUNDS, int BLOCK>
+template <int ROUNDS, int BLOCK, bool BRANCH = false>
 __global__ void __launch_bounds__(BLOCK) body_rounds(long long* out, unsigned* smids, int reps)
 {
   __shared__ unsigned slots[16];
@@ -130,7 +130,17 @@ __global__ void __launch_bounds__(BLOCK) body_rounds(long long* out, unsigned* s
         "mad.lo.u32 %0, %0, 3, %1;\n mad.lo.u32 %0, %0, 5, %1;\n mad.lo.u32 %0, %0, 7, %1;\n mad.lo.u32 %0, %0, 9, %1;\n"
         : "+r"(v)
         : "r"(c));
-      atomicMax(&slots[rd & 15], v);
+      if constexpr (BRANCH)
+      {
+        if (threadIdx.x == static_cast<unsigned>(rd & (BLOCK - 1)))
+        {
+          atomicMax(&slots[rd & 15], v); // one lane, divergent: BSSY, BRA, BSYNC per round
+        }
+      }
+      else
+      {
+        atomicMax(&slots[rd & 15], v);
+      }
       __syncthreads();
       v ^= slots[rd & 15];
     }
@@ -265,16 +275,16 @@ void run_rounds_sel(int blocks, const char* tag)
   cudaFree(ds);
 }
 
-template <int ROUNDS, int BLOCK>
+template <int ROUNDS, int BLOCK, bool BRANCH = false>
 void run_rounds(int blocks, const char* tag)
 {
   long long* d;
   unsigned* ds;
   cudaMalloc(&d, sizeof(long long) * blocks);
   cudaMalloc(&ds, sizeof(unsigned) * blocks);
-  body_rounds<ROUNDS, BLOCK><<<blocks, BLOCK>>>(d, ds, 4); // warm up
+  body_rounds<ROUNDS, BLOCK, BRANCH><<<blocks, BLOCK>>>(d, ds, 4); // warm up
   cudaDeviceSynchronize();
-  body_rounds<ROUNDS, BLOCK><<<blocks, BLOCK>>>(d, ds, kReps);
+  body_rounds<ROUNDS, BLOCK, BRANCH><<<blocks, BLOCK>>>(d, ds, kReps);
   cudaError_t err = cudaDeviceSynchronize();
   if (err != cudaSuccess)
   {
@@ -293,11 +303,11 @@ void run_rounds(int blocks, const char* tag)
     mx = ::max(mx, h[b]);
     sum += static_cast<double>(h[b]);
   }
-  printf("{\"name\":\"rounds %s ROUNDS %d BLOCK %d blocks %d\",\"rounds\":%d,\"block\":%d,\"blocks\":%d,"
+  printf("{\"name\":\"rounds %s%s ROUNDS %d BLOCK %d blocks %d\",\"rounds\":%d,\"block\":%d,\"blocks\":%d,"
          "\"cycles_min\":%lld,\"cycles_max\":%lld,\"cycles_mean\":%.0f,\"per_round_min\":%.1f,\"per_round_max\":%.1f,"
          "\"arch\":\"%s\",\"device\":\"%s\",\"cuda\":\"%s\",\"nvcc\":\"%s\",\"node\":\"%s\",\"date\":\"%s\","
          "\"file\":\"harness/micro/icache_micro.cu\",\"per_block\":[",
-         tag, ROUNDS, BLOCK, blocks, ROUNDS, BLOCK, blocks, mn, mx, sum / blocks,
+         BRANCH ? "branchy-imad " : "", tag, ROUNDS, BLOCK, blocks, ROUNDS, BLOCK, blocks, mn, mx, sum / blocks,
          static_cast<double>(mn) / ROUNDS, static_cast<double>(mx) / ROUNDS,
          g_meta.arch.c_str(), g_meta.device.c_str(), g_meta.cuda.c_str(), g_meta.nvcc.c_str(),
          g_meta.node.c_str(), g_meta.date.c_str());
@@ -333,6 +343,108 @@ __global__ void l2_chase(const unsigned* __restrict__ buf, unsigned start_stride
   }
   out[blockIdx.x]   = t1 - t0;
   smids[blockIdx.x] = sm;
+}
+
+// Load-path chases over an L1-resident 16 KB buffer, one thread per block: the same permutation walked
+// with ld.global.nc (LDG.E.CONSTANT, the read-only path my other chases use), plain ld.global (LDG.E),
+// generic ld (LD.E), and a local-memory chase (a 1 KB per-thread array indexed dynamically, LDL, the path
+// register spills take). Per SM and single block.
+__global__ void path_chase(const unsigned* buf, unsigned words, int hops, int mode, long long* out, unsigned* smids)
+{
+  unsigned sm  = smid();
+  unsigned idx = buf[(static_cast<unsigned long long>(blockIdx.x) * 32u) % words];
+  unsigned local_arr[256];
+  if (mode == 3)
+  {
+#pragma unroll 1
+    for (int i = 0; i < 256; ++i)
+    {
+      local_arr[i] = (static_cast<unsigned>(i) * 37u + 11u) & 255u; // full cycle since 37 is odd
+    }
+    idx = idx & 255u;
+  }
+  long long t0 = clock64();
+  if (mode == 0)
+  {
+    for (int h = 0; h < hops; ++h)
+    {
+      unsigned v;
+      asm volatile("ld.global.nc.u32 %0, [%1];" : "=r"(v) : "l"(buf + idx));
+      idx = v;
+    }
+  }
+  else if (mode == 1)
+  {
+    for (int h = 0; h < hops; ++h)
+    {
+      unsigned v;
+      asm volatile("ld.global.u32 %0, [%1];" : "=r"(v) : "l"(buf + idx));
+      idx = v;
+    }
+  }
+  else if (mode == 2)
+  {
+    for (int h = 0; h < hops; ++h)
+    {
+      unsigned v;
+      asm volatile("ld.u32 %0, [%1];" : "=r"(v) : "l"(buf + idx));
+      idx = v;
+    }
+  }
+  else
+  {
+    for (int h = 0; h < hops; ++h)
+    {
+      idx = local_arr[idx];
+    }
+  }
+  long long t1 = clock64();
+  if (idx == 0xffffffffu)
+  {
+    g_sink = 1;
+  }
+  out[blockIdx.x]   = t1 - t0;
+  smids[blockIdx.x] = sm;
+}
+
+static void run_path_chase(unsigned* d, unsigned words, int blocks, int hops)
+{
+  const char* names[4] = {"ld.global.nc 16KB", "ld.global 16KB", "ld generic 16KB", "local 1KB LDL"};
+  long long* o;
+  unsigned* sm;
+  cudaMalloc(&o, sizeof(long long) * blocks);
+  cudaMalloc(&sm, sizeof(unsigned) * blocks);
+  long long* h = new long long[blocks];
+  unsigned* hs = new unsigned[blocks];
+  for (int mode = 0; mode < 4; ++mode)
+  {
+    path_chase<<<blocks, 1>>>(d, words, hops, mode, o, sm);
+    cudaDeviceSynchronize();
+    path_chase<<<blocks, 1>>>(d, words, hops, mode, o, sm);
+    cudaDeviceSynchronize();
+    cudaMemcpy(h, o, sizeof(long long) * blocks, cudaMemcpyDeviceToHost);
+    cudaMemcpy(hs, sm, sizeof(unsigned) * blocks, cudaMemcpyDeviceToHost);
+    long long mn = LLONG_MAX, mx = 0;
+    for (int b = 0; b < blocks; ++b)
+    {
+      mn = ::min(mn, h[b]);
+      mx = ::max(mx, h[b]);
+    }
+    printf("{\"name\":\"path %s blocks %d\",\"mode\":%d,\"blocks\":%d,\"hops\":%d,\"per_hop_min\":%.1f,\"per_hop_max\":%.1f,"
+           "\"arch\":\"%s\",\"device\":\"%s\",\"node\":\"%s\",\"date\":\"%s\",\"file\":\"harness/micro/icache_micro.cu\",\"per_block\":[",
+           names[mode], blocks, mode, blocks, hops, static_cast<double>(mn) / hops, static_cast<double>(mx) / hops,
+           g_meta.arch.c_str(), g_meta.device.c_str(), g_meta.node.c_str(), g_meta.date.c_str());
+    for (int b = 0; b < blocks; ++b)
+    {
+      printf("%s[%u,%.1f]", b ? "," : "", hs[b], static_cast<double>(h[b]) / hops);
+    }
+    printf("]}\n");
+  }
+  fflush(stdout);
+  delete[] h;
+  delete[] hs;
+  cudaFree(o);
+  cudaFree(sm);
 }
 
 static unsigned* make_chase(size_t bytes, unsigned& stride_words)
@@ -518,6 +630,10 @@ int main(int argc, char** argv)
   run_rounds<128, 128>(sms, "one block per SM");
   run_rounds<128, 256>(sms, "one block per SM");
   run_rounds<128, 128>(1, "one block again");
+  // the 80 KB IMAD body with a one-lane guarded atomic per round (BSSY, BRA, BSYNC), single block and per SM
+  run_rounds<128, 128, true>(1, "one block");
+  run_rounds<128, 256, true>(1, "one block");
+  run_rounds<128, 128, true>(sms, "one block per SM");
   // select-heavy rounds with and without a divergent one-lane atomic branch, 128 rounds is about 90 KB of code
   run_rounds_sel<128, 128, false>(1, "one block");
   run_rounds_sel<128, 128, true>(1, "one block");
@@ -525,6 +641,12 @@ int main(int argc, char** argv)
   run_rounds_sel<128, 256, true>(1, "one block");
   run_rounds_sel<32, 128, true>(1, "one block");
   run_rounds_sel<128, 128, true>(sms, "one block per SM");
+  // larger branchy bodies: 256 and 384 rounds are about 60 and 90 KB of code, the size of the slow kernels
+  run_rounds_sel<256, 128, true>(1, "one block");
+  run_rounds_sel<384, 128, true>(1, "one block");
+  run_rounds_sel<384, 256, true>(1, "one block");
+  run_rounds_sel<384, 128, false>(1, "one block");
+  run_rounds_sel<384, 128, true>(sms, "one block per SM");
   // memory latency per SM: L2 resident (4 MB) and beyond L2 (512 MB)
   run_chase(4u << 20, "L2 4MB", 1, 4096);
   run_chase(4u << 20, "L2 4MB", sms, 4096);
@@ -539,6 +661,14 @@ int main(int argc, char** argv)
   }
   run_chase(16u << 10, "L2 16KB", 1, 2048);
   run_chase(64u << 10, "L2 64KB", 1, 2048);
+  // load paths over an L1 resident 16 KB buffer and local memory, per SM and single block
+  {
+    unsigned stride = 0;
+    unsigned* d     = make_chase(16u << 10, stride);
+    run_path_chase(d, (16u << 10) / 4, 1, 2048);
+    run_path_chase(d, (16u << 10) / 4, sms, 2048);
+    cudaFree(d);
+  }
   probe_clock("end");
   return 0;
 }

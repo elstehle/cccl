@@ -141,7 +141,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.5";
+inline constexpr const char* harness_version = "0.6";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -701,8 +701,11 @@ __global__ void __launch_bounds__(Cfg::lat_block) oracle_kernel(
 }
 
 // Latency: chain of `chain` serialized calls, min over `reps` repetitions of the bracketed cycles.
-//   data-dependent : call n loads input ((n + dep) & 15) where dep is the previous call's first
-//                    output index masked with the runtime zero `zero_mask`
+//   data-dependent : call n of repetition r loads input ((r * chain + n + dep) & 15) where dep is
+//                    the previous call's first output index masked with the runtime zero
+//                    `zero_mask`. The rotation with r makes every chain length touch all 16 inputs
+//                    over the repetitions, so the per-call cache behavior does not depend on the
+//                    chain length (a chain of 16 would otherwise leave L1 where a chain of 8 stays)
 //   data-oblivious : in-place chain on the register-resident input, first key xor-perturbed with
 //                    the masked previous output
 // A generate-only control (noop adapter) runs the identical kernel and is subtracted on the host.
@@ -744,7 +747,7 @@ __global__ void __launch_bounds__(Cfg::lat_block) lat_kernel(
     {
       if constexpr (DataDep)
       {
-        const int which = (n + (dep & zero_mask)) & (num_inputs - 1);
+        const int which = (rep * chain + n + (dep & zero_mask)) & (num_inputs - 1);
         load_input<typename Cfg::KeyT, Cfg::Threads, A>(
           g_in + static_cast<size_t>(which) * Cfg::keys_per_call, ks, idx, lane);
       }
@@ -1815,11 +1818,14 @@ struct cell_runner
   }
 
   // ---- latency
+  // dyn_floor: the no-op control is launched with at least the variant's dynamic shared memory so
+  // both kernels see the same L1 carve-out (and the same occupancy in the throughput regime)
   template <class C, class Ad>
-  static void latency_sweep(const bits_t* d_in, int reps, std::vector<long long>& minima, resources& res)
+  static void
+  latency_sweep(const bits_t* d_in, int reps, std::vector<long long>& minima, resources& res, size_t dyn_floor)
   {
     constexpr int groups = C::lat_groups;
-    const size_t dyn     = C::dyn_bytes(groups);
+    const size_t dyn     = std::max(C::dyn_bytes(groups), dyn_floor);
     auto kern            = lat_kernel<C, Ad, C::data_dependent>;
     enable_large_smem(kern, dyn);
     res = query_resources(kern, C::lat_block, dyn);
@@ -1847,8 +1853,9 @@ struct cell_runner
   static void run_latency(const options& o, const bits_t* d_in, adapter_result& r)
   {
     std::vector<double> x(chain_lengths, chain_lengths + num_chain_points), y, yn;
-    latency_sweep<Cfg, A>(d_in, o.reps, r.lat_minima, r.lat_res);
-    latency_sweep<NoopCfg, Noop>(d_in, o.reps, r.lat_noop_minima, r.lat_noop_res);
+    const size_t dyn_variant = Cfg::dyn_bytes(Cfg::lat_groups);
+    latency_sweep<Cfg, A>(d_in, o.reps, r.lat_minima, r.lat_res, dyn_variant);
+    latency_sweep<NoopCfg, Noop>(d_in, o.reps, r.lat_noop_minima, r.lat_noop_res, dyn_variant);
     for (int i = 0; i < num_chain_points; ++i)
     {
       y.push_back(static_cast<double>(r.lat_minima[i]));
@@ -1869,10 +1876,11 @@ struct cell_runner
   // ---- throughput
   template <class C, class Ad>
   static bool throughput_one(const bits_t* d_in, int calls, const device_info& dev, double& gelem, double& best_ms,
-                             std::vector<double>& all_ms, int& grid, long long& elements, resources& res)
+                             std::vector<double>& all_ms, int& grid, long long& elements, resources& res,
+                             size_t dyn_floor)
   {
     constexpr int groups = C::thr_groups;
-    const size_t dyn     = C::dyn_bytes(groups);
+    const size_t dyn     = std::max(C::dyn_bytes(groups), dyn_floor);
     auto kern            = thr_kernel<C, Ad>;
     enable_large_smem(kern, dyn);
     res = query_resources(kern, C::thr_block, dyn);
@@ -1923,13 +1931,15 @@ struct cell_runner
     double noop_ms;
     int noop_grid;
     long long noop_el;
+    const size_t dyn_variant = Cfg::dyn_bytes(Cfg::thr_groups);
     if (!throughput_one<Cfg, A>(d_in, calls, dev, r.thr_value, r.thr_ms, r.thr_ms_all, r.thr_grid, r.thr_elements,
-                                r.thr_res))
+                                r.thr_res, dyn_variant))
     {
       r.error += "throughput kernel could not run (occupancy 0 or launch failure); ";
       return;
     }
-    throughput_one<NoopCfg, Noop>(d_in, calls, dev, r.thr_noop, noop_ms, dummy, noop_grid, noop_el, r.thr_noop_res);
+    throughput_one<NoopCfg, Noop>(d_in, calls, dev, r.thr_noop, noop_ms, dummy, noop_grid, noop_el, r.thr_noop_res,
+                                  dyn_variant);
     r.has_throughput = true;
   }
 

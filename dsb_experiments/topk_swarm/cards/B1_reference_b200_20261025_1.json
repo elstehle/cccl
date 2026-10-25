@@ -4,7 +4,7 @@
  "scope": "block",
  "arch": "b200",
  "cuda_version": "13.4.92",
- "node": "umbriel-b200-068",
+ "node": "umbriel-b200-020",
  "date": "2026-10-25",
  "commit": "bb116b9775",
  "author": "eval-engineer",
@@ -27,7 +27,7 @@
  "correctness": {
   "oracle_passed": true,
   "cases": 546,
-  "notes": "unsupported B1_reference__B1_reference__bf16_T256_N1024_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N1024_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N1024_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N1024_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K4096_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K4096_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K4096_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K4096_prefer_smaller_index | prefer_smaller_index is unsupported by block_topk_air (atomic ticket order at the k-th key), those cells are listed as unsupported, not failed. Oracle battery per cell: random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized. | control is an A/A run of the same adapter in the same process (run-to-run noise reference)"
+  "notes": "unsupported B1_reference__B1_reference__bf16_T256_N1024_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N1024_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N1024_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N1024_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N4096_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N16384_K4096_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__bf16_T256_N32768_K4096_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N1024_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N4096_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N16384_K4096_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K4_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K16_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K64_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K256_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K1024_prefer_smaller_index | unsupported B1_reference__B1_reference__fp32_T256_N32768_K4096_prefer_smaller_index | prefer_smaller_index is unsupported by block_topk_air (atomic ticket order at the k-th key), those cells are listed as unsupported, not failed. Oracle battery per cell: random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized. Re-measured with harness 0.6 (input rotation per repetition, control with the variant's shared-memory footprint), replacing the harness 0.2 measurement of the same cells. | control is an A/A run of the same adapter in the same process (run-to-run noise reference)"
  },
  "cells": [
   {
@@ -36,14 +36,15 @@
    "output_form": "indices",
    "n": 1024,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 1767.864247,
+   "value": 1769.909946,
    "control_name": "B1_reference",
-   "control_value": 1767.834677,
+   "control_value": 1769.990591,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -51,9 +52,14 @@
     "smem_bytes": 4160,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -61,24 +67,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 367.5519474,
+   "value": 367.670365,
    "control_name": "B1_reference",
-   "control_value": 367.4266319,
-   "canary_start": 3778.912067,
-   "canary_end": 3779.648066,
+   "control_value": 367.6546858,
+   "canary_start": 3775.680065,
+   "canary_end": 3777.791977,
    "resources": {
     "registers": 32,
     "smem_bytes": 4160,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 376,
+    "bssy_count": 8
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -86,14 +98,15 @@
    "output_form": "indices",
    "n": 1024,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 1881.849462,
+   "value": 1891.717742,
    "control_name": "B1_reference",
-   "control_value": 1881.861559,
+   "control_value": 1891.918011,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -101,9 +114,14 @@
     "smem_bytes": 4256,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -111,24 +129,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 349.5221851,
+   "value": 349.5835921,
    "control_name": "B1_reference",
-   "control_value": 349.4513486,
-   "canary_start": 3779.135942,
-   "canary_end": 3779.392004,
+   "control_value": 349.5694175,
+   "canary_start": 3775.935888,
+   "canary_end": 3779.263973,
    "resources": {
     "registers": 32,
     "smem_bytes": 4256,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 376,
+    "bssy_count": 8
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -136,14 +160,15 @@
    "output_form": "indices",
    "n": 1024,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 2016.50672,
+   "value": 2024.965054,
    "control_name": "B1_reference",
-   "control_value": 2016.932796,
+   "control_value": 2024.869624,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -151,9 +176,14 @@
     "smem_bytes": 4640,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -161,24 +191,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 322.8428162,
+   "value": 323.0013983,
    "control_name": "B1_reference",
-   "control_value": 322.9865929,
-   "canary_start": 3778.656006,
-   "canary_end": 3779.680014,
+   "control_value": 323.0094527,
+   "canary_start": 3775.392056,
+   "canary_end": 3778.3041,
    "resources": {
     "registers": 32,
     "smem_bytes": 4640,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 376,
+    "bssy_count": 8
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -186,14 +222,15 @@
    "output_form": "indices",
    "n": 1024,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 2129.431452,
+   "value": 2135.915323,
    "control_name": "B1_reference",
-   "control_value": 2129.431452,
+   "control_value": 2134.557796,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -201,9 +238,14 @@
     "smem_bytes": 6176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -211,24 +253,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 297.3578054,
+   "value": 297.4911951,
    "control_name": "B1_reference",
-   "control_value": 297.4204762,
-   "canary_start": 3779.616117,
-   "canary_end": 3779.488087,
+   "control_value": 297.5322282,
+   "canary_start": 3776.160002,
+   "canary_end": 3775.552034,
    "resources": {
     "registers": 32,
     "smem_bytes": 6176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 376,
+    "bssy_count": 8
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -236,14 +284,15 @@
    "output_form": "indices",
    "n": 4096,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 3650.348118,
+   "value": 3390.173387,
    "control_name": "B1_reference",
-   "control_value": 3650.375,
+   "control_value": 3393.341398,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -251,9 +300,14 @@
     "smem_bytes": 16448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1824,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -261,24 +315,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 574.2917498,
+   "value": 573.8703905,
    "control_name": "B1_reference",
-   "control_value": 574.3121196,
-   "canary_start": 3778.399944,
-   "canary_end": 3781.120062,
+   "control_value": 574.7749824,
+   "canary_start": 3775.680065,
+   "canary_end": 3778.975964,
    "resources": {
     "registers": 48,
     "smem_bytes": 16448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 5,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 928,
+    "bssy_count": 32
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -286,149 +346,216 @@
    "output_form": "indices",
    "n": 4096,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 3845.228495,
+   "value": 3570.852151,
    "control_name": "B1_reference",
-   "control_value": 3846.836022,
+   "control_value": 3573.231183,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 16544,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1848,
+    "bssy_count": 64
+   },
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 16,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 533.8687655,
+   "control_name": "B1_reference",
+   "control_value": 533.3623543,
+   "canary_start": 3776.096106,
+   "canary_end": 3779.583931,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 16544,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 944,
+    "bssy_count": 32
+   },
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 64,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 4139.689516,
+   "control_name": "B1_reference",
+   "control_value": 4123.59543,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 16928,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1864,
+    "bssy_count": 64
+   },
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 64,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 485.1179902,
+   "control_name": "B1_reference",
+   "control_value": 485.3304058,
+   "canary_start": 3776.063919,
+   "canary_end": 3779.167891,
+   "resources": {
+    "registers": 57,
+    "smem_bytes": 16928,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 952,
+    "bssy_count": 32
+   },
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 256,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 4975.696237,
+   "control_name": "B1_reference",
+   "control_value": 4975.603495,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 18464,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1864,
+    "bssy_count": 64
+   },
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 256,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 406.4290669,
+   "control_name": "B1_reference",
+   "control_value": 406.1142499,
+   "canary_start": 3775.935888,
+   "canary_end": 3777.375937,
+   "resources": {
+    "registers": 57,
+    "smem_bytes": 18464,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 952,
+    "bssy_count": 32
+   },
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 5676.581989,
+   "control_name": "B1_reference",
+   "control_value": 5676.180108,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
     "registers": 63,
-    "smem_bytes": 16544,
+    "smem_bytes": 24608,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1864,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
-  },
-  {
-   "key_type": "bf16",
-   "value_type": "int32",
-   "output_form": "indices",
-   "n": 4096,
-   "k": 16,
-   "threads": 256,
-   "requirement": "not_guaranteed",
-   "input_pattern": "random",
-   "regime": "throughput",
-   "metric": "gelem_per_s",
-   "value": 533.5090769,
-   "control_name": "B1_reference",
-   "control_value": 533.8026549,
-   "canary_start": 3779.520035,
-   "canary_end": 3779.776096,
-   "resources": {
-    "registers": 64,
-    "smem_bytes": 16544,
-    "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 11
-   },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
-  },
-  {
-   "key_type": "bf16",
-   "value_type": "int32",
-   "output_form": "indices",
-   "n": 4096,
-   "k": 64,
-   "threads": 256,
-   "requirement": "not_guaranteed",
-   "input_pattern": "random",
-   "regime": "latency",
-   "metric": "cycles_per_call",
-   "value": 4416.247312,
-   "control_name": "B1_reference",
-   "control_value": 4411.995968,
-   "canary_start": 32.00097656,
-   "canary_end": 32.00097656,
-   "resources": {
-    "registers": 64,
-    "smem_bytes": 16928,
-    "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 25
-   },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
-  },
-  {
-   "key_type": "bf16",
-   "value_type": "int32",
-   "output_form": "indices",
-   "n": 4096,
-   "k": 64,
-   "threads": 256,
-   "requirement": "not_guaranteed",
-   "input_pattern": "random",
-   "regime": "throughput",
-   "metric": "gelem_per_s",
-   "value": 485.5612081,
-   "control_name": "B1_reference",
-   "control_value": 484.8330723,
-   "canary_start": 3778.111935,
-   "canary_end": 3779.711962,
-   "resources": {
-    "registers": 57,
-    "smem_bytes": 16928,
-    "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 11
-   },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
-  },
-  {
-   "key_type": "bf16",
-   "value_type": "int32",
-   "output_form": "indices",
-   "n": 4096,
-   "k": 256,
-   "threads": 256,
-   "requirement": "not_guaranteed",
-   "input_pattern": "random",
-   "regime": "latency",
-   "metric": "cycles_per_call",
-   "value": 5250.522849,
-   "control_name": "B1_reference",
-   "control_value": 5248.158602,
-   "canary_start": 32.00097656,
-   "canary_end": 32.00097656,
-   "resources": {
-    "registers": 64,
-    "smem_bytes": 18464,
-    "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 25
-   },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
-  },
-  {
-   "key_type": "bf16",
-   "value_type": "int32",
-   "output_form": "indices",
-   "n": 4096,
-   "k": 256,
-   "threads": 256,
-   "requirement": "not_guaranteed",
-   "input_pattern": "random",
-   "regime": "throughput",
-   "metric": "gelem_per_s",
-   "value": 405.8593498,
-   "control_name": "B1_reference",
-   "control_value": 406.0547456,
-   "canary_start": 3779.392004,
-   "canary_end": 3780.064106,
-   "resources": {
-    "registers": 57,
-    "smem_bytes": 18464,
-    "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 11
-   },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -436,49 +563,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 1024,
-   "threads": 256,
-   "requirement": "not_guaranteed",
-   "input_pattern": "random",
-   "regime": "latency",
-   "metric": "cycles_per_call",
-   "value": 5773.774194,
-   "control_name": "B1_reference",
-   "control_value": 5778.307796,
-   "canary_start": 32.00097656,
-   "canary_end": 32.00097656,
-   "resources": {
-    "registers": 64,
-    "smem_bytes": 24608,
-    "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 25
-   },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
-  },
-  {
-   "key_type": "bf16",
-   "value_type": "int32",
-   "output_form": "indices",
-   "n": 4096,
-   "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 328.7824116,
+   "value": 328.6598756,
    "control_name": "B1_reference",
-   "control_value": 328.6682354,
-   "canary_start": 3779.488087,
-   "canary_end": 3779.968023,
+   "control_value": 328.8102932,
+   "canary_start": 3776.000023,
+   "canary_end": 3778.01609,
    "resources": {
     "registers": 57,
     "smem_bytes": 24608,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 952,
+    "bssy_count": 32
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -486,14 +594,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 9598.194892,
+   "value": 9952.489247,
    "control_name": "B1_reference",
-   "control_value": 9591.110215,
+   "control_value": 9937.459677,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -501,9 +610,14 @@
     "smem_bytes": 65600,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6288,
+    "bssy_count": 256
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -511,24 +625,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 527.0228352,
+   "value": 526.1080566,
    "control_name": "B1_reference",
-   "control_value": 528.5449351,
-   "canary_start": 3779.551983,
-   "canary_end": 3779.936075,
+   "control_value": 528.0845016,
+   "canary_start": 3775.104046,
+   "canary_end": 3776.384115,
    "resources": {
     "registers": 128,
     "smem_bytes": 65600,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3152,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -536,14 +656,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 9678.805108,
+   "value": 10018.03226,
    "control_name": "B1_reference",
-   "control_value": 9675.009409,
+   "control_value": 10023.16801,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -551,9 +672,14 @@
     "smem_bytes": 65696,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6304,
+    "bssy_count": 256
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -561,24 +687,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 526.2222036,
+   "value": 527.1087255,
    "control_name": "B1_reference",
-   "control_value": 527.6822931,
-   "canary_start": 3779.103994,
-   "canary_end": 3779.488087,
+   "control_value": 528.5881252,
+   "canary_start": 3775.808096,
+   "canary_end": 3777.631998,
    "resources": {
     "registers": 128,
     "smem_bytes": 65696,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3160,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -586,14 +718,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 10375.55242,
+   "value": 10160.73118,
    "control_name": "B1_reference",
-   "control_value": 10376.31183,
+   "control_value": 10165.83468,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -601,9 +734,14 @@
     "smem_bytes": 66080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6360,
+    "bssy_count": 260
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -611,24 +749,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 510.1150492,
+   "value": 510.8404701,
    "control_name": "B1_reference",
-   "control_value": 510.3969457,
-   "canary_start": 3778.176069,
-   "canary_end": 3779.328108,
+   "control_value": 509.8737497,
+   "canary_start": 3775.648117,
+   "canary_end": 3775.840044,
    "resources": {
     "registers": 128,
     "smem_bytes": 66080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3192,
+    "bssy_count": 130
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -636,14 +780,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 12994.90457,
+   "value": 12718.5,
    "control_name": "B1_reference",
-   "control_value": 12986.91935,
+   "control_value": 12726.59005,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -651,9 +796,14 @@
     "smem_bytes": 67616,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6456,
+    "bssy_count": 258
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -661,24 +811,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 444.8518789,
+   "value": 445.0662058,
    "control_name": "B1_reference",
-   "control_value": 444.8824735,
-   "canary_start": 3779.520035,
-   "canary_end": 3779.711962,
+   "control_value": 444.9232983,
+   "canary_start": 3775.327921,
+   "canary_end": 3775.680065,
    "resources": {
     "registers": 128,
     "smem_bytes": 67616,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3224,
+    "bssy_count": 129
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -686,14 +842,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 17749.80645,
+   "value": 17468.25134,
    "control_name": "B1_reference",
-   "control_value": 17745.14247,
+   "control_value": 17466.66667,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -701,9 +858,14 @@
     "smem_bytes": 73760,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6456,
+    "bssy_count": 258
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -711,24 +873,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 333.4706806,
+   "value": 333.505066,
    "control_name": "B1_reference",
-   "control_value": 333.5222827,
-   "canary_start": 3779.616117,
-   "canary_end": 3779.839993,
+   "control_value": 333.4534692,
+   "canary_start": 3776.448011,
+   "canary_end": 3777.535915,
    "resources": {
     "registers": 128,
     "smem_bytes": 73760,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3224,
+    "bssy_count": 129
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -736,14 +904,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 21465.29167,
+   "value": 22077.83602,
    "control_name": "B1_reference",
-   "control_value": 21481.49194,
+   "control_value": 22038.51747,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -751,9 +920,14 @@
     "smem_bytes": 98336,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6456,
+    "bssy_count": 258
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -761,24 +935,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 256.1318263,
+   "value": 256.0574417,
    "control_name": "B1_reference",
-   "control_value": 256.0878654,
-   "canary_start": 3779.360056,
-   "canary_end": 3779.680014,
+   "control_value": 256.1182963,
+   "canary_start": 3775.232077,
+   "canary_end": 3777.280092,
    "resources": {
     "registers": 128,
     "smem_bytes": 98336,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3224,
+    "bssy_count": 129
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -786,14 +966,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 19745.46774,
+   "value": 20416.03495,
    "control_name": "B1_reference",
-   "control_value": 19783.84812,
+   "control_value": 20402.28898,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -801,9 +982,14 @@
     "smem_bytes": 131136,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12232,
+    "bssy_count": 512
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -811,24 +997,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 375.8555308,
+   "value": 376.0158218,
    "control_name": "B1_reference",
-   "control_value": 375.7972943,
-   "canary_start": 3779.103994,
-   "canary_end": 3779.680014,
+   "control_value": 376.0449852,
+   "canary_start": 3776.000023,
+   "canary_end": 3775.007963,
    "resources": {
     "registers": 254,
     "smem_bytes": 131136,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6120,
+    "bssy_count": 256
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -836,14 +1028,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 19708.66129,
+   "value": 20400.85618,
    "control_name": "B1_reference",
-   "control_value": 19704.16398,
+   "control_value": 20423.86022,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -851,9 +1044,14 @@
     "smem_bytes": 131232,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12240,
+    "bssy_count": 512
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -861,24 +1059,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 376.0595415,
+   "value": 376.0158218,
    "control_name": "B1_reference",
-   "control_value": 375.7244902,
-   "canary_start": 3778.111935,
-   "canary_end": 3779.648066,
+   "control_value": 376.5413205,
+   "canary_start": 3776.288033,
+   "canary_end": 3775.295973,
    "resources": {
     "registers": 254,
     "smem_bytes": 131232,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6128,
+    "bssy_count": 256
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -886,14 +1090,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 20170.04435,
+   "value": 20840.61962,
    "control_name": "B1_reference",
-   "control_value": 20208.76344,
+   "control_value": 20841.85215,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -901,9 +1106,14 @@
     "smem_bytes": 131616,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12304,
+    "bssy_count": 516
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -911,24 +1121,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 372.2207443,
+   "value": 371.949528,
    "control_name": "B1_reference",
-   "control_value": 372.2921702,
-   "canary_start": 3779.295921,
-   "canary_end": 3781.055927,
+   "control_value": 372.063672,
+   "canary_start": 3775.4879,
+   "canary_end": 3775.648117,
    "resources": {
     "registers": 254,
     "smem_bytes": 131616,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6168,
+    "bssy_count": 258
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -936,14 +1152,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 22879.54167,
+   "value": 23050.14382,
    "control_name": "B1_reference",
-   "control_value": 22895.97177,
+   "control_value": 23040.12769,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -951,9 +1168,14 @@
     "smem_bytes": 133152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12584,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -961,24 +1183,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 340.4945543,
+   "value": 340.4348074,
    "control_name": "B1_reference",
-   "control_value": 340.195985,
-   "canary_start": 3779.295921,
-   "canary_end": 3779.392004,
+   "control_value": 340.3631344,
+   "canary_start": 3775.808096,
+   "canary_end": 3775.392056,
    "resources": {
     "registers": 254,
     "smem_bytes": 133152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6288,
+    "bssy_count": 257
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -986,14 +1214,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 30048.00403,
+   "value": 30131.7621,
    "control_name": "B1_reference",
-   "control_value": 30136.56183,
+   "control_value": 30141.65591,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1001,9 +1230,14 @@
     "smem_bytes": 139296,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12584,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -1011,24 +1245,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 270.6285642,
+   "value": 270.6134594,
    "control_name": "B1_reference",
-   "control_value": 270.8779953,
-   "canary_start": 3779.072046,
-   "canary_end": 3779.583931,
+   "control_value": 270.8326023,
+   "canary_start": 3775.583982,
+   "canary_end": 3775.167942,
    "resources": {
     "registers": 254,
     "smem_bytes": 139296,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6288,
+    "bssy_count": 257
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -1036,14 +1276,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 40026.40188,
+   "value": 41269.94355,
    "control_name": "B1_reference",
-   "control_value": 39993.55108,
+   "control_value": 41258.89651,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1051,9 +1292,14 @@
     "smem_bytes": 163872,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 25
+    "bar_sync_count": 25,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12584,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "bf16",
@@ -1061,24 +1307,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 205.3854593,
+   "value": 205.3637028,
    "control_name": "B1_reference",
-   "control_value": 205.4681207,
-   "canary_start": 3779.648066,
-   "canary_end": 3779.583931,
+   "control_value": 205.4420022,
+   "canary_start": 3776.128054,
+   "canary_end": 3776.063919,
    "resources": {
     "registers": 254,
     "smem_bytes": 163872,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 11
+    "bar_sync_count": 11,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6288,
+    "bssy_count": 257
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1086,14 +1338,15 @@
    "output_form": "indices",
    "n": 1024,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 1785.245968,
+   "value": 1789.227151,
    "control_name": "B1_reference",
-   "control_value": 1784.901882,
+   "control_value": 1788.936828,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1101,9 +1354,14 @@
     "smem_bytes": 4160,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 5,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1048,
+    "bssy_count": 32
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1111,24 +1369,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 381.0606725,
+   "value": 381.0931339,
    "control_name": "B1_reference",
-   "control_value": 380.8163302,
-   "canary_start": 3779.520035,
-   "canary_end": 3780.575991,
+   "control_value": 380.8786122,
+   "canary_start": 3775.360107,
+   "canary_end": 3777.728081,
    "resources": {
     "registers": 38,
     "smem_bytes": 4160,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 528,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1136,24 +1400,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 1905.221774,
+   "value": 1890.864247,
    "control_name": "B1_reference",
-   "control_value": 1904.146505,
+   "control_value": 1890.936828,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
-    "registers": 44,
+    "registers": 40,
     "smem_bytes": 4256,
     "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 5,
-    "bar_sync_count": 37
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1048,
+    "bssy_count": 32
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1161,24 +1431,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 355.3409804,
+   "value": 355.4516512,
    "control_name": "B1_reference",
-   "control_value": 355.3626758,
-   "canary_start": 3779.520035,
-   "canary_end": 3780.224085,
+   "control_value": 355.5906533,
+   "canary_start": 3775.583982,
+   "canary_end": 3777.88806,
    "resources": {
     "registers": 38,
     "smem_bytes": 4256,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 536,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1186,24 +1462,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 2038.573925,
+   "value": 2037.52957,
    "control_name": "B1_reference",
-   "control_value": 2038.544355,
+   "control_value": 2037.412634,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
-    "registers": 44,
+    "registers": 40,
     "smem_bytes": 4640,
     "spill_bytes": 0,
-    "occupancy_blocks_per_sm": 5,
-    "bar_sync_count": 37
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1048,
+    "bssy_count": 32
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1211,24 +1493,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 326.5840346,
+   "value": 326.8261233,
    "control_name": "B1_reference",
-   "control_value": 326.615198,
-   "canary_start": 3779.040098,
-   "canary_end": 3781.280041,
+   "control_value": 326.6848659,
+   "canary_start": 3776.063919,
+   "canary_end": 3778.464079,
    "resources": {
     "registers": 38,
     "smem_bytes": 4640,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 536,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1236,14 +1524,15 @@
    "output_form": "indices",
    "n": 1024,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 2312.715054,
+   "value": 2311.919355,
    "control_name": "B1_reference",
-   "control_value": 2312.650538,
+   "control_value": 2311.685484,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1251,9 +1540,14 @@
     "smem_bytes": 6176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 5,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1048,
+    "bssy_count": 32
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1261,24 +1555,30 @@
    "output_form": "indices",
    "n": 1024,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 280.6559065,
+   "value": 280.7588242,
    "control_name": "B1_reference",
-   "control_value": 280.6992353,
-   "canary_start": 3779.103994,
-   "canary_end": 3779.808044,
+   "control_value": 280.6856986,
+   "canary_start": 3775.615931,
+   "canary_end": 3779.616117,
    "resources": {
     "registers": 38,
     "smem_bytes": 6176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 536,
+    "bssy_count": 16
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1286,14 +1586,15 @@
    "output_form": "indices",
    "n": 4096,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 3151.637097,
+   "value": 3116.569892,
    "control_name": "B1_reference",
-   "control_value": 3150.801075,
+   "control_value": 3111.03629,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1301,9 +1602,14 @@
     "smem_bytes": 16448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2424,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1311,24 +1617,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 571.6246824,
+   "value": 571.0609951,
    "control_name": "B1_reference",
-   "control_value": 571.3637635,
-   "canary_start": 3778.975964,
-   "canary_end": 3779.520035,
+   "control_value": 570.6577818,
+   "canary_start": 3775.712013,
+   "canary_end": 3779.423952,
    "resources": {
     "registers": 64,
     "smem_bytes": 16448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1224,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1336,14 +1648,15 @@
    "output_form": "indices",
    "n": 4096,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 3704.508065,
+   "value": 3698.686828,
    "control_name": "B1_reference",
-   "control_value": 3702.965054,
+   "control_value": 3699.120968,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1351,9 +1664,14 @@
     "smem_bytes": 16544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2440,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1361,24 +1679,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 521.0630209,
+   "value": 521.413166,
    "control_name": "B1_reference",
-   "control_value": 521.4412042,
-   "canary_start": 3779.423952,
-   "canary_end": 3779.4559,
+   "control_value": 521.8971302,
+   "canary_start": 3775.264025,
+   "canary_end": 3779.711962,
    "resources": {
     "registers": 64,
     "smem_bytes": 16544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1224,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1386,14 +1710,15 @@
    "output_form": "indices",
    "n": 4096,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 4673.400538,
+   "value": 4718.365591,
    "control_name": "B1_reference",
-   "control_value": 4668.044355,
+   "control_value": 4732.235215,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1401,9 +1726,14 @@
     "smem_bytes": 16928,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2464,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1411,24 +1741,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 435.57738,
+   "value": 435.3037064,
    "control_name": "B1_reference",
-   "control_value": 435.6605042,
-   "canary_start": 3779.4559,
-   "canary_end": 3779.776096,
+   "control_value": 435.5920274,
+   "canary_start": 3775.712013,
+   "canary_end": 3779.040098,
    "resources": {
     "registers": 64,
     "smem_bytes": 16928,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1232,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1436,14 +1772,15 @@
    "output_form": "indices",
    "n": 4096,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 5305.108871,
+   "value": 5485.134409,
    "control_name": "B1_reference",
-   "control_value": 5304.549731,
+   "control_value": 5480.803763,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1451,9 +1788,14 @@
     "smem_bytes": 18464,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2464,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1461,24 +1803,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 372.9291608,
+   "value": 373.1479474,
    "control_name": "B1_reference",
-   "control_value": 372.925582,
-   "canary_start": 3778.01609,
-   "canary_end": 3779.711962,
+   "control_value": 373.3813673,
+   "canary_start": 3776.000023,
+   "canary_end": 3777.60005,
    "resources": {
     "registers": 64,
     "smem_bytes": 18464,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1232,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1486,14 +1834,15 @@
    "output_form": "indices",
    "n": 4096,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 6418.931452,
+   "value": 6472.303763,
    "control_name": "B1_reference",
-   "control_value": 6415.202957,
+   "control_value": 6475.696237,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1501,9 +1850,14 @@
     "smem_bytes": 24608,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2464,
+    "bssy_count": 128
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1511,24 +1865,30 @@
    "output_form": "indices",
    "n": 4096,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 293.1550669,
+   "value": 293.2592097,
    "control_name": "B1_reference",
-   "control_value": 293.0841838,
-   "canary_start": 3778.048038,
-   "canary_end": 3779.583931,
+   "control_value": 293.1306763,
+   "canary_start": 3775.552034,
+   "canary_end": 3778.271914,
    "resources": {
     "registers": 64,
     "smem_bytes": 24608,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1232,
+    "bssy_count": 64
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1536,14 +1896,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 9728.337366,
+   "value": 10052.85887,
    "control_name": "B1_reference",
-   "control_value": 9741.928763,
+   "control_value": 10060.38441,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1551,9 +1912,14 @@
     "smem_bytes": 65600,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8016,
+    "bssy_count": 512
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1561,24 +1927,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 325.7103305,
+   "value": 325.8635248,
    "control_name": "B1_reference",
-   "control_value": 325.819749,
-   "canary_start": 3779.200077,
-   "canary_end": 3779.968023,
+   "control_value": 325.8854273,
+   "canary_start": 3776.160002,
+   "canary_end": 3775.648117,
    "resources": {
     "registers": 173,
     "smem_bytes": 65600,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4024,
+    "bssy_count": 256
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1586,14 +1958,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 10462.98118,
+   "value": 10731.21505,
    "control_name": "B1_reference",
-   "control_value": 10448.38172,
+   "control_value": 10729.39113,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1601,9 +1974,14 @@
     "smem_bytes": 65696,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8032,
+    "bssy_count": 512
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1611,24 +1989,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 309.8430692,
+   "value": 310.2196623,
    "control_name": "B1_reference",
-   "control_value": 309.8035102,
-   "canary_start": 3777.951956,
-   "canary_end": 3779.200077,
+   "control_value": 310.2792198,
+   "canary_start": 3775.935888,
+   "canary_end": 3777.663946,
    "resources": {
     "registers": 173,
     "smem_bytes": 65696,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4032,
+    "bssy_count": 256
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1636,14 +2020,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 12134.74194,
+   "value": 11284.4879,
    "control_name": "B1_reference",
-   "control_value": 12164.11156,
+   "control_value": 11304.19624,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1651,9 +2036,14 @@
     "smem_bytes": 66080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8096,
+    "bssy_count": 516
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1661,24 +2051,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 279.1735904,
+   "value": 279.3826573,
    "control_name": "B1_reference",
-   "control_value": 279.3585263,
-   "canary_start": 3777.760029,
-   "canary_end": 3777.920008,
+   "control_value": 279.3343995,
+   "canary_start": 3775.327921,
+   "canary_end": 3776.544094,
    "resources": {
     "registers": 173,
     "smem_bytes": 66080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4064,
+    "bssy_count": 258
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1686,14 +2082,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 15244.60349,
+   "value": 14063.98656,
    "control_name": "B1_reference",
-   "control_value": 15236.89785,
+   "control_value": 14048.5672,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1701,9 +2098,14 @@
     "smem_bytes": 67616,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8192,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1711,24 +2113,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 237.8802239,
+   "value": 237.7519335,
    "control_name": "B1_reference",
-   "control_value": 237.8860487,
-   "canary_start": 3779.488087,
-   "canary_end": 3779.295921,
+   "control_value": 238.1021152,
+   "canary_start": 3775.424004,
+   "canary_end": 3777.215958,
    "resources": {
     "registers": 173,
     "smem_bytes": 67616,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4104,
+    "bssy_count": 257
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1736,14 +2144,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 20290.34409,
+   "value": 19018.63844,
    "control_name": "B1_reference",
-   "control_value": 20283.77688,
+   "control_value": 19011.29704,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1751,9 +2160,14 @@
     "smem_bytes": 73760,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8192,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1761,24 +2175,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 189.9594256,
+   "value": 190.0264033,
    "control_name": "B1_reference",
-   "control_value": 190.063649,
-   "canary_start": 3779.167891,
-   "canary_end": 3780.607939,
+   "control_value": 190.0412998,
+   "canary_start": 3775.648117,
+   "canary_end": 3776.256084,
    "resources": {
     "registers": 173,
     "smem_bytes": 73760,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4104,
+    "bssy_count": 257
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1786,14 +2206,15 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 23343.16801,
+   "value": 24514.02151,
    "control_name": "B1_reference",
-   "control_value": 23322.89651,
+   "control_value": 24494.47043,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1801,9 +2222,14 @@
     "smem_bytes": 98336,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8192,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1811,24 +2237,30 @@
    "output_form": "indices",
    "n": 16384,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 162.7759026,
+   "value": 162.7786401,
    "control_name": "B1_reference",
-   "control_value": 162.7185578,
-   "canary_start": 3779.551983,
-   "canary_end": 3779.551983,
+   "control_value": 162.8770486,
+   "canary_start": 3776.063919,
+   "canary_end": 3774.271965,
    "resources": {
     "registers": 173,
     "smem_bytes": 98336,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4104,
+    "bssy_count": 257
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1836,14 +2268,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 19468.65323,
+   "value": 20170.86156,
    "control_name": "B1_reference",
-   "control_value": 19468.52688,
+   "control_value": 20204.12366,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1851,9 +2284,14 @@
     "smem_bytes": 131136,
     "spill_bytes": 992,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 112,
+    "stl_count": 74,
+    "ldl_count": 82,
+    "sass_instructions": 16032,
+    "bssy_count": 1024
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1861,24 +2299,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 326.4777661,
+   "value": 326.5767021,
    "control_name": "B1_reference",
-   "control_value": 326.4118489,
-   "canary_start": 3779.392004,
-   "canary_end": 3779.488087,
+   "control_value": 326.4887583,
+   "canary_start": 3775.680065,
+   "canary_end": 3775.743961,
    "resources": {
     "registers": 255,
     "smem_bytes": 131136,
     "spill_bytes": 440,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 96,
+    "stl_count": 34,
+    "ldl_count": 38,
+    "sass_instructions": 8016,
+    "bssy_count": 512
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1886,14 +2330,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 18954.68817,
+   "value": 20155.89651,
    "control_name": "B1_reference",
-   "control_value": 18974.08602,
+   "control_value": 20193.39247,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1901,9 +2346,14 @@
     "smem_bytes": 131232,
     "spill_bytes": 992,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 112,
+    "stl_count": 74,
+    "ldl_count": 82,
+    "sass_instructions": 16040,
+    "bssy_count": 1024
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1911,24 +2361,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 16,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 324.0454391,
+   "value": 323.904768,
    "control_name": "B1_reference",
-   "control_value": 324.0995713,
-   "canary_start": 3778.59211,
-   "canary_end": 3779.903889,
+   "control_value": 324.2620965,
+   "canary_start": 3775.680065,
+   "canary_end": 3777.951956,
    "resources": {
     "registers": 255,
     "smem_bytes": 131232,
     "spill_bytes": 440,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 96,
+    "stl_count": 34,
+    "ldl_count": 38,
+    "sass_instructions": 8024,
+    "bssy_count": 512
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1936,14 +2392,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 22846.68145,
+   "value": 24152.67339,
    "control_name": "B1_reference",
-   "control_value": 22841.17473,
+   "control_value": 24126.7379,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -1951,9 +2408,14 @@
     "smem_bytes": 131616,
     "spill_bytes": 992,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 112,
+    "stl_count": 74,
+    "ldl_count": 82,
+    "sass_instructions": 16104,
+    "bssy_count": 1028
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1961,24 +2423,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 64,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 288.5330887,
+   "value": 288.9800863,
    "control_name": "B1_reference",
-   "control_value": 288.1730212,
-   "canary_start": 3779.423952,
-   "canary_end": 3779.776096,
+   "control_value": 288.9628636,
+   "canary_start": 3775.135994,
+   "canary_end": 3775.680065,
    "resources": {
     "registers": 255,
     "smem_bytes": 131616,
     "spill_bytes": 440,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 96,
+    "stl_count": 34,
+    "ldl_count": 38,
+    "sass_instructions": 8056,
+    "bssy_count": 514
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -1986,14 +2454,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 27419.97581,
+   "value": 28023.35081,
    "control_name": "B1_reference",
-   "control_value": 27443.69489,
+   "control_value": 28017.62903,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -2001,9 +2470,14 @@
     "smem_bytes": 133152,
     "spill_bytes": 1024,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 112,
+    "stl_count": 70,
+    "ldl_count": 80,
+    "sass_instructions": 16352,
+    "bssy_count": 1026
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -2011,24 +2485,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 256,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 260.1611416,
+   "value": 260.4545749,
    "control_name": "B1_reference",
-   "control_value": 260.2309591,
-   "canary_start": 3779.295921,
-   "canary_end": 3779.488087,
+   "control_value": 260.4685409,
+   "canary_start": 3776.223898,
+   "canary_end": 3776.000023,
    "resources": {
     "registers": 255,
     "smem_bytes": 133152,
     "spill_bytes": 480,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 96,
+    "stl_count": 30,
+    "ldl_count": 36,
+    "sass_instructions": 8168,
+    "bssy_count": 513
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -2036,14 +2516,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 36111.20968,
+   "value": 36260.25941,
    "control_name": "B1_reference",
-   "control_value": 36106.94086,
+   "control_value": 36235.54301,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -2051,9 +2532,14 @@
     "smem_bytes": 139296,
     "spill_bytes": 1024,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 112,
+    "stl_count": 70,
+    "ldl_count": 80,
+    "sass_instructions": 16352,
+    "bssy_count": 1026
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -2061,24 +2547,30 @@
    "output_form": "indices",
    "n": 32768,
    "k": 1024,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 213.3314642,
+   "value": 213.5522134,
    "control_name": "B1_reference",
-   "control_value": 213.415941,
-   "canary_start": 3779.392004,
-   "canary_end": 3779.711962,
+   "control_value": 213.4300415,
+   "canary_start": 3775.392056,
+   "canary_end": 3776.19195,
    "resources": {
     "registers": 255,
     "smem_bytes": 139296,
     "spill_bytes": 480,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 96,
+    "stl_count": 30,
+    "ldl_count": 36,
+    "sass_instructions": 8168,
+    "bssy_count": 513
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -2086,14 +2578,15 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 47124.76344,
+   "value": 48001.25,
    "control_name": "B1_reference",
-   "control_value": 47082.28763,
+   "control_value": 48036.27957,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -2101,9 +2594,14 @@
     "smem_bytes": 163872,
     "spill_bytes": 1024,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 37
+    "bar_sync_count": 37,
+    "stack_bytes": 112,
+    "stl_count": 70,
+    "ldl_count": 80,
+    "sass_instructions": 16352,
+    "bssy_count": 1026
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   },
   {
    "key_type": "fp32",
@@ -2111,53 +2609,60 @@
    "output_form": "indices",
    "n": 32768,
    "k": 4096,
+   "rows": 1,
    "threads": 256,
    "requirement": "not_guaranteed",
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 167.426084,
+   "value": 167.5707135,
    "control_name": "B1_reference",
-   "control_value": 167.4347513,
-   "canary_start": 3779.040098,
-   "canary_end": 3779.007912,
+   "control_value": 167.5707135,
+   "canary_start": 3775.232077,
+   "canary_end": 3776.096106,
    "resources": {
     "registers": 255,
     "smem_bytes": 163872,
     "spill_bytes": 480,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 17
+    "bar_sync_count": 17,
+    "stack_bytes": 96,
+    "stl_count": 30,
+    "ldl_count": 36,
+    "sass_instructions": 8168,
+    "bssy_count": 513
    },
-   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+   "raw_file": "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
   }
  ],
  "findings": {
   "low_level": [
    "Registers scale with items per thread because AIR keeps the keys, the int32 values and a memoized key copy live across the radix passes: 44 regs at IPT 4 (fp32), 64 at IPT 16, 169 at IPT 64, 255 with 992 to 1024 bytes of spill at IPT 128 (fp32) and 254 regs with 0 spill at IPT 128 (bf16). Occupancy follows: 6 blocks/SM at N 1024 fp32 (8 for bf16), 4 at N 4096, 1 at N 16384 and 32768 (fp32), 2 at N 16384 bf16.",
    "SASS of the harness latency kernel (one warm-up call plus the chain body): 37 BAR.SYNC for fp32 (4 radix passes) against 25 for bf16 (2 passes), 0 STL and 0 LDL up to IPT 64, 32 to 33 STL and LDL at IPT 128. Shared memory is 4256 B at N 1024 and grows to 131232 B at N 32768 (the exchange buffer is N x 4 bytes, dynamic shared memory in the harness).",
-   "The data-dependent chain control (vectorized 16-byte blocked loads, fold, barrier, read-back) costs 139 to 147 cycles per call at N 1024, 271 (bf16) to 919 (fp32) at N 4096, 2.5k (bf16) to 4.6k (fp32) at N 16384 and 4.6k to 8.7k at N 32768. Net values at N >= 16384 therefore carry a few percent of uncertainty from the subtraction (the control varies by up to 1100 cycles with k at the same N, raw fits have R^2 >= 0.998).",
+   "The data-dependent chain control (vectorized 16-byte blocked loads, fold, barrier, read-back, launched with the variant's dynamic shared memory so both kernels see the same L1 carve-out) costs 139 to 151 cycles per call at N 1024, 550 (bf16) to 930 (fp32) at N 4096, 2.5k to 2.9k (bf16) and 4.6k to 5.9k (fp32) at N 16384 and 4.6k to 8.7k at N 32768. Every chain length rotates through all 16 inputs over the repetitions (harness 0.6), so the per-call cache behavior is independent of the chain length: all 42 fits have R^2 >= 0.9993. The control still varies with k at fixed N (N 16384 fp32: 4.6k at k 4, 16 and 4096 against 5.85k at k 64 to 1024), a shared-memory carve-out step that both kernels pay alike.",
    "Throughput ceiling of the harness (no-op adapter, loads only): 5.2 to 5.4 Telem/s at N 1024 (L1 resident), 2.1 Telem/s (fp32) and 7.6 Telem/s (bf16) at N 4096, 1.1 to 2.3 Telem/s at N 16384 and 32768. At N >= 16384 the primitive runs at 1 block/SM, so its own load phase is not hidden by another block: a kernel with prefetching would see a few percent more."
   ],
   "algorithmic": [
-   "Latency grows slowly with k at fixed N (k 4 to 256 at N 1024: 1785 to 2313 fp32, 1768 to 2129 bf16) and roughly linearly with N at fixed small k (fp32 k 16: 1905, 3705, 10463, 18955 for N 1024 to 32768), the histogram sweep over all items per pass dominates above N 4096, as the B1 idea card's cost model predicts (about 85 cycles per item per pass).",
-   "bf16 is not cheaper than fp32 at the same N and k in latency (1882 vs 1905 at N 1024 k 16, 9679 vs 10463 at N 16384 k 16): two 8-bit passes with no early exit cost about what fp32's 2 to 4 passes with early exit cost. In throughput bf16 wins only where it buys occupancy (N 16384: 526 vs 310 Gelem/s at 2 vs 1 blocks per SM, N 32768: 376 vs 324 without the fp32 spills).",
+   "Latency grows slowly with k at fixed N (k 4 to 256 at N 1024: 1789 to 2312 fp32, 1770 to 2136 bf16) and roughly linearly with N at fixed small k (fp32 k 16: 1891, 3699, 10731, 20156 for N 1024 to 32768), the histogram sweep over all items per pass dominates above N 4096, as the B1 idea card's cost model predicts (about 85 cycles per item per pass).",
+   "bf16 is not cheaper than fp32 at the same N and k in latency (1892 vs 1891 at N 1024 k 16, 10018 vs 10731 at N 16384 k 16, 20401 vs 20156 at N 32768 k 16): two 8-bit passes with no early exit cost about what fp32's 2 to 4 passes with early exit cost. In throughput bf16 wins only where it buys occupancy (N 16384: 527 vs 310 Gelem/s at 2 vs 1 blocks per SM, N 32768: 376 vs 324 without the fp32 spills).",
    "Throughput peaks at N 4096 (fp32 521 to 572 Gelem/s, bf16 534 to 574 at k 16 and 4) where IPT 16 still allows 4 blocks per SM, and falls to 310 to 330 Gelem/s at N 16384 fp32 and 324 at N 32768 (1 block per SM, spills).",
-   "Large k costs: k = N/4 at N 16384 is 23.3k cycles fp32 against 10.5k at k 16, and at N 32768 k 4096 is 47.1k against 19.0k, the candidate scatter and the pair exchange grow with k.",
+   "Large k costs: k = N/4 at N 16384 is 24.5k cycles fp32 against 10.7k at k 16, and at N 32768 k 4096 is 48.0k against 20.2k, the candidate scatter and the pair exchange grow with k.",
    "Tie structure of the inputs the numbers were taken on: fp32 random has 1.0 keys at rank k, bf16 random has 1.4 (N 1024 k 4) to 54 (N 32768 k 4096) keys equal to the k-th, the not_guaranteed oracle accepts any subset of them."
   ],
   "negative": [
    "Index-only output does not come cheaper than pairs output here: the adapter has to run the pairs path (key exchange plus value exchange, 3 barriers in the epilogue) and drop the keys, there is no values-only epilogue in block_topk_air.",
-   "The first measurement pass used scalar blocked loads in the harness: at N >= 16384 they cost 16.9k to 33.4k cycles per call (uncoalesced, 32 sectors per warp instruction), as much as AIR itself, and halved the apparent throughput. Vectorized 16-byte loads fixed this, scalar blocked loads are the wrong baseline for any blocked-arrangement primitive."
+   "The first measurement pass used scalar blocked loads in the harness: at N >= 16384 they cost 16.9k to 33.4k cycles per call (uncoalesced, 32 sectors per warp instruction), as much as AIR itself, and halved the apparent throughput. Vectorized 16-byte loads fixed this, scalar blocked loads are the wrong baseline for any blocked-arrangement primitive.",
+   "Harness 0.2 to 0.5 (the first version of this card) let a chain of 16 calls leave L1 where a chain of 8 stayed resident for data-dependent cells with 16 inputs above about 128 KB, and launched the control with a smaller shared-memory footprint than the variant. Re-measured with 0.6 the N 1024 cells moved by under 1 percent, N 4096 bf16 by 7 percent (3571 against 3845 at k 16) and N 16384 and 32768 by 2 to 6 percent (fp32 k 16: 10731 against 10463, 20156 against 18955), all fits now linear."
   ],
   "surprises": [
    "The July main header figure (2499 cycles at N 1024 k 16 fp32, including its 50-cycle chain link) is no longer what main does: main now carries the productized optimization and measures 1905 net of the control, within 3 percent of the July v6 prototype (1857 with its link included). The throughput did not follow to the same degree: 355 Gelem/s here against 329 for the July header and 437 for v6 (main's exchange union adds barriers, and this harness reloads the input per call and averages 16 inputs instead of one).",
-   "At N 16384 k 4096 the net latency rose from 18.0k (first pass, scalar loads) to 23.3k (vectorized loads) while the raw dropped: the control is not perfectly additive at that design point, so numbers at N >= 16384 should be read with a few percent of tolerance.",
+   "The non-additive control at N 16384 k 4096 seen with harness 0.2 (net rose while raw fell when loads were vectorized) was the chain-16 L1 effect plus the control's smaller carve-out, both removed in 0.6: that cell now reads 24.5k with R^2 1.0000.",
    "GB200 latency in cycles is identical to B200 to within 1 percent for every cell (same SM), throughput is 7 to 10 percent higher on GB200 (clocks). This is a consistency check only, cards never compare archs."
   ],
   "open_questions": [
    "A values-only epilogue (scatter indices by ticket, no key gather) is the obvious index-only saving, the B1 optimizer should measure it against the pairs path (the idea card estimates about 100 cycles).",
    "Where does the k dependence come from exactly at N 1024 (k 4 to 256 adds 530 cycles fp32)? The ticket atomics on two counters and the two exchange rounds are the candidates.",
-   "Why does the control differ by 1100 cycles between k 1024 and k 4096 at N 16384 when only the output buffer size changes? A shared-memory carve-out effect on L1 is the suspect."
+   "Why does the control step by about 1300 cycles between k 16 and k 64 at N 16384 fp32 (4.6k against 5.85k) when only the output buffer size changes? A shared-memory carve-out step that changes the L1 size is the suspect, it is paid alike by variant and control."
   ]
  },
  "techniques_adopted": [],
@@ -2168,33 +2673,33 @@
   "harness/topk_harness.cuh",
   "cub/cub/block/specializations/block_topk_air.cuh"
  ],
+ "clone_commit": "b6bfae9a37bb",
  "_controls": [
   "B1_reference"
  ],
  "_batches": [
-  "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus2_20261025_104523.json"
+  "state/results/eval-engineer/b200/B1_reference_vs_B1_reference_focus_focus3_20261025_154557.json"
  ],
  "_canary": [
   {
    "start": {
-    "timestamp": "2026-10-25T10:46:14Z",
+    "timestamp": "2026-10-25T15:47:30Z",
     "device": "NVIDIA B200",
     "sms": 148,
     "cuda_runtime": "13.4",
     "cuda_driver": "13.4",
     "lat_cycles_per_op": 32.00097656,
-    "thr_us": 3778.271914
+    "thr_us": 3776.256084
    },
    "end": {
-    "timestamp": "2026-10-25T10:46:54Z",
+    "timestamp": "2026-10-25T15:47:57Z",
     "device": "NVIDIA B200",
     "sms": 148,
     "cuda_runtime": "13.4",
     "cuda_driver": "13.4",
     "lat_cycles_per_op": 32.00097656,
-    "thr_us": 3779.232025
+    "thr_us": 3775.583982
    }
   }
- ],
- "clone_commit": "fc5de9f42987"
+ ]
 }

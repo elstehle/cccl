@@ -231,7 +231,12 @@
               "sorted_asc",
               "sorted_desc",
               "pivot_tie",
-              "named_workload"
+              "named_workload",
+              "all_equal",
+              "signed_zero",
+              "inf_denorm",
+              "quantized_random",
+              "relu_quantized"
             ]
           },
           "workload_name": {

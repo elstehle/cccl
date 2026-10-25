@@ -166,8 +166,11 @@ Serialization: call `n` consumes `dep = out_idx[0]` of call `n - 1` (read after 
 masked with a kernel argument that is zero at run time but unknown to the compiler.
 
 - `data_dependent = true` (radix select, atomics, threshold filters: the work depends on the
-  data): call `n` loads input `(n + dep) & 15` out of 16 distinct inputs of the cell's pattern,
-  fresh data every call, the load address carries the dependency.
+  data): call `n` of repetition `r` loads input `(r * chain + n + dep) & 15` out of 16 distinct
+  inputs of the cell's pattern, fresh data every call, the load address carries the dependency.
+  The rotation with `r` makes every chain length touch all 16 inputs over the repetitions, so the
+  cache behavior per call does not depend on the chain length (before 0.6 a chain of 16 left L1
+  where a chain of 8 stayed resident, which bent the fit at N 8192 and above).
 - `data_dependent = false` (sorting networks: the work is fixed): in-place chain on the register
   resident input, the first key is xor-perturbed with `dep`. The input degenerates over the chain,
   which does not matter for a data-oblivious primitive (the oracle runs separately on pristine
@@ -175,7 +178,8 @@ masked with a kernel argument that is zero at run time but unknown to the compil
 
 Generate-only control: the identical kernel with a no-op adapter (same arrangement, same loads or
 perturbation, every thread folds its inputs into one word and stores it to `out_idx[lane % K]` so
-no load is dead, same barrier and read-back) is measured with
+no load is dead, same barrier and read-back, launched with the variant's dynamic shared memory
+size so both kernels see the same L1 carve-out and, in the throughput regime, the same occupancy) is measured with
 the same method, and `cycles_per_call = slope(adapter) - slope(noop)`. Both slopes, the minima per
 chain length and the fit quality are in the JSON (`slope_raw`, `slope_noop`, `chain_minima`,
 `r2_raw`). The fold costs about one LOP3 per three items and is the residual error of the
