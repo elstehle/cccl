@@ -227,8 +227,13 @@ ssh <node> '<exec_prefix> bash -c "cd <root>/work/<holder>/harness && export PAT
 ssh <node> '<exec_prefix> tar czf - -C <root>/results/<holder> .' | tar xzf - -C $SWARM/state/results/<holder>
 ```
 
-`--root` derives `--work <root>/work/<holder>`, `--out <root>/results/<holder>` and
-`--lock <root>/locks/gpu<i>.lock`. `--node-name` and `--arch-name` come from the lease line
+`--control-req <requirement>` instantiates the control under a different requirement than the
+variant, in the same process and lock section: a `prefer_smaller_index` variant can be measured
+against the reference's `not_guaranteed` path when the reference does not support the tie-break
+(the control name then reads `W1_reference@not_guaranteed`). Without it, cells the control does
+not support come out without a control value and `make_card.py` drops them unless a second A/A
+batch of the variant is merged through a second `--batch`. `--root` derives
+`--work <root>/work/<holder>`, `--out <root>/results/<holder>` and `--lock <root>/locks/gpu<i>.lock`. `--node-name` and `--arch-name` come from the lease line
 (inside a container the hostname is the container id, so pass them). Filters: `--keys`, `--req`, `--n`, `--k`, `--threads`,
 `--patterns`, `--regimes`, `--oracle-only`, `--no-battery`. `--build-only` and `--measure-only`
 split the phases, `--dry-run` lists the cells. Compiles never run under the lock.

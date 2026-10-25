@@ -120,7 +120,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.2";
+inline constexpr const char* harness_version = "0.3";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -1964,6 +1964,7 @@ inline json adapter_json(const adapter_result& r)
 template <class KeyT>
 json make_cells(const adapter_result& v,
                 const adapter_result* c,
+                const std::string& control_name,
                 int threads,
                 int n,
                 int k,
@@ -2006,7 +2007,7 @@ json make_cells(const adapter_result& v,
     j.add("value", v.lat_value);
     if (c && c->has_latency)
     {
-      j.add("control_name", c->id);
+      j.add("control_name", control_name);
       j.add("control_value", c->lat_value);
     }
     else
@@ -2024,7 +2025,7 @@ json make_cells(const adapter_result& v,
     j.add("value", v.thr_value);
     if (c && c->has_throughput)
     {
-      j.add("control_name", c->id);
+      j.add("control_name", control_name);
       j.add("control_value", c->thr_value);
     }
     else
@@ -2071,6 +2072,8 @@ json adapter_static_json()
 
 // ------------------------------------------------------------------------------------------------
 // The cell entry point. V and C are adapter class templates, VInfo and CInfo their info structs.
+// CReq is the requirement the control is instantiated with (normally Req, run.py's --control-req
+// lets a prefer_smaller_index variant run against the reference's not_guaranteed path).
 // ------------------------------------------------------------------------------------------------
 template <class VInfo,
           template <class, int, int, int, requirement> class V,
@@ -2080,14 +2083,17 @@ template <class VInfo,
           int Threads,
           int N,
           int K,
-          requirement Req>
+          requirement Req,
+          requirement CReq = Req>
 int run_cell(int argc, char** argv)
 {
   options o              = parse_options(argc, argv);
   constexpr key_type kt  = key_traits<KeyT>::type;
   constexpr bool v_ok    = VInfo::supported(kt, Threads, N, K, Req);
-  constexpr bool c_ok    = CInfo::supported(kt, Threads, N, K, Req);
-  constexpr bool same_ab = std::is_same_v<VInfo, CInfo>;
+  constexpr bool c_ok    = CInfo::supported(kt, Threads, N, K, CReq);
+  constexpr bool same_ab = std::is_same_v<VInfo, CInfo> && (Req == CReq);
+  const std::string control_name =
+    std::string(CInfo::id) + (CReq != Req ? std::string("@") + to_string(CReq) : std::string());
 
   json root = json::object();
   root.add("harness_version", harness_version);
@@ -2096,6 +2102,8 @@ int run_cell(int argc, char** argv)
   root.add("cell", contract_json<VInfo, KeyT, Threads, N, K, Req>());
   root.add("variant_id", VInfo::id);
   root.add("control_id", CInfo::id);
+  root.add("control_name", control_name);
+  root.add("control_requirement", to_string(CReq));
   root.add("control_is_aa", same_ab);
   root.add("pattern", o.pattern);
   root.add("variant_supported", v_ok);
@@ -2131,8 +2139,8 @@ int run_cell(int argc, char** argv)
     bool have_control = false;
     if constexpr (c_ok)
     {
-      using CA   = C<KeyT, Threads, N, K, Req>;
-      using CCfg = cell_cfg<CInfo, CA, KeyT, Threads, N, K, Req>;
+      using CA   = C<KeyT, Threads, N, K, CReq>;
+      using CCfg = cell_cfg<CInfo, CA, KeyT, Threads, N, K, CReq>;
       root.add("control_static", adapter_static_json<CCfg>());
       cr           = cell_runner<CCfg>::run(o, dev);
       have_control = true;
@@ -2153,8 +2161,8 @@ int run_cell(int argc, char** argv)
     }
     root.add("status", vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
     root.add("cells",
-             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, Threads, N, K, Req, VA::output,
-                                             o.pattern, can0, can1)
+             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, Threads, N, K, Req,
+                                             VA::output, o.pattern, can0, can1)
                           : json::array());
 
     // Short human summary on stdout (one line per regime), everything else goes to the JSON file
