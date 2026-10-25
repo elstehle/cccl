@@ -113,6 +113,19 @@ enum class tie_ballots
   warp_sparse // one ballot per slot that holds a candidate somewhere in the warp, warps without ties skip
 };
 
+// Shared atomic add with return on a 32-bit shared-space address (block scope, relaxed), the ticket of the
+// deterministic epilogue. Spelled in PTX so that the address is a plain register value taken once: through
+// the generic temp storage reference the compiler recomputes the CTA's shared window base (S2UR SR_CgaCtaId,
+// UMOV, ULEA) in front of every ticket atomic once its register target is tight, and the special register
+// read lands on every item's ticket chain.
+[[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE ::cuda::std::uint32_t
+shared_atomic_add(::cuda::std::uint32_t shared_addr, ::cuda::std::uint32_t value)
+{
+  ::cuda::std::uint32_t old;
+  asm volatile("atom.relaxed.cta.shared.add.u32 %0, [%1], %2;" : "=r"(old) : "r"(shared_addr), "r"(value));
+  return old;
+}
+
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
@@ -625,6 +638,9 @@ public:
 
     if constexpr (Tickets == ticket_mode::per_item)
     {
+      // The counters' shared address, taken once for the deterministic ticket (see shared_atomic_add)
+      [[maybe_unused]] const ::cuda::std::uint32_t counters_shared =
+        static_cast<::cuda::std::uint32_t>(__cvta_generic_to_shared(&storage.selected_offset[0]));
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
@@ -637,11 +653,13 @@ public:
           // the two classes, on a counter indexed by the item's class (T57). With a constant counter
           // address and a constant increment the compiler warp-aggregates the atomic and the special
           // register reads land on the critical path of every item. The ties' tickets (class 1) are drawn
-          // and dropped, their positions were written by resolve_ties.
+          // and dropped, their positions were written by resolve_ties. The atomic takes the class-indexed
+          // 32-bit shared address so that the counters' base is a register value and not recomputed per item.
           const int item_class = (!select_all_candidates) && is_candidate ? 1 : 0;
           if (is_selected || is_candidate)
           {
-            const auto ticket = atomicAdd_block(&storage.selected_offset[item_class], histo_counter_t{1});
+            const auto ticket =
+              shared_atomic_add(counters_shared + 4u * static_cast<::cuda::std::uint32_t>(item_class), 1u);
             if (item_class == 0)
             {
               out_idx[ticket] = item_slot(i);
