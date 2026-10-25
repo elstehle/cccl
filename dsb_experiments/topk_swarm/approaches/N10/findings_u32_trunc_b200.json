@@ -1,0 +1,38 @@
+{
+ "author": "opt-N10",
+ "approach_id": "N10",
+ "variant": "u32_trunc",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "all lanes of the hardware warp call the primitive together (the logical warps of a sub-warp instantiation run in lockstep)",
+  "sync_performed": "shuffles, ballots and one redux on the full warp mask, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to power of two k (other k take the full merge), k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N, measured 32 to 256 at LW 32",
+  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word, the index is never carried through the network and is recovered from the item's position by ballot rank",
+  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 is mapped to +0.0 before the twiddle so the two zeros are one word",
+  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost",
+  "sorted_output_support": "not provided: the final merge stops at stride k, the output is the selected set in class and index order"
+ },
+ "report_path": "approaches/N10/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N10_u32_trunc.cuh",
+  "approaches/N10/n10_detail.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh"
+ ],
+ "techniques_adopted": ["T1", "T4", "T7", "T17", "T28", "T36", "T37", "T40", "T42"],
+ "techniques_contributed": [],
+ "correctness_notes": "FILL",
+ "findings": {
+  "low_level": ["FILL"],
+  "algorithmic": ["FILL"],
+  "negative": ["FILL"],
+  "surprises": ["FILL"],
+  "open_questions": ["FILL"]
+ }
+}

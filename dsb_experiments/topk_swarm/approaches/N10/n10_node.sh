@@ -27,6 +27,7 @@ else:
     sys.exit("node %s not ready in registry" % name)
 PY
   cat $STATE/target.env
+  n10_env
 }
 n10_env() { source $STATE/target.env; }
 n10_ssh() {
@@ -65,3 +66,11 @@ n10_poll() {
   local log=$1
   n10_ssh "cd $ROOT/work/$HOLDER && if grep -q '^exit=' $log.log; then echo DONE; grep -c compile_error $log.log; tail -n 5 $log.log | cut -c1-240; else echo RUNNING; tail -n 2 $log.log | cut -c1-200; fi"
 }
+# ship a local script and start it detached on the node (stdin does not pass through docker exec here, so base64)
+n10_batch() {
+  n10_env
+  local script=$1 name=$(basename $1 .sh)
+  local b64=$(base64 < $script | tr -d '\n')
+  n10_ssh "cd $ROOT/work/$HOLDER && echo $b64 | base64 -d > $name.sh && chmod +x $name.sh && (setsid nohup ./$name.sh > $name.log 2>&1 < /dev/null &) ; sleep 2; head -3 $name.log"
+}
+n10_batchlog() { n10_env; n10_ssh "cat $ROOT/work/$HOLDER/$1.log"; }
