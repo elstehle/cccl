@@ -201,16 +201,17 @@ def cmd_status(args):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 allow_abbrev=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    a = sub.add_parser("acquire", help="take a free GPU lease")
+    a = sub.add_parser("acquire", help="take a free GPU lease", allow_abbrev=False)
     a.add_argument("--holder", required=True)
     a.add_argument("--arch", default="any", choices=["any", "b200", "gb200"])
     a.add_argument("--node", default=None, help="only this node (name or ssh host), e.g. to rerun on a card's node")
     a.add_argument("--min-remaining", default="45m", help="minimum lease time left (default 45m)")
     a.add_argument("--wait", default="30m", help="how long to wait for a free GPU (default 30m, 0 for none)")
     a.set_defaults(func=cmd_acquire)
-    r = sub.add_parser("release", help="free every GPU held by --holder")
+    r = sub.add_parser("release", help="free every GPU held by --holder", allow_abbrev=False)
     r.add_argument("--holder", required=True)
     r.set_defaults(func=cmd_release)
     s = sub.add_parser("status", help="print the registry")
