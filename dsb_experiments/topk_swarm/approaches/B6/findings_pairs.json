@@ -1,0 +1,49 @@
+{
+ "author": "opt-B6",
+ "approach_id": "B6",
+ "variant": "pairs",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 9216,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside cub::BlockRadixSort's pairs sort, one more per pass than the keys-only form (the value exchange), 29 BAR.SYNC in the latency kernel against 26 for B6_radix, 4 passes bf16 and 8 fp32",
+  "k_range": "[1, N) at compile time",
+  "n_range": "N = Threads x IPT, N <= 32768, measured N 2048 at 256 threads",
+  "type_constraints": "bf16 (16-bit twiddled key, int32 value) and fp32 (32-bit twiddled key, int32 value), the index is the sort value. Temp storage max(rank counters 9216, key exchange, value exchange (N + N/32) x 4): 9216 at N 2048 for both types",
+  "nan_behavior": "as B6_radix: twiddled bitwise, -0.0 folded onto +0.0",
+  "tie_break_support": "inherent through the stability of the pairs sort with the input in index order, same binary for both requirements",
+  "sorted_output_support": "inherent at zero extra cost"
+ },
+ "report_path": "approaches/B6/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B6_pairs.cuh",
+  "harness/adapters/B6_radix.cuh"
+ ],
+ "techniques_adopted": ["T21", "T34", "T36"],
+ "techniques_contributed": ["T55"],
+ "correctness_notes": "B6_pairs against B6_radix at the kill cell (N 2048 k 1024, bf16 and fp32, both requirements, both regimes, label kill_pairs, umbriel-b200-020, source commit 971a398f42), full oracle battery passed in every cell for both requirements.",
+ "findings": {
+  "low_level": [
+   "bf16: the pairs sort exchanges a 16-bit key and a 32-bit value per item per pass through two buffers with one extra barrier (29 against 26 BAR.SYNC), 904 against 1008 SASS instructions (the 16-bit key path has fewer address and mask instructions than the packed word), 64 against 56 registers, 13 against 14 BAR.SYNC in the throughput kernel. fp32: 760 against 888 instructions, 64 registers both, shared memory 17472 for both pairs kernels (the two 4-byte exchange buffers alias, 9216 of counters dominate at N 2048) against 25088 for the 64-bit word.",
+   "Canaries 32.00 cycles and 3776 us at both ends, occupancy 4 blocks per SM for every kernel."
+  ],
+  "algorithmic": [
+   "bf16 N 2048 k 1024: pairs 6878 against the packed 32-bit word 5550 cycles (1.24x slower), throughput 121 against 159 Gelem per s (0.76x). The packed word carries the index through the keys-only exchange for free, the pairs sort pays a second scatter and gather and a barrier per pass, about 330 cycles per pass at IPT 8.",
+   "fp32 N 2048 k 1024: pairs 13398 against the 64-bit word 13496 (0.99x, a tie), throughput 62.3 against 59.4 (1.05x). The 64-bit word's exchange moves the same 8 bytes per item as the key plus value exchange, and the 64-bit digit extraction (SHF.R.U64 per item per pass) costs what the pairs sort's extra barrier costs. For fp32 the word form has no lever at block scope, the pairs sort is the simpler equivalent.",
+   "Both forms are stable and give prefer_smaller_index at zero cost (identical cycles under both requirements)."
+  ],
+  "negative": [
+   "Neither form changes the B6 verdict: the pairs sort is 2.7x (bf16) and 5.3x (fp32) behind B3_tuned at the kill cell by the same-session chain through B6_radix."
+  ],
+  "surprises": [
+   "The u64 word saves the value exchange and still ties the pairs sort at fp32: at block scope the 64-bit word buys nothing (T11 found the same for 64-bit atomics), unlike at warp scope where the W1 u64 word costs 13 to 30 percent over the min max pairs but gives the requirement."
+  ],
+  "open_questions": [
+   "A 32-bit truncated word for fp32 (top 32 - log2 N key bits plus the index, B2's N4 idea) would halve the exchange bytes and would need a tie class check after the sort, which at 5x behind the select is not worth building."
+  ]
+ }
+}
