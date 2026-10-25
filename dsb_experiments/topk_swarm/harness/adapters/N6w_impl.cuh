@@ -367,8 +367,10 @@ __device__ __forceinline__ void bracket_pass(const float (&v)[IPT], range& st, i
   const float lo    = fmaxf(untw(st.tmin), -FLT_MAX);
   const float hi    = fminf(untw(st.tmax), FLT_MAX);
   const float width = hi - lo;
+  // a degenerate bracket (zero or overflowing width) keeps a tiny positive scale: a zero scale
+  // would turn infinite items into NaN images (inf times 0) and put -inf into the top bin
   float scale       = 32.0f / width;
-  scale             = (width > 0.0f && scale < FLT_MAX) ? scale : 0.0f;
+  scale             = (width > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN;
   const bucket_masks<5> bm(lane);
 
   uint32_t u[IPT];

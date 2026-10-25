@@ -1,0 +1,38 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "N6",
+  "variant": "w_ballot",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 512,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "ballots, redux.sync, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 16 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 256 to 4096",
+    "type_constraints": "bf16 and fp32 keys widened to fp32 in registers with minus zero folded onto plus zero, int32 indices derived from the position (no index registers)",
+    "nan_behavior": "unsupported (the fixed-point image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code",
+    "sorted_output_support": "not inherent (items above the pivot bin are emitted in index order, the finish in descending key order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [],
+    "algorithmic": [],
+    "negative": [],
+    "surprises": [],
+    "open_questions": []
+  },
+  "techniques_adopted": ["T1", "T4", "T7", "T17", "T19", "T21", "T24", "T25", "T32", "T36", "T38", "T41"],
+  "techniques_contributed": [],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/N6w_ballot.cuh",
+    "approaches/N6w/sim_warp_bins.py",
+    "approaches/N6w/sim_warp_bins.md"
+  ],
+  "correctness_notes": ""
+}

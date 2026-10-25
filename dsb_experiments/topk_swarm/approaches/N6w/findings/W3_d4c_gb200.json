@@ -1,0 +1,37 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "W3",
+  "variant": "d4c",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 2048,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "ballots, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 64 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 from 128 to 32768, measured 512 to 4096",
+    "type_constraints": "bf16 (16 image bits, 4 digit passes) and fp32 (32 image bits, 8 passes) with minus zero folded onto plus zero, int32 indices derived from the position",
+    "nan_behavior": "unsupported (the image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the tie class at the k-th key is taken in index order by ballot ranks, both requirements run the same code",
+    "sorted_output_support": "not inherent (index order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [],
+    "algorithmic": [],
+    "negative": [],
+    "surprises": [],
+    "open_questions": []
+  },
+  "techniques_adopted": ["T4", "T5", "T17", "T21", "T25", "T30", "T32", "T36"],
+  "techniques_contributed": [],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/W3_impl.cuh",
+    "harness/adapters/W3_d4c.cuh"
+  ],
+  "correctness_notes": ""
+}
