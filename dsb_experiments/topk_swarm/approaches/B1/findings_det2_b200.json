@@ -1,0 +1,60 @@
+{
+ "author": "opt-B1det",
+ "approach_id": "B1",
+ "variant": "det2",
+ "report_path": "approaches/B1/DET_TICKET.md",
+ "source_paths": [
+  "harness/adapters/B1_det2.cuh",
+  "approaches/B1/block_topk_b1_det2.cuh",
+  "approaches/B1/profile_det_phases.cu"
+ ],
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2256,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init, plus 1 in the tie phase when the candidates at the k-th key exceed the remaining k",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = Threads x IPT, IPT 1 to 64 under prefer_smaller_index (the tie decision is a 64-bit mask per thread), measured 1024, 4096 and 16384 at 256 threads and 32768 at 512 threads, N 32768 at 256 threads is unsupported",
+  "type_constraints": "fp32 and bf16 through the radix traits, int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is normalized to +0.0 once in the prologue so both zeros form one tie class",
+  "tie_break_support": "inherent under prefer_smaller_index: warp-redundant rank (knowledge base 4.5 approach C) over the exact ties after the last pass, index order on striped tiles, taken ties written at total_selected + rank. The emission ticket of the strictly selected items is one shared atomic per item on a class-indexed counter (B1_idx's spelling, T57), the ties draw and drop a ticket on the second counter. Price against B1_idx under not_guaranteed in the same session: fp32 (no ties at rank k) within 1 percent latency at N 1024 and 4096, 3.5 to 9.6 percent at N 16384, bf16 5 to 10 percent at N 1024, 12 to 24 at N 4096, 12 to 37 at N 16384, see findings",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [
+  "T21",
+  "T23",
+  "T39",
+  "T57"
+ ],
+ "techniques_contributed": [
+  "T61"
+ ],
+ "correctness_notes": "18 prefer_smaller_index cells at N 1024, 4096 and 16384 (256 threads), variant and control B1_det both under prefer_smaller_index, 27 oracle cases per cell including the five signed_zero seeds, signed_zero_boundary and pivot_tie_zero with the exact index check, all passed. The 6 cells at N 32768 and 256 threads are unsupported for both (IPT 128 exceeds the 64-bit tie mask). Control B1_det in the same lock section (harness 0.8, label d2a). The B1_det2 header is a copy of block_topk_b1.cuh in namespace topk_b1_det2 whose only functional change is the ticket hunk, the second commit of the branch adds phase stamps that compile to nothing without B1_PROFILE.",
+ "findings": {
+  "low_level": [
+   "Same-kernel A/B of the ticket spelling inside the AIR kernel, the A/B that T39 asked for: B1_det draws the ticket for `is_selected || (is_candidate && select_all_candidates)` with `atomicAdd_block(&selected_offset[0], 1)` (the T23 empty asm on the index is a no-op, T39), B1_det2 draws one ticket per item under the union `is_selected || is_candidate` on `selected_offset[item_class]` with `item_class = !select_all_candidates && is_candidate` and branches on the class for the store (ties, class 1, draw and drop their ticket and are placed by the rank). cuobjdump of the latency kernels at fp32 N 1024 k 16 (two copies of the primitive per kernel): B1_det 1304 instructions with 8 S2R SR_LTMASK, 5 S2R SR_LANEID, 8 VOTEU.ANY, 8 FLO.U32, 24 POPC, 16 SHFL.IDX and 22 STS, B1_det2 1240 instructions with 0 SR_LTMASK, 1 SR_LANEID, 0 VOTEU.ANY, 0 FLO, 8 POPC, 8 SHFL.IDX, 8 STS and 8 plain ATOMS.ADD on a register address. Per item the B1_det2 epilogue is ISETP, two predicated IMADs that pick UR7 or UR7 + 4 as the counter address, `ATOMS.ADD R3, [R3+0x84c], R12`, then `@!P5 STS [R5+0x8e0]` (out[ticket]) or `@P2 STS [R3+0x920]` (out[total_selected + rank]). The B1_det item is `S2R SR_LANEID, VOTEU.ANY, FLO.U32, S2R SR_LTMASK, POPC, ISETP, LOP3, POPC, @P0 ATOMS.ADD [UR7+0x84c], SHFL.IDX, IMAD.IADD, STS` inside a BSSY to BSYNC region, T23's shape.",
+   "The removed instructions scale with the item slots: 2912 against 3184 at fp32 N 4096 (IPT 16, 32 SR_LTMASK, 17 SR_LANEID, 32 VOTEU, 32 FLO removed) and 7856 against 8936 at bf16 N 16384 (IPT 64, 128, 65, 128, 128). Latency-kernel registers are identical (40 at IPT 4, 64 at IPT 16, 206 bf16 and 209 fp32 at IPT 64), the throughput kernel drops from 40 to 32 registers at IPT 4 (occupancy 6 to 8 blocks per SM, both key types), 58 to 61 (bf16) and 64 to 64 (fp32) at IPT 16 (4 blocks both), 191 to 207 and 223 to 227 at IPT 64 (1 block both). BAR.SYNC counts identical (33 fp32, 21 bf16 at N 1024), no STL or LDL, stack 0 in every 256-thread cell.",
+   "Cycles saved per call by the spelling (B1_det minus B1_det2, latency slope): fp32, where no tie phase ever runs (ties_at_k 1.0), 358, 388 and 290 at N 1024 k 16, 64 and 256 (about 90 per item slot at IPT 4), 780, 1060 and 1287 at N 4096 (49 to 80 per slot at IPT 16), 2365, 2821 and 3937 at N 16384 (37 to 62 per slot at IPT 64). bf16 305, 326 and 263 at N 1024, 716, 975 and 1208 at N 4096, 2383, 2817 and 3835 at N 16384."
+  ],
+  "algorithmic": [
+   "The deterministic AIR path loses 10.8 to 22.3 percent of its latency and 4.7 to 19.0 percent of its throughput to the constant-address ticket alone. B1_det2 against B1_det, cycles per call: bf16 N 1024 k 16, 64, 256: 1868 against 2173, 2028 against 2353, 2177 against 2440. N 4096: 3790 against 4507, 4776 against 5750, 5541 against 6748. N 16384: 9949 against 12332, 11805 against 14622, 15242 against 19077. fp32 N 1024: 1802 against 2160, 1915 against 2303, 2142 against 2432. N 4096: 3710 against 4490, 4633 against 5693, 5204 against 6491. N 16384: 9809 against 12174, 11413 against 14234, 13706 against 17643. Throughput in Gelem per s: bf16 362 against 314 (N 1024 k 16), 567 against 488 (N 4096 k 16), 372 against 323 (N 16384 k 16), fp32 392 against 344, 623 against 536, 379 against 321, gains of 5 to 23 percent.",
+   "The 344 cycles that the B1_det card attributed to the compiler's warp aggregation of the ticket (T23) are 358 at the same cell here (fp32 N 1024 k 16, 2160 against 1802 within one kernel pair that differs only in the ticket hunk), so the structural cost of the old deterministic epilogue was the aggregation in full, and the attribution of T23 and T57 holds in the AIR kernel itself.",
+   "The cost per aggregated site is largest at IPT 4 (about 90 cycles per slot, the two special register reads of about 80 cycles on every item's dependent store chain, T14) and falls to 37 to 62 cycles per slot at IPT 64 where the sites overlap more, the same 12 to 67 cycles per slot range that T57 measured on the N6 kernel."
+  ],
+  "negative": [
+   "Nothing measured here was negative. The dropped class 1 tickets (one pipelined ATOMS per tied item when the tie phase runs) do not show at 1.4 to 10 ties per row, and on flood patterns (all_equal, pivot_tie) the not_guaranteed path draws the same tickets."
+  ],
+  "surprises": [
+   "The fix costs no registers in the latency kernel and frees 8 in the throughput kernel at IPT 4 (the lane id and lt mask of the aggregation), so occupancy rises from 6 to 8 blocks per SM at N 1024, part of the 13.8 to 16.2 percent throughput gain there.",
+   "The saving per item slot is about 90 cycles at IPT 4, more than the roughly 80 cycles of one S2R shadow (T14): the aggregated site also serializes the ATOMS of the warp behind a VOTEU and FLO, so the plain per-item atomics of B1_det2 overlap where the elected atomic waited."
+  ],
+  "open_questions": [
+   "Whether a kernel-argument or shared-memory-read counter index (T39's other candidate) also defeats the aggregation was not measured, the class index is the working form and is now the spelling in both B1 epilogues.",
+   "A deterministic variant that skips the tie tickets altogether (two counters indexed by is_candidate, candidates placed at total_selected plus ticket when they exactly fill the remaining slots) would save the dropped atomics, invisible on random rows and only visible on flood patterns."
+  ]
+ }
+}
