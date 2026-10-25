@@ -1,0 +1,46 @@
+{
+ "author": "opt-W4",
+ "approach_id": "W4",
+ "variant": "chunk4",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked, the tile is 4 consecutive runs of N / 4 items each sorted by (key descending, index ascending), the harness sorted-runs option (--runs 4) provides such input",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 100096,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage or the output buffer by a block barrier (the harness does), the input runs are not checked",
+  "sync_performed": "4 __syncthreads per call (one after the staging of the runs, two per merge level: split exchange and level boundary, none after the last level), no atomics, no shuffles",
+  "k_range": "powers of two with k <= N/2 and every merge level splitting evenly over the 256 threads (w4::tree_valid), measured 2048 at N 8192",
+  "n_range": "N = 256 x IPT with N / 4 a power of two and a multiple of IPT, N <= 32768 (fp32) or 65536 (bf16), measured 8192",
+  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index), int32 indices from the blocked position, runs sorted on entry",
+  "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
+  "tie_break_support": "inherent: word order (key descending, index ascending), the merge path takes the earlier run on ties (its indices are smaller), the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
+  "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
+ },
+ "findings": {
+  "low_level": [],
+  "algorithmic": [],
+  "negative": [],
+  "surprises": [],
+  "open_questions": []
+ },
+ "techniques_adopted": [
+  "T7",
+  "T29",
+  "T36",
+  "T42",
+  "T54",
+  "T55"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W4/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W4_chunk4.cuh",
+  "harness/adapters/W4_impl.cuh",
+  "harness/adapters/W4_core.cuh",
+  "approaches/W4/host_test.cpp",
+  "approaches/W4/cells_w4.json"
+ ],
+ "correctness_notes": ""
+}

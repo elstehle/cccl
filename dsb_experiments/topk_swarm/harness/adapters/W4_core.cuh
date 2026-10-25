@@ -21,13 +21,16 @@
 // chunks of C: load up to C items from each side (loads beyond the consumed count predicated
 // off, the register preset to the filler), take the C largest with one half-cleaner stage and a
 // bitonic merge of log2(C) stages (all static register indices), and advance both heads by the
-// counted wins. Runs live in shared memory in a layout swizzled on groups of 16 (64-bit words)
-// or 32 (32-bit words) words: threads of a pair stride through a run at about OPT / 2 words per
-// thread, which maps to two or four banks unswizzled.
+// counted wins. Runs live in shared memory as 32-bit arrays (fp32: key half and index half apart, the
+// level 0 runs of the chunk merge carry no index array since their index is the position) in a
+// layout swizzled on aligned groups of 32 words of the absolute position: threads of a pair stride
+// through a run at about OPT / 2 words per thread and runs start at multiples of 32, which
+// unswizzled maps 16 threads or 16 runs onto the same banks.
 #pragma once
 
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 
 #if defined(__CUDACC__)
 #  define W4_FN __device__ __forceinline__
@@ -99,10 +102,21 @@ struct word_ops;
 template <>
 struct word_ops<uint64_t>
 {
-  static constexpr int group = 16; // words per swizzle group (16 x 8 bytes = 32 banks)
   W4_FN static uint64_t make(uint32_t tw, int idx)
   {
     return (static_cast<uint64_t>(tw) << 32) | static_cast<uint32_t>(~idx);
+  }
+  W4_FN static uint64_t from_parts(uint32_t hi, uint32_t lo)
+  {
+    return (static_cast<uint64_t>(hi) << 32) | lo;
+  }
+  W4_FN static uint32_t hi(uint64_t w)
+  {
+    return static_cast<uint32_t>(w >> 32);
+  }
+  W4_FN static uint32_t lo(uint64_t w)
+  {
+    return static_cast<uint32_t>(w);
   }
   W4_FN static int index(uint64_t w)
   {
@@ -113,7 +127,6 @@ struct word_ops<uint64_t>
 template <>
 struct word_ops<uint32_t>
 {
-  static constexpr int group = 32;
   W4_FN static uint32_t make(uint32_t tw, int idx)
   {
     return (tw << 16) | (static_cast<uint32_t>(~idx) & 0xffffu);
@@ -124,14 +137,16 @@ struct word_ops<uint32_t>
   }
 };
 
-// Swizzled word position inside a run buffer: the low log2(group) bits are xored with the next
-// log2(group) bits, a permutation inside every aligned group, so run starts and extents that are
-// multiples of `group` stay inside their run.
-template <typename W>
+// Every run buffer is an array of 32-bit words (bf16: the whole word, fp32: the key half and the
+// index half in two arrays), so the bank is the word position mod 32 and the swizzle group is 32
+// words. The swizzle is applied to the absolute position in the buffer: the low five bits are
+// xored with the next five, a permutation inside every aligned group of 32, so runs that start
+// at multiples of 32 keep their extent and two runs at the same relative position do not share
+// a bank.
+inline constexpr int G = 32;
 W4_FN int sw(int i)
 {
-  constexpr int g = word_ops<W>::group;
-  return i ^ ((i / g) & (g - 1));
+  return i ^ ((i >> 5) & 31);
 }
 
 // Descending compare-exchange: two VIMNMX on 32-bit words (T42), compare and select on 64-bit.
@@ -144,6 +159,58 @@ W4_FN void cas(W& hi, W& lo)
   hi            = a;
   lo            = b;
 }
+
+// ------------------------------------------------------------------------------------------------
+// Run buffer access policies. key_at(p) is what the merge path compares (strict greater means
+// "precedes"), word_at(p, idx) the full word for the chunk network, store(p, w) the write.
+//   run_words:       one array of W words (bf16), key_at is the word itself
+//   run_split<Imp>:  fp32, key array plus index-half array, Imp: the index half is implicit from
+//                    the item position (level 0 of the chunk merge, whose runs are in index order)
+// ------------------------------------------------------------------------------------------------
+template <typename W>
+struct run_words
+{
+  W* w;
+  W4_FN W key_at(int p) const
+  {
+    return w[sw(p)];
+  }
+  W4_FN W word_at(int p, int) const
+  {
+    return w[sw(p)];
+  }
+  W4_FN void store(int p, W x) const
+  {
+    w[sw(p)] = x;
+  }
+};
+
+template <bool Implicit>
+struct run_split
+{
+  uint32_t* key;
+  uint32_t* lo;
+  W4_FN uint32_t key_at(int p) const
+  {
+    return key[sw(p)];
+  }
+  W4_FN uint64_t word_at(int p, int idx) const
+  {
+    if constexpr (Implicit)
+    {
+      return word_ops<uint64_t>::from_parts(key[sw(p)], static_cast<uint32_t>(~idx));
+    }
+    else
+    {
+      return word_ops<uint64_t>::from_parts(key[sw(p)], lo[sw(p)]);
+    }
+  }
+  W4_FN void store(int p, uint64_t x) const
+  {
+    key[sw(p)] = word_ops<uint64_t>::hi(x);
+    lo[sw(p)]  = word_ops<uint64_t>::lo(x);
+  }
+};
 
 // ------------------------------------------------------------------------------------------------
 // Batcher odd-even merge sort of a register array, descending, static indices only (as B2)
@@ -187,14 +254,15 @@ W4_FN void sort_desc(W (&v)[IPT])
 }
 
 // ------------------------------------------------------------------------------------------------
-// Merge path on two descending runs, the first run wins ties (its indices are smaller, so this
-// is the word order). Returns the number of items of A among the first d of the merge. Steps is
-// a compile-time bound on ceil(log2(range + 1)), the loop runs it fully with a predicated body.
-// The probe of a finished search (lo == hi) is in range: A[mid] with mid <= len_a touches at
-// most the first pad word after the run, B's position is clamped at 0.
+// Merge path on two descending runs at absolute buffer positions a_base and b_base, the first
+// run wins ties (its indices are smaller, so this is the word order). Returns the number of
+// items of A among the first d of the merge. Steps is a compile-time bound on
+// ceil(log2(range + 1)), the loop runs it fully with a predicated body. The probe of a finished
+// search (lo == hi) stays inside the buffer: A's position is at most len_a (the next run or the
+// trailing pad group), B's is clamped at 0.
 // ------------------------------------------------------------------------------------------------
-template <int Steps, typename W>
-W4_FN int merge_path(const W* A, const W* B, int len_a, int len_b, int d)
+template <int Steps, typename IO>
+W4_FN int merge_path(const IO& A, int a_base, const IO& B, int b_base, int len_a, int len_b, int d)
 {
   int lo = cmax(d - len_b, 0);
   int hi = cmin(d, len_a);
@@ -203,8 +271,8 @@ W4_FN int merge_path(const W* A, const W* B, int len_a, int len_b, int d)
   {
     const int mid      = (lo + hi) >> 1;
     const bool go      = lo < hi;
-    const W a          = A[sw<W>(mid)];
-    const W b          = B[sw<W>(cmax(d - 1 - mid, 0))];
+    const auto a       = A.key_at(a_base + mid);
+    const auto b       = B.key_at(b_base + cmax(d - 1 - mid, 0));
     const bool b_first = b > a;
     hi                 = (go & b_first) ? mid : hi;
     lo                 = (go & !b_first) ? mid + 1 : lo;
@@ -245,11 +313,14 @@ W4_FN int top_chunk(const W (&a)[C], const W (&b)[C], W (&o)[C])
 }
 
 // Merge exactly [a_beg, a_end) of A with [b_beg, b_end) of B, OPT = (a_end - a_beg) +
-// (b_end - b_beg) outputs in chunks of C. ToIndices: write source indices to an int array,
-// else words to a run buffer (swizzled, out_pos is the unswizzled start inside the buffer).
-template <int C, int OPT, bool ToIndices, typename W, typename OutT>
-W4_FN void merge_top(const W* A, const W* B, int a_beg, int a_end, int b_beg, int b_end, OutT* out, int out_pos)
+// (b_end - b_beg) outputs in chunks of C. a_idx0 and b_idx0 are the first item indices of the
+// runs (used by the implicit-index policy only). ToIndices: write source indices to out_idx at
+// out_pos, else words to the output buffer at absolute position out_base + out_pos.
+template <int C, int OPT, bool ToIndices, typename IO, typename OutIO>
+W4_FN void merge_top(const IO& in, int a_base, int a_idx0, int b_base, int b_idx0, int a_beg, int a_end, int b_beg,
+                     int b_end, const OutIO& out, int out_base, int out_pos, int* out_idx)
 {
+  using W    = decltype(in.word_at(0, 0));
   int a_head = a_beg;
   int b_head = b_beg;
   W4_UNROLL
@@ -263,11 +334,11 @@ W4_FN void merge_top(const W* A, const W* B, int a_beg, int a_end, int b_beg, in
       b[i] = 0;
       if (a_head + i < a_end)
       {
-        a[i] = A[sw<W>(a_head + i)];
+        a[i] = in.word_at(a_base + a_head + i, a_idx0 + a_head + i);
       }
       if (b_head + i < b_end)
       {
-        b[i] = B[sw<W>(b_head + i)];
+        b[i] = in.word_at(b_base + b_head + i, b_idx0 + b_head + i);
       }
     }
     const int wins = top_chunk<C>(a, b, o);
@@ -276,11 +347,11 @@ W4_FN void merge_top(const W* A, const W* B, int a_beg, int a_end, int b_beg, in
     {
       if constexpr (ToIndices)
       {
-        out[out_pos + c * C + i] = word_ops<W>::index(o[i]);
+        out_idx[out_pos + c * C + i] = word_ops<W>::index(o[i]);
       }
       else
       {
-        out[sw<W>(out_pos + c * C + i)] = o[i];
+        out.store(out_base + out_pos + c * C + i, o[i]);
       }
     }
     a_head += wins;
@@ -329,12 +400,13 @@ W4_HD inline constexpr bool tree_valid(int threads, int runs, int run_len, int k
 
 // ------------------------------------------------------------------------------------------------
 // The merge tree: Runs sorted runs of RunLen words, Threads cooperating threads, k largest out.
-// Level l reads buffer l % 2 and writes buffer (l + 1) % 2 (the last level writes indices).
+// Level l reads the buffers of parity l % 2 and writes the other parity (the last level writes
+// indices). Split: fp32 key and index halves in separate arrays. Implicit0: the level 0 runs are
+// in index order and carry no index array (the chunk merge).
 // ------------------------------------------------------------------------------------------------
-template <typename W, int Threads, int Runs, int RunLen, int K>
+template <typename W, bool Split, bool Implicit0, int Threads, int Runs, int RunLen, int K>
 struct merge_tree
 {
-  static constexpr int G      = word_ops<W>::group;
   static constexpr int levels = log2_ceil(Runs);
 
   W4_HD static constexpr int in_len(int l)
@@ -353,7 +425,6 @@ struct merge_tree
   {
     return runs_at(l) / 2;
   }
-  // threads per pair
   W4_HD static constexpr int tpp(int l)
   {
     return Threads / pairs_at(l);
@@ -366,34 +437,47 @@ struct merge_tree
   {
     return cmin(CHUNK, opt(l));
   }
-  // run stride in words of level l's input buffer: whole swizzle groups plus one pad group
+  // run stride in words of level l's input buffer: whole swizzle groups
   W4_HD static constexpr int stride(int l)
   {
-    return round_up(in_len(l), G) + G;
+    return round_up(in_len(l), G);
   }
+  // words of level l's input buffer, one trailing pad group for the finished-search probe
   W4_HD static constexpr int in_words(int l)
   {
-    return runs_at(l) * stride(l);
+    return runs_at(l) * stride(l) + G;
   }
-  W4_HD static constexpr int buf_words(int parity)
+  W4_HD static constexpr int buf_words(int parity, int from)
   {
     int m = 1;
     for (int l = parity; l < levels; l += 2)
     {
-      m = cmax(m, in_words(l));
+      if (l >= from)
+      {
+        m = cmax(m, in_words(l));
+      }
     }
     return m;
   }
-  static constexpr int words0 = buf_words(0);
-  static constexpr int words1 = buf_words(1);
+  static constexpr int words0 = buf_words(0, 0);
+  static constexpr int words1 = buf_words(1, 0);
+  static constexpr int lo0    = Split ? buf_words(0, Implicit0 ? 2 : 0) : 1;
+  static constexpr int lo1    = Split ? words1 : 1;
+
+  struct TempStorage
+  {
+    alignas(16) uint32_t k0[words0];
+    alignas(16) uint32_t k1[words1];
+    alignas(16) uint32_t l0[lo0];
+    alignas(16) uint32_t l1[lo1];
+    int xs[Threads];
+  };
 
   W4_HD static constexpr bool valid()
   {
     return tree_valid(Threads, Runs, RunLen, K);
   }
 
-  // One level for thread t. `xs` is a Threads-sized exchange array for the block form (the
-  // caller synchronizes between phase 1 and phase 2), the warp form passes its shuffle result.
   template <int Lv>
   struct level
   {
@@ -403,38 +487,56 @@ struct merge_tree
     static constexpr int OPT   = opt(Lv);
     static constexpr int C     = chunk(Lv);
     static constexpr int S     = stride(Lv);
-    static constexpr int OS    = stride(Lv + 1 < levels ? Lv + 1 : Lv); // output run stride
+    static constexpr int OS    = stride(Lv + 1 < levels ? Lv + 1 : Lv);
     static constexpr int Steps = log2_ceil(IN + 1);
     static constexpr bool last = (Lv + 1 == levels);
+    static constexpr bool imp  = Implicit0 && (Lv == 0);
 
-    // phase 1: the split of this thread's end diagonal
-    W4_FN static int split_end(int t, const W* in)
-    {
-      const int p  = t / TPP;
-      const int j  = t % TPP;
-      const W* A   = in + (2 * p) * S;
-      const W* B   = A + S;
-      return merge_path<Steps>(A, B, IN, IN, (j + 1) * OPT);
-    }
+    using in_io  = std::conditional_t<Split, run_split<imp>, run_words<W>>;
+    using out_io = std::conditional_t<Split, run_split<false>, run_words<W>>;
 
-    // phase 2: merge with the start split a_beg (the predecessor's end split, 0 for j == 0)
-    W4_FN static void merge(int t, const W* in, W* out, int* out_idx, int a_beg, int a_end)
+    W4_FN static in_io input(TempStorage& ts)
     {
-      const int p  = t / TPP;
-      const int j  = t % TPP;
-      const int d  = j * OPT;
-      const W* A   = in + (2 * p) * S;
-      const W* B   = A + S;
-      const int b_beg = d - a_beg;
-      const int b_end = d + OPT - a_end;
-      if constexpr (last)
+      if constexpr (Split)
       {
-        merge_top<C, OPT, true>(A, B, a_beg, a_end, b_beg, b_end, out_idx, d);
+        return in_io{(Lv % 2 == 0) ? ts.k0 : ts.k1, (Lv % 2 == 0) ? ts.l0 : ts.l1};
       }
       else
       {
-        merge_top<C, OPT, false>(A, B, a_beg, a_end, b_beg, b_end, out + p * OS, d);
+        return in_io{reinterpret_cast<W*>((Lv % 2 == 0) ? ts.k0 : ts.k1)};
       }
+    }
+    W4_FN static out_io output(TempStorage& ts)
+    {
+      if constexpr (Split)
+      {
+        return out_io{(Lv % 2 == 0) ? ts.k1 : ts.k0, (Lv % 2 == 0) ? ts.l1 : ts.l0};
+      }
+      else
+      {
+        return out_io{reinterpret_cast<W*>((Lv % 2 == 0) ? ts.k1 : ts.k0)};
+      }
+    }
+
+    // phase 1: the split of this thread's end diagonal
+    W4_FN static int split_end(int t, TempStorage& ts)
+    {
+      const int p   = t / TPP;
+      const int j   = t % TPP;
+      const in_io A = input(ts);
+      return merge_path<Steps>(A, (2 * p) * S, A, (2 * p + 1) * S, IN, IN, (j + 1) * OPT);
+    }
+
+    // phase 2: merge with the start split a_beg (the predecessor's end split, 0 for j == 0)
+    W4_FN static void merge(int t, TempStorage& ts, int* out_idx, int a_beg, int a_end)
+    {
+      const int p     = t / TPP;
+      const int j     = t % TPP;
+      const int d     = j * OPT;
+      const int b_beg = d - a_beg;
+      const int b_end = d + OPT - a_end;
+      merge_top<C, OPT, last>(input(ts), (2 * p) * S, (2 * p) * RunLen, (2 * p + 1) * S, (2 * p + 1) * RunLen,
+                              a_beg, a_end, b_beg, b_end, output(ts), p * OS, d, out_idx);
     }
   };
 };
@@ -449,7 +551,8 @@ struct key_word;
 template <>
 struct key_word<float>
 {
-  using W = uint64_t;
+  using W                     = uint64_t;
+  static constexpr bool split = true;
   W4_FN static uint32_t tw(float f)
   {
     return twiddle_f32(f);
@@ -459,7 +562,8 @@ struct key_word<float>
 template <>
 struct key_word<uint16_t>
 {
-  using W = uint32_t;
+  using W                     = uint32_t;
+  static constexpr bool split = false;
   W4_FN static uint32_t tw(uint16_t b)
   {
     return twiddle_bf16(b);
@@ -467,42 +571,52 @@ struct key_word<uint16_t>
 };
 
 // Block chunk merge: the tile of N keys in blocked arrangement holds M sorted runs of N / M
-// consecutive items, thread t stages its IPT items into run buffer 0.
+// consecutive items, thread t stages its IPT items into the level 0 buffer (fp32: keys only,
+// the index is the position).
 template <typename KeyT, int Threads, int N, int K, int M>
 struct chunk_core
 {
-  using kw                    = key_word<KeyT>;
-  using W                     = typename kw::W;
-  static constexpr int IPT    = N / Threads;
-  static constexpr int L      = N / M;
-  using tree                  = merge_tree<W, Threads, M, L, K>;
+  using kw                 = key_word<KeyT>;
+  using W                  = typename kw::W;
+  static constexpr int IPT = N / Threads;
+  static constexpr int L   = N / M;
+  using tree               = merge_tree<W, kw::split, kw::split, Threads, M, L, K>;
+  using TempStorage        = typename tree::TempStorage;
 
-  W4_FN static void stage(const KeyT (&keys)[IPT], int t, W* buf0)
+  W4_FN static void stage(const KeyT (&keys)[IPT], int t, TempStorage& ts)
   {
     constexpr int S0 = tree::stride(0);
     const int first  = t * IPT;
     const int r      = first / L;
     const int pos    = first % L;
-    W* dst           = buf0 + r * S0;
+    const int base   = r * S0 + pos;
     W4_UNROLL
     for (int i = 0; i < IPT; ++i)
     {
-      dst[sw<W>(pos + i)] = word_ops<W>::make(kw::tw(keys[i]), first + i);
+      if constexpr (kw::split)
+      {
+        ts.k0[sw(base + i)] = kw::tw(keys[i]);
+      }
+      else
+      {
+        reinterpret_cast<W*>(ts.k0)[sw(base + i)] = word_ops<W>::make(kw::tw(keys[i]), first + i);
+      }
     }
   }
 };
 
 // Warp truncated merge sort: lane l holds items [l x IPT, (l + 1) x IPT) (blocked), sorts them
-// in registers and writes its run to buffer 0, then 5 merge levels truncated at k.
+// in registers and writes its run to the level 0 buffer, then 5 merge levels truncated at k.
 template <typename KeyT, int N, int K>
 struct wmerge_core
 {
-  using kw                    = key_word<KeyT>;
-  using W                     = typename kw::W;
-  static constexpr int IPT    = N / 32;
-  using tree                  = merge_tree<W, 32, 32, IPT, K>;
+  using kw                 = key_word<KeyT>;
+  using W                  = typename kw::W;
+  static constexpr int IPT = N / 32;
+  using tree               = merge_tree<W, kw::split, false, 32, 32, IPT, K>;
+  using TempStorage        = typename tree::TempStorage;
 
-  W4_FN static void prepare(const KeyT (&keys)[IPT], int lane, W* buf0)
+  W4_FN static void prepare(const KeyT (&keys)[IPT], int lane, TempStorage& ts)
   {
     constexpr int S0 = tree::stride(0);
     W w[IPT];
@@ -512,11 +626,19 @@ struct wmerge_core
       w[i] = word_ops<W>::make(kw::tw(keys[i]), lane * IPT + i);
     }
     sort_desc<IPT>(w);
-    W* dst = buf0 + lane * S0;
+    const int base = lane * S0;
     W4_UNROLL
     for (int i = 0; i < IPT; ++i)
     {
-      dst[sw<W>(i)] = w[i];
+      if constexpr (kw::split)
+      {
+        ts.k0[sw(base + i)] = word_ops<W>::hi(w[i]);
+        ts.l0[sw(base + i)] = word_ops<W>::lo(w[i]);
+      }
+      else
+      {
+        reinterpret_cast<W*>(ts.k0)[sw(base + i)] = w[i];
+      }
     }
   }
 };

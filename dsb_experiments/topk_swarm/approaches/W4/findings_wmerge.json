@@ -1,0 +1,46 @@
+{
+ "author": "opt-W4",
+ "approach_id": "W4",
+ "variant": "wmerge",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 38912,
+  "sync_assumed": "warp convergence of the 32 lanes, the caller separates consecutive calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+  "sync_performed": "6 __syncwarp per call (after the per-lane run store and after each of the first four merge levels), one __shfl_up_sync per level for the predecessor's split, no barriers",
+  "k_range": "powers of two in [32, N/2] (every merge level must split evenly over the 32 lanes), measured 64, 256 and 1024",
+  "n_range": "N = 32 x IPT with IPT a power of two in [2, 64] (the per-lane Batcher network stays under the local-memory threshold of T34 at 64), measured 512 to 2048",
+  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index, N at most 65536), int32 indices from the blocked position",
+  "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
+  "tie_break_support": "inherent: the word order is (key descending, index ascending), the merge path takes the first run on ties and the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
+  "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
+ },
+ "findings": {
+  "low_level": [],
+  "algorithmic": [],
+  "negative": [],
+  "surprises": [],
+  "open_questions": []
+ },
+ "techniques_adopted": [
+  "T7",
+  "T28",
+  "T34",
+  "T36",
+  "T42",
+  "T54"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W4/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W4_wmerge.cuh",
+  "harness/adapters/W4_impl.cuh",
+  "harness/adapters/W4_core.cuh",
+  "approaches/W4/host_test.cpp",
+  "approaches/W4/cells_w4.json"
+ ],
+ "correctness_notes": ""
+}

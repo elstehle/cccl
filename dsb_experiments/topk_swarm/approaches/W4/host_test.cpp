@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <vector>
 
@@ -152,24 +153,23 @@ bool check(const char* what, const std::vector<KeyT>& keys, const std::vector<in
 
 
 // one level of the tree for all threads, barriers emulated by the two loops
-template <int Lv, typename Tree, typename W>
-void run_level(int threads, std::vector<W>& buf0, std::vector<W>& buf1, std::vector<int>& xs, std::vector<int>& out)
+template <int Lv, typename Tree>
+void run_level(int threads, typename Tree::TempStorage& ts, std::vector<int>& out)
 {
   if constexpr (Lv < Tree::levels)
   {
     using L = typename Tree::template level<Lv>;
-    W* in   = (Lv % 2 == 0) ? buf0.data() : buf1.data();
-    W* o    = (Lv % 2 == 0) ? buf1.data() : buf0.data();
+    std::vector<int> xs(threads);
     for (int t = 0; t < threads; ++t)
     {
-      xs[t] = L::split_end(t, in);
+      xs[t] = L::split_end(t, ts);
     }
     for (int t = 0; t < threads; ++t)
     {
       const int a_beg = (t % L::TPP == 0) ? 0 : xs[t - 1];
-      L::merge(t, in, o, out.data(), a_beg, xs[t]);
+      L::merge(t, ts, out.data(), a_beg, xs[t]);
     }
-    run_level<Lv + 1, Tree, W>(threads, buf0, buf1, xs, out);
+    run_level<Lv + 1, Tree>(threads, ts, out);
   }
 }
 
@@ -180,12 +180,12 @@ void test_block(const char* pattern, unsigned seed)
   constexpr int Threads = 256;
   using core            = w4::chunk_core<KeyT, Threads, N, K, M>;
   using tree            = typename core::tree;
-  using W               = typename core::W;
   static_assert(tree::valid(), "shape");
   auto keys = make_keys<KeyT>(pattern, N, seed);
   sort_runs(keys, M);
-  std::vector<W> buf0(tree::words0, 0), buf1(tree::words1, 0);
-  std::vector<int> xs(Threads), out(K, -1);
+  auto ts = std::make_unique<typename core::TempStorage>();
+  memset(ts.get(), 0, sizeof(typename core::TempStorage));
+  std::vector<int> out(K, -1);
   for (int t = 0; t < Threads; ++t)
   {
     KeyT mine[core::IPT];
@@ -193,9 +193,9 @@ void test_block(const char* pattern, unsigned seed)
     {
       mine[i] = keys[t * core::IPT + i];
     }
-    core::stage(mine, t, buf0.data());
+    core::stage(mine, t, *ts);
   }
-  run_level<0, tree, W>(Threads, buf0, buf1, xs, out);
+  run_level<0, tree>(Threads, *ts, out);
   char what[128];
   snprintf(what, sizeof(what), "block %s N %d K %d M %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, M,
            pattern, seed);
@@ -211,11 +211,11 @@ void test_warp(const char* pattern, unsigned seed)
 {
   using core = w4::wmerge_core<KeyT, N, K>;
   using tree = typename core::tree;
-  using W    = typename core::W;
   static_assert(tree::valid(), "shape");
   auto keys = make_keys<KeyT>(pattern, N, seed);
-  std::vector<W> buf0(tree::words0, 0), buf1(tree::words1, 0);
-  std::vector<int> xs(32), out(K, -1);
+  auto ts = std::make_unique<typename core::TempStorage>();
+  memset(ts.get(), 0, sizeof(typename core::TempStorage));
+  std::vector<int> out(K, -1);
   for (int lane = 0; lane < 32; ++lane)
   {
     KeyT mine[core::IPT];
@@ -223,9 +223,9 @@ void test_warp(const char* pattern, unsigned seed)
     {
       mine[i] = keys[lane * core::IPT + i];
     }
-    core::prepare(mine, lane, buf0.data());
+    core::prepare(mine, lane, *ts);
   }
-  run_level<0, tree, W>(32, buf0, buf1, xs, out);
+  run_level<0, tree>(32, *ts, out);
   char what[128];
   snprintf(what, sizeof(what), "warp  %s N %d K %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, pattern,
            seed);
@@ -235,8 +235,32 @@ void test_warp(const char* pattern, unsigned seed)
   }
 }
 
+template <typename KeyT, int N, int K, int M>
+void print_ts_block()
+{
+  using core = w4::chunk_core<KeyT, 256, N, K, M>;
+  printf("ts block %s N %d K %d M %d: %zu bytes\n", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, M, sizeof(typename core::TempStorage));
+}
+template <typename KeyT, int N, int K>
+void print_ts_warp()
+{
+  using core = w4::wmerge_core<KeyT, N, K>;
+  printf("ts warp %s N %d K %d: %zu bytes (x8 warps %zu, plus out %d)\n", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K,
+         sizeof(typename core::TempStorage), 8 * sizeof(typename core::TempStorage), 2 * 8 * K * 4);
+}
+
 int main()
 {
+  print_ts_block<float, 8192, 2048, 4>();
+  print_ts_block<uint16_t, 8192, 2048, 4>();
+  print_ts_block<float, 8192, 1024, 8>();
+  print_ts_block<float, 4096, 512, 8>();
+  print_ts_warp<float, 2048, 1024>();
+  print_ts_warp<uint16_t, 2048, 1024>();
+  print_ts_warp<float, 2048, 256>();
+  print_ts_warp<float, 2048, 64>();
+  print_ts_warp<uint16_t, 2048, 64>();
+  print_ts_warp<float, 1024, 256>();
   const char* patterns[] = {"random", "tie_heavy", "all_equal", "signed_zero", "sorted_asc", "relu"};
   for (const char* p : patterns)
   {
