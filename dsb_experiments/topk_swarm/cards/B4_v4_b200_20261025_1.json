@@ -5446,5 +5446,11 @@
     "thr_us": 3777.88806
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B4",
+  "date": "2026-10-25",
+  "notes": "verify-B4 rerun 2026-10-25 on umbriel-b200-018, harness 0.8 (card: 0.4), source exp/topk-swarm/B4 commit b1f8ce8d24, control B4_v3 from the same tree, 48 cells x 2 regimes (N 1024, 4096, 16384, 32768 x k 16, 64, 256, both requirements), batch state/results/verify-B4/B4_v4_vs_B4_v3_b4_vb4_v4v3_20261025_171056.json, named control in one lock section, canaries 32.00098 and 3780 us, oracle 22 battery cases passed per cell for variant and control (card: 13). VERDICT verified = true: a wash, as the card says. Ratios within 2.7 percent of the card on all 96 cells: N 16384 k 64 not_guaranteed bf16 5255 against 5644 (1.07x, card 1.08x), fp32 4664 against 4781 (1.02x, card 1.00x). N 32768 k 256 bf16 8135 against 8182 (1.01x, card 1.01x), fp32 7027 against 6913 (0.98x, card 0.97x). N 1024 k 16 bf16 0.95x (card 0.96x), fp32 0.93x (card 0.92x). random cells fp32 N 4096 k 16 0.98x (card 0.97x) and fp32 N 1024 k 16 as above. prefer_smaller_index 0.94x to 1.19x (card 0.94x to 1.18x). Absolute cycles at bf16 N 4096 are 7 to 10 percent lower than the card for v4 and v3 alike (harness-version effect on striped loads at IPT 16, see card B4_v4_b200_20261025_2), fp32 N 32768 prefer_smaller_index 2.3 to 3.3 percent above for both, everything else within 2.7 percent. Throughput within 0.6 percent everywhere. Chain fits r2 >= 0.9994. Resources identical to the card: 64 registers at IPT 4, 124 to 128 at IPT 16 (card 126 to 128), 255 from IPT 64, spill 2632 and 3416 bytes at IPT 128 not_guaranteed against v3's 1648 and 1416, STL 319 and 366, LDL 339 and 454, stack 360 and 488, as the card's low_level finding states."
+ }
 }

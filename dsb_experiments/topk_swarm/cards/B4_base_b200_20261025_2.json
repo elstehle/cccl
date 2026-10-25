@@ -2776,5 +2776,11 @@
     "thr_us": 3778.176069
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B4",
+  "date": "2026-10-25",
+  "notes": "verify-B4 rerun 2026-10-25 on umbriel-b200-018, harness 0.8 (card: 0.4), source exp/topk-swarm/B4 commit 2f23137767, control B1_idx under not_guaranteed (as the card), 18 cells x 2 regimes (N 8192, 16384, 32768 x k 64, 256, 2048), batch state/results/verify-B4/B4_base_vs_B1_idx_b4_vb4_baseb1_20261025_170704.json, named control in one lock section, canaries 32.00098 and 3780 us, oracle 22 battery cases passed per cell for variant and control (card: 13). VERDICT verified = true. Headline cells (rerun | card): fp32 N 32768 k 256 9385 against 21995 (2.34x) | 9316 against 21765 (2.34x). bf16 N 32768 k 256 9610 against 18630 (1.94x) | 9535 against 18675 (1.96x). fp32 N 32768 k 64 2.07x | 2.05x. bf16 N 32768 k 64 1.75x | 1.76x. bf16 N 16384 k 64 7938 against 9383 (1.18x) | 7873 against 9340 (1.19x). fp32 N 16384 k 64 1.37x | 1.35x. random cells bf16 N 8192 k 2048 0.54x | 0.54x and bf16 N 16384 k 64 as above. Every variant value within 1.9 percent of the card. the B1_idx control is 2.2 to 3.8 percent above the card at fp32 N 8192 k 64 and 256 and N 16384 k 64 (the only cells outside 3 percent, a loss cell and two win cells, in B4's favor by 1.5 to 3.4 percent on the ratio). throughput within 1.5 percent everywhere. Chain fits r2 >= 0.9992. Resources as in the card (255 registers from IPT 64, spill 848 and 1064 bytes at IPT 128 with matching STL and LDL counts, B1_idx 2 blocks per SM at IPT 64 against B4's 1). B1_idx has 2.1 KB of shared memory, so the harness 0.6 dyn_floor change that lowers the B3_tuned control in the sibling card does not apply here, which is why this card reproduces."
+ }
 }

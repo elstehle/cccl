@@ -5441,5 +5441,11 @@
     "thr_us": 3777.920008
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": false,
+  "verifier": "verify-B4",
+  "date": "2026-10-25",
+  "notes": "verify-B4 rerun 2026-10-25 on umbriel-b200-018, harness 0.8 (card: 0.4), source exp/topk-swarm/B4 commit d55e2cd430, control B4_base from the same tree, 24 cells x 2 regimes (N 4096, 16384, 32768 x k 16, 256, both requirements), batch state/results/verify-B4/B4_v2_vs_B4_base_b4_vb4_v2base_20261025_170802.json, named control in one lock section, canaries 32.00098 and 3780 us, oracle 22 battery cases passed per cell for variant and control (card: 13). VERDICT verified = false: the headline bf16 gain at N 4096 k 16 does not reproduce within 3 percent under the current harness, the chain's conclusion (v2 adopted) and the fp32 and large-N cells do. N 4096 k 16 not_guaranteed: bf16 4525 against 6052 (1.34x), card 4951 against 7249 (1.46x). fp32 5147 against 7002 (1.36x), card 5177 against 7007 (1.35x). prefer_smaller_index bf16 1.49x (card 1.46x), fp32 1.38x (card 1.34x). Cause of the bf16 miss: under the 0.8 harness wrapper the B4_base bf16 N 4096 not_guaranteed latency kernel compiles to 119 registers and 10184 SASS instructions (card 80 and 10408) and runs 17 percent faster, v2 (125 registers in both) runs 9 percent faster (the striped-load noop slope is 654 against 254 cycles per call under 0.8), so the harness-visible gain of the grouped slots (T56) at this cell is 1.34x under the current harness and 1.46x under the card's. the phase-stamp attribution of T56 (about 240 cycles per slot in the base build) comes from the profiler and is not touched by this rerun. N 32768 k 16 and 256: 1.05x to 1.08x not_guaranteed and 1.16x to 1.24x prefer_smaller_index, every value within 1.6 percent of the card. N 16384: fp32 within 1.8 percent, bf16 k 16 not_guaranteed variant 4.7 percent below the card (1.25x against 1.18x), k 256 2.8 percent below (1.17x against 1.12x). random cells fp32 N 32768 k 256 1.07x (card 1.08x) and fp32 N 16384 k 16 prefer_smaller_index 1.29x (card 1.30x). Throughput within 0.3 percent everywhere (N 4096 1.08x and 1.02x as the card). Chain fits r2 >= 0.9994. Resources as in the card at N 16384 and 32768 (255 registers, v2 spill 800 and 884 bytes at IPT 128 with matching STL and LDL)."
+ }
 }
