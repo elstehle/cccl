@@ -31,7 +31,7 @@
   "T20"
  ],
  "techniques_contributed": [],
- "correctness_notes": "Oracle battery (random seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) passed in every cell for both requirements, including the exact prefer_smaller_index check with signed zeros. The prefer_smaller_index cells have an A/A control (W1_reference does not support the requirement) measured in a second lock section of the same lease right after the not_guaranteed section, see the batch files. Two W1 optimizer instances shared one agent id on 2026-10-25. This card is Instance A (opt-W1, worktree cccl-topk-swarm-W1, branch exp/topk-swarm/W1): W1_packed, W1_level, the sub-warp adapters and the N2 verdict from W1_level against W1_packed. Instance B (opt-W1b) owns the same-code eager against level comparison and the fp32 native min max pairs variant, report approaches/W1/REPORT_W1b.md.",
+ "correctness_notes": "Oracle battery (random seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) passed in every cell for both requirements, including the exact prefer_smaller_index check with signed zeros. The prefer_smaller_index cells have an A/A control (W1_reference does not support the requirement) measured in a second lock section of the same lease right after the not_guaranteed section, see the batch files. Two W1 optimizer instances shared one agent id on 2026-10-25. This card is Instance A (opt-W1, worktree cccl-topk-swarm-W1, branch exp/topk-swarm/W1): W1_packed, W1_level, the sub-warp adapters and the N2 verdict from W1_level against W1_packed. Instance B (opt-W1b) owns the same-code eager against level comparison and the fp32 native min max pairs variant, report approaches/W1/REPORT_W1b.md. Built on the node against the shared harness at swarm commit b6bfae9a37bb, adapter sources at W1 worktree commit ccc1166d9c.",
  "findings": {
   "low_level": [
    "Instruction mix per network from the SASS of the latency kernel (two inlined copies per kernel, counts per copy): bf16 u32 index-in-key at N 32 is 15 SHFL, 19 ISETP, 17 SEL, 20 LOP3, 10 PLOP3 against the pairs reference's 30 SHFL, 14 ISETP, 31 SEL, 41 LOP3, 20 PLOP3, 6 PRMT: one shuffle per stage instead of two and no bf16 pack and unpack. ptxas does not turn CUB's bool comparator into VIMNMX for the u32 words: the exchange stays ISETP, ISETP, PLOP3, SEL (2 VIMNMX in the whole kernel), so the observation of issue #12160 that integral keys already get IMNMX does not hold for the WarpBitonicSortNetwork merge_stage form with its two compares and the reverse test.",
@@ -58,5 +58,6 @@
    "Does the halved SASS count of the bf16 path carry into the batched segmented kernels, where both forms already reach 8 blocks per SM?",
    "Would a min max operator path in WarpBitonicSort (issue #12160) give the eager CUB code the VIMNMX exchange for integer words without a custom network? The W1_level numbers bound the gain at two tiles (bf16 N 64 k 32: 905 to 695 cycles, which also contains the restructuring)."
   ]
- }
+ },
+ "commit": "ccc1166d9c"
 }

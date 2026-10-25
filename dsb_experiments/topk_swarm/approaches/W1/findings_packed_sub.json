@@ -32,7 +32,7 @@
   "T20"
  ],
  "techniques_contributed": [],
- "correctness_notes": "Oracle battery passed in every cell for both requirements. The control is W1_reference_sub, the eager CUB pairs network at the logical warp size (the same structure as W1_reference, which only supports 32 lanes), written by opt-W1 as the sub-warp control. The prefer_smaller_index cells have an A/A control in a second lock section of the same lease. Two W1 optimizer instances shared one agent id on 2026-10-25. This card is Instance A (opt-W1, worktree cccl-topk-swarm-W1, branch exp/topk-swarm/W1): W1_packed, W1_level, the sub-warp adapters and the N2 verdict from W1_level against W1_packed. Instance B (opt-W1b) owns the same-code eager against level comparison and the fp32 native min max pairs variant, report approaches/W1/REPORT_W1b.md.",
+ "correctness_notes": "Oracle battery passed in every cell for both requirements. The control is W1_reference_sub, the eager CUB pairs network at the logical warp size (the same structure as W1_reference, which only supports 32 lanes), written by opt-W1 as the sub-warp control. The prefer_smaller_index cells have an A/A control in a second lock section of the same lease. Two W1 optimizer instances shared one agent id on 2026-10-25. This card is Instance A (opt-W1, worktree cccl-topk-swarm-W1, branch exp/topk-swarm/W1): W1_packed, W1_level, the sub-warp adapters and the N2 verdict from W1_level against W1_packed. Instance B (opt-W1b) owns the same-code eager against level comparison and the fp32 native min max pairs variant, report approaches/W1/REPORT_W1b.md. Built on the node against the shared harness at swarm commit b6bfae9a37bb, adapter sources at W1 worktree commit ccc1166d9c.",
  "findings": {
   "low_level": [
    "Sub-warp kernels run 32 / LW logical warps per hardware warp, so the registers of the latency kernel hold IPT = N / LW words per lane: bf16 31 to 54 registers at LW 4 to 16 and N up to 128 with k at most 16, 64 at LW 8 and 16 N 128 k 64, 121 at LW 4 N 128 k 64 (MaxK 64 is 16 words per lane). fp32 u64 words double that: 64 at LW 16 N 128, 72 to 96 at LW 8 N 128, 80 to 168 at LW 4 N 128, where the throughput kernel drops to 2 to 3 blocks per SM (79 to 128 registers). No spills, no stack frame in any cell.",
@@ -57,5 +57,6 @@
    "Why does the bf16 packed form lose at LW 16 N 128 k 64 while it wins at LW 8 N 128 k 64 by 1.48x? The two cells have the same word count per lane (8) but MaxK 64 against 64 with M 4 against 8 words per tile.",
    "Is the reference's sub-warp slowness at LW 4 (83 cycles per 4-item tile) a property of CUB's merge_stage at tiny logical warps (the group direction logic per stage) that a specialized LW 4 path would remove?"
   ]
- }
+ },
+ "commit": "ccc1166d9c"
 }
