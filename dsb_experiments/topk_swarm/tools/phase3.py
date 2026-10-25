@@ -58,6 +58,8 @@ def runpy_args(a, scope_cfg, cells_arg, req, args, extra_regimes=None, control=N
     out += ["--patterns", args.patterns, "--seeds", str(args.seeds)]
     if args.check_sorted:
         out.append("--check-sorted")
+    if getattr(args, "note", ""):
+        out += ["--note", args.note]
     return out
 
 
@@ -79,6 +81,8 @@ def main():
     ap.add_argument("--jobs", type=int, default=14)
     ap.add_argument("--min-remaining", default="3h")
     ap.add_argument("--adapters", default=None, help="comma list of adapter labels to include (default all)")
+    ap.add_argument("--cells-only", default=None, help="comma list of cells inputs to use (focus, flipbands, named)")
+    ap.add_argument("--note", default="", help="recorded in every batch meta (e.g. resumed on another node)")
     ap.add_argument("--only", default="all", choices=["all", "build", "measure"],
                     help="write only the ship and build steps, or only the lease, measure and fetch steps")
     ap.add_argument("--split", default="1/1", help="build only the i-th of M interleaved adapter subsets, e.g. 1/2 "
@@ -141,6 +145,8 @@ def main():
                 cells_sets = [["--cell-list", "cells/" + os.path.basename(args.cell_list)]]
             else:
                 names = cells_names or a.get("cells") or list(m["cells"].keys())
+                if args.cells_only:
+                    names = [nm for nm in names if nm in args.cells_only.split(",")]
                 cells_sets = []
                 for nm in names:
                     path = m["cells"][nm]

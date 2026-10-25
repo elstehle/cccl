@@ -52,6 +52,27 @@
           "note": "AIR with the deterministic rank, both requirements"
         },
         {
+          "id": "B1_det3",
+          "requirements": [
+            "prefer_smaller_index"
+          ],
+          "note": "AIR with the det3 tie phase (B1_idx registers), prefer_smaller_index candidate, addendum after the phase 3 go (cards merged 2026-10-25 18:06Z); under not_guaranteed it is B1_idx"
+        },
+        {
+          "id": "B1_det3",
+          "requirements": [
+            "prefer_smaller_index"
+          ],
+          "runs": 4,
+          "cells": [
+            "focus",
+            "flipbands"
+          ],
+          "n": "8192,16384,32768",
+          "label": "runs4",
+          "note": "same on the sorted-runs input so the random@runs4 tables have a selection competitor for W4_chunk4"
+        },
+        {
           "id": "B3_tuned",
           "note": "compacting radix select"
         },
@@ -200,13 +221,15 @@
         "B6_radix"
       ]
     },
-    "note": "every adapter that declares output_sorted or has a documented post-sort, oracle with --check-sorted, expected ranking from approaches/W4/REPORT.md section 6"
+    "note": "every adapter that declares output_sorted or has a documented post-sort, oracle with --check-sorted, expected ranking from approaches/W4/REPORT.md section 6 The --check-sorted oracle runs over the full battery (ties, signed zeros, floods), not only random: verify-W4 showed W2_packed fp32 (N4 truncation leaves equal-under-truncation keys in index order) and W5_v4 (tie_heavy, quantized_random) are not sorted although their reports say so."
   },
   "harness_version_pinned": "0.10",
-  "skipped": [
-    "B1_det3: no card on the swarm branch at the phase 3 go, skipped as instructed"
-  ],
+  "skipped": [],
   "second_reference": {
     "block": "B1_det"
-  }
+  },
+  "addenda": [
+    "B1_det3 (prefer_smaller_index block cells, random and random@runs4), 2026-10-25",
+    "named sub-warp cells at every valid lane count (4, 8, 16), the first pass ran them at 4 lanes only"
+  ]
 }

@@ -134,8 +134,11 @@ def main():
         ref2_name = r2[0][0] if r2 else ""
         ref2_value = (sorted(v for _, v in r2)[len(r2) // 2]) if r2 else None  # median over the batches that carried it
         m_ref2 = margin(win["value"], ref2_value) if ref2_value else None
+        nodes_here = sorted({e["node"] for e in cands if e["node"]})
+        run_spills = bool(run and (run.get("spill") or 0) > 0)
         row = {"scope": scope, "regime": regime, "requirement": req, "pattern": pattern, "key_type": kt, "n": n, "k": k,
                "workload": wl, "winner": win["adapter"], "value": win["value"], "runner_up": run["adapter"] if run else "",
+               "nodes": nodes_here, "runner_up_spills": run_spills,
                "runner_value": run["value"] if run else None, "margin_runner_up": m_run, "reference": win["control"],
                "reference_value": win["control_value"], "margin_reference": m_ref,
                "reference2": ref2_name, "reference2_value": ref2_value, "margin_reference2": m_ref2, "node": win["node"],
@@ -154,7 +157,16 @@ def main():
              "control measured in the same lock section (latency: how much slower the other is, throughput: how "
              "much faster the winner is). Cells with a margin over the runner-up below %.0f percent are listed "
              "as close and get the tie_heavy pass." % (args.results, ", ".join(sorted(x for x in nodes if x)),
-                                                        ", ".join(sorted(versions)), args.close_margin * 100), ""]
+                                                        ", ".join(sorted(versions)), args.close_margin * 100), "",
+             "Reading notes. (1) Every value is from the harness version named above; cards made with earlier "
+             "versions differ by the documented control changes (harness/README.md section 3.1), for example "
+             "B4_v4 against B3_tuned at fp32 N 16384 reads 0.78 to 0.80 of the card ratio under 0.10. (2) Tables "
+             "whose input pattern carries `@runsM` are the sorted-runs track (chunk merges on M presorted runs): "
+             "only adapters measured on that input appear there, a single-candidate row has no runner-up, and "
+             "these rows are not head-to-head with the random-input tables. (3) A runner-up marked `(spills)` has "
+             "register spills or local memory at that cell, so its margin is against a degraded form (B2_packed "
+             "above 32 items per thread is the known case). (4) When a table's cells were measured on more than "
+             "one node the `node` column says which, candidates of one cell always share a node and a session.", ""]
     groups = defaultdict(list)
     for r in rows:
         groups[(r["scope"], r["regime"], r["requirement"], r["pattern"])].append(r)
@@ -163,6 +175,11 @@ def main():
         lines.append("## %s, %s, %s, %s input" % (scope, regime, req, pattern))
         lines.append("")
         has2 = any(r["reference2"] for r in groups[g])
+        table_nodes = sorted({nd for r in groups[g] for nd in r["nodes"]})
+        if len(table_nodes) > 1:
+            lines.append("Cells of this table were measured on %s (see the node column, resumed passes after the "
+                         "2026-10-25 21:26Z network outage ran on a different node from the first batches)." % ", ".join(table_nodes))
+            lines.append("")
         hdr = ["key", "N", "k", "workload", "winner", "value", "runner-up", "margin", "reference", "margin"]
         if has2:
             hdr += ["second reference", "margin"]
@@ -171,7 +188,7 @@ def main():
         lines.append("|" + "---|" * len(hdr))
         for r in groups[g]:
             cols = [r["key_type"], str(r["n"]), str(r["k"]), r["workload"], r["winner"], "%.4g" % r["value"],
-                    ("%s (%.4g)" % (r["runner_up"], r["runner_value"])) if r["runner_up"] else "",
+                    ("%s (%.4g)%s" % (r["runner_up"], r["runner_value"], " (spills)" if r["runner_up_spills"] else "")) if r["runner_up"] else "",
                     pct(r["margin_runner_up"]) if r["margin_runner_up"] is not None else "",
                     "%s (%.4g)" % (r["reference"], r["reference_value"]),
                     pct(r["margin_reference"]) if r["margin_reference"] is not None else ""]

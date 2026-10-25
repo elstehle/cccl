@@ -110,18 +110,26 @@ def expand_named_cells(path, scope, args, default_threads):
         if keys and it.get("key_type") not in keys:
             continue
         n, k = int(it["n"]), int(it["k"])
-        t = int(it.get("threads", 0)) or default_threads.get(scope, 32)
-        if scope == "subwarp" and not it.get("threads"):
-            t = next((x for x in (4, 8, 16) if n % x == 0 and n >= x and n // x <= 32), 0)
-        if t == 0 or n % t != 0 or n < t:
-            skipped.append((it.get("name"), "n %d is not a multiple of %d threads" % (n, t)))
+        if it.get("threads") or it.get("lanes") or it.get("logical_warp"):
+            lane_counts = [int(it.get("threads") or it.get("lanes") or it.get("logical_warp"))]
+        elif scope == "subwarp":
+            # a named sub-warp workload without an explicit lane count runs at every logical warp
+            # size that fits (4, 8 and 16 lanes), each a candidate of its own in the matrix
+            lane_counts = [x for x in (4, 8, 16) if n % x == 0 and n >= x and n // x <= 32]
+        else:
+            lane_counts = [default_threads.get(scope, 32)]
+        if args.threads:
+            lane_counts = [x for x in lane_counts if str(x) in args.threads.split(",")]
+        if not lane_counts or any(n % t != 0 or n < t for t in lane_counts):
+            skipped.append((it.get("name"), "n %d has no valid lane count in %s" % (n, lane_counts or "none")))
             continue
         req_list = ["not_guaranteed", "prefer_smaller_index"] if it.get("requirement") == "both" else [it["requirement"]]
         if reqs:
             req_list = [r for r in req_list if r in reqs]
-        for req in req_list:
-            cells.append({"key_type": it["key_type"], "threads": t, "n": n, "k": k, "requirement": req,
-                          "workload_name": it.get("name"), "named_regime": it.get("regime", "both")})
+        for t in lane_counts:
+            for req in req_list:
+                cells.append({"key_type": it["key_type"], "threads": t, "n": n, "k": k, "requirement": req,
+                              "workload_name": it.get("name"), "named_regime": it.get("regime", "both")})
     return cells, skipped
 
 
@@ -344,6 +352,7 @@ def main():
     ap.add_argument("--dry-run", action="store_true", help="list the cells and exit")
     ap.add_argument("--label", default="batch")
     ap.add_argument("--source-commit", help="commit of the adapter source (default: harness/SOURCE_COMMIT if present)")
+    ap.add_argument("--note", default="", help="free text recorded in the batch meta (e.g. resumed on another node)")
     ap.add_argument("--node-name", default=socket.gethostname(),
                     help="node name for the batch meta (inside a container the hostname is the container id)")
     ap.add_argument("--arch-name", default="", help="b200 or gb200, from the lease line")
@@ -466,6 +475,7 @@ def main():
             source_commit = open(sc_file).read().strip() or None
     meta = {
         "source_commit": source_commit,
+        "note": args.note,
         "batch": batch,
         "label": args.label,
         "holder": args.holder,
