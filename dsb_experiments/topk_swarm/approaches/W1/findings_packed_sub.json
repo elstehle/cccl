@@ -1,0 +1,62 @@
+{
+ "author": "opt-W1",
+ "approach_id": "W1",
+ "variant": "packed_sub",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 1,
+  "sync_assumed": "none beyond warp convergence of the logical warp's lanes",
+  "sync_performed": "shuffles only, no barrier",
+  "type_constraints": "bf16 keys packed into one 32-bit word (key bits high, inverted 16-bit index low, N at most 65536), fp32 keys packed into one 64-bit word (key bits high, inverted 32-bit index low), int32 source indices derived from the striped position",
+  "nan_behavior": "a NaN key orders by its sign bit (positive NaN above every finite key, negative NaN below), deterministic, never produced by focus-set inputs. -0.0 is mapped to +0.0 before packing so the two zeros compare equal",
+  "tie_break_support": "inherent in the word order: among equal keys the smaller index gives the larger word, prefer_smaller_index costs nothing (psi cells equal the ng cells to the cycle, same code)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted by (key descending, index ascending)",
+  "k_range": "[1, MaxK] with MaxK = round_up(k, LW) <= N at compile time, LW the logical warp size 4, 8 or 16",
+  "n_range": "N a multiple of LW, measured 8, 16, 32 and 128 (bf16 N at most 65536)"
+ },
+ "report_path": "approaches/W1/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W1_packed_sub.cuh",
+  "harness/adapters/W1_reference_sub.cuh",
+  "approaches/W1/w1_adapters.cuh",
+  "approaches/W1/w1_common.cuh",
+  "harness/topk_harness.cuh",
+  "cub/cub/warp/warp_bitonic_topk.cuh"
+ ],
+ "techniques_adopted": [
+  "T3",
+  "T20"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Oracle battery passed in every cell for both requirements. The control is W1_reference_sub, the eager CUB pairs network at the logical warp size (the same structure as W1_reference, which only supports 32 lanes), written by opt-W1 as the sub-warp control. The prefer_smaller_index cells have an A/A control in a second lock section of the same lease. Two W1 optimizer instances shared one agent id on 2026-10-25. This card is Instance A (opt-W1, worktree cccl-topk-swarm-W1, branch exp/topk-swarm/W1): W1_packed, W1_level, the sub-warp adapters and the N2 verdict from W1_level against W1_packed. Instance B (opt-W1b) owns the same-code eager against level comparison and the fp32 native min max pairs variant, report approaches/W1/REPORT_W1b.md. Built on the node against the shared harness at swarm commit b6bfae9a37bb, adapter sources at W1 worktree commit ccc1166d9c.",
+ "findings": {
+  "low_level": [
+   "Sub-warp kernels run 32 / LW logical warps per hardware warp, so the registers of the latency kernel hold IPT = N / LW words per lane: bf16 31 to 54 registers at LW 4 to 16 and N up to 128 with k at most 16, 64 at LW 8 and 16 N 128 k 64, 121 at LW 4 N 128 k 64 (MaxK 64 is 16 words per lane). fp32 u64 words double that: 64 at LW 16 N 128, 72 to 96 at LW 8 N 128, 80 to 168 at LW 4 N 128, where the throughput kernel drops to 2 to 3 blocks per SM (79 to 128 registers). No spills, no stack frame in any cell.",
+   "The generate-only control slope at sub-warp scope is 87 to 109 cycles per call against 48 at warp scope: the no-op folds and stores of 32 / LW groups serialize on the same shared output words.",
+   "The reference at LW 4 and 8 with bf16 keys is slow for its size (N 128 k 4 at LW 4: 4484 cycles, 32 tiles of 4 items each sorted with 2 shuffle stages, then compare and replace and a 2-stage merge per tile), the packed form removes the index shuffle and the bf16 conversion per stage: 2668 cycles.",
+   "Canaries 32.001 cycles per op at start and end of both sections, throughput canary 3609 to 3611 us, R squared 1.0000 on every fit."
+  ],
+  "algorithmic": [
+   "bf16 packed against the pairs reference, latency: LW 4 1.07x to 2.09x (N 8 k 4 296 against 405, N 32 k 4 772 against 1199, N 128 k 4 2668 against 4484, N 128 k 64 6971 against 14541), LW 8 1.18x to 1.48x except N 32 k 16 at 0.99x (1175 against 1158), LW 16 1.02x to 1.34x (N 16 428 against 572, N 128 k 16 3484 against 4297) except N 128 k 64 at 0.84x (4410 against 3704). Throughput 1.05x to 2.88x, larger at larger N and k (LW 8 N 128 k 64: 314 against 109 Gelem/s).",
+   "fp32 through the u64 word loses to the pairs reference in nearly every sub-warp cell: latency 0.71x to 1.09x (LW 4 N 16 k 8 939 against 666, LW 8 N 32 k 4 1184 against 986, LW 16 N 128 k 4 4033 against 3281), throughput 0.76x to 1.00x. The second shuffle per stage that the reference pays for the index is matched by the u64 word, and the 64-bit compare costs more than the float compare.",
+   "prefer_smaller_index is free in every sub-warp cell (psi A/A numbers equal the ng numbers to the cycle, bf16 and fp32).",
+   "The eager chain at LW 4 with MaxK 4 is 32 tiles at N 128: 2668 cycles bf16, 83 cycles per tile of 4 items, which is where the level network of the next card wins most (the chains of all 32 tiles overlap)."
+  ],
+  "negative": [
+   "fp32 u64 at sub-warp scope is a loss against pairs everywhere except N 8 to 16 at LW 16, the exact tie-break for fp32 needs a different carrier at these sizes.",
+   "bf16 LW 16 N 128 k 64 (MaxK 64, 4 words per lane per tile): 0.84x, the only bf16 cell where the packed word loses in latency, with 64 registers in the latency kernel."
+  ],
+  "surprises": [
+   "The packed bf16 gain at sub-warp scope is far less uniform than at warp scope (1.0x to 2.1x across cells of the same LW) and does not grow monotonically with N or k, which points at schedule effects of the fully unrolled eager chain rather than at the instruction count (the throughput ratios are uniform at 1.8x to 2.9x for N at least 16)."
+  ],
+  "open_questions": [
+   "Why does the bf16 packed form lose at LW 16 N 128 k 64 while it wins at LW 8 N 128 k 64 by 1.48x? The two cells have the same word count per lane (8) but MaxK 64 against 64 with M 4 against 8 words per tile.",
+   "Is the reference's sub-warp slowness at LW 4 (83 cycles per 4-item tile) a property of CUB's merge_stage at tiny logical warps (the group direction logic per stage) that a specialized LW 4 path would remove?"
+  ]
+ },
+ "commit": "ccc1166d9c"
+}
