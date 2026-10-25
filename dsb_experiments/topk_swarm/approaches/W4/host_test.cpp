@@ -245,7 +245,10 @@ void test_warp(const char* pattern, unsigned seed)
 template <typename KeyT, int N, int K, int M>
 void print_ts_block()
 {
-  using core = w4::chunk_core<KeyT, 256, N, K, M>;
+  using core           = w4::chunk_core<KeyT, 256, N, K, M>;
+  constexpr bool split = core::kw::split;
+  static_assert(sizeof(typename core::TempStorage) == w4::chunk_temp_bytes(256, M, N / M, K, split, split),
+                "chunk_temp_bytes must match the tree's TempStorage");
   printf("ts block %s N %d K %d M %d: %zu bytes\n", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, M, sizeof(typename core::TempStorage));
 }
 template <typename KeyT, int N, int K, int Halves = 1>
@@ -262,6 +265,10 @@ int main()
   print_ts_block<uint16_t, 8192, 2048, 4>();
   print_ts_block<float, 8192, 1024, 8>();
   print_ts_block<float, 4096, 512, 8>();
+  print_ts_block<float, 16384, 4096, 8>();
+  print_ts_block<float, 32768, 4096, 8>();
+  print_ts_block<uint16_t, 32768, 8192, 8>();
+  print_ts_block<float, 32768, 256, 4>();
   print_ts_warp<float, 2048, 1024>();
   print_ts_warp<uint16_t, 2048, 1024>();
   print_ts_warp<float, 2048, 256>();

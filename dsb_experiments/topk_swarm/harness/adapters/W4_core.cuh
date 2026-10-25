@@ -510,6 +510,41 @@ W4_HD inline constexpr bool tree_valid(int threads, int runs, int run_len, int k
   return out == k;
 }
 
+// Temp storage bytes of a merge tree with the chunk-merge layout (exact counts, xor swizzle, no
+// pad), computed without instantiating it, for the adapters' supported(): the two key buffers,
+// the two index-half buffers of the split form (none at level 0 when the index is implicit) and
+// the split exchange. Equal to sizeof(merge_tree<...>::TempStorage) for the chunk adapters
+// (checked by approaches/W4/host_test.cpp).
+W4_HD inline constexpr int chunk_temp_bytes(int threads, int runs, int run_len, int k, bool split, bool implicit0)
+{
+  const int levels = log2_ceil(runs);
+  int words0 = 1, words1 = 1, lo0 = 1, lo1 = 1;
+  int in     = run_len;
+  for (int l = 0; l < levels; ++l)
+  {
+    const int w = (runs >> l) * round_up(in, G) + G;
+    if (l % 2 == 0)
+    {
+      words0 = cmax(words0, w);
+      if (split && (l >= 2 || !implicit0))
+      {
+        lo0 = cmax(lo0, w);
+      }
+    }
+    else
+    {
+      words1 = cmax(words1, w);
+      if (split)
+      {
+        lo1 = cmax(lo1, w);
+      }
+    }
+    in = cmin(k, 2 * in);
+  }
+  const int bytes = 4 * (round_up(words0, 4) + round_up(words1, 4) + round_up(lo0, 4) + round_up(lo1, 4)) + 4 * threads;
+  return round_up(bytes, 16);
+}
+
 // ------------------------------------------------------------------------------------------------
 // The merge tree: Runs sorted runs of RunLen words, Threads cooperating threads, k largest out.
 // Level l reads the buffers of parity l % 2 and writes the other parity (the last level writes
