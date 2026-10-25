@@ -454,6 +454,8 @@ __device__ __forceinline__ void digit_pass(const uint32_t (&tw)[IPT], range& st,
     }
     cnt += __popc(bm.match(bal) & cm);
   }
+  // lanes beyond the 2^d buckets of this pass share the masks of lower lanes and must not count
+  cnt         = (lane < (1 << d)) ? cnt : 0;
   const int s = suffix_scan(cnt, lane);
   int p, np, above;
   locate(s, cnt, st.r, p, np, above);
