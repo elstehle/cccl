@@ -56,7 +56,7 @@ fetch_results() {
 (cd "$SW/harness" && tar czf - micro/icache_micro.cu micro/icache_bodies.h micro/run_icache.sh run.py topk_harness.cuh canary_main.cu cells_focus.json adapters/B2_packed.cuh adapters/B1_reference.cuh adapters/B2_detail.cuh) | ship_and_build 2>&1 | tail -2
 
 # 2. lease (pinned, short), measure, release
-L=$(python3 tools/lease.py acquire --holder "$H" --arch b200 --node "$N" --min-remaining 15m --wait 20m 2>&1 | tail -1)
+L=$(python3 tools/lease.py acquire --holder "$H" --arch "${ARCH:-b200}" --node "$N" --min-remaining 15m --wait 20m 2>&1 | tail -1)
 echo "$(date -u +%H:%M:%SZ) acquire: ${L:0:70}"
 echo "$L" | grep -q "node=$N" || { echo "no lease on $N"; python3 tools/lease.py release --holder "$H" >/dev/null 2>&1; exit 2; }
 GPU=$(echo "$L" | sed -n 's/.*gpu=\([0-9]*\).*/\1/p')
