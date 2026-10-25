@@ -638,9 +638,15 @@ public:
 
     if constexpr (Tickets == ticket_mode::per_item)
     {
-      // The counters' shared address, taken once for the deterministic ticket (see shared_atomic_add)
-      [[maybe_unused]] const ::cuda::std::uint32_t counters_shared =
+      // The counters' shared address, taken once for the deterministic ticket (see shared_atomic_add). The
+      // empty asm makes the value opaque: the compiler otherwise rematerializes the address conversion (window
+      // base from SR_CgaCtaId) at every use.
+      [[maybe_unused]] ::cuda::std::uint32_t counters_shared =
         static_cast<::cuda::std::uint32_t>(__cvta_generic_to_shared(&storage.selected_offset[0]));
+      if constexpr (deterministic_ties)
+      {
+        asm volatile("" : "+r"(counters_shared));
+      }
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
