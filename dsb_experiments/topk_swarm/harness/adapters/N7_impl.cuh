@@ -11,15 +11,15 @@
 //
 // Rounds are W2's (one redux of the heads, the unique winner shifts its head by one), so the round
 // costs the depth-8 price (T19, T41) at any items per lane. The loop over blocks is rolled so the
-// refill network is emitted once. The head of a lane can only run dry
-// after H wins. Rounds run in blocks of B (H = 2 B). At the top of block b every lane tests whether
-// its head was below full at the end of block b - 1 and still has remainder words, one
-// __any_sync over the warp decides, and the refill (every remainder block sorted again and merged
-// into the head with write-back) runs under that warp-uniform branch after the rounds of block b.
-// Invariant: at the start of every block each lane holds at least B valid head words or an empty
-// remainder, so no lane can run dry inside a block, and the vote of block b overlaps the rounds of
-// block b instead of sitting on the redux chain. On random input the refill is rare (a lane needs
-// more than H - B wins since its last refill).
+// refill network is emitted once. The head of a lane can only run dry after H wins. Rounds run in
+// blocks of B (H >= 4 B). At the top of block b every lane tests whether it had fewer than 2 B
+// valid head words at the end of block b - 1 and still has remainder words, one __any_sync over
+// the warp decides, and the refill (every remainder block sorted again and merged into the head
+// with write-back) runs under that warp-uniform branch after the rounds of block b. Invariant: at
+// the start of every block each lane holds at least B valid head words or an empty remainder, so
+// no lane can run dry inside a block, and the vote of block b overlaps the rounds of block b
+// instead of sitting on the redux chain. A refill needs H - 2 B + 1 wins of one lane since its
+// last refill (five at H 8, B 2), rare on random input.
 //
 // fp32: after the rounds the largest word not emitted is the warp max over max(head[0], remainder
 // max), W2's next-word check decides the slow path, which is W2's (blocked arrangement).
@@ -92,7 +92,9 @@ template <int T, int H, int B, int P, class Red, class Emit>
 __device__ __forceinline__ uint32_t
 round_block(uint32_t (&a)[P], int& rem_count, int r0, bool last_block, int lane, const Red& red, Emit emit)
 {
-  const bool need     = (a[H - 1] == 0u) && (rem_count > 0);
+  // valid head words below 2 B at the end of the previous block: the lane could run dry in the
+  // block after this one (head sorted, zeros only at the tail, so a[2 B - 1] == 0 is the test)
+  const bool need     = (a[2 * B - 1] == 0u) && (rem_count > 0);
   const bool any_need = __any_sync(0xffffffffu, need);
   uint32_t m          = 0;
   uint32_t head[H];
@@ -141,13 +143,16 @@ __device__ __forceinline__ uint32_t twolevel_rounds(uint32_t (&a)[P], int lane, 
 
 // The warp primitive: T lanes hold N keys blocked (lane t has items t*IPT .. t*IPT+IPT-1), write K
 // indices to out_idx. H head words, blocks of B rounds, H == 2 B.
-template <typename KeyT, int T, int N, int K, int H = 8, int B = 4>
+template <typename KeyT, int T, int N, int K, int H = 8, int B = 2>
 struct primitive
 {
   static constexpr int IPT     = N / T;
   static constexpr int IdxBits = w2::ceil_log2(N);
   static_assert(IPT % H == 0 && IPT >= 2 * H, "the two-level list needs at least two blocks of H per lane");
-  static_assert(H == 2 * B, "the head must hold two blocks of rounds");
+  // The refill is flagged when a lane has fewer than 2 B valid head words, that is after H - 2 B + 1
+  // wins since its last refill. With H 8 and B 4 one win is enough and the refill ran in nearly
+  // every block (measured 70 to 190 cycles per round, batch n7b), with B 2 it takes five wins.
+  static_assert(H >= 4 * B, "the head must hold four blocks of rounds for the refill to be rare");
 
   __device__ __forceinline__ static void run(const KeyT (&keys)[IPT], int* out_idx)
   {
