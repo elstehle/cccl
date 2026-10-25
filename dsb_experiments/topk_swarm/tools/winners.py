@@ -47,9 +47,14 @@ def main():
     ap.add_argument("--close")
     ap.add_argument("--close-margin", type=float, default=0.15)
     ap.add_argument("--pattern", default=None, help="restrict to one input pattern (default: all, one table each)")
+    ap.add_argument("--second-reference", action="append", default=[],
+                    help="control adapter ids measured as a second control (e.g. B1_det): their values appear as an "
+                    "extra reference column and the variant's duplicate measurement from those batches is not a candidate")
     args = ap.parse_args()
+    seconds = set(args.second_reference)
 
     entries = defaultdict(list)  # cell key -> list of candidate dicts
+    refs2 = defaultdict(list)  # cell key -> [(second control name, value)] from the second-control batches
     nodes, versions = set(), set()
     for p in sorted(glob.glob(os.path.join(args.results, "*.json"))):
         if p.endswith(".build.json"):
@@ -73,6 +78,9 @@ def main():
             if args.pattern and pattern != args.pattern:
                 continue
             key = (scope, c["regime"], c["requirement"], pattern, c["key_type"], c["n"], c["k"], c.get("workload_name") or "")
+            if c["control_name"].split("@")[0] in seconds:
+                refs2[key].append((c["control_name"], c["control_value"]))
+                continue
             entries[key].append({
                 "adapter": label_of(c, aid, scope), "value": c["value"], "control": c["control_name"],
                 "control_value": c["control_value"], "node": d["node"].get("hostname"), "harness": hv,
@@ -96,10 +104,15 @@ def main():
 
         m_run = margin(win["value"], run["value"]) if run else None
         m_ref = margin(win["value"], win["control_value"])
+        r2 = refs2.get(key, [])
+        ref2_name = r2[0][0] if r2 else ""
+        ref2_value = (sorted(v for _, v in r2)[len(r2) // 2]) if r2 else None  # median over the batches that carried it
+        m_ref2 = margin(win["value"], ref2_value) if ref2_value else None
         row = {"scope": scope, "regime": regime, "requirement": req, "pattern": pattern, "key_type": kt, "n": n, "k": k,
                "workload": wl, "winner": win["adapter"], "value": win["value"], "runner_up": run["adapter"] if run else "",
                "runner_value": run["value"] if run else None, "margin_runner_up": m_run, "reference": win["control"],
-               "reference_value": win["control_value"], "margin_reference": m_ref, "node": win["node"],
+               "reference_value": win["control_value"], "margin_reference": m_ref,
+               "reference2": ref2_name, "reference2_value": ref2_value, "margin_reference2": m_ref2, "node": win["node"],
                "harness": win["harness"], "candidates": len(cands), "regs": win["regs"], "spill": win["spill"],
                "threads": win["threads"], "all": [{"adapter": e["adapter"], "value": e["value"]} for e in cands]}
         rows.append(row)
@@ -122,16 +135,24 @@ def main():
         scope, regime, req, pattern = g
         lines.append("## %s, %s, %s, %s input" % (scope, regime, req, pattern))
         lines.append("")
-        lines.append("| key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |")
-        lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        has2 = any(r["reference2"] for r in groups[g])
+        hdr = ["key", "N", "k", "workload", "winner", "value", "runner-up", "margin", "reference", "margin"]
+        if has2:
+            hdr += ["second reference", "margin"]
+        hdr += ["candidates", "regs", "node"]
+        lines.append("| " + " | ".join(hdr) + " |")
+        lines.append("|" + "---|" * len(hdr))
         for r in groups[g]:
-            lines.append("| %s | %d | %d | %s | %s | %.4g | %s | %s | %s | %s | %d | %s | %s |" % (
-                r["key_type"], r["n"], r["k"], r["workload"], r["winner"], r["value"],
-                ("%s (%.4g)" % (r["runner_up"], r["runner_value"])) if r["runner_up"] else "",
-                pct(r["margin_runner_up"]) if r["margin_runner_up"] is not None else "",
-                "%s (%.4g)" % (r["reference"], r["reference_value"]),
-                pct(r["margin_reference"]) if r["margin_reference"] is not None else "", r["candidates"],
-                r["regs"] if r["regs"] is not None else "", r["node"]))
+            cols = [r["key_type"], str(r["n"]), str(r["k"]), r["workload"], r["winner"], "%.4g" % r["value"],
+                    ("%s (%.4g)" % (r["runner_up"], r["runner_value"])) if r["runner_up"] else "",
+                    pct(r["margin_runner_up"]) if r["margin_runner_up"] is not None else "",
+                    "%s (%.4g)" % (r["reference"], r["reference_value"]),
+                    pct(r["margin_reference"]) if r["margin_reference"] is not None else ""]
+            if has2:
+                cols += [("%s (%.4g)" % (r["reference2"], r["reference2_value"])) if r["reference2"] else "",
+                         pct(r["margin_reference2"]) if r["margin_reference2"] is not None else ""]
+            cols += [str(r["candidates"]), str(r["regs"]) if r["regs"] is not None else "", str(r["node"])]
+            lines.append("| " + " | ".join(cols) + " |")
         lines.append("")
     # summary: wins per adapter per scope and regime
     lines.append("## Wins per adapter")

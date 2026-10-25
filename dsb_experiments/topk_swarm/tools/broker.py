@@ -7,6 +7,10 @@
                                                  excludes hosts that already carry an active entry
   broker.py bootstrap <node-or-job> [--image REF] run nodes/bootstrap_<cluster>.sh on the node, mark ready
   broker.py release <node-or-job> [--force]      remove the container, scancel, mark released
+  broker.py dedicate <node-or-job> --to a,b | --clear
+                                                 lease.py hands the node only to these holders, the node
+                                                 does not count toward the pool target, and the tick brings
+                                                 up a successor 90 minutes before its lease ends
   broker.py retire <node-or-job> --reason TEXT   no new leases on the node, current holder and queued
                                                  pinned waiters finish, the tick releases it when idle,
                                                  the host joins the permanent exclude list
@@ -81,6 +85,7 @@ def parse_per_arch(spec):
         raise ValueError("empty per-arch target")
     return out
 EXPIRING_S = 45 * 60      # below this a ready node becomes expiring and counts as gone for renew
+SUCCESSOR_S = 90 * 60     # a dedicated node gets its successor requested this long before its lease ends
 RELEASE_S = 5 * 60        # below this an unheld node is released (cleanup) instead of dying on its own
 BROKER_LOG = LOGS / "broker.log"
 SQUEUE_FMT = "%i|%j|%T|%L|%N|%P|%l|%S"
@@ -266,10 +271,13 @@ def find_node(reg, key):
 
 
 def good_nodes(reg, now=None):
-    """Nodes that will still be usable in 45 minutes: requested, or ready/bootstrapping with time left."""
+    """Nodes that will still be usable in 45 minutes: requested, or ready/bootstrapping with time left.
+    Dedicated nodes do not count, they are not available to the pool."""
     now = now or utcnow()
     good = []
     for n in reg["nodes"]:
+        if n.get("dedicated_to"):
+            continue
         if n.get("status") == "requested":
             good.append(n)
         elif n.get("status") in ("ready", "bootstrapping"):
@@ -289,12 +297,14 @@ def print_table(reg, show_all=False):
         gpus = ", ".join("gpu%s=%s" % (g.get("index"), g.get("holder") or "free") for g in n.get("gpus", [])) or "-"
         if n.get("retire"):
             gpus += "  [retiring]"
+        if n.get("dedicated_to"):
+            gpus += "  [dedicated: %s]" % ",".join(n["dedicated_to"])
         print(fmt % (node_label(n), n.get("cluster"), n.get("arch"), n.get("status"), n.get("job_id"),
                      fmt_remaining(remaining_seconds(n, now)), n.get("cuda") or "-", gpus))
     print("active=%d cap=%d good_for_45min=%d" % (count_active(reg), reg.get("cap", 6), len(good_nodes(reg, now))))
 
 
-def submit(reg, cluster, nodelist=None, note=None):
+def submit(reg, cluster, nodelist=None, note=None, dedicated_to=None):
     """sbatch a hold on cluster and append a `requested` entry. Caller holds the registry lock.
     Hosts that already carry an active entry on this cluster and the permanent exclude list are
     excluded (one job per host). `nodelist` pins the request to one host and bypasses the exclude
@@ -323,6 +333,9 @@ def submit(reg, cluster, nodelist=None, note=None):
     if nodelist:
         entry["nodelist"] = nodelist
         entry["one_off"] = note or "pinned request"
+    if dedicated_to:
+        entry["dedicated_to"] = list(dedicated_to)
+        entry["note"] = note or "dedicated"
     reg["nodes"].append(entry)
     print("requested %s job %s (%s)%s" % (cluster, jid, c["arch"],
                                          (" pinned to " + nodelist) if nodelist else ((" excluding " + ",".join(busy)) if busy else "")))
@@ -416,6 +429,62 @@ def release_node(key, force=False):
             reg.save()
     print("%s: container %s, scancel %s rc=%d, marked released" % (node_label(snapshot), cleaned, snapshot["job_id"], r.rc))
     return 0 if r.ok else 1
+
+
+def dedicate_node(key, holders=None, clear=False):
+    with Registry() as reg:
+        node = find_node(reg.data, key)
+        if node is None:
+            print("no such node or job: %s" % key)
+            return 1
+        if clear:
+            node.pop("dedicated_to", None)
+            print("%s: dedication cleared, back in the pool" % node_label(node))
+        else:
+            node["dedicated_to"] = holders
+            node["dedicated_at"] = iso(utcnow())
+            print("%s: dedicated to %s, lease ends %s" % (node_label(node), ",".join(holders), node.get("lease_expires")))
+        reg.save()
+    return 0
+
+
+def successor_pass(wait_s):
+    """For every dedicated node with less than 90 minutes left, make sure a successor with the same
+    dedication exists (requested, bootstrapping or ready with more time). Returns (new job ids, blocked)
+    where blocked is True when a successor was needed but the cap was full."""
+    jids = []
+    blocked = False
+    with Registry() as reg:
+        now = utcnow()
+        cap = reg.data.get("cap", 6)
+        for n in list(reg.data["nodes"]):
+            if not n.get("dedicated_to") or n.get("status") not in ("ready", "expiring"):
+                continue
+            rem = remaining_seconds(n, now)
+            if rem is None or rem >= SUCCESSOR_S:
+                continue
+            key = tuple(sorted(n["dedicated_to"]))
+            has_successor = any(
+                o is not n and o.get("status") in ACTIVE_STATES and o.get("arch") == n.get("arch")
+                and tuple(sorted(o.get("dedicated_to") or [])) == key
+                and (o.get("status") == "requested" or (remaining_seconds(o, now) or 0) > rem)
+                for o in reg.data["nodes"])
+            if has_successor:
+                continue
+            if cap - count_active(reg.data) <= 0:
+                print("successor for dedicated %s needed (%s left) but cap %d is full" % (node_label(n), fmt_remaining(rem), cap))
+                blocked = True
+                continue
+            jid = submit(reg.data, ARCH_TO_CLUSTER[n["arch"]], note="successor of %s for %s" % (node_label(n), ",".join(n["dedicated_to"])),
+                         dedicated_to=n["dedicated_to"])
+            if jid:
+                jids.append(jid)
+                print("successor of dedicated %s requested: job %s" % (node_label(n), jid))
+        if jids:
+            reg.save()
+    if jids and wait_s > 0:
+        wait_running(jids, wait_s)
+    return jids, blocked
 
 
 def retire_node(key, reason):
@@ -629,8 +698,9 @@ def cmd_request(args):
         if active + args.count > cap:
             print("refused: %d active + %d requested would exceed cap %d" % (active, args.count, cap))
             return 3
+        dedicated = [h.strip() for h in (args.dedicate or "").split(",") if h.strip()] or None
         for _ in range(args.count):
-            jid = submit(reg.data, args.cluster, nodelist=args.nodelist, note=args.note)
+            jid = submit(reg.data, args.cluster, nodelist=args.nodelist, note=args.note, dedicated_to=dedicated)
             if jid:
                 jids.append(jid)
         reg.save()
@@ -654,6 +724,13 @@ def cmd_release(args):
 
 def cmd_retire(args):
     return retire_node(args.node, args.reason)
+
+
+def cmd_dedicate(args):
+    if not args.clear and not args.to:
+        raise SystemExit("pass --to a,b or --clear")
+    holders = [h.strip() for h in (args.to or "").split(",") if h.strip()]
+    return dedicate_node(args.node, holders, clear=args.clear)
 
 
 def target_args(args):
@@ -697,9 +774,10 @@ def cmd_tick(args):
     for jid in dying:
         release_node(jid)
     rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
-    if rc == 3:
-        # The cap blocks a renewal. Give up unheld expiring nodes now instead of at the 5 minute mark,
-        # so the replacement still gets most of the 45 minute overlap.
+    _, succ_blocked = successor_pass(parse_duration(args.wait))
+    if rc == 3 or succ_blocked:
+        # The cap blocks a renewal or a dedicated successor. Give up unheld expiring nodes now instead of
+        # at the 5 minute mark, so the replacement still gets most of its overlap.
         with Registry() as reg:
             idle_expiring = [n["job_id"] for n in reg.data["nodes"]
                              if n.get("status") == "expiring" and not any(g.get("holder") for g in n.get("gpus", []))]
@@ -707,7 +785,10 @@ def cmd_tick(args):
             print("cap full and renewal pending, releasing idle expiring job %s" % jid)
             release_node(jid)
         if idle_expiring:
-            rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
+            if succ_blocked:
+                successor_pass(parse_duration(args.wait))
+            if rc == 3:
+                rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
     with Registry() as reg:
         todo = [n["job_id"] for n in reg.data["nodes"] if n.get("status") == "requested" and n.get("ssh")]
     for jid in todo:
@@ -780,7 +861,13 @@ def main(argv=None):
     r.add_argument("--wait", default="0", help="wait this long for the job(s) to start, e.g. 30m")
     r.add_argument("--nodelist", default=None, help="pin to one host (bypasses the exclude list, one-off)")
     r.add_argument("--note", default=None, help="why this one-off exists, stored in the entry")
+    r.add_argument("--dedicate", default=None, help="holders this node is reserved for, e.g. eval-engineer,hw-researcher")
     r.set_defaults(func=cmd_request)
+    d = sub.add_parser("dedicate")
+    d.add_argument("node")
+    d.add_argument("--to", default=None, help="comma separated holder names")
+    d.add_argument("--clear", action="store_true")
+    d.set_defaults(func=cmd_dedicate)
     b = sub.add_parser("bootstrap")
     b.add_argument("node", help="node name, ssh host or job id")
     b.add_argument("--image", default=None)
