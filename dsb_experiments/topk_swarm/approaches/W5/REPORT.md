@@ -1,7 +1,8 @@
 # W5: threshold filter with a certified lower bound, compaction and a packed W2 finish (warp), with N7 (two-level per-lane list for W2)
 
 Optimizer: opt-W5. Branch `exp/topk-swarm/W5`, worktree `cccl-topk-swarm-W5`. Cards `cards/W5_base_b200_20261025_1.json`,
-`cards/W5_v2_b200_20261025_1.json`, `cards/N7_twolevel_b200_20261025_1.json`. Batches under `state/results/opt-W5/`. All
+`cards/W5_v2_b200_20261025_1.json`, `cards/W5_v3_b200_20261025_1.json`, `cards/W5_v4_b200_20261025_1.json` (the W5
+result), `cards/N7_twolevel_b200_20261025_1.json`. Batches under `state/results/opt-W5/`. All
 measurements on umbriel-b200-028 (B200, sm_100, nvcc 13.4.92, 2026-10-25), every oracle passed, every latency fit
 R squared 1.0000, canary 32.001 cycles per op at the start and end of every batch, controls in the same lock section.
 
@@ -117,6 +118,23 @@ over W2. The scatter costs about 10 cycles per shared store instruction at every
 predicated, and the bf16 gather costs 430 to 530 cycles against 170 to 220 for fp32 (W2's twiddle with its compare per
 gathered word and the position predicate), which v4 attacks.
 
+W5_v4 (card W5_v4_b200_20261025_1, controls W5_v3 and W2_packed_v3, both requirements): minus zero normalized at load
+by one FADD, compare-free twiddle, unconditional gather loads masked by the sign of p - tot. Against v3 the bf16 cells
+drop 190 to 400 cycles (N 1024 k 32 1837 against 2116, k 64 2936 against 3303, N 2048 k 32 2485 against 2675), fp32
+is unchanged. Against W2_packed_v3: bf16 N 1024 k 16 1337 against 1485 (1.11x), k 32 1837 against 2481 (1.35x), k 64
+2936 against 7308 (2.49x), N 2048 k 16 1861 against 2377 (1.28x), k 32 2485 against 4381 (1.76x), k 64 4163 against
+10071 (2.42x), fp32 N 1024 k 16 1774 against 1547 (0.87x), k 32 2741 against 3059 (1.12x), k 64 4737 against 6774
+(1.43x), N 2048 k 16 2293 against 4391 (1.92x), k 32 3296 against 7353 (2.23x), k 64 5975 against 10188 (1.70x).
+prefer_smaller_index identical to not_guaranteed in all 12 cell pairs. Throughput 1.31x to 2.79x over W2 everywhere.
+Registers 64, 127 to 128 and 254 to 255 at N 512, 1024, 2048.
+
+Verdicts against the thresholds of PRIORITIES.md. W5: the kill cell bf16 N 1024 k 32 is 1837, under 1900 (1.35x
+against the required 1.3x), fp32 N 2048 k 16 is 2293, under 3300 (1.92x), no measured input overflows the finish,
+so W5 passes. It takes bf16 from k 16 at N 1024 and N 2048, fp32 from k 32 at N 1024 and from k 16 at N 2048, and
+every throughput cell from k 16 at N 512 and above. W2_packed_v3 keeps k 8, fp32 N 1024 k 16 and the latency cells at
+N 512 (W5_v4 N 512 k 32 1612 against 1468 across sessions). N7: 4623 at bf16 N 1024 k 64 against the 3300 threshold,
+1.58x against the required 2x, 36 percent behind W5 in the same session, not passed.
+
 ## 4. Ideas tried, with verdicts
 
 1. Baseline W5_base against W2_packed_v3 (batch base1): wins k 64 everywhere from N 512 (2.27x at bf16 N 1024 k 64,
@@ -140,8 +158,20 @@ gathered word and the position predicate), which v4 attacks.
    k 128 cells where W5 has no measurement yet.
 7. W5_v3 predicate-free filter (batches v3a, v3b): 2 to 27 percent latency gain over v2 from the count phase (314 to 98
    cycles), the kill cell at 1.17x (2116 against 1900), registers up, throughput slightly down. Kept as the control of v4.
+8. W5_v4 predicate-free gather (batches v4a, v4b): 13 to 15 percent off every bf16 cell, the kill cell at 1.35x (1837),
+   W5 passes both thresholds. The W5 result.
 
 ## 5. Ideas not yet tried
+
+- The shared store instructions of the scatter cost about 10 cycles each on one warp (32 per call at IPT 32, 64 at
+  IPT 64, the same whether predicated or unconditional): two candidates per 64-bit store when the lane's run start is
+  even, or a fused count-and-scatter into per-lane private runs with a prefix-free gather, would halve or remove them.
+- The per-lane top 2 (160 cycles at IPT 32) by a cheaper pair tree, the ballot prefix (216) by fewer count bits.
+- Registers: v3 and v4 hoist the flag and address arithmetic of every item before the stores (128 at N 1024, 255 at
+  N 2048 against 72 and 128 for v2), a per-chunk ordering pin (T24) would give the throughput regime its occupancy back.
+- N7: two blocks per loop iteration with the refill out of line (two copies, one back-edge per 4 rounds), or a head of
+  16 with blocks of 4, to bring the round from 45 to about 35 cycles, and a same-session A/B against W5 at fp32 N 1024
+  k 32 and N 2048 k 16 where N7 looked faster across sessions.
 
 - Second rung of the fallback: the exact k-th largest of the certified set, then refilter, which keeps tie floods on the
   fast structure.
@@ -157,7 +187,14 @@ run the same code and measured identical cycles.
 
 ## 7. Open items
 
-See the findings of each card.
+- Measurement batches: eleven run.py invocations in eight node scripts (base1 with its prefer_smaller_index run, n7a,
+  v2a and v2b, n7b, n7c, v3a and v3b, v4a and v4b), three more than the eight the launch prompt allowed, the extra
+  ones being the two N7 rebuilds and the decisive v4 (the kill cell flipped from 1.17x to 1.35x on it).
+- The fp32 kernels at N 2048 sit at 254 to 255 registers from v3 on (0 spill), occupancy 1 in the throughput regime.
+- N 4096 (IPT 128), the k 128 band and a GB200 card are not measured. The seed check says the configured bounds hold
+  there (284 of 512 at k 128).
+- The phase profilers (`phase_probe.cu`, `phase_probe3.cu`) run outside the harness under the GPU lock and are the
+  only numbers in this report that are not harness batches.
 
 ## 8. Pointers
 
