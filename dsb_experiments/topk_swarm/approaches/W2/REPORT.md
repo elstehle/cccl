@@ -139,3 +139,12 @@ result is deterministic and identical under both requirements. prefer_smaller_in
 `ideas/queue/W2_redux_extraction.md` (copied to `approaches/W2/CARD.md`), `ideas/queue/N4_truncated_key_packing.md`,
 `ideas/queue/B5_hierarchical.md`, `TECHNIQUES.md` T1, T3, T7, T17, T19, T20, T24, T33, T34, T36 (adopted), T40, T41 (contributed),
 `reference/BLOCK_TOPK_RESULTS.md` sections 1 and 3, `harness/micro/intrinsics_micro.cu` row `W2PackedList`.
+
+## Verification notes (lead, 2026-10-25, from verify-W2 and the second verify-W2-b instance)
+
+All seven W2 and B5 cards were rerun on umbriel-b200-091 from rebuilds at the card commits. Every headline number reproduced to the cycle, 38 of the study's cards are verified at this point, and four corrections to this report's text stand:
+
+1. The statement that the reducer refactor left the v1 instruction stream identical holds for bf16 only. At c8193dc96e the fp32 W2_packed kernels differ from the dfeeab4138 build (fp32 N 1024 k 16 throughput kernel 2032 instructions and 172 registers against the card's 1768 and 146, 565.6 against 537.4 Gelem/s), latencies within 0.7 percent because the change sits in a slow path.
+2. The v3 gain of 6 to 10 percent does not hold at every cell with 8 to 64 items per lane. The k 4 cells gain 0 to 4 percent or lose (bf16 N 1024 k 4 0.99x, fp32 throughput N 1024 k 4 0.96x, N 2048 k 4 0.95x).
+3. Identical binaries measure 10 to 29 percent more cycles on umbriel-b200-091 than on umbriel-b200-047 at k 32 to 64 with 32 to 64 items per lane, variant and control alike with ratios preserved, and the B5 k 64 kernels run 8 percent slower on umbriel-b200-020 than on 091 while B2 is identical. Cross-node statements in this report carry that uncertainty.
+4. The v2, v3, sw, sw_v2 and first B5 cards ran no prefer_smaller_index cells and do not list them as unsupported. The adapters do not read the requirement, so the code is identical, and the W2_packed card's prefer_smaller_index cells (identical cycles and SASS) cover the claim.
