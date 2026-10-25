@@ -29,6 +29,7 @@
 
 #include <cuda/std/cstdint>
 #include <cuda/std/type_traits>
+#include <cuda/std/utility>
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -297,7 +298,8 @@ public:
   static constexpr int threads     = Threads;
   static constexpr int ipt         = ItemsPerThread;
   static constexpr int tile_items  = Threads * ItemsPerThread;
-  static constexpr int cap         = tile_items / CapDivisor; // candidates kept after the first pass
+  static constexpr bool compacts   = (CapDivisor > 0); // CapDivisor 0: never compact, tile sweeps only
+  static constexpr int cap         = compacts ? tile_items / CapDivisor : 1; // candidates kept after pass 1
   static constexpr int cpt         = (cap + Threads - 1) / Threads; // candidates per thread, blocked
   static constexpr bool padded     = (Layout == cand_layout::padded) && (cpt > 1);
   static constexpr int cand_stride = padded ? cpt + 1 : cpt; // words per thread in the buffer
@@ -371,7 +373,7 @@ public:
     const always_valid always{};
 
     // Pass over the whole tile on the most significant digit
-    const int c1 = run_pass<ipt>(ck, always, 0, k_rem, prefix, mask);
+    const int c1 = run_pass<ipt>(ck, always, ::cuda::std::integral_constant<int, 0>{}, k_rem, prefix, mask);
     const int s1 = k - k_rem;
 
     if (c1 == k_rem)
@@ -379,7 +381,7 @@ public:
       // Every item in the pivot bucket is selected: emit above and pivot items in one sweep
       emit<ipt, TB>(ck, tile_idx, always, prefix, tie_hi(prefix, mask), k_rem, c1, 0, k, out);
     }
-    else if (c1 <= cap)
+    else if (compacts && c1 <= cap)
     {
       compact(ck, prefix, tie_hi(prefix, mask), out);
       __syncthreads();
@@ -464,10 +466,11 @@ private:
     return prefix | (~mask & key_mask);
   }
 
+  template <int Bins = num_buckets>
   __device__ __forceinline__ void zero_histogram(u32 (&hist)[num_buckets])
   {
 #pragma unroll
-    for (int b = tid; b < num_buckets; b += Threads)
+    for (int b = tid; b < Bins; b += Threads)
     {
       hist[b] = 0;
     }
@@ -475,24 +478,26 @@ private:
 
   // Exclusive scan over the buckets, the thread whose bucket contains the k_rem-th item records
   // the pass state. Exactly one thread qualifies because the bucket counts sum to at least k_rem.
+  template <int Bins>
   __device__ __forceinline__ void scan_and_choose(const u32 (&hist)[num_buckets], int k_rem)
   {
-    u32 counts[bpt];
-    u32 excl[bpt];
+    constexpr int items = (Bins + Threads - 1) / Threads;
+    u32 counts[items];
+    u32 excl[items];
 #pragma unroll
-    for (int i = 0; i < bpt; ++i)
+    for (int i = 0; i < items; ++i)
     {
-      const int b = tid * bpt + i;
-      counts[i]   = (b < num_buckets) ? hist[b] : 0u;
+      const int b = tid * items + i;
+      counts[i]   = (b < Bins) ? hist[b] : 0u;
     }
     scan_t(storage.scan).ExclusiveSum(counts, excl);
 #pragma unroll
-    for (int i = 0; i < bpt; ++i)
+    for (int i = 0; i < items; ++i)
     {
-      const int b   = tid * bpt + i;
+      const int b   = tid * items + i;
       const u32 e   = excl[i];
       const u32 inc = e + counts[i];
-      if (b < num_buckets && e < static_cast<u32>(k_rem) && inc >= static_cast<u32>(k_rem))
+      if (b < Bins && e < static_cast<u32>(k_rem) && inc >= static_cast<u32>(k_rem))
       {
         storage.state = make_uint2((e << first_bits) | static_cast<u32>(b), counts[i]);
       }
@@ -502,13 +507,16 @@ private:
   // One radix pass over a register-resident set: histogram of digit `pass` over the valid items
   // matching the current prefix, scan and pivot choice, pass-state update. Returns the number of
   // candidates (items in the pivot bucket) and narrows k_rem, prefix and mask.
-  template <int M, class ValidF>
+  template <int M, int Pass, class ValidF>
   __device__ __forceinline__ int
-  run_pass(const u32 (&ck)[M], ValidF valid, int pass, int& k_rem, u32& prefix, u32& mask)
+  run_pass(const u32 (&ck)[M], ValidF valid, ::cuda::std::integral_constant<int, Pass>, int& k_rem, u32& prefix, u32& mask)
   {
-    const int shift         = pass_shift(pass);
-    const u32 digit_mask    = (1u << pass_bits(pass)) - 1u;
-    u32(&hist)[num_buckets] = storage.histogram[pass & 1];
+    constexpr int pass       = Pass;
+    constexpr int shift      = pass_shift(pass);
+    constexpr int bins       = 1 << pass_bits(pass);
+    constexpr int next_bins  = (pass + 1 < num_passes) ? (1 << pass_bits(pass + 1 < num_passes ? pass + 1 : pass)) : 0;
+    const u32 digit_mask     = static_cast<u32>(bins - 1);
+    u32(&hist)[num_buckets]  = storage.histogram[pass & 1];
     if constexpr (predicated)
     {
       const u32 hist_addr = detail::smem_addr(hist);
@@ -530,13 +538,13 @@ private:
         }
       }
     }
-    if (pass + 1 < num_passes)
+    if constexpr (pass + 1 < num_passes)
     {
-      zero_histogram(storage.histogram[(pass + 1) & 1]);
+      zero_histogram<next_bins>(storage.histogram[(pass + 1) & 1]);
     }
     __syncthreads();
 
-    scan_and_choose(hist, k_rem);
+    scan_and_choose<bins>(hist, k_rem);
     __syncthreads();
 
     const uint2 st     = storage.state;
@@ -555,15 +563,24 @@ private:
     const u32 (&ck)[M], IdxF idx_of, ValidF valid, int k_rem, u32 prefix, u32 mask, int out_base, int k_set, int* out)
   {
     int cands = 0;
-#pragma unroll
-    for (int p = 1; p < num_passes; ++p)
-    {
-      cands = run_pass<M>(ck, valid, p, k_rem, prefix, mask);
-      if (cands == k_rem)
+    bool done = false; // block-uniform early exit (all remaining candidates are selected)
+    const auto step = [&](auto pc) {
+      if (!done)
       {
-        break;
+        cands = run_pass<M>(ck, valid, pc, k_rem, prefix, mask);
+        done  = (cands == k_rem);
       }
+    };
+    step(::cuda::std::integral_constant<int, 1>{});
+    if constexpr (num_passes > 2)
+    {
+      step(::cuda::std::integral_constant<int, 2>{});
     }
+    if constexpr (num_passes > 3)
+    {
+      step(::cuda::std::integral_constant<int, 3>{});
+    }
+    static_assert(num_passes <= 4, "extend the pass sequence for more than four passes");
     emit<M, TB>(ck, idx_of, valid, prefix, tie_hi(prefix, mask), k_rem, cands, out_base, k_set, out);
   }
 
