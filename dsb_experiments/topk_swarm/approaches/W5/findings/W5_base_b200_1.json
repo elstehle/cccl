@@ -1,0 +1,55 @@
+{
+  "author": "opt-W5",
+  "approach_id": "W5",
+  "variant": "base",
+  "commit": "7aa26c3c1e",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 1024,
+    "sync_assumed": "warp convergence of the 32 lanes, the caller separates calls that reuse the output buffer or the temp storage by a __syncwarp (the harness does)",
+    "sync_performed": "one redux.min for the threshold, log2(IPT + 1) ballots for the prefix, one __syncwarp between the scatter and the gather, one redux.max per finish round, one redux.max for the fp32 next-word check (redux.add, max and min on the fp32 slow path, redux.add per level and two ballots per item on the overflow fallback), no barriers",
+    "k_range": "[4, 128] with 2k <= N, measured 8 to 64 (k 4 and 128 built and oracle checked in the seed check only)",
+    "n_range": "N = 32 x IPT, power of two, 256 to 65536 (bf16) or 32768 (fp32), measured 512 to 2048",
+    "type_constraints": "bf16 (16 twiddled key bits above a 16-bit inverted index in the finish word, exact) and fp32 (top 32 - log2(capacity) twiddled key bits above the inverted buffer position, idea N4, exact after the tie pass), int32 indices derived from the striped position",
+    "nan_behavior": "as W2: a NaN with the sign bit clear twiddles above +inf and is selected first, a NaN with the sign bit set is never selected, the all-ones pattern may collide with the empty-list sentinel, focus-set inputs contain no NaN",
+    "tie_break_support": "inherent on the filter path (the finish word orders by key descending, index ascending) and on the fallback (ballot tickets in index order), prefer_smaller_index runs the same code and measured identical to not_guaranteed (2162 vs 2162 bf16, 2865 vs 2865 fp32 at N 1024 k 32)",
+    "sorted_output_support": "descending by key on the filter path (the fp32 tie pass may reorder the last slots of the tie class), unsorted ticket order on the overflow fallback"
+  },
+  "findings": {
+    "low_level": [
+      "Fixed cost (cycles at k 8 minus 8 rounds of 27): about 750 at IPT 16, 1190 at IPT 32, 2100 at IPT 64, so roughly 27 cycles per item per lane in the latency regime, twice the card's model. The SASS of the bf16 throughput kernel at N 1024 k 8 has 1624 instructions against 664 for W2_packed_v3, about 600 of them the cold radix fallback (two VOTE, four POPC and two STS per item in its emission loop). The bf16 pack costs 8 instructions per item (LOP3 sign test, SEL mask, LOP3 xor, ISETP and SEL for the minus-zero normalization, IMAD shift, two LOP3 for the inverted index), the per-lane count and the scatter position are two serial add chains of IPT dependent IADDs each (about 4 cycles per item on the critical path), and the compare and store are 3 more instructions per item.",
+      "The round costs 27 cycles with the list of 4 or 8 (slope over k: bf16 N 1024 k 8 to 16 adds 217 for 8 rounds, k 16 to 32 adds 544 for 16 rounds including the change from the 16x1 to the 16x2 bound, k 32 to 64 adds 1057 for 32 rounds including the 16x4 bound), the T19 and T41 figure, at any N.",
+      "Registers: bf16 64 at N 512, 72 at N 1024, 128 at N 2048 (W2_packed_v3 47 to 57 and 80), fp32 64, 79 to 80, 155 to 159 (W2 69 to 71, 104 to 128, 168 to 244 with 20 to 30 spill bytes in its latency kernel at N 2048). No stack frame, no STL or LDL in any W5 kernel. Throughput occupancy 3 to 6 blocks per SM at N 512 to 1024, 1 to 2 at N 2048.",
+      "Canary 32.001 cycles per op at the start and end, R squared 1.0000 in every latency cell, slope_raw over slope_noop at least 4x, control W2_packed_v3 in the same lock section (bf16 N 1024 k 32 2481, N 2048 k 16 2377, fp32 N 2048 k 16 4391 reproduce the W2 card to the cycle or within 2 percent)."
+    ],
+    "algorithmic": [
+      "W5 wins where the rounds are not the cost and the candidate count is small relative to the tile: bf16 N 1024 k 64 3219 against 7308 (2.27x), N 2048 k 32 3093 against 4383 (1.42x), N 2048 k 64 5335 against 10071 (1.89x), fp32 N 2048 k 16 2616 against 4391 (1.68x, the focus cell with a threshold of 3300), N 2048 k 32 3853 against 7354 (1.91x), N 2048 k 64 6626 against 10187 (1.54x), N 1024 k 64 4819 against 6774 (1.41x), N 1024 k 8 1385 against 1815 (W2's known fp32 schedule anomaly). It loses every cell with IPT 16 below k 64 and every k 8 and k 16 cell at N 1024 and 2048 bf16 (N 1024 k 16 1618 against 1485), where W2's pruned list already makes the prologue cheap.",
+      "The must-beat cell bf16 N 1024 k 32 reads 2162 against 2481 (1.15x), short of the 1.3x (1900) threshold: the rounds are 32 x 27 = 864 in both, and W5's fixed part (about 1300 cycles at IPT 32 with the 16x2 bound and the list of 8) is not yet below W2's selection network (about 1600).",
+      "The host simulation (approaches/W5/sim_gj.py, 4000 trials per cell) sets the bound family: with G groups each certifying its top J (G x J >= k), the candidate count is nearly independent of N and depends on (G, J) only: 32x1 122 mean and 316 max at k 32, 16x2 80 mean and 198 to 212 max, 8x4 57 mean and 126 max, 16x4 126 mean and 241 to 259 max at k 64, 16x8 208 to 214 mean and 354 to 388 max at k 128. The exact k-th largest of the lane maxima (the card's bound) is tight at k 16 (21 mean, 37 max) and equals 32x1 at k 32. The configured bounds (16x1 D 8 at k 16, 16x2 D 8 at k 32, 16x4 D 8 at k 64, 16x8 D 16 at k 128) never overflow on the 16 measured inputs of any cell (approaches/W5/seed_check.cu: worst case 185 of 256 at k 64, 170 of 256 at k 32, 284 of 512 at k 128), and the simulated overflow rate is below 1e-3 everywhere.",
+      "Throughput is the clearest win: bf16 N 1024 k 32 672 against 480 Gelem per s, k 64 458 against 209, N 2048 k 64 628 against 255, fp32 N 2048 k 32 810 against 516, k 64 531 against 230, and W5 wins or ties every throughput cell from k 16 up including N 512, because the per-item work has no long dependency chain across warps and the finish list is short."
+    ],
+    "negative": [
+      "Packing every item into the W2 word before the filter is wasted work: only the at most 32 x D candidates need the word, and the bf16 pack is the largest per-item cost (8 instructions). The serial count and position chains cost about 4 cycles per item each on one warp. Both are design errors of this baseline, fixed in v2.",
+      "At IPT 16 (N 512) the filter cannot pay: W2's prologue is a sort of 16 with pruned merges, cheaper than compare, count, ballot prefix, scatter, gather and sort of 8 per lane.",
+      "The 16x4 bound at k 64 and the 16x8 bound at k 128 cost a per-lane top 4 or top 8 (sorted blocks of 8 and merges, 200 and 280 instructions at IPT 32), which is the W2 prologue in miniature."
+    ],
+    "surprises": [
+      "A grouped bound beats the exact one: the min over 16 lane pairs of the pair's second largest (one shuffle step) admits 80 candidates on average at k 32 against 122 for the min over the 32 lane maxima, and the exact k-th largest of the certified set, which the card proposed, would cost k redux rounds for 36 candidates, so the whole (G, J) family sits between two extremes neither of which is the right design point.",
+      "fp32 costs the same as bf16 or less (N 2048 k 8 2095 against 2317 bf16) because the fp32 twiddle is cheaper than the bf16 pack and the N4 truncation on buffer positions keeps 24 key bits, so the slow path never ran on random input."
+    ],
+    "open_questions": [
+      "Whether the filter on raw float keys (compare and max on floats, pack only the candidates after the gather) and tree-shaped count and position chains bring the fixed cost under W2's network at IPT 32 (v2 is built to answer this).",
+      "Whether a cheaper per-lane top 4 (pair tree of sorted quads) makes k 64 and k 128 cheaper than the sorted-block chain.",
+      "The fallback is exact but costs a 32-level radix select plus two ballots per item (never taken on random input, exercised by tie_heavy, pivot_tie, all_equal and sorted in the oracle battery), a second rung (exact k-th of the certified set, then refilter) would keep tie floods on the fast structure."
+    ]
+  },
+  "techniques_adopted": ["T1", "T3", "T4", "T7", "T17", "T18", "T19", "T21", "T32", "T36", "T41"],
+  "techniques_contributed": [],
+  "report_path": "approaches/W5/REPORT.md",
+  "source_paths": ["harness/adapters/W5_impl.cuh", "harness/adapters/W5_base.cuh", "approaches/W5/sim_candidates.py", "approaches/W5/sim_gj.py", "approaches/W5/seed_check.cu"],
+  "correctness_notes": "oracle battery (13 cases per adapter per cell, both requirements where measured) passed on every cell, the overflow fallback is exercised by the tie_heavy, pivot_tie, all_equal, sorted_asc and sorted_desc cases."
+}
