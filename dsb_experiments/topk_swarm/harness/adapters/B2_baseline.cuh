@@ -95,14 +95,14 @@ struct B2_baseline
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      p[i] = (b2::twiddle16(keys[i]) << 16) | (0xffffu - static_cast<unsigned>(tid * IPT + i));
+      p[i] = (b2b::twiddle16(keys[i]) << 16) | (0xffffu - static_cast<unsigned>(tid * IPT + i));
     }
-    b2::sort_desc<IPT>(p);
+    b2b::sort_desc<IPT>(p);
     __syncthreads();
-#pragma unroll b2::round_unroll<K>::value
+#pragma unroll b2b::round_unroll<K>::value
     for (int r = 0; r < K; ++r)
     {
-      b2::round_shift1<IPT>(&ts.slot[r], p);
+      b2b::round_shift1<IPT>(&ts.slot[r], p);
     }
     for (int t = tid; t < K; t += Threads)
     {
@@ -131,16 +131,16 @@ struct B2_baseline
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      tw[i] = b2::twiddle32(keys[i]);
+      tw[i] = b2b::twiddle32(keys[i]);
       s[i]  = tw[i];
     }
-    b2::sort_desc<IPT>(s);
+    b2b::sort_desc<IPT>(s);
     __syncthreads();
     unsigned T = 0u;
-#pragma unroll b2::round_unroll<K>::value
+#pragma unroll b2b::round_unroll<K>::value
     for (int r = 0; r < K; ++r)
     {
-      T = b2::round_shift1<IPT>(&ts.slot[r], s);
+      T = b2b::round_shift1<IPT>(&ts.slot[r], s);
     }
     // T is slot[K - 1]: at least K items are at or above it, every value above it was extracted
     unsigned myc = 0u;

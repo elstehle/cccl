@@ -1,0 +1,70 @@
+{
+ "author": "opt-B2b",
+ "approach_id": "B2",
+ "variant": "spec3",
+ "commit": "5dd6ef58aa",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 580,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: one per round (k), no init barrier for bf16 (no shared state to zero), fp32 adds 1 for the tie count and the finish barriers on the rare tie path",
+  "k_range": "[1, min(N/2, 256)] at compile time, as B2_packed",
+  "n_range": "N = Threads x IPT, IPT a power of two up to 128 (bf16) or 64 (fp32), N <= 65536, measured 1024 to 8192",
+  "type_constraints": "bf16 and fp32 as B2_packed (packed key-index words), int32 indices",
+  "nan_behavior": "as B2_packed: bitwise twiddle, -0.0 normalized to +0.0, no NaN in focus-set inputs",
+  "tie_break_support": "inherent, same binary for both requirements, measured identical within 1 percent",
+  "sorted_output_support": "inherent, thread t keeps the maximum of round t"
+ },
+ "report_path": "approaches/B2/REPORT_B2b.md",
+ "source_paths": [
+  "harness/adapters/B2_spec3.cuh",
+  "harness/adapters/B2_packed.cuh",
+  "harness/topk_harness.cuh"
+ ],
+ "techniques_adopted": [
+  "T1",
+  "T7",
+  "T11",
+  "T17",
+  "T19",
+  "T26",
+  "T33"
+ ],
+ "techniques_contributed": [
+  "T27"
+ ],
+ "correctness_notes": "Iteration 3 of B2 (instance opt-B2b, see the packed card for the two-instance note). Control is the incumbent B2_packed in the same lock section, which supports both requirements, so every cell has a control. Oracle: 13 cases per cell, 36 cells, all passed (umbriel-b200-091 oracle pass and the measured batch on umbriel-b200-047). Iteration 2 (B2_spec2, the atomic form of the same idea with a two-level redux refresh and a one-round-deferred tail shift) failed the oracle on sorted_asc and sorted_desc (duplicate index: the deferred tail shift leaves the winner's second item stale when the same lane wins twice in a row, so the refresh posts the same word again) and was not measured. B2_spec4 (atomic form with the single-level refresh) compiled to the same CREDUX stall before the branch that guards the atomic and was not measured either.",
+ "findings": {
+  "low_level": [
+   "The round compiles as intended: BAR.SYNC, two LDS.128 of the 8 per-warp words, VIMNMX3, VIMNMX3, VIMNMX, VIMNMX3 (depth 2), ISETP (b0 == M), a predicated VIMNMX for the post value, STS, BAR.SYNC. The three refresh CREDUX.MAX per round (third head, the b0 lane's item after next, the b1 lane's next item) have inputs independent of M, so ptxas hoists them above the read back of the previous round and their IMAD.U32 moves land at the top of the next block, after the barrier. No ATOMS, no BSSY in the round, 2 BRA in the kernel, 0 spills. Registers 28 to 34 at IPT 4 bf16 (B2_packed 21), 35 to 59 at IPT 16, 43 to 86 at IPT 32, fp32 40 to 48, 64 to 80, 128 to 157.",
+   "Two ptxas behaviors that shaped the variants: (1) it hoists pure register arithmetic across BAR.SYNC, so a fold written after the barrier was computed before it and stalled the warp on the redux result before the store, (2) it materializes a CREDUX result into a vector register (IMAD.U32 R, UR) right after the CREDUX, so any redux issued after the read back stalls the warp before its arrival at the barrier whatever the consumers are. The only form that avoids both is a redux whose inputs are known before the read back, which the single-level refresh provides. The intrinsic __reduce_max_sync was additionally sunk across the barrier by NVVM in one build and had to be written as volatile PTX.",
+   "Measured round slope (bf16, net of the control): 137 cycles at IPT 4 (k 4 to 16 and 16 to 64 agree), 164 (k 4 to 16) to 258 (k 16 to 64) at IPT 16, 183 to 402 at IPT 32, against 83.5, 110 and 112 to 148 for B2_packed. fp32: 137, 190 and 219 at k 4 to 16. The whole call at bf16 N 1024 k 16 is 2200 against 1380 (0.63x), at N 4096 k 16 2835 against 2057, at N 8192 k 16 3665 against 2769. Throughput 171 against 494 Gelem/s at bf16 N 1024 k 16 (occupancy 6 against 8 blocks per SM from the registers).",
+   "The fixed cost dropped as designed: 553 at IPT 4 k 4 against 380 is 4 x 137 + 5, so the prologue net of the control is about zero (no init barrier, no slot zeroing, no slot read back), and the readout is one register per thread."
+  ],
+  "algorithmic": [
+   "The dependent-chain model does not explain the round and neither does redux throughput: the hardware researcher measured CREDUX as a per-scheduler resource at about 5.7 cycles each (T33), so the 3 refresh redux per warp per round cost 23 to 33 scheduler cycles that hide inside the round. The SASS of the measured binary explains the 137: ptxas moves the three CREDUX freely across BAR.SYNC (round to round they sit before the STS, between the STS and the barrier, or after the barrier and before the LDS.128, addresses 0a70, 0aa0 and 0c60 in the N 1024 k 16 bf16 kernel), and whenever one lands after the barrier its 22 cycles plus the UR to R move stand in front of the fold, the post value and the STS. The source order (redux issued before the store and the barrier, inputs independent of the round maximum) is not preserved by ptxas, so in most rounds a redux is on the chain after all, and the round is about BAR 28, CREDUX 22 to 33, fold and post 12 to 18, STS, LDS.128 33, max tree 12, compare and select 12.",
+   "With one aggregated CREDUX per warp per round the baseline is already the shortest chain ptxas will schedule for an 8-warp block: every variant that needs more than one warp reduction per round handed ptxas a redux it could place on the chain, and it did. The levers that remain are structural: fewer warps per block (128 threads, next batch) and fewer rounds, not a reordered chain.",
+   "Correctness of the speculative state machine (b0, b1, x per warp, refreshed by c1 = third head, c2 = next item of the b0 lane after the one that is already x, c3 = next item of the b1 lane, folded by whether x > b1 when the warp won) held on all 13 oracle cases per cell including sorted input where one lane wins many rounds in a row, once the shift was applied in the same round (the deferred tail shift of spec and spec2 is unsound with the refresh).",
+   "prefer_smaller_index remains free (identical cycles for both requirements in every cell, same binary)."
+  ],
+  "negative": [
+   "Store form of the speculative post (per-warp word plus 8-way max): round 137 against 83.5 at IPT 4, 164 to 258 against 110 at IPT 16. Retired at 256 threads.",
+   "Atomic form with a predicated red per warp (spec2, spec4): ptxas turns the predicated red into a divergent branch and places the UR to R moves of the refresh redux before the branch, so the warp stalls on the redux before the atomic. spec2 was also unsound (deferred tail shift). Retired.",
+   "The register cost of carrying the warp state and three redux results in flight (plus 7 to 38 registers over B2_packed) lowers the occupancy of the bf16 kernel from 8 to 6 blocks per SM at IPT 4 and 16."
+  ],
+  "surprises": [
+   "A round with no shared atomics, no init barrier, a shorter dependent chain in the source and fewer barriers per call is 60 percent slower than the baseline, and exactly as slow as the atomic burst variant, because ptxas rescheduled the refresh redux onto the chain in most rounds.",
+   "The fixed cost of the call can be made close to zero net of the harness control (553 at k 4 is four rounds), so B2's prologue at IPT 4 is not where the time goes, the round is."
+  ],
+  "open_questions": [
+   "Can the issue point of a redux be pinned relative to BAR.SYNC from CUDA C++ at all? asm volatile keeps the PTX order but ptxas reorders CREDUX across the barrier, a fake register dependency on the read back pins the consumer but not the producer. Without that control the speculative-post family cannot be scheduled as designed on nvcc 13.4.",
+   "Would a 128-thread block (4 CREDUX per round, barrier 20 cycles, IPT doubled) cut the round below 83.5 (next batch)?",
+   "A one-redux refresh: c2 and c3 can be merged into one redux selected by up = (x > b1), which is known before, leaving c1 and c23 (two per warp); with the throughput reading that is still 16 per round and not expected to win, so it was not built.",
+   "The hardware researcher's per-scheduler CREDUX, VOTE and SHFL throughput numbers (T33: 5.7, 7 and 4 cycles per instruction per scheduler) bound how many warp collectives a block round can afford before throughput matters: about 14 CREDUX per scheduler per 80-cycle round, far above what B2 or B5 issue."
+  ]
+ }
+}

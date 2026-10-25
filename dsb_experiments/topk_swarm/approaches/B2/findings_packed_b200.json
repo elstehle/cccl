@@ -1,0 +1,62 @@
+{
+ "author": "opt-B2b",
+ "approach_id": "B2",
+ "variant": "packed",
+ "commit": "8f15348fc3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 68,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and 1 plus the re-ranked rounds on the rare tie path",
+  "k_range": "[1, min(N/2, 256)] at compile time, the slot array is k words and k rounds above 256 lose to any radix path",
+  "n_range": "N = Threads x IPT with IPT a power of two, IPT <= 128 for bf16 and <= 64 for fp32, N <= 65536 (16 index bits), measured N 1024 to 8192 at 256 threads",
+  "type_constraints": "bf16 (twiddled 16-bit key and 16-bit inverted index in one word) and fp32 (idea N4: top 32 - log2 N key bits and the inverted index in one word, exact tie finish), int32 indices derived from the blocked position",
+  "nan_behavior": "twiddled bitwise: a positive NaN ranks above +inf, a negative NaN below -inf, never in focus-set inputs. A negative NaN with all mantissa bits set at the last index packs to the empty-slot word 0 and is never selected. -0.0 is normalized to +0.0 before packing (one FADD or one HADD2 per word), so the zeros tie by index",
+  "tie_break_support": "inherent: the inverted index is the low part of the packed word, prefer_smaller_index and not_guaranteed run the same binary, measured identical within 1 percent in the same lock section (raw file)",
+  "sorted_output_support": "inherent: slot r is the r-th largest, the output is sorted by key descending then index ascending at no extra cost"
+ },
+ "report_path": "approaches/B2/REPORT_B2b.md",
+ "source_paths": ["harness/adapters/B2_packed.cuh", "harness/topk_harness.cuh"],
+ "techniques_adopted": ["T7", "T9", "T10", "T11", "T19"],
+ "techniques_contributed": [],
+ "correctness_notes": "Oracle battery per cell: random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized, 13 cases per cell, 48 cells (both requirements) all passed, including the exact prefer_smaller_index check on signed_zero and the fp32 tie finish on the tie patterns. The prefer_smaller_index cells of this batch have no control because B1_reference does not support that requirement (harness 0.3's --control-req arrived after this batch): they are not in this card, their values are in the raw file and agree with the not_guaranteed cells of the same lock section within 1 percent (same binary). B2 ran as two optimizer instances by a launch accident: this instance (opt-B2b) built the batch under the holder name opt-B2 from adapter files identical to commit 8f15348fc3 of exp/topk-swarm/B2b (first committed as 8212d9e0d2 on exp/topk-swarm/B2), the batch files were copied to results/opt-B2b on the node and fetched from there. The other instance (holder opt-B2) owns the variants B2_baseline, B2_detail and B2_trunc32.",
+ "findings": {
+  "low_level": [
+   "The round compiles to LDS, ISETP, SEL (head), CREDUX.MAX, IMAD.U32 (uniform to register move), one predicated ATOMS.MAX RZ per warp, BAR.SYNC.DEFER_BLOCKING, then the remaining IPT - 1 SEL of the shift. ptxas aggregates the 32 same-address fire-and-forget atomicMax of a warp into one redux.sync plus one elected atomic, so the 256-thread burst of the design never reaches the shared memory unit, and the redux (22 cycles, T1) sits on the dependent chain of every round.",
+   "Measured round slope (latency, random, net of the control, k 4 to 16 and 16 to 64 agree unless stated): bf16 83.5 cycles at IPT 4 (N 1024), 110 at IPT 16 (N 4096), 112 (k 4 to 16) to 148 (k 16 to 64) at IPT 32 (N 8192, fully unrolled, 5008 SASS instructions at k 64), 260 at IPT 32 with the rolled loop (k 256, K x IPT > 4096). fp32 85.8 at IPT 4, 103 at IPT 16 and IPT 32 (k 4 to 16).",
+   "Fixed cost (k to 0 extrapolation, net of the control): bf16 45 cycles at IPT 4, 274 at IPT 16, 960 at IPT 32. It is the odd-even merge sort of the per-thread list (5, 63, 191 compare-exchanges, 10, 126, 382 VIMNMX.U32) plus the pack (HADD2.BF16 for the -0.0 normalization, SHF, LOP3, IMAD, LOP3 per word pair), issue bound at 2 warps per scheduler. fp32 adds about 270 (IPT 4), 350 (IPT 16) and 670 (IPT 32): FADD, SHF.R.S32.HI and two LOP3 per item for twiddle and pack, IPT compares for the tie count, and one more barrier round trip (atomicAdd, BAR.SYNC, LDS, ISETP, BRA).",
+   "Registers: bf16 21 (IPT 4), 32 (IPT 16), 40 to 48 (IPT 32), fp32 30 to 32, 64, 128 (the twiddled copy for the tie finish doubles the live words), 0 spills, 0 STL and LDL everywhere. BAR.SYNC in the latency kernel: 39 (bf16 k 16) and 45 (fp32 k 16) for two calls plus the harness. Shared memory 4k + 4 bytes (64 to 3088 with the harness output buffers). Occupancy 8 blocks per SM for bf16 up to IPT 16 and 5 to 6 at IPT 32, fp32 8, 4 and 2 (B1 6, 4 and 2).",
+   "The harness control (16-byte blocked loads, fold, barrier, read back) costs 139 to 145 cycles at N 1024, 271 (bf16) and 900 (fp32) at N 4096, 920 and 2500 at N 8192, all fits R^2 >= 0.9976. The throughput ceiling (no-op adapter) is 5.1 Telem/s at N 1024, 7.5 (bf16) and 2.1 (fp32) at N 4096, 4.2 and 1.1 at N 8192."
+  ],
+  "algorithmic": [
+   "Cost model that held: cycles = fixed(IPT) + k x round(IPT) with the slopes and intercepts above. B1 is nearly k-flat (bf16 N 1024: 1767 at k 4, 2017 at k 64), so B2 wins below a crossover k and loses by k x round above it. Measured against B1 in the same lock section (bf16 latency): N 1024 k 4 379 vs 1767 (4.7x), k 16 1380 vs 1882 (1.36x), k 64 5397 vs 2017 (0.37x), k 256 21388 vs 2129 (0.10x). N 4096 k 4 718 vs 3645 (5.1x), k 16 2057 vs 3833 (1.86x), k 64 7290 vs 4411 (0.61x). N 8192 k 4 1409 vs 5667 (4.0x), k 16 2758 vs 5868 (2.13x), k 64 9886 vs 6591 (0.67x). fp32: N 1024 k 16 1680 vs 1905 (1.13x), N 4096 k 16 2299 vs 3710 (1.61x), N 8192 k 16 3306 vs 5971 (1.81x), k 64 loses at every N (0.35x to 0.68x).",
+   "Crossover with B1 on the linear model: bf16 about k 22 at N 1024, k 34 at N 4096, k 36 to 40 at N 8192, fp32 about k 19, 33 and 50. The approach card predicted k 18 at N 1024 and about k 40 at N 8192, so the model held at IPT 4 and the larger N are slightly better than predicted because B1 grows with N faster than the B2 round does.",
+   "prefer_smaller_index is free: the index is the low part of the packed word, the same binary runs for both requirements and the measured cycles agree within 1 percent (bf16 N 1024 k 16: 1380 and 1380, N 8192 k 16: 2758 and 2771, fp32 N 4096 k 16: 2299 and 2296, raw file). The exact oracle check passes on every battery pattern including signed_zero after the -0.0 normalization. The output is additionally sorted by key then index.",
+   "Throughput (one occupancy wave, Gelem/s) follows the latency ratios: bf16 N 1024 k 4 1274 vs 365, k 16 491 vs 347, k 64 143 vs 321, N 4096 k 16 800 vs 530, N 8192 k 16 906 vs 561, fp32 N 1024 k 16 405 vs 353, N 4096 k 16 562 vs 518, N 8192 k 16 509 vs 415. The 21 to 48 register bf16 kernel keeps 8 blocks per SM where B1 has 4 to 6.",
+   "fp32 through idea N4 (truncated key of 22, 20 and 19 bits at N 1024, 4096 and 8192, index in the low bits): the rounds are the bf16 rounds, the count pass compares the tie class of the k-th truncated key against its members among the slots, and the exact finish (second-level packing of the dropped key bits, same rounds on the class members) runs only when they differ. Host simulation on the harness random pattern (2000 seeds, same generator): the finish runs on 0.1 percent (N 1024 k 4) to 2.3 percent (N 4096 k 16) and 4.2 percent (N 8192 k 16) of inputs, tie classes at most 3 to 5, 20 to 50 percent at N 32768 with 17 key bits. The tie structure of the measured inputs is 1.0 keys at rank k for fp32 and 1.4 to 5.4 for bf16 (bf16 ties are resolved by the index half, no tie path exists for bf16).",
+   "Round slope at IPT 32 (112 to 148) stays below the 150-cycle kill threshold of the approach card, so B2 keeps N 8192 for k up to about 32. Above IPT 32 the sorted per-thread list is the wrong structure: the prologue is already a third of the k 16 call at IPT 32."
+  ],
+  "negative": [
+   "k 64 and above lose to B1 at every N measured (0.35x to 0.68x at k 64, 0.10x to 0.15x at k 256): one barrier round per output cannot compete with k-flat radix passes, the crossover is k 20 to 50 depending on N and type.",
+   "The per-thread full sort plus shift-down list does not scale with IPT: 960 cycles of prologue at IPT 32 and about 2 extra cycles per item per round. IPT 64 and 128 are supported by the adapter (bf16) but were not measured because the model already loses there.",
+   "The rolled round loop (used when K x IPT > 4096, here IPT 32 k 256) costs 260 cycles per round against 112 to 148 unrolled: the compiler keeps the aggregation but the loop body cannot overlap the shift of round r with the barrier of round r + 1.",
+   "fp32 costs 270 to 670 fixed cycles more than bf16 at the same IPT and k (twiddle, pack, tie count, one more barrier), where B1's type gap is 20 to 140 cycles. The fp32 kernel at IPT 32 uses 128 registers (2 blocks per SM), so its throughput advantage over B1 shrinks to 1.2x at N 8192 k 16."
+  ],
+  "surprises": [
+   "The cheap block round of the July study and T10/T11 is not a hardware merge of a 256-thread same-address burst: ptxas rewrites the warp's fire-and-forget atomicMax into CREDUX.MAX plus one elected ATOMS.MAX RZ (the predicated form in T11's own SASS evidence). The un-aggregated same-address cost is the 32 to 59 cycles per warp instruction that T10 measured with SEL-selected addresses. The consequence for B2 is that a 22-cycle redux sits on every round's dependent chain, which the next variant removes.",
+   "The fixed cost at IPT 4 is only 45 cycles net of the control: the slot init, the init barrier, sort4 and the pack hide behind the control's own loads and barrier.",
+   "The round slope at IPT 32 grows with k (112 for k 4 to 16, 148 for k 16 to 64) while it is k-independent at IPT 4 and 16. Instruction cache pressure of the unrolled code (5008 SASS instructions at k 64) is the suspect."
+  ],
+  "open_questions": [
+   "How much of the round is the redux on the dependent chain: the next variant (B2_spec) posts from the lanes that hold the warp's stale maximum and second maximum and refreshes them in the shadow of the barrier.",
+   "Which per-thread structure beats the sorted list above IPT 16: a sorted front of 4 to 8 items with an unsorted remainder and a refill on exhaustion (the refill is divergent but rare on random data, every round on sorted input).",
+   "Can the fp32 tie count ride on the last round instead of its own barrier, and is the second-level finish ever the right choice at N 32768 (17 key bits, finish on 20 to 50 percent of inputs) against value rounds with a min-index ticket.",
+   "Why the rolled loop costs 260 cycles per round at IPT 32 (SASS of the N 8192 k 256 kernel not yet read).",
+   "Where B2's throughput advantage ends when the kernel is batched: 8 blocks per SM at 21 registers against B1's 6 is a latency-regime statement only."
+  ]
+ }
+}

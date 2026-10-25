@@ -1,0 +1,52 @@
+{
+ "author": "opt-B2b",
+ "approach_id": "B2",
+ "variant": "packed",
+ "commit": "5dd6ef58aa",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 68,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and the finish barriers on the rare tie path",
+  "k_range": "[1, min(N/2, 256)] at compile time",
+  "n_range": "N = Threads x IPT, this batch 128 threads with IPT 8 and 32 (N 1024 and 4096)",
+  "type_constraints": "bf16 and fp32 as in the first packed card, int32 indices",
+  "nan_behavior": "as in the first packed card",
+  "tie_break_support": "inherent, not_guaranteed cells only in this batch",
+  "sorted_output_support": "inherent"
+ },
+ "report_path": "approaches/B2/REPORT_B2b.md",
+ "source_paths": ["harness/adapters/B2_packed.cuh", "harness/topk_harness.cuh"],
+ "techniques_adopted": ["T7", "T9", "T10", "T11", "T19", "T26"],
+ "techniques_contributed": ["T27"],
+ "correctness_notes": "Third packed batch (instance opt-B2b): the same adapter at 128 threads per block (4 warps) against B1_reference at 128 threads in the same lock section, not_guaranteed only, N 1024 and 4096, k 4, 16, 64, both key types, 12 cells. Oracle: 13 cases per cell, all passed. The cells carry threads 128 and are distinct from the 256-thread cells of the first card, a comparison across the two cards is across sessions and is made in the report only, with that caveat.",
+ "findings": {
+  "low_level": [
+   "At 128 threads the round slope is 69.5 cycles at IPT 8 (bf16 N 1024, k 4 to 16 and 16 to 64 agree), 85 to 91 at IPT 32 (N 4096), fp32 73.5 at IPT 8 and 71 to 86 at IPT 32. The round has 4 CREDUX (one per warp) and a 4-warp barrier (20 cycles in T11) instead of 8 and 28. Registers 29 to 30 bf16 at IPT 8, 32 to 48 at IPT 32, fp32 40 and 128, 0 spills, occupancy 16 blocks per SM for bf16 N 1024 (B1 at 128 threads: 48 to 96 registers, 25 to 37 BAR.SYNC).",
+   "The fixed cost at IPT 8 is 348 - 4 x 69.5 = 70 cycles net of the control (sort8 of 19 compare-exchanges, pack of 4 word pairs), at IPT 32 bf16 882 - 4 x 85 = 540 (the 191-pair sort with 1 warp per scheduler instead of 2 issues faster than the 960 of the 256-thread IPT 32 kernel).",
+   "Same SASS shape as at 256 threads (LDS, ISETP, SEL, CREDUX, IMAD, predicated ATOMS.MAX RZ, BAR.SYNC, then the shift), 312 to 1976 instructions bf16 N 1024, the unrolled k 64 kernel at IPT 32 is 5008 instructions."
+  ],
+  "algorithmic": [
+   "Against B1 at 128 threads in the same lock section (latency): bf16 N 1024 k 4 348 vs 2059 (5.9x), k 16 1182 vs 2265 (1.92x), k 64 4504 vs 2587 (0.57x). N 4096 k 4 882 vs 4933 (5.6x), k 16 1907 vs 5228 (2.74x), k 64 6254 vs 6074 (1.03x). fp32 N 1024 k 16 1494 vs 2306 (1.54x), N 4096 k 16 2085 vs 5447 (2.6x), k 64 6219 vs 7055 (1.13x). Throughput bf16 N 1024 k 16 663 vs 461 Gelem/s, N 4096 k 16 932 vs 593, k 64 258 vs 539, fp32 N 4096 k 16 543 vs 437.",
+   "The crossover with B1 moves up at 128 threads: bf16 about k 28 at N 1024 and k 64 at N 4096 (B2 540 + 88 k against B1 about 5200 + 18 k), fp32 about k 30 and k 70. B1 itself is slower at 128 threads than at 256 (its per-thread histogram work doubles), which is part of the shift.",
+   "Round cost against warps per block, as a model for a device agent that chooses its block size: with 4 warps the barrier is 8 cycles cheaper (T11) and the aggregated post is 4 CREDUX per round instead of 8, the shift costs 4 more selects per round at the doubled IPT. The measured 69.5 against 83.5 (previous card, other session, same adapter and node type, canaries identical at 32.001 cycles per op) is the net of those three. B2 wants small blocks: 128 threads at N 1024 to 4096, and the per-thread list grows accordingly.",
+   "fp32 at 128 threads and N 4096 is IPT 32 with two words per item: 128 registers, 4 blocks per SM, throughput 543 against 562 at 256 threads (other session), the latency gain does not carry to throughput there."
+  ],
+  "negative": [
+   "k 64 still loses at N 1024 (0.57x) and only ties B1 at N 4096 (1.03x bf16, 1.13x fp32): the smaller block does not change where rounds stop paying by much, it moves the crossover by about 6 to 20 in k.",
+   "At N 4096 and 128 threads the IPT 32 sort (191 compare-exchanges) is 540 cycles of prologue, the same structural limit as at 256 threads one N later."
+  ],
+  "surprises": [
+   "The fixed cost of the 256-thread IPT 32 kernel (960) is almost twice that of the 128-thread IPT 32 kernel (540) for the same per-thread work: with one warp per scheduler the sort is latency bound, with two it is issue bound.",
+   "B1 at 128 threads loses 20 to 40 percent against its 256-thread configuration (2265 against 1882 at bf16 N 1024 k 16 across sessions), so a device agent that picks 128-thread blocks for B2 should not run B1 at that size as the fallback."
+  ],
+  "open_questions": [
+   "64-thread blocks (2 warps, IPT 16 at N 1024): the barrier and the CREDUX count halve again while the sort16 (63 pairs) and 16 selects per round cost more, the model is close to even. Not measured.",
+   "Whether the 128-thread advantage holds in the batched device kernel where several 128-thread blocks share an SM and the shared redux and barrier resources (the hardware researcher's answer on CREDUX throughput decides)."
+  ]
+ }
+}

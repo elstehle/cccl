@@ -1,0 +1,30 @@
+{
+  "author": "opt-B2b",
+  "approach_id": "B2",
+  "variant": "twolevel",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 64,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 init plus k rounds for bf16, plus one __syncthreads_or for the fp32 tie check, plus 1 and k minus a rounds on the fp32 finish path (a is the first slot of the tie class)",
+    "k_range": "[1, N/2] at compile time, k rounds, the round loop is fully unrolled up to k 64 and by 8 above",
+    "n_range": "N = Threads x IPT with IPT a power of two, N <= 65536 (16-bit index half for bf16, log2 N index bits for fp32), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "bf16 keys packed as 16-bit twiddled key over 16-bit inverted index, fp32 keys packed as the top 32 - log2 N twiddled key bits over the inverted index with an exact finish on the tie class of the k-th truncated key, int32 indices derived from positions",
+    "nan_behavior": "a NaN twiddles above +inf (positive NaN) or below -inf (negative NaN) and is selected or dropped accordingly, never produced by focus-set inputs. -0.0 and +0.0 map to the same twiddled key (negate twiddle) and tie by index",
+    "tie_break_support": "inherent: the packed word orders by (key, smaller index first), the same code runs for both requirements, measured cost zero",
+    "sorted_output_support": "inherent for bf16 (the slots are the answer sorted by key descending then index ascending), for fp32 sorted except inside the finished tie class"
+  },
+  "report_path": "approaches/B2/REPORT_B2b.md",
+  "source_paths": [
+    "harness/adapters/B2_twolevel.cuh",
+    "harness/adapters/B2_detail.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": ["T7", "T9", "T10", "T11", "T19"],
+  "techniques_contributed": []
+}

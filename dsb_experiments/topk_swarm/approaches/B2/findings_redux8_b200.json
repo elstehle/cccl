@@ -1,0 +1,60 @@
+{
+  "author": "opt-B2b",
+  "approach_id": "B2",
+  "variant": "redux8",
+  "commit": "8d2a49e496",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 64,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 init plus k rounds for bf16, plus one __syncthreads_or for the fp32 tie check, plus 1 and k minus a rounds on the fp32 finish path (a is the first slot of the tie class); each round additionally executes one __reduce_max_sync per warp before the atomic",
+    "k_range": "[1, N/2] at compile time, k rounds, the round loop is fully unrolled up to k 64 and by 8 above",
+    "n_range": "N = Threads x IPT with IPT a power of two, N <= 65536 (16-bit index half for bf16, log2 N index bits for fp32), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "bf16 keys packed as 16-bit twiddled key over 16-bit inverted index, fp32 keys packed as the top 32 - log2 N twiddled key bits over the inverted index with an exact finish on the tie class of the k-th truncated key, int32 indices derived from positions",
+    "nan_behavior": "a NaN twiddles above +inf (positive NaN) or below -inf (negative NaN) and is selected or dropped accordingly, never produced by focus-set inputs. -0.0 and +0.0 map to the same twiddled key (negate twiddle) and tie by index",
+    "tie_break_support": "inherent: the packed word orders by (key, smaller index first), the same code runs for both requirements, measured cost zero",
+    "sorted_output_support": "inherent for bf16 (the slots are the answer sorted by key descending then index ascending), for fp32 sorted except inside the finished tie class"
+  },
+  "report_path": "approaches/B2/REPORT_B2b.md",
+  "source_paths": [
+    "harness/adapters/B2_redux8.cuh",
+    "harness/adapters/B2_detail.cuh",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T9",
+    "T11",
+    "T19"
+  ],
+  "techniques_contributed": [
+    "T26"
+  ],
+  "correctness_notes": "Oracle battery per cell, 13 cases (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized), 96 cells (48 shapes x both requirements, N 1024 to 16384) all passed. Control B2_twolevel in the same lock section, both requirements, same selection in every cell (the variant changes only how a round posts).",
+  "findings": {
+    "low_level": [
+      "Round SASS at IPT 4 (bf16 N 1024 k 16, latency kernel): B2_twolevel 10 instructions per round (BAR.SYNC, LDS, ISETP, SEL, SEL, CREDUX.MAX, SEL, SEL, IMAD.U32, ATOMS.MAX), B2_redux8 20 (BAR.SYNC, SEL, SEL, BSSY, SEL, LDS, ISETP, SEL, CREDUX.MAX, IMAD.U32, BRA, S2R, VOTEU.ANY, CREDUX.MAX, UFLO, IMAD, ISETP, ATOMS.MAX, NOP, BSYNC). The hand-written __reduce_max_sync is the first CREDUX; the predicated `lane 0 posts` atomicMax is then aggregated by ptxas a second time into VOTEU, CREDUX, UFLO plus the elected ATOMS, inside a BSSY/BSYNC region for the lane test. Kernel-wide CREDUX 64 against 32, BSSY 32 against 0, BRA 37 against 5, 792 against 464 instructions.",
+      "Round slope net of the control (latency, random, k 4 to 16 and 16 to 64): bf16 154 cycles per round at IPT 4 against 84 for B2_twolevel, 214 and 223 at IPT 16 against 159 and 148, 216 and 290 at IPT 32 against 140 and 227, 248 and 309 at IPT 64 against 189 and 207. fp32 159 at IPT 4 against 81, 213 at IPT 16 against 140, 226 at IPT 32 against 123, 293 at IPT 64 against 207. The fixed cost is unchanged within 20 cycles.",
+      "Registers identical to B2_twolevel within one (22 against 21 at IPT 4, 28 to 31 at IPT 16, 32 to 48 at IPT 32, 78 to 80 at IPT 64, fp32 30, 79, 127 to 128, 254 to 255), no spills, same occupancy, so the throughput difference is issue slots, not residency."
+    ],
+    "algorithmic": [
+      "Hypothesis refuted: posting one warp maximum per warp (8 shared atomics per round instead of 256) does not relieve anything, because the plain fire-and-forget atomicMax already reaches the shared memory unit as one elected atomic per warp (T26). The explicit pre-reduction adds a second CREDUX (22 cycles, T1), a divergent lane test with its reconvergence, and the IMAD move of the uniform result, about 55 to 75 cycles per round. B2_redux8 loses in all 48 shapes: latency 0.54x to 0.97x (median 0.70x), throughput 0.57x to 0.96x (median 0.82x), both requirements within 2 percent.",
+      "The throughput regime loses less than the latency regime (0.82x against 0.70x median) because with 3 to 8 blocks per SM the added issue slots of one warp overlap other warps' barrier waits, but the extra dependent latency of the second redux still shows: there is no cell where the variant is at least even.",
+      "Cost-model consequence for B2 and B5: the block round's post is already optimal in shape (CREDUX plus one ATOMS per warp); the only remaining per-round costs are the barrier (about 28, T9), the redux (22), the read back and the list update. A warp-level pre-selection pays only when it removes rounds (B5's warp phase), never when it only reduces the atomic count."
+    ],
+    "negative": [
+      "Hand-written warp pre-reduction before a shared atomicMax: retired. ptxas emits it for the plain atomic and re-emits it for the predicated one, so the hand-written form is strictly worse (double CREDUX, a BSSY/BSYNC region, 55 to 75 cycles per round). This explains the T11 observation that the explicit redux plus elected atomic measured slower than the plain burst."
+    ],
+    "surprises": [
+      "ptxas does not recognise the posted value as warp-uniform: the __reduce_max_sync result lives in a uniform register, is moved to a per-lane register (IMAD.U32), and the predicated atomicMax from lane 0 is then reduced again (VOTEU.ANY, CREDUX.MAX, UFLO) before the single ATOMS.MAX, although the active mask has one lane.",
+      "The variant's round is 20 instructions, twice B2_twolevel's, yet uses the same registers: the cost is entirely dependent latency and issue, not residency, which is why the throughput regime (0.82x) still loses."
+    ],
+    "open_questions": [
+      "Whether an inline PTX red.shared.max.u32 from one lane, or a uniform-datapath store of the warp maximum to a per-warp word (B2_spec3 on the branch, the other opt-B2b instance's line), escapes the second aggregation and what the un-reduced ATOMS from one lane costs on its own."
+    ]
+  }
+}
