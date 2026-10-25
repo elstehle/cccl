@@ -1,0 +1,81 @@
+{
+  "author": "opt-N3",
+  "approach_id": "N3",
+  "variant": "stream",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 138400,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 bracket barrier and 2 around the first chunk's histogram scan, then per further chunk the block scan's internal barrier plus 1 after the store sweep (7 chunks at N 32768), 1 after the finish's histogram scan, the emission scan's internal barrier and 1 before the rank finish; a refine level adds 1 in the min and max reduction and 2 in the re-binning, a compaction adds 2 per block of 4 x Threads entries plus 3",
+    "k_range": "[1, 2048] at run time (at most half a chunk of 4096, so the first chunk's histogram already yields a threshold at or above that chunk's median), measured at k 1024 and 2048",
+    "n_range": "N a multiple of the chunk size 4096 up to 32768 (16-bit index and count fields), fed as N / 4096 chunks; Threads 256 or 512; measured at N 16384 and 32768",
+    "type_constraints": "fp32 and bf16 keys (compared as fp32 values, bf16 widened exactly), int32 indices derived from the striped position, buffer entries are 4 bytes (bf16 key and 16-bit index packed) or 8 bytes (fp32); TempStorage 138400 bytes at fp32 and 71840 at bf16 (256 threads), 141568 and 73984 at 512",
+    "nan_behavior": "a NaN is never a candidate after the first chunk (every compare is false); inside the first chunk its fixed-point image lands in the top bin and the rank finish orders it below every number, unsupported. -0.0 equals +0.0 everywhere: value compares, the image subtracts the bracket base, the integer image folds the sign of zero, the rank finish compares values",
+    "tie_break_support": "not_guaranteed and prefer_smaller_index in one code path: the items above the pivot bin are an exact set, the pivot bin is resolved exactly by an all-pairs rank over at most Threads items (key descending, index ascending); a tie class larger than Threads is taken in buffer order under not_guaranteed and refined on the index image (1024 bins over the index range, at most Threads items per bin) under prefer_smaller_index",
+    "sorted_output_support": "not supported inherently, post-sort of k",
+    "streaming_contract": "insert_chunk(chunk, base_index) is called once per chunk of 4096 items in index order and never reads any other chunk; the state between chunks is the candidate buffer (at most 16384 entries, compacted in place when the next chunk would not fit), the 1024-bin histogram and the threshold; finish(k, out) emits the k indices. On resident input the adapter feeds the register tile chunk by chunk, so the measured cost is the streaming cost on resident data"
+  },
+  "report_path": "approaches/N3/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N3_stream.cuh",
+    "approaches/N3/block_topk_stream.cuh",
+    "approaches/N3/model.py",
+    "harness/cells_n3.json"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T21",
+    "T25",
+    "T29",
+    "T31",
+    "T32",
+    "T36",
+    "T45",
+    "T56",
+    "T58",
+    "T60"
+  ],
+  "techniques_contributed": [
+    "T63",
+    "T64"
+  ],
+  "findings": {
+    "low_level": [
+      "Phase profile (clock64 stamps by thread 0 behind N3_PROFILE, median of 32 calls, one block, approaches/N3/profile_phases.cu, file profiles/profile_random_b200_068.txt), fp32 N 32768 k 2048 at 256 threads: bracket 475, first chunk stores 694, first histogram scan 1092, then per chunk count sweep 185 to 314, packed block scan phase 895 to 1071, store sweep 1631 to 1721 (16 slots), finish: histogram scan 690, count sweep 8079, emit sweep 11878, rank finish 2294, total 45097 against 43195 in the harness. At 512 threads: 929, 716, 1191, per chunk 215, 881 to 1092, 1100 to 1308 (8 slots), finish 916, 4601, 7026, 1632, total 33926 against 31693. bf16 within 3 percent of fp32 at both sizes. The stream is 49 percent of the call at 256 threads and 58 at 512, the finish the rest.",
+      "The store sweep costs about 100 cycles per register slot at 256 threads and 140 at 512 for one predicated STS.64 (STS.32 for bf16), a 5-instruction fixed-point image, one branch-free shared atomic (into one of 1024 bins, or a per-thread dummy word when the slot is no candidate) and a counter increment. B4's compaction store sweep without atomics and image costs about 15 cycles per slot on the same node (B4 report section 3). One data-dependent ATOMS per slot, 16 back to back, is the difference, and 512 threads does not reduce it: the atomic unit is per SM and the issue count per block is the same. (T64)",
+      "The finish's two buffer sweeps are rolled loops (pragma unroll 1) over about 44 entries per thread (11.1k to 11.3k buffered entries at N 32768 k 2048): 184 and 270 cycles per iteration at 256 threads, 209 and 319 at 512, one dependent chain of LDS.64, FADD, FFMA, two IMNMX, compares and predicated stores per iteration with no overlap across iterations. They are half the call. (T64)",
+      "The packed block scan phase (four histogram loads with 4-way bank conflicts, one cub BlockScan over 256 or 512 threads, the owner's edge computation with one division and up to six image evaluations) costs 900 to 1070 cycles at both thread counts, 2.5x the 350 to 430 cycles B4 measured for a plain BlockScan at 256 threads.",
+      "Registers: 255 at fp32 256 threads (the 128-register tile plus the chunk copies and the finish state) with 820 to 892 bytes of honest spill (stack 232 to 264 bytes, STL 80 to 85, LDL 117 to 124, no hidden local array), 128 at bf16 256 threads with 0 to 56 bytes, 128 at 512 threads with 100 to 776 bytes at fp32 and 0 at bf16. Static SASS 24120 to 25848 instructions at N 32768 with 237 BAR.SYNC: the overflow path (resolve, compact, rebin, rescan) is inlined into each of the seven chunk calls and never executes on random input, about 30 barriers execute. Shared memory 88 KB (bf16) and 155 KB (fp32) including the harness buffers, one block per SM in both regimes for N3 and for the controls at N 32768.",
+      "Oracle: all 24 cells passed the 22-case battery under both requirements in the oracle-only pass and in the three measured batches, including sorted_asc (two in-place compactions per call in the host model, the buffer at 6144 entries at the end), inf_denorm (one compaction after a useless first bracket), the five signed_zero seeds and signed_zero_boundary (tie class of zeros, taken in buffer order under not_guaranteed, refined on the index image under prefer_smaller_index), pivot_tie and all_equal (tie class of 4096), and the quantized patterns (pivot sets of 106 to 108 items, rank finish)."
+    ],
+    "algorithmic": [
+      "The histogram-carried threshold works as designed: on random input the buffer holds 11.1k to 11.3k entries at N 32768 k 2048 (4096 from the first chunk, then about 2048, 2048, 1024, 683, 512, 410 and 341 with the one-chunk lag, host model and GPU agree on the structure), the final pivot bin holds 20 to 30 items, no refinement level runs and the rank finish resolves it exactly under both requirements. The candidate volume is 34 percent of N, which the card's model predicted (k (1 + ln(N over C)) plus the first chunk), and the threshold after every chunk is within one bin width of the exact k-th largest so far.",
+      "The cost model that holds, per chunk of 4096 at 256 threads: about 2.8k cycles (0.7 cycles per item), 60 percent of it the store sweep's atomics and image, 32 percent the scan phase, the rest the count sweep; at 512 threads 2.3k (0.56 per item). B3_tuned selects the whole resident row at 0.56 to 0.63 cycles per item (18.4k to 20.8k over 32768 items), so one streaming chunk costs about as much per item as the entire resident radix selection before any finish, and the finish sweeps 0.34 N buffered entries twice.",
+      "Why N3 loses at the candidate cell: 2.24x and 2.08x slower than B3_tuned at 256 threads (41.2k and 43.2k against 18.4k and 20.8k, bf16 then fp32), 1.80x and 1.76x slower than N8_b3tuned at 512 (29.2k and 31.7k against 16.3k and 18.1k), 1.62x and 1.72x slower than B4_v4 at 256 (25.5k and 25.1k) and 1.59x and 1.63x at 512 (18.4k and 19.4k). The controls pay about two histogram passes over N items (B3 compacts after the first), N3 pays one histogram pass over N (every slot issues an atomic) plus a block scan per chunk plus two rolled passes over 0.34 N entries. Nothing in the streaming structure is cheaper than its resident equivalent, the saving the card hoped for (no k-sized merges) is real but the per-chunk bookkeeping costs more than the merges would have saved.",
+      "Edge cells: N 32768 k 1024 at 0.56x and 0.54x of N8_b3tuned (256 threads, bf16 and fp32), 0.69x and 0.65x at 512, 0.35x and 0.29x of B4_v4 (whose bound is tight at k 1024); N 16384 k 2048 at 0.40x and 0.39x of N8_b3tuned at 256, 0.50x and 0.53x at 512, 0.66x to 0.82x of B4_v4. Fewer chunks help N3 (the finish is a fixed share), smaller k helps the controls more.",
+      "Projection from the profile, not measured: unrolled finish sweeps at B4's unrolled rates would cut the finish from 23k to about 5k at 256 threads and from 14k to about 3k at 512, and histogramming the compacted candidates instead of every slot (45 instead of 128 atomics per thread) would cut the stream by about 4k, for a projected 15k to 17k at 256 threads and 11k to 12k at 512: parity to 1.3x over B3_tuned at 256, 1.4x to 1.6x over N8_b3tuned at 512, and no better than B4_v4's k 1024 cells (10.5k to 12.4k). The bar (16k, 1.3x under B3_tuned) is not reachable by a safe margin even then."
+    ],
+    "negative": [
+      "The cell fails the card's kill criterion by 2x: N 32768 k 2048 fp32 43.2k against B3_tuned 20.8k in the same lock section (bar at most 16k), bf16 41.2k against 18.4k; at 512 threads 31.7k and 29.2k against N8_b3tuned 18.1k and 16.3k. Throughput at the cell 0.90x and 0.67x of B3_tuned (360 and 214 Gelem per s against 400 and 321) at 256 threads, 0.69x and 0.81x of N8_b3tuned at 512, 0.62x to 0.73x of B4_v4 at 512. The ratios above 1 (bf16 N 32768 k 2048 throughput 1.31x and N 16384 k 2048 1.50x over B4_v4 at 256 threads) are against B4's own weak cells and still 0.60x to 0.90x of B3_tuned. Retired per the card: no further GPU time, the streaming cost goes to the contract note.",
+      "Branch-free dummy-word atomics (T32's proposal, B4_v4's pass) do not make a per-slot histogram cheap: the issue count equals the guarded form's and the shared atomic unit, not the reconvergence region, is the cost at 16 data-dependent atomics per thread back to back.",
+      "512 threads gain 1.36x to 1.41x over 256 threads in latency (less than T45's 1.45x for radix select): the scan phase and the per-slot atomic cost do not shrink with the thread count, only the sweeps and the finish loops do.",
+      "prefer_smaller_index costs 6 to 14 percent (bf16 256 threads 47.0k against 41.2k, fp32 46.4k against 43.2k, 512 threads 32.4k against 29.2k and 35.1k against 31.7k) although the resolved path is the same on random input: the index refine is compiled into the finish, the rank's index compare runs in both, and the register allocation differs (bf16 256 threads spills 56 bytes under prefer_smaller_index and nothing under not_guaranteed). B3's scan emission gives the requirement for free (0.997x to 1.003x), N3's buffer-order tie class does not."
+    ],
+    "surprises": [
+      "The host model found the one logic bug of this build before any GPU time: the threshold's edge validation nudged the edge by nextafterf of the edge, and the image's first operation is v minus lo, whose rounding swallows a one-ulp step of v, so the validated edge fell back to the bracket minimum and the threshold stalled for two chunks (12384 instead of 11148 entries, threshold -0.033 where the exact k-th was 0.655). A margin relative to the magnitude of edge and base fixed it (T63).",
+      "Compile time was not the issue (25 translation units per batch in 55 to 80 s, three batches measured in 3 minutes), the design was: the whole study fit in one node hour.",
+      "The rolled finish loops cost 12 to 20 times more per entry than an unrolled register sweep costs per slot (184 to 319 against 10 to 15 cycles). They were written rolled to spare registers next to the 128-register tile, which is dead by the time the finish runs."
+    ],
+    "open_questions": [
+      "Whether the projected 11k to 12k at 512 threads (finish unrolled by 8 with hoisted loads, candidate-only histogram, a custom scan) is real: one more build would tell, and at best ties B4_v4's k 1024 cells, so it is not worth a batch inside this study.",
+      "A real streaming kernel (chunks loaded from global memory inside insert_chunk) has no 128-register tile and no 255-register pressure, and runs at 2 to 4 blocks per SM: the per-chunk cost in that setting is unmeasured, the harness has no streaming input pattern and the adapter emulates the stream on the resident tile.",
+      "Whether the 100 cycles per slot of the store sweep are T10's back-to-back serialization or bank conflicts across 1024 random bins: a same-kernel A/B with per-warp histograms (8 x 1024 words) or with the candidate-only histogram would separate them.",
+      "The packed scan phase at 900 to 1070 cycles against 350 to 430 for a plain cub BlockScan: the four histogram loads and the owner's division are the suspects, not measured separately."
+    ]
+  },
+  "correctness_notes": "All 24 cells passed the oracle (22 cases each: the cell's seeds plus the battery) under both requirements in the oracle-only pass N3_stream_vs_N8_b3tuned_n3_a_oracle_20261025_170906 and again in the three measured batches. The host model approaches/N3/model.py passed 320 cases (16 patterns, two seeds at 256 threads and one at 512, both key types, both requirements, the three measured shapes) before the first build."
+}

@@ -1,0 +1,131 @@
+/Users/estehle/Downloads/cccl-topk-swarm-N3/dsb_experiments/topk_swarm/approaches/N3/model.py:47: RuntimeWarning: overflow encountered in cast
+  return F32(np.float64(a) * np.float64(b) + np.float64(c))
+ok  fp32 random                 smaller=0 seed=0 entries=11337 mode=2 A=2030 R=  18 P=  21 levels=0 compactions=0 
+ok  fp32 random                 smaller=0 seed=1 entries=11148 mode=2 A=2038 R=  10 P=  20 levels=0 compactions=0 
+ok  fp32 quantized_random       smaller=0 seed=0 entries=11446 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  fp32 quantized_random       smaller=0 seed=1 entries=11206 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  fp32 relu_quantized         smaller=0 seed=0 entries=11252 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  fp32 relu_quantized         smaller=0 seed=1 entries=11106 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  fp32 tie_heavy              smaller=0 seed=0 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  fp32 tie_heavy              smaller=0 seed=1 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  fp32 sorted_asc             smaller=0 seed=0 entries= 6144 mode=2 A=2041 R=   7 P=  17 levels=4 compactions=2 
+ok  fp32 sorted_asc             smaller=0 seed=1 entries= 6144 mode=2 A=2039 R=   9 P=  17 levels=4 compactions=2 
+ok  fp32 sorted_desc            smaller=0 seed=0 entries= 4096 mode=2 A=2041 R=   7 P=  12 levels=0 compactions=0 
+ok  fp32 sorted_desc            smaller=0 seed=1 entries= 4096 mode=0 A=2039 R=   9 P=   9 levels=0 compactions=0 
+ok  fp32 pivot_tie              smaller=0 seed=0 entries= 4608 mode=1 A= 512 R=1536 P=4096 levels=1 compactions=0 
+ok  fp32 pivot_tie              smaller=0 seed=1 entries= 4608 mode=1 A= 512 R=1536 P=4096 levels=1 compactions=0 
+ok  fp32 all_equal              smaller=0 seed=0 entries= 4096 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 all_equal              smaller=0 seed=1 entries= 4096 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s0         smaller=0 seed=0 entries=11517 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s0         smaller=0 seed=1 entries=11389 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s1         smaller=0 seed=0 entries=11517 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s1         smaller=0 seed=1 entries=11389 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s2         smaller=0 seed=0 entries=11517 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s2         smaller=0 seed=1 entries=11389 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s3         smaller=0 seed=0 entries=11517 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s3         smaller=0 seed=1 entries=11389 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s4         smaller=0 seed=0 entries=11517 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_s4         smaller=0 seed=1 entries=11389 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  fp32 signed_zero_boundary   smaller=0 seed=0 entries=11348 mode=1 A=1024 R=1024 P=2048 levels=1 compactions=0 
+ok  fp32 signed_zero_boundary   smaller=0 seed=1 entries=11160 mode=1 A=1024 R=1024 P=2048 levels=1 compactions=0 
+ok  fp32 pivot_tie_zero         smaller=0 seed=0 entries= 8193 mode=1 A= 512 R=1536 P=4096 levels=2 compactions=0 
+ok  fp32 pivot_tie_zero         smaller=0 seed=1 entries= 8188 mode=1 A= 512 R=1536 P=4096 levels=2 compactions=0 
+ok  fp32 inf_denorm             smaller=0 seed=0 entries= 6144 mode=0 A=2046 R=   2 P=   2 levels=6 compactions=2 
+ok  fp32 inf_denorm             smaller=0 seed=1 entries=11149 mode=2 A=2041 R=   7 P=  20 levels=0 compactions=0 
+ok  fp32 random                 smaller=1 seed=0 entries=11337 mode=2 A=2030 R=  18 P=  21 levels=0 compactions=0 
+ok  fp32 random                 smaller=1 seed=1 entries=11148 mode=2 A=2038 R=  10 P=  20 levels=0 compactions=0 
+ok  fp32 quantized_random       smaller=1 seed=0 entries=11446 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  fp32 quantized_random       smaller=1 seed=1 entries=11206 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  fp32 relu_quantized         smaller=1 seed=0 entries=11252 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  fp32 relu_quantized         smaller=1 seed=1 entries=11106 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  fp32 tie_heavy              smaller=1 seed=0 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  fp32 tie_heavy              smaller=1 seed=1 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  fp32 sorted_asc             smaller=1 seed=0 entries= 6144 mode=2 A=2041 R=   7 P=  17 levels=4 compactions=2 
+ok  fp32 sorted_asc             smaller=1 seed=1 entries= 6144 mode=2 A=2039 R=   9 P=  17 levels=4 compactions=2 
+ok  fp32 sorted_desc            smaller=1 seed=0 entries= 4096 mode=2 A=2041 R=   7 P=  12 levels=0 compactions=0 
+ok  fp32 sorted_desc            smaller=1 seed=1 entries= 4096 mode=0 A=2039 R=   9 P=   9 levels=0 compactions=0 
+ok  fp32 pivot_tie              smaller=1 seed=0 entries= 4608 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  fp32 pivot_tie              smaller=1 seed=1 entries= 4608 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  fp32 all_equal              smaller=1 seed=0 entries= 4096 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  fp32 all_equal              smaller=1 seed=1 entries= 4096 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  fp32 signed_zero_s0         smaller=1 seed=0 entries=11517 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  fp32 signed_zero_s0         smaller=1 seed=1 entries=11389 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  fp32 signed_zero_s1         smaller=1 seed=0 entries=11517 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  fp32 signed_zero_s1         smaller=1 seed=1 entries=11389 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  fp32 signed_zero_s2         smaller=1 seed=0 entries=11517 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  fp32 signed_zero_s2         smaller=1 seed=1 entries=11389 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  fp32 signed_zero_s3         smaller=1 seed=0 entries=11517 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  fp32 signed_zero_s3         smaller=1 seed=1 entries=11389 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  fp32 signed_zero_s4         smaller=1 seed=0 entries=11517 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  fp32 signed_zero_s4         smaller=1 seed=1 entries=11389 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  fp32 signed_zero_boundary   smaller=1 seed=0 entries=11348 mode=2 A=2045 R=   3 P=   5 levels=1 compactions=0 
+ok  fp32 signed_zero_boundary   smaller=1 seed=1 entries=11160 mode=2 A=2046 R=   2 P=   4 levels=1 compactions=0 
+ok  fp32 pivot_tie_zero         smaller=1 seed=0 entries= 8193 mode=2 A=2046 R=   2 P=   6 levels=2 compactions=0 
+ok  fp32 pivot_tie_zero         smaller=1 seed=1 entries= 8188 mode=0 A=2044 R=   4 P=   4 levels=2 compactions=0 
+ok  fp32 inf_denorm             smaller=1 seed=0 entries= 6144 mode=0 A=2046 R=   2 P=   2 levels=6 compactions=2 
+ok  fp32 inf_denorm             smaller=1 seed=1 entries=11149 mode=2 A=2041 R=   7 P=  20 levels=0 compactions=0 
+ok  bf16 random                 smaller=0 seed=0 entries=11329 mode=2 A=2032 R=  16 P=  27 levels=0 compactions=0 
+ok  bf16 random                 smaller=0 seed=1 entries=11114 mode=2 A=2027 R=  21 P=  30 levels=0 compactions=0 
+ok  bf16 quantized_random       smaller=0 seed=0 entries=11446 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  bf16 quantized_random       smaller=0 seed=1 entries=11206 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  bf16 relu_quantized         smaller=0 seed=0 entries=11252 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  bf16 relu_quantized         smaller=0 seed=1 entries=11106 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  bf16 tie_heavy              smaller=0 seed=0 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  bf16 tie_heavy              smaller=0 seed=1 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  bf16 sorted_asc             smaller=0 seed=0 entries= 6147 mode=2 A=2032 R=  16 P=  27 levels=4 compactions=2 
+ok  bf16 sorted_asc             smaller=0 seed=1 entries= 6145 mode=2 A=2027 R=  21 P=  30 levels=4 compactions=2 
+ok  bf16 sorted_desc            smaller=0 seed=0 entries= 4096 mode=2 A=2032 R=  16 P=  27 levels=0 compactions=0 
+ok  bf16 sorted_desc            smaller=0 seed=1 entries= 4096 mode=2 A=2027 R=  21 P=  30 levels=0 compactions=0 
+ok  bf16 pivot_tie              smaller=0 seed=0 entries= 4608 mode=1 A= 512 R=1536 P=4096 levels=1 compactions=0 
+ok  bf16 pivot_tie              smaller=0 seed=1 entries= 4608 mode=1 A= 512 R=1536 P=4096 levels=1 compactions=0 
+ok  bf16 all_equal              smaller=0 seed=0 entries= 4096 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 all_equal              smaller=0 seed=1 entries= 4096 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s0         smaller=0 seed=0 entries=11539 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s0         smaller=0 seed=1 entries=11406 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s1         smaller=0 seed=0 entries=11539 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s1         smaller=0 seed=1 entries=11406 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s2         smaller=0 seed=0 entries=11539 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s2         smaller=0 seed=1 entries=11406 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s3         smaller=0 seed=0 entries=11539 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s3         smaller=0 seed=1 entries=11406 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s4         smaller=0 seed=0 entries=11539 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_s4         smaller=0 seed=1 entries=11406 mode=1 A=   0 R=2048 P=4096 levels=1 compactions=0 
+ok  bf16 signed_zero_boundary   smaller=0 seed=0 entries=11361 mode=1 A=1024 R=1024 P=2048 levels=1 compactions=0 
+ok  bf16 signed_zero_boundary   smaller=0 seed=1 entries=11205 mode=1 A=1024 R=1024 P=2048 levels=1 compactions=0 
+ok  bf16 pivot_tie_zero         smaller=0 seed=0 entries= 8193 mode=1 A= 512 R=1536 P=4096 levels=2 compactions=0 
+ok  bf16 pivot_tie_zero         smaller=0 seed=1 entries= 8188 mode=1 A= 512 R=1536 P=4096 levels=2 compactions=0 
+ok  bf16 inf_denorm             smaller=0 seed=0 entries= 6169 mode=2 A=2035 R=  13 P=  27 levels=6 compactions=2 
+ok  bf16 inf_denorm             smaller=0 seed=1 entries=11115 mode=2 A=2030 R=  18 P=  30 levels=0 compactions=0 
+ok  bf16 random                 smaller=1 seed=0 entries=11329 mode=2 A=2032 R=  16 P=  27 levels=0 compactions=0 
+ok  bf16 random                 smaller=1 seed=1 entries=11114 mode=2 A=2027 R=  21 P=  30 levels=0 compactions=0 
+ok  bf16 quantized_random       smaller=1 seed=0 entries=11446 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  bf16 quantized_random       smaller=1 seed=1 entries=11206 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  bf16 relu_quantized         smaller=1 seed=0 entries=11252 mode=2 A=1964 R=  84 P= 108 levels=0 compactions=0 
+ok  bf16 relu_quantized         smaller=1 seed=1 entries=11106 mode=2 A=1966 R=  82 P= 106 levels=0 compactions=0 
+ok  bf16 tie_heavy              smaller=1 seed=0 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  bf16 tie_heavy              smaller=1 seed=1 entries=11264 mode=0 A=1536 R= 512 P= 512 levels=0 compactions=0 
+ok  bf16 sorted_asc             smaller=1 seed=0 entries= 6147 mode=2 A=2032 R=  16 P=  27 levels=4 compactions=2 
+ok  bf16 sorted_asc             smaller=1 seed=1 entries= 6145 mode=2 A=2027 R=  21 P=  30 levels=4 compactions=2 
+ok  bf16 sorted_desc            smaller=1 seed=0 entries= 4096 mode=2 A=2032 R=  16 P=  27 levels=0 compactions=0 
+ok  bf16 sorted_desc            smaller=1 seed=1 entries= 4096 mode=2 A=2027 R=  21 P=  30 levels=0 compactions=0 
+ok  bf16 pivot_tie              smaller=1 seed=0 entries= 4608 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  bf16 pivot_tie              smaller=1 seed=1 entries= 4608 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  bf16 all_equal              smaller=1 seed=0 entries= 4096 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  bf16 all_equal              smaller=1 seed=1 entries= 4096 mode=2 A=2034 R=  14 P=  32 levels=1 compactions=0 
+ok  bf16 signed_zero_s0         smaller=1 seed=0 entries=11539 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  bf16 signed_zero_s0         smaller=1 seed=1 entries=11406 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  bf16 signed_zero_s1         smaller=1 seed=0 entries=11539 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  bf16 signed_zero_s1         smaller=1 seed=1 entries=11406 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  bf16 signed_zero_s2         smaller=1 seed=0 entries=11539 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  bf16 signed_zero_s2         smaller=1 seed=1 entries=11406 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  bf16 signed_zero_s3         smaller=1 seed=0 entries=11539 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  bf16 signed_zero_s3         smaller=1 seed=1 entries=11406 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  bf16 signed_zero_s4         smaller=1 seed=0 entries=11539 mode=2 A=2047 R=   1 P=   6 levels=1 compactions=0 
+ok  bf16 signed_zero_s4         smaller=1 seed=1 entries=11406 mode=0 A=2043 R=   5 P=   5 levels=1 compactions=0 
+ok  bf16 signed_zero_boundary   smaller=1 seed=0 entries=11361 mode=2 A=2045 R=   3 P=   5 levels=1 compactions=0 
+ok  bf16 signed_zero_boundary   smaller=1 seed=1 entries=11205 mode=2 A=2046 R=   2 P=   4 levels=1 compactions=0 
+ok  bf16 pivot_tie_zero         smaller=1 seed=0 entries= 8193 mode=2 A=2046 R=   2 P=   6 levels=2 compactions=0 
+ok  bf16 pivot_tie_zero         smaller=1 seed=1 entries= 8188 mode=0 A=2044 R=   4 P=   4 levels=2 compactions=0 
+ok  bf16 inf_denorm             smaller=1 seed=0 entries= 6169 mode=2 A=2035 R=  13 P=  27 levels=6 compactions=2 
+ok  bf16 inf_denorm             smaller=1 seed=1 entries=11115 mode=2 A=2030 R=  18 P=  30 levels=0 compactions=0 
+failures: 0
