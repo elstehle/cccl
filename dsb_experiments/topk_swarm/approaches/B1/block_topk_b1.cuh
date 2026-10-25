@@ -428,7 +428,13 @@ public:
         {
           if (is_selected || (is_candidate && select_all_candidates))
           {
-            const auto ticket = atomicAdd_block(&storage.selected_offset[0], histo_counter_t{1});
+            // The counter index goes through an empty asm statement: with a provably uniform address and a
+            // constant increment the compiler aggregates the atomic across the warp (VOTE, POPC, FLO and
+            // S2R SR_LTMASK per site), and the special register reads land on the critical path of every
+            // item. An index the compiler cannot prove uniform keeps the plain per-item atomic.
+            int sel_class = 0;
+            asm volatile("" : "+r"(sel_class));
+            const auto ticket = atomicAdd_block(&storage.selected_offset[sel_class], histo_counter_t{1});
             out_idx[ticket]   = item_slot(i);
           }
           else if (is_candidate && ((taken >> i) & 1))
@@ -441,9 +447,13 @@ public:
           const int item_class = (!select_all_candidates) && is_candidate ? 1 : 0;
           if (is_selected || is_candidate)
           {
+            // Ties draw tickets beyond the remaining k as well, only the first k_remaining of them are written
             const auto ticket = atomicAdd_block(&storage.selected_offset[item_class], histo_counter_t{1});
             const auto pos    = (item_class == 1) ? static_cast<histo_counter_t>(total_selected) + ticket : ticket;
-            out_idx[pos]      = item_slot(i);
+            if (item_class == 0 || static_cast<int>(ticket) < k - total_selected)
+            {
+              out_idx[pos] = item_slot(i);
+            }
           }
         }
       }
@@ -490,9 +500,10 @@ public:
               base = atomicAdd_block(&storage.selected_offset[1], static_cast<histo_counter_t>(__popc(cand_ballot)));
             }
             base = __shfl_sync(0xffffffffu, base, 0);
-            if (is_candidate && !select_all_candidates)
+            const int tie_pos = static_cast<int>(base) + __popc(cand_ballot & lt_mask);
+            if (is_candidate && !select_all_candidates && tie_pos < k - total_selected)
             {
-              out_idx[total_selected + base + __popc(cand_ballot & lt_mask)] = item_slot(i);
+              out_idx[total_selected + tie_pos] = item_slot(i);
             }
           }
         }

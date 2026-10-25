@@ -50,11 +50,17 @@
 namespace topk_b1
 {
 
+// PerBucketTracking: from the second pass on, the candidates record the min and max of their key bits per
+// histogram bucket (two fire-and-forget atomics per candidate item), so the tie-class exit tests the pivot
+// bucket alone. Without it the min and max are tracked over all candidates of the pass, which only detects a
+// tie class once it is the whole candidate set (one pass later when the pivot bucket is a tie class inside a
+// larger candidate set, the bf16 case).
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
           bool NormalizeSignedZero = false,
-          tie_break TieBreak       = tie_break::none>
+          tie_break TieBreak       = tie_break::none,
+          bool PerBucketTracking   = false>
 class block_topk_n6
 {
 private:
@@ -97,9 +103,10 @@ private:
     } pass_state;
     // per warp: max of the items, min of the per-thread maxima, min of the items (order-preserving bits)
     u32 bracket[num_warps][3];
-    // double-buffered min and max of the candidates' order-preserving key bits
-    u32 key_min[2];
-    u32 key_max[2];
+    // double-buffered min and max of the candidates' order-preserving key bits, over all candidates of the
+    // pass or per histogram bucket
+    u32 key_min[2][PerBucketTracking ? num_buckets : 1];
+    u32 key_max[2][PerBucketTracking ? num_buckets : 1];
     histo_counter_t selected_offset[2];
     histo_counter_t tie_table[deterministic_ties ? num_warps : 1][deterministic_ties ? items_per_thread : 1];
   };
@@ -150,12 +157,15 @@ private:
     return ::cuda::std::bit_cast<float>(t ^ m);
   }
 
-  // fixed-point image of a value over the bracket: bits(round((v - lo) * scale + 2^23)) clamped below
+  // fixed-point image of a value over the bracket: bits(round((v - lo) * scale + 2^23)) clamped into
+  // [u_lo, u_lo + 2^23). Values below the bracket (and -inf) land on u_lo, +inf on the top.
   [[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE static u32 fixed_point(float v, float lo, float scale)
   {
     const float f = fmaf(v - lo, scale, 8388608.0f);
     const auto b  = ::cuda::std::bit_cast<::cuda::std::int32_t>(f);
-    return static_cast<u32>((::cuda::std::max) (b, static_cast<::cuda::std::int32_t>(u_lo)));
+    const auto c  = (::cuda::std::min) ((::cuda::std::max) (b, static_cast<::cuda::std::int32_t>(u_lo)),
+                                        static_cast<::cuda::std::int32_t>(u_lo + 0x7FFFFFu));
+    return static_cast<u32>(c);
   }
 
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void zero_histogram(histo_counter_t (&histogram)[num_buckets])
@@ -205,38 +215,81 @@ private:
       }
     }
     // Reset the next pass's min and max trackers (their last readers precede this pass's histogram barrier)
-    if (linear_tid == 0)
+    if constexpr (!PerBucketTracking)
     {
-      storage.key_min[(pass + 1) & 1] = 0xFFFFFFFFu;
-      storage.key_max[(pass + 1) & 1] = 0u;
+      if (linear_tid == 0)
+      {
+        storage.key_min[(pass + 1) & 1][0] = 0xFFFFFFFFu;
+        storage.key_max[(pass + 1) & 1][0] = 0u;
+      }
+    }
+  }
+
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void reset_trackers(int buffer)
+  {
+    if constexpr (PerBucketTracking)
+    {
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int off = 0; off < num_buckets; off += threads_per_block)
+      {
+        if (off + linear_tid < num_buckets)
+        {
+          storage.key_min[buffer][off + linear_tid] = 0xFFFFFFFFu;
+          storage.key_max[buffer][off + linear_tid] = 0u;
+        }
+      }
+    }
+    else
+    {
+      if (linear_tid == 0)
+      {
+        storage.key_min[buffer][0] = 0xFFFFFFFFu;
+        storage.key_max[buffer][0] = 0u;
+      }
     }
   }
 
   // One pass over the fixed-point digits [shift, shift + bits) of u. TrackMinMax: candidates also record
   // the min and max of their key bits. Returns true when the pivot bucket holds exactly the remaining k.
+  // The bracket parameters are passed through an empty asm statement per pass, so the compiler recomputes
+  // the fixed-point image in every pass (three instructions per item) instead of keeping one image per item
+  // live across the passes, which doubles the register footprint and spills at large items per thread.
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE static void opaque(float& lo, float& scale)
+  {
+    asm volatile("" : "+f"(lo), "+f"(scale));
+  }
+
   template <bool TrackMinMax>
   [[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE bool
   run_u_pass(const float (&vals)[items_per_thread], state_t& st, int pass, int shift, int bits)
   {
     histo_counter_t(&histogram)[num_buckets] = storage.passes.histogram[pass & 1];
     const u32 digit_mask                      = (1u << bits) - 1u;
+    float lo = st.lo, scale = st.scale;
+    opaque(lo, scale);
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
-      const u32 u = fixed_point(vals[i], st.lo, st.scale);
+      const u32 u = fixed_point(vals[i], lo, scale);
       if ((u & st.u_mask) == st.u_prefix)
       {
-        const u32 digit = (u >> shift) & digit_mask;
-        atomicAdd_block(&histogram[bin_slot(static_cast<int>(digit_mask - digit))], histo_counter_t{1});
+        const u32 digit  = (u >> shift) & digit_mask;
+        const int bucket = static_cast<int>(digit_mask - digit);
+        atomicAdd_block(&histogram[bin_slot(bucket)], histo_counter_t{1});
         if constexpr (TrackMinMax)
         {
-          const u32 t = twiddle(vals[i]);
-          atomicMin_block(&storage.key_min[pass & 1], t);
-          atomicMax_block(&storage.key_max[pass & 1], t);
+          const u32 t     = twiddle(vals[i]);
+          const int tslot = PerBucketTracking ? bucket : 0;
+          atomicMin_block(&storage.key_min[pass & 1][tslot], t);
+          atomicMax_block(&storage.key_max[pass & 1][tslot], t);
         }
       }
     }
     zero_histogram(storage.passes.histogram[(pass + 1) & 1]);
+    if constexpr (PerBucketTracking)
+    {
+      reset_trackers((pass + 1) & 1);
+    }
     __syncthreads();
 
     scan_and_choose_bucket(histogram, static_cast<histo_counter_t>(st.k_remaining), pass);
@@ -256,10 +309,12 @@ private:
   {
     histo_counter_t(&histogram)[num_buckets] = storage.passes.histogram[pass & 1];
     const int shift                           = byte * 8;
+    float lo = st.lo, scale = st.scale;
+    opaque(lo, scale);
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
-      const u32 u = fixed_point(vals[i], st.lo, st.scale);
+      const u32 u = fixed_point(vals[i], lo, scale);
       const u32 t = twiddle(vals[i]);
       if ((u & st.u_mask) == st.u_prefix && (t & st.k_mask) == st.k_prefix)
       {
@@ -346,24 +401,22 @@ private:
   scatter(const float (&vals)[items_per_thread], const state_t& st, int total_selected, int k, int* out_idx)
   {
     const bool select_all_candidates = st.num_candidates + total_selected == k;
-    bool is_sel[items_per_thread];
-    bool is_cand[items_per_thread];
-    _CCCL_PRAGMA_UNROLL_FULL()
-    for (int i = 0; i < items_per_thread; ++i)
-    {
-      const u32 up = fixed_point(vals[i], st.lo, st.scale) & st.u_mask;
+    float lo = st.lo, scale = st.scale;
+    opaque(lo, scale);
+    auto classify = [&](int i, bool& sel, bool& cand) {
+      const u32 up = fixed_point(vals[i], lo, scale) & st.u_mask;
       if constexpr (WithKeyPrefix)
       {
         const u32 kp = twiddle(vals[i]) & st.k_mask;
-        is_sel[i]    = up > st.u_prefix || (up == st.u_prefix && kp > st.k_prefix);
-        is_cand[i]   = up == st.u_prefix && kp == st.k_prefix;
+        sel          = up > st.u_prefix || (up == st.u_prefix && kp > st.k_prefix);
+        cand         = up == st.u_prefix && kp == st.k_prefix;
       }
       else
       {
-        is_sel[i]  = up > st.u_prefix;
-        is_cand[i] = up == st.u_prefix;
+        sel  = up > st.u_prefix;
+        cand = up == st.u_prefix;
       }
-    }
+    };
 
     [[maybe_unused]] tie_mask_t taken = 0;
     [[maybe_unused]] int tie_rank[items_per_thread];
@@ -371,6 +424,13 @@ private:
     {
       if (!select_all_candidates)
       {
+        bool is_cand[items_per_thread];
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
+        {
+          bool sel;
+          classify(i, sel, is_cand[i]);
+        }
         resolve_ties(is_cand, k - total_selected, taken, tie_rank);
       }
     }
@@ -378,26 +438,35 @@ private:
     _CCCL_PRAGMA_UNROLL_FULL()
     for (int i = 0; i < items_per_thread; ++i)
     {
+      bool is_sel_i, is_cand_i;
+      classify(i, is_sel_i, is_cand_i);
       if constexpr (deterministic_ties)
       {
-        if (is_sel[i] || (is_cand[i] && select_all_candidates))
+        if (is_sel_i || (is_cand_i && select_all_candidates))
         {
-          const auto ticket = atomicAdd_block(&storage.selected_offset[0], histo_counter_t{1});
+          // see block_topk_b1: an index the compiler cannot prove uniform keeps the plain per-item atomic
+          int sel_class = 0;
+          asm volatile("" : "+r"(sel_class));
+          const auto ticket = atomicAdd_block(&storage.selected_offset[sel_class], histo_counter_t{1});
           out_idx[ticket]   = item_slot(i);
         }
-        else if (is_cand[i] && ((taken >> i) & 1))
+        else if (is_cand_i && ((taken >> i) & 1))
         {
           out_idx[total_selected + tie_rank[i]] = item_slot(i);
         }
       }
       else
       {
-        const int item_class = (!select_all_candidates) && is_cand[i] ? 1 : 0;
-        if (is_sel[i] || is_cand[i])
+        const int item_class = (!select_all_candidates) && is_cand_i ? 1 : 0;
+        if (is_sel_i || is_cand_i)
         {
+          // Ties draw tickets beyond the remaining k as well, only the first k_remaining of them are written
           const auto ticket = atomicAdd_block(&storage.selected_offset[item_class], histo_counter_t{1});
           const auto pos    = (item_class == 1) ? static_cast<histo_counter_t>(total_selected) + ticket : ticket;
-          out_idx[pos]      = item_slot(i);
+          if (item_class == 0 || static_cast<int>(ticket) < k - total_selected)
+          {
+            out_idx[pos] = item_slot(i);
+          }
         }
       }
     }
@@ -460,10 +529,9 @@ public:
     {
       storage.selected_offset[0] = 0;
       storage.selected_offset[1] = 0;
-      storage.key_min[1]         = 0xFFFFFFFFu;
-      storage.key_max[1]         = 0u;
     }
     zero_histogram(storage.passes.histogram[0]);
+    reset_trackers(1);
     __syncthreads();
 
     u32 hi_t = storage.bracket[0][0];
@@ -478,8 +546,11 @@ public:
     const float hi          = fminf(untwiddle(hi_t), flt_max);
     const float lo          = fmaxf(untwiddle(lo_t), -flt_max);
     state_t st;
+    // The scale is finite and nonzero in every case (a zero scale would turn an infinite item into NaN):
+    // the degenerate brackets (empty width, or a width that overflows fp32) fall back to the key passes.
+    const float width = hi - lo;
     st.lo             = lo;
-    st.scale          = (hi > lo) ? (8388600.0f / (hi - lo)) : 0.0f;
+    st.scale          = (width > 0.0f && width < flt_max) ? (8388600.0f / width) : (width > 0.0f ? 1.0e-32f : 1.0f);
     st.u_mask         = 0;
     st.u_prefix       = 0;
     st.k_mask         = 0;
@@ -498,16 +569,16 @@ public:
         done = run_u_pass<true>(vals, st, pass++, 7, 8);
         if (!done)
         {
-          u32 kmin = storage.key_min[(pass - 1) & 1];
-          u32 kmax = storage.key_max[(pass - 1) & 1];
+          u32 kmin = storage.key_min[(pass - 1) & 1][PerBucketTracking ? storage.pass_state.bucket : 0];
+          u32 kmax = storage.key_max[(pass - 1) & 1][PerBucketTracking ? storage.pass_state.bucket : 0];
           done     = (kmin == kmax);
           if (!done)
           {
             done = run_u_pass<true>(vals, st, pass++, 0, 7);
             if (!done)
             {
-              kmin = storage.key_min[(pass - 1) & 1];
-              kmax = storage.key_max[(pass - 1) & 1];
+              kmin = storage.key_min[(pass - 1) & 1][PerBucketTracking ? storage.pass_state.bucket : 0];
+              kmax = storage.key_max[(pass - 1) & 1][PerBucketTracking ? storage.pass_state.bucket : 0];
               done = (kmin == kmax);
               if (!done)
               {
