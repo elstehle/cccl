@@ -71,7 +71,31 @@ about 750 at IPT 16, 1190 at IPT 32 and 2100 at IPT 64 (about 27 cycles per item
 kernel at N 1024 k 8: 1624 instructions against 664 for W2 (about 600 of them the cold fallback), the bf16 pack 8
 instructions per item, the count and the scatter position two serial IADD chains of IPT steps.
 
-W5_v2 and N7: see sections 4 and 5 once their batches are in (this report is updated per batch).
+W5_v2 (card W5_v2_b200_20261025_1, controls W5_base and W2_packed_v3 in two lock sections): the filter on raw float
+keys with the pack after the gather removes about 300 instructions per call and moves the latency by at most 5 percent
+either way (bf16 N 1024 k 32 2279 against base 2162 and W2 2481, N 2048 k 64 5104 against 5335 and 10071, fp32 N 2048
+k 16 2592 against 2616 and 4392), while the throughput rises 4 to 34 percent over base (bf16 N 2048 k 8 1770 against
+1323 Gelem per s). The fixed cost still grows by 23 cycles per lane item.
+
+Phase profile of v2 (`approaches/W5/phase_probe.cu`, one warp, dependent clock stamps per phase, mean over 256 chained
+calls on the 16 measured inputs, cycles): bf16 N 1024 k 32: loads 260, per-lane top 2 188, group merge and threshold 79,
+compare and count 314, ballot prefix 187, scatter 341, syncwarp and gather 446, sort 70, rounds 863 (total 2748). bf16
+N 2048 k 32: loads 450, top 2 326, threshold 75, count 836, prefix 193, scatter 465, gather 452, sort 74, rounds 840.
+bf16 N 512 k 32: 159, 86, 79, 130, 162, 158, 435, 74, 847. So the compare-and-count and the scatter phases cost about
+10 cycles per lane item each for 3 to 5 instructions per item, and the gather after the __syncwarp costs 430 to 520
+cycles for 8 loads at every N, which is the time the 32 scattered stores take to drain before the first load may issue.
+The SASS explains the first two: every per-item float compare produces a predicate, there are seven predicate
+registers, and ptxas serializes compare and consume per item with P2R moves. v3 (sign-bit flags, integer count tree,
+unconditional stores to a per-lane dummy slot) removes every per-item predicate.
+
+N7, first two builds (batches n7a and n7b, not carded): with the block loop unrolled the refill network was inlined once
+per block of rounds (3737 min max instructions in the throughput kernel against 382 for W2, 11368 in the latency
+kernel) and the round cost 70 to 185 cycles (bf16 N 1024 k 64 9903 against W2 7308). With the loop rolled the kernel is
+1000 instructions but the round still cost 70, 106 and 190 cycles at IPT 16, 32 and 64 (bf16 N 1024 k 64 7182 against
+7308, N 512 k 64 4655 against 2704): the lookahead test "fewer than 2 B valid head words" with H 8 and B 4 fires as soon
+as any lane has won once since its last refill, so the warp-uniform refill (sorting and merging every remainder block,
+about 70 instructions per block of 8) ran in nearly every block, and the per-round cost scales with the tile. The third
+build uses blocks of 2 (test: fewer than 4 valid, five wins of one lane).
 
 ## 4. Ideas tried, with verdicts
 
@@ -85,6 +109,11 @@ W5_v2 and N7: see sections 4 and 5 once their batches are in (this report is upd
 3. N7 with an unrolled block loop (batch n7a): 9903 at bf16 N 1024 k 64 against W2 7308, the round at 70 to 185 cycles,
    because the refill network was inlined once per block of rounds (3737 min max instructions in the throughput kernel
    against 382 for W2, 11368 instructions in the latency kernel). Rejected, fixed by rolling the block loop (n7b).
+4. N7 rolled with blocks of 4 (batch n7b): 7182 against 7308 at bf16 N 1024 k 64, the round still 70 to 190 cycles
+   scaling with IPT, because the lookahead test fires after one win and the refill runs in nearly every block.
+   Rejected, fixed by blocks of 2 (n7c).
+5. W5_v2 raw-key filter (batches v2a, v2b): latency within 5 percent of base either way, throughput up 4 to 34 percent,
+   the fixed cost unchanged at 23 cycles per lane item. Kept as the control of v3, the lesson is in the phase profile.
 
 ## 5. Ideas not yet tried
 
