@@ -667,7 +667,8 @@ def renew_pool(target=None, wait_s=0, queues=None, per_arch=None):
                 if per_arch:
                     d = dict(deficits)
                     while sum(d.values()) > 0:
-                        for a in sorted(d, key=lambda a: -d[a]):
+                        # an arch with no pool node at all goes first, then the largest deficit
+                        for a in sorted(d, key=lambda a: (counts.get(a, 0) > 0, -d[a], a)):
                             if d[a] > 0:
                                 d[a] -= 1
                                 if ARCH_TO_CLUSTER[a] in reachable:
