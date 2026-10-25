@@ -1,0 +1,409 @@
+# WarpMergeSort latency optimization — cycle breakdowns, prototypes, findings
+
+Single warp (32 threads), keys-only `float`, sizes 32,64,96,128,160,192,256,320,384 (= IPT
+1,2,3,4,5,6,8,10,12). Measured on **NVIDIA B200 (sm_100)**, CUDA 13.1, node `umb-b200-261`.
+Latency = chain-length-slope cycles/call. Merge sort is **data-dependent** (does less work on
+already-sorted input), so per the `DEVICE_SIDE_BENCHMARKING_ISSUE.md` methodology we feed fresh
+random input per call, serialize the chain through the previous output (a real RAW dependency),
+and subtract a generate-only control so the reported number is the sort's marginal cost. Code:
+`proto_wms_bench.cu` (real `cub::WarpMergeSort` baseline + instrumented mirror), `proto_wms_opt.cu`
+(policy-templated ablation). All variants validated == `cub` == `std::sort` on every size.
+
+## TL;DR — recommendation
+
+**Statically unroll the MergePath diagonal search** (like `StaticUpperBound` in
+`block_run_length_decode.cuh`). It is the single largest lever: **−420 to −960 cyc (15-25%)** on
+every size, because the data-dependent `while`-loop binary search diverges across the warp (each
+lane runs a different number of iterations) and its reconvergence stall sits on the critical
+path. A fixed trip count keeps the warp converged. Combined with an optimal per-thread sorting
+network (helps only at large IPT), the mirror gets **−10% (IPT 8) to −32% (IPT 1)**:
+
+| size | IPT | baseline | **MP+NET** | speedup | Δregs | smem |
+|---|---|---|---|---|---|---|
+| 32  | 1  | 2219 | **1511** | −32% | +15 | 0 |
+| 128 | 4  | 3613 | **2992** | −17% | +9  | 0 |
+| 256 | 8  | 5143 | **4628** | −10% | +7  | 0 |
+| 384 | 12 | 6658 | **5504** | −17% | +12 | 0 |
+
+**Bank-conflict padding is a measured *loss* (−negative, +57..+581 cyc)** in this regime — see §5.
+
+Round 2 (§9-12) adds a merge-sort-preserving win — **prefetch + branchless-shift SerialMerge**,
+which breaks the serial shared-load chain of the merge — taking the best stack to **−13% to −32%**
+(IPT ≤ 10), and documents the ideas that did *not* pan out (partition-monotonicity range
+reduction, guided/gallop search, dynamic-index prefetch) and the algorithmic ceiling (oblivious
+bitonic merge = `WarpBitonicSort`, already ~2-3× faster when the caller can choose it).
+
+## 1. Baseline latency (real `cub::WarpMergeSort`, slope cyc/call)
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| cyc | 2236 | 3460 | 4008 | 4569 | 5161 | 5541 | 6460 | 7376 | 8269 |
+
+Cost is roughly linear in IPT above IPT=2 (~470 cyc/item) with a ~2000-cyc floor (5 merge rounds
+× fixed per-round overhead). The instrumented mirror reproduces these within ~1% at small IPT.
+
+## 2. Where the time goes (instrumented mirror, clock64 phase stamps)
+
+Approximate — the 17 stamps add `__syncwarp`s that inflate the divergent MergePath phase — but
+the shape is unambiguous (cycles, min of 32 reps):
+
+| size | thread-sort | STS (store) | MergePath | SerialMerge | note |
+|---|---|---|---|---|---|
+| 32  (IPT 1)  | 44  | 220 | 1819 | 504  | MergePath + SerialMerge = 90% |
+| 128 (IPT 4)  | 69  | 140 | 2471 | 957  | |
+| 256 (IPT 8)  | 221 | 181 | 3030 | 1865 | thread-sort now non-trivial |
+| 384 (IPT 12) | 460 | 199 | 3506 | 2640 | thread-sort ~7% |
+
+Three structural facts:
+
+1. **The two shared-memory-resident merge phases (MergePath + SerialMerge) dominate — ~80-90%.**
+   Both are *dependent chains of shared loads*: MergePath's next probe address depends on the
+   previous probe's comparison; SerialMerge's next read depends on which side advanced. The
+   primitive is **shared-memory-latency bound, not compute or bandwidth bound.**
+2. **MergePath is disproportionately expensive** relative to its ~log₂(size) probes because the
+   `while` loop's trip count is data-dependent → the warp diverges and pays reconvergence.
+3. **Thread-local StableOddEvenSort grows as O(IPT²)** (44→460 cyc), crossing STS around IPT=6
+   and becoming a real term at IPT≥8.
+
+STS (the store to shared) is minor and flat; the per-round barrier + store latency is fixed.
+
+## 3. Per-change ablation (clean slope, one policy at a time)
+
+`proto_wms_opt.cu` toggles each optimization independently on the mirror (no stamps → no
+perturbation). Δ vs baseline, cyc/call:
+
+| size | IPT | base | +MP (static search) | +NET (Batcher) | +PAD (bank pad) | **MP+NET** |
+|---|---|---|---|---|---|---|
+| 32  | 1  | 2219 | **−708** | +0   | +57  | 1511 (**−32%**) |
+| 64  | 2  | 2651 | **−614** | −10  | +195 | 2033 (−23%) |
+| 96  | 3  | 3103 | **−710** | −2   | +291 | 2390 (−23%) |
+| 128 | 4  | 3613 | **−603** | −19  | +255 | 2992 (−17%) |
+| 160 | 5  | 4077 | **−869** | −23  | +367 | 3206 (−21%) |
+| 192 | 6  | 4379 | **−818** | −38  | +369 | 3525 (−20%) |
+| 256 | 8  | 5143 | **−421** | −93  | +235 | 4628 (−10%) |
+| 320 | 10 | 5919 | **−963** | −145 | +581 | 4828 (−18%) |
+| 384 | 12 | 6658 | **−941** | −215 | +578 | 5504 (−17%) |
+
+## 4. MergePath static unroll — the big win
+
+The baseline diagonal search is a data-dependent `while` loop:
+
+```cpp
+while (b < e) {
+  const int mid = (b + e) >> 1;
+  if (keys2[diag-1-mid] < keys1[mid]) e = mid; else b = mid + 1;
+}
+```
+
+Different lanes hit `b >= e` after different iteration counts, so the warp diverges and stalls on
+reconvergence — on top of the dependent shared-load chain. The search range per merge round is
+`IPT * 2^round`, a **compile-time** bound (the round loop unrolls), so the iteration count is
+statically known. Replacing the loop with a fixed `ceil(log2(range+1))` trip count (predicated
+body, exactly the `StaticUpperBound` pattern) keeps all lanes converged:
+
+```cpp
+template <int RANGE>
+__device__ int mp_static(const float* sh, int k1b, int k2b, int c1, int c2, int diag) {
+  int b = diag < c2 ? 0 : diag - c2;
+  int e = min(diag, c1);
+  #pragma unroll
+  for (int i = 0; i <= cub::Log2<RANGE + 1>::VALUE; ++i) {   // fixed count => no divergence
+    const int mid = (b + e) >> 1;
+    const bool go = b < e;
+    const bool up = go && (sh[k2b + diag-1-mid] < sh[k1b + mid]);
+    e = up ? mid : e;
+    b = (go && !up) ? mid + 1 : b;
+  }
+  return b;
+}
+```
+
+**−420 to −960 cyc, every size.** It doesn't remove the dependent-load chain (inherent to binary
+search) but it removes the divergence and loop overhead riding on top of it. Applicability: any
+merge round whose run length is a compile-time bound — true for the fixed-tile warp/block merge
+sort. The device (`dispatch_merge`) partitioning search has runtime bounds and would keep the
+loop, or bound-and-cap.
+
+## 5. Bank-conflict padding — a measured negative result
+
+The blocked layout `keys_shared[IPT*lane + item]` is strided by IPT, so for IPT≥2 the STS and the
+SerialMerge LDS have bank conflicts. Padding one dead word every 32 elements (`idx + idx/32`) to
+rotate banks **made every size slower (+57 to +581 cyc).** The reason is instructive and matches
+§2: in the single-warp latency regime there is no throughput pressure, so **bank conflicts (a
+bandwidth phenomenon) are not on the critical path** — the bottleneck is dependent-access
+*latency*. Padding only adds an address-computation term (`idx>>5`, an extra add) to every shared
+access and shifts nothing that matters. Conflict-avoidance would help the *throughput* regime
+(many warps saturating the SM) but not latency; it should be a throughput-only policy.
+
+## 6. Per-thread sorting network — small, IPT-dependent
+
+`StableOddEvenSort` (odd-even transposition) does ~IPT²/2 compares serially. A Batcher odd-even
+mergesort network (branchless `fminf`/`fmaxf`) does fewer for large IPT. Measured (+NET column):
+negligible for IPT≤6 (thread-sort is a tiny fraction there), growing to −93/−145/−215 at
+IPT=8/10/12. Note the Batcher network here pads non-power-of-2 IPT up to the next power of two
+with +∞ sentinels (Batcher is only correct for power-of-2 lengths); a production impl would use a
+per-size *optimal* comparator network (e.g. 39 comparators for n=12 vs odd-even's 66) and capture
+a larger share. Even the padded version never regresses. Register cost: the branchless network
+raises the register count (part of the +7..+16 in §7).
+
+## 7. Resources (lat kernel, base vs MP+NET)
+
+No shared-memory change (both use the `TILE`-word exchange); no spills at any size. The static
+search (unrolled, more live index state) and the branchless network raise registers by **+7
+(IPT 8) to +16 (IPT 1)** — from ~46-59 to ~60-71. At single-warp occupancy this is free; for a
+throughput kernel packing many warps it is the one cost to weigh, and argues for gating NET / the
+static-search unroll depth behind a latency-vs-occupancy policy.
+
+## 8. Recommendation & next steps
+
+1. **Static-unrolled MergePath** — the clear win, all sizes, zero smem, portable to any
+   compile-time-tile merge sort. Recommended for `block_merge_sort.cuh`'s `MergePath` when the
+   run length is a compile-time bound (warp/block merge sort's fixed tile); the device merge
+   partitioning keeps the runtime loop. This is the first thing to upstream.
+2. **Optimal per-thread networks** for large IPT — modest, worth it where IPT≥8 and registers
+   allow; use true optimal networks (not padded Batcher) for non-power-of-2 IPT.
+3. **Do not** add bank-conflict padding for the latency regime; reserve conflict-avoidance for
+   the throughput path.
+4. Next: port the static MergePath into the real `block_merge_sort.cuh` and confirm the win on
+   `cub::WarpMergeSort`/`cub::BlockMergeSort` directly (the mirror tracks cub within ~1%, so the
+   ~15-25% is expected to carry), then measure the throughput regime and the pairs (key+value)
+   variant, where the extra value-exchange rounds change the phase balance.
+
+Reproduce: build `proto_wms_bench.cu` / `proto_wms_opt.cu` with the standard nvcc line and run
+`[correct|lat|prof]` / `[correct|lat|res]`.
+
+---
+
+# Round 2 — first-principles: what else can we do?
+
+## 9. What information do we actually have, and what does it enable
+
+| fact about the data / problem | what it enables | outcome |
+|---|---|---|
+| the two runs are **sorted** | the merge itself (Merge Path / serial merge) | baseline |
+| run lengths are a **compile-time** bound (`IPT·2^round`, fixed tile) | statically unroll the diagonal search; statically bound the prefetch | **§4 (win), §10 (win)** |
+| after partitioning, each thread's ≤IPT inputs are at **known contiguous addresses** | prefetch them with independent (pipelined) loads instead of a dependent chain | **§10 (win, with a caveat)** |
+| partition points are **monotone** across threads, `p(t+1)−p(t) ∈ [0,IPT]` | bound each thread's search to an IPT-wide window | **§11.1 (does not help — warp-lockstep)** |
+| the merge is a **dependent shared-load chain** | replace it with a data-oblivious network (shuffles) | **§11.4 (that is bitonic sort)** |
+| (if known) input is ~**uniform** | seed the search near `diag/2`, gallop | **§11.2 (reintroduces divergence)** |
+
+## 10. Found: prefetch + branchless-shift SerialMerge (breaks the dependent chain)
+
+`SerialMerge` issues IPT loads from shared where **each load's address depends on the previous
+comparison** — a serial latency chain. But once MergePath fixes the partition, this thread
+consumes at most IPT elements from each run, at *known contiguous addresses*. So: **prefetch IPT
+elements from each side with independent (pipelined) loads** — one shared latency for the whole
+batch — then merge in registers.
+
+The naïve register merge (2-pointer, `A[ai]`/`B[bi]`) **fails**: the dynamic register indices
+force `A`/`B` into local memory (measured spills of 32-96 B, §11.3), turning the independent
+shared loads into a *local*-memory dependent chain — **+460 to +17240 cyc, catastrophic.** The fix
+is the top-k removal trick: keep both run heads at index 0 and **branchlessly shift the chosen run
+down** with static-indexed predicated moves (`A[i] = takeB ? A[i] : A[i+1]`). All-static indices →
+no spill. Measured (`+SM(shift)` alone, Δ vs base):
+
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|---|---|---|
+| Δcyc | −4 | +5 | −53 | −121 | −183 | −234 | −190 | −145 | **+10** |
+
+A modest but real merge-sort-preserving win for **IPT 3-10**, breaking even by IPT=12 where the
+O(IPT²) shift moves and register pressure (up to 102 regs) overtake the saved shared latency.
+Combined **MP + NET + prefetch-shift** (the best per-size stack):
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| best cyc | 1520 | 2031 | 2213 | 2853 | 2949 | 3282 | 4470 | 4549 | **5504\*** |
+| vs base | −31% | −23% | −29% | −21% | −28% | −25% | −13% | −23% | **−17%** |
+
+\*IPT=12: drop the prefetch-shift (it regresses the combo to +6%); use MP+NET only (−17%). So the
+recommended policy is **MP + NET + prefetch-shift for IPT ≤ 10, MP + NET for IPT ≥ 12** — gate the
+prefetch merge on IPT. No spills, no smem change; registers rise (the prefetch doubles the live
+key footprint), the one cost to weigh for a throughput kernel.
+
+## 11. Ideas explored that did **not** help (with the reason)
+
+1. **Range reduction via partition monotonicity.** `p(t+1) ∈ [p(t), p(t)+IPT]`, so a thread that
+   knows its neighbor's partition searches only an IPT-wide window (`log2(IPT)` iters instead of
+   `log2(S)`). But this **cannot lower single-warp latency**: (a) the bound is *circular* — the
+   neighbor's partition itself costs `log2(S)` to compute; (b) any **two-phase** scheme (coarse
+   anchors → refine) runs the phases sequentially, and the warp executes in lockstep, so the time
+   is `log2(S) + log2(window) > log2(S)`; (c) **subsampling** the search array is just
+   `log2(S/IPT) + log2(IPT) = log2(S)` — log is additive. The binary search is already at its
+   `log2(S)` floor; correlation between the 32 answers can't be cashed in under warp lockstep.
+2. **Guided search from an initial guess + galloping** (assume ~uniform data, start near
+   `diag/2`). Worst-case is still `log2(S)`, and the variable gallop distance **reintroduces the
+   divergence** that §4's static unroll just removed. Net negative for the latency regime.
+3. **Prefetch + 2-pointer register merge** (dynamic indexing): spills to local memory (§10);
+   +460..+17240 cyc. Documented as the motivation for the shift variant.
+4. **Data-oblivious bitonic merge via shuffles** — the *correct* way to kill the dependent-load
+   chain: reverse one run, giving a bitonic sequence, then `log2(2S)` fixed compare-exchange
+   stages, partners fetched by `__shfl_xor` (no shared memory, no binary search, no divergence).
+   But applied to every round this **is bitonic sort**, already shipping as `cub::WarpBitonicSort`
+   and already ~2-3× faster than WarpMergeSort in this regime (`DEVICE_SIDE_BENCHMARKING_ISSUE.md`
+   §2: 922 vs 3436 cyc at len 64, 2157 vs 4587 at len 128, 4617 vs 6497 at len 256). The
+   first-principles conclusion: **Merge Path partitioning is the wrong tool for warp-resident
+   latency-critical sorting** — its dependent search/merge chains are exactly what an oblivious
+   network avoids. If the caller can choose the algorithm, bitonic wins; the optimizations here
+   (§4, §10) are for when merge sort is required (stability, arbitrary comparators, larger tiles
+   that exceed the register budget of a full network).
+   *(A harness note: WarpBitonicSort is register/shuffle-only, so a dependency-chain latency probe
+   dead-code-eliminates it without shared-memory side effects; the cited numbers are from the
+   companion doc's proper measurement.)*
+5. **Bank-conflict-free shared layout** — already a measured loss in this regime (§5): latency,
+   not bandwidth, bound.
+
+## 12. Ideas worth a future look (not prototyped)
+
+- **Multi-way (K-way) merge** to cut the round count from `log2(32)=5` to `log_K(32)` (3 rounds
+  for K=4, 2 for K=8), removing whole STS + double-`__syncwarp` barriers — the fixed ~2000-cyc,
+  5-round floor is barrier-dominated. The cost is a harder K-way partition (K-dimensional Merge
+  Path or a small tournament), and more register state; whether it nets out is an open question.
+- **Cross-round partition reuse**: round r+1 merges concatenations of round r's runs; a coarse
+  partition from r might warm-start r+1's search. Speculative — the runs double each round, so the
+  bound is loose.
+
+## 13. Head-to-head: WarpMergeSort vs WarpBitonicSort (`proto_wms_vs_bitonic.cu`)
+
+The §11.4 conclusion — that the data-oblivious bitonic network is the right tool for warp-latency
+sorting — quantified directly. Both keys-only float, single-warp scope, all 9 sizes (WarpBitonicSort
+handles non-power-of-2 IPT via power-of-two decomposition). Latency uses each primitive's correct
+critical-path method (oblivious bitonic → in-place dependency chain; data-dependent merge →
+back-to-back random, gen-subtracted); the merge numbers reproduce §1 and the companion doc within
+~1%. Throughput = one occupancy wave × fixed iterations, `sink()`-guarded, element-normalized.
+
+### Latency (single-warp slope, cyc/call) — there is a crossover
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| **WarpMergeSort** | 2236 | 3460 | 4008 | 4569 | 5161 | 5541 | 6460 | 7376 | 8269 |
+| **WarpBitonicSort** | **660** | **1080** | **1710** | **1964** | **3021** | **3792** | **5468** | 7510 | 8934 |
+| bitonic speedup | 3.4× | 3.2× | 2.3× | 2.3× | 1.7× | 1.5× | 1.2× | 0.98× | 0.93× |
+
+**Bitonic dominates small IPT (3.4× at size 32) but the lines cross at IPT≈10 (size 320)**, beyond
+which merge sort is faster. The reason is asymptotic: bitonic is O(N log²N) data-oblivious
+compare-exchanges, merge is O(N log N). At few items/thread bitonic's cheap shuffles and zero
+divergence win overwhelmingly; as items/thread grow, the extra log factor of oblivious work
+overtakes merge's dependent-but-fewer operations.
+
+**Synthesis with the optimizations (§4/§10).** Optimized merge (MP + NET + prefetch-shift, or
+MP+NET at IPT 12) shifts the crossover *left*:
+
+| size | 128 (IPT4) | 256 (IPT8) | 320 (IPT10) | 384 (IPT12) |
+|---|---|---|---|---|
+| optimized merge | 2853 | **4470** | **4549** | **5504** |
+| WarpBitonicSort | **1964** | 5468 | 7510 | 8934 |
+| winner | bitonic 1.45× | **merge 1.22×** | **merge 1.65×** | **merge 1.62×** |
+
+So the tuned merge sort **overtakes bitonic at IPT≈7-8** instead of ≈10 — it wins the whole
+large-tile half of the range, while bitonic owns the small-tile half. Neither is universally best;
+the crossover is the actionable output.
+
+### Throughput (Gelem/s, one wave, fixed workload)
+
+| size | 32 | 64 | 96 | 128 | 160 | 192 | 256 | 320 | 384 |
+|---|---|---|---|---|---|---|---|---|---|
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+| **WarpMergeSort** | 65 | 110 | 134 | 119 | **162** | **162** | 96 | **181** | **148** |
+| **WarpBitonicSort** | **258** | **210** | **176** | **174** | 151 | 151 | **142** | 124 | 124 |
+| bitonic speedup | 4.0× | 1.9× | 1.3× | 1.5× | 0.94× | 0.93× | 1.5× | 0.68× | 0.84× |
+
+Throughput is **occupancy-bound**, not work-bound, so it reads differently from latency:
+WarpBitonicSort is shared-memory-free and its curve is smooth/monotone; WarpMergeSort's shared
+`TempStorage` (grows with IPT) and register footprint drive occupancy in quantized steps, giving a
+non-monotone curve (dips at IPT 4/8, spikes at IPT 5/10 where a block wave happens to pack well).
+Bitonic wins the small sizes decisively (4× at size 32) and the picture is mixed above IPT≈5, where
+merge's better asymptotic work sometimes outweighs its occupancy penalty. Because throughput here
+is dominated by occupancy quantization, exact per-size values are noisier than the latency slopes;
+the robust takeaways are bitonic's large small-size advantage and the absence of a clean winner at
+larger tiles.
+
+### Recommendation
+
+For warp-scope sorting: **WarpBitonicSort for small tiles (≤ ~128 elems / IPT ≤ 4) on both axes**;
+for larger tiles, **the tuned WarpMergeSort (§4/§10) is the latency winner (IPT ≳ 8)** and throughput
+is a wash decided by occupancy. This also motivates a policy that picks the algorithm by tile size,
+and — since bitonic owns exactly the small-IPT regime where the merge sort's fixed 5-round barrier
+floor hurts most — reinforces §12's multi-way-merge idea as the main remaining lever for merge sort.
+
+---
+
+# Round 3 — attacking the diagonal search itself (`proto_wms_mp2.cu`)
+
+Measured on **umb-b200-239, CUDA 13.3.1** (previous rounds: 13.1). Baselines (V0) reproduce the
+13.1 numbers within 1%, but the *tuned* variant (V1: static binary MergePath + Batcher +
+prefetch-shift) measures noticeably worse under the 13.3 compiler (IPT4: 3579 vs 2853; IPT12:
+7203 vs 5504 — at IPT12 now slightly *behind* baseline). Two consequences: within-node deltas
+below are valid, cross-toolkit ones are not, and **the tuned path is compiler-sensitive — it
+should be re-validated per CUDA release before/while upstreaming.**
+
+## 14. Ideas for a faster split-point search — mostly measured negatives
+
+Seeds explored: thread cooperation on split points, hardware intrinsics (redux), remembering
+split points / bounds from other threads or earlier passes. Distilled into three evaluated
+families (all pass correctness on every size):
+
+### 14.1 k-ary static MergePath (multiple independent probes per step) — **negative**
+
+The only way to beat `log2(S)` *latency* per search under warp lockstep is more independent
+probes per step: 3 (4-ary) or 7 (8-ary) interior probes pipeline into ~one shared latency,
+cutting steps to `log4/log8(S)`. Measured (Δ vs V1, random input):
+
+| IPT | 1 | 2 | 3 | 4 | 5 | 6 | 8 | 10 | 12 |
+|---|---|---|---|---|---|---|---|---|---|
+| 4-ary Δ | +381 | +435 | +410 | +817 | +489 | +625 | +838 | +2380 | +2574 |
+| 8-ary Δ | worse still (up to +3400) | | | | | | | | |
+
+Why it loses despite the sound asymptotics: the tile's merge rounds mostly search **small
+ranges** (`S = IPT·2^round`; three of five rounds have S ≤ 4·IPT), where binary already needs
+only 3-5 steps, while 4-ary's per-step cost — 6 loads instead of 2, clamps, a select cascade,
+and +25-30 registers (up to 102) — applies to *every* step. The step reduction only matters in
+the last 1-2 rounds, and even there it doesn't amortize. k-ary would deserve a re-look only for
+much larger runs (block-wide tiles, S in the thousands).
+
+### 14.2 Rank-and-scatter merge (no diagonal search, no serial merge) — **negative for IPT ≥ 2**
+
+The "remember split points" seed mutated into the strongest-looking idea: skip partitioning
+entirely — each thread ranks its own IPT register-resident sorted elements in the *other* run
+(IPT searches that should pipeline to ~one search's latency; stability via lower/upper-bound
+asymmetry) and scatters to `own_index + rank`, eliminating SerialMerge as a phase. Three
+structural arrangements were built and measured, because each failure suggested a specific fix:
+
+| arrangement | IPT 1 | IPT 4 | IPT 12 | failure mechanism |
+|---|---|---|---|---|
+| search-major (one full search per item) | **1592 (−12% — the one win)** | 9487 | 32533 | ptxas register-minimizing allocation **serializes** the "independent" chains (visible as suspiciously low reg counts) |
+| step-major, fully unrolled (all IPT probes batched per step) | 1686 | 7863 | 39684 | batching helps a little, but STEPS×IPT unrolled probe bodies explode code size |
+| step-major, rolled step loop | 2485 | 10263 | 33302 | compact code, but the loop overhead (branch + trip count) lands **on the dependent chain**, ~+25 cyc/step |
+| V1 reference | 1810 | 3579 | 7203 | — |
+
+The premise — "IPT independent dependent-chains pipeline for free" — **does not survive contact
+with the compiler**: whichever way the loops are arranged, the measured cost stays ~IPT× a single
+search rather than ~1×. The single genuine result is **IPT = 1** (size 32), where there is one
+search, no serial merge, and no partitioning: rank-and-scatter is the fastest merge-sort variant
+measured for that size (1592, −12% vs V1). Given bitonic owns size 32 anyway (660, §13), this is
+documented rather than recommended.
+
+### 14.3 Cooperation, redux, remembered bounds — analysis (no prototype justified)
+
+* **Hierarchical split cooperation** (find median split, then quarter splits in halved ranges):
+  levels are sequential under warp lockstep, so latency is `Σ_j log2(S/2^j) > log2(S)` — strictly
+  worse than the 32 already-parallel independent searches. The information-sharing idea has no
+  latency channel to pay into.
+* **`redux`/warp intrinsics**: computes one warp-wide scalar; the 32 split points are distinct
+  values, so it cannot carry the search. Its niche is a presorted fast path (`max(A) ≤ min(B)`
+  ⇒ the round is a concatenation, skip search+merge): ~2 loads + ballot per round of insurance,
+  data-dependent payoff only — worthless on random input, potentially large on nearly-sorted.
+  Left as a policy idea for callers with known input structure.
+* **Bounds remembered from other threads / previous passes**: neighbor bounds are circular
+  (computing them costs the same search) and two-phase schemes add latencies (§11.1); previous-
+  pass split points don't bound the doubled-run diagonals tightly enough to save even one step.
+
+### 14.4 Conclusion
+
+The statically-unrolled **binary** MergePath of §4 remains the best split-point search across
+all attacks: at these tile sizes its dependent chain (2 loads + fold per step, ~30 total steps
+across rounds) is the empirical local optimum on this hardware/toolchain. The remaining levers
+for warp-merge-sort latency are algorithmic, not search-local: bitonic for small tiles (§13) and
+multi-way merge to cut the round count (§12).

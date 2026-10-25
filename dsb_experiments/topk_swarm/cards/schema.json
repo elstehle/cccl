@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "topk swarm result card",
+  "type": "object",
+  "required": ["approach_id", "variant", "scope", "arch", "cuda_version", "node", "date", "commit", "author", "contract", "correctness", "cells", "findings", "techniques_adopted", "report_path", "source_paths"],
+  "properties": {
+    "approach_id": {"type": "string", "pattern": "^(W|B|N)[0-9]+$"},
+    "variant": {"type": "string", "description": "short name of the variant measured, e.g. baseline, packed16, excl-scan"},
+    "scope": {"type": "string", "enum": ["subwarp", "warp", "block"]},
+    "arch": {"type": "string", "enum": ["b200", "gb200"]},
+    "cuda_version": {"type": "string"},
+    "node": {"type": "string"},
+    "date": {"type": "string", "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$"},
+    "commit": {"type": "string", "description": "commit of the optimizer branch the numbers were built from"},
+    "author": {"type": "string", "description": "agent name"},
+    "contract": {
+      "type": "object",
+      "required": ["input_location", "input_arrangement", "output_location", "output_form", "output_sorted", "temp_storage_bytes", "sync_assumed", "sync_performed", "k_range", "n_range", "type_constraints", "nan_behavior"],
+      "properties": {
+        "input_location": {"type": "string", "enum": ["registers", "smem", "global"]},
+        "input_arrangement": {"type": "string", "description": "blocked, striped, packed-striped, or a description"},
+        "output_location": {"type": "string", "enum": ["registers", "smem", "global"]},
+        "output_form": {"type": "string", "enum": ["indices", "pairs", "keys"]},
+        "output_sorted": {"type": "boolean"},
+        "temp_storage_bytes": {"type": "integer"},
+        "sync_assumed": {"type": "string"},
+        "sync_performed": {"type": "string"},
+        "k_range": {"type": "string"},
+        "n_range": {"type": "string"},
+        "type_constraints": {"type": "string"},
+        "nan_behavior": {"type": "string"},
+        "tie_break_support": {"type": "string", "description": "inherent, index-in-key, post-pass, or not supported, with the cost"},
+        "sorted_output_support": {"type": "string", "description": "inherent, post-sort, or not supported, with the cost"}
+      }
+    },
+    "correctness": {
+      "type": "object",
+      "required": ["oracle_passed", "cases"],
+      "properties": {
+        "oracle_passed": {"type": "boolean"},
+        "cases": {"type": "integer"},
+        "notes": {"type": "string"}
+      }
+    },
+    "cells": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["key_type", "value_type", "output_form", "n", "k", "requirement", "input_pattern", "regime", "metric", "value", "control_name", "control_value", "resources"],
+        "properties": {
+          "key_type": {"type": "string", "enum": ["fp8e4m3", "fp16", "bf16", "fp32", "fp64"]},
+          "value_type": {"type": "string", "enum": ["int32", "none"]},
+          "output_form": {"type": "string", "enum": ["indices", "pairs", "keys"]},
+          "n": {"type": "integer"},
+          "k": {"type": "integer"},
+          "threads": {"type": "integer", "description": "logical warp size or block size"},
+          "requirement": {"type": "string", "enum": ["not_guaranteed", "prefer_smaller_index", "prefer_larger_index"]},
+          "input_pattern": {"type": "string", "enum": ["random", "tie_heavy", "sorted_asc", "sorted_desc", "pivot_tie", "named_workload"]},
+          "workload_name": {"type": "string"},
+          "regime": {"type": "string", "enum": ["latency", "throughput", "batched"]},
+          "metric": {"type": "string", "enum": ["cycles_per_call", "gelem_per_s", "us_per_launch"]},
+          "value": {"type": "number"},
+          "control_name": {"type": "string"},
+          "control_value": {"type": "number"},
+          "canary_start": {"type": "number"},
+          "canary_end": {"type": "number"},
+          "resources": {
+            "type": "object",
+            "required": ["registers", "smem_bytes", "spill_bytes"],
+            "properties": {
+              "registers": {"type": "integer"},
+              "smem_bytes": {"type": "integer"},
+              "spill_bytes": {"type": "integer"},
+              "occupancy_blocks_per_sm": {"type": "integer"},
+              "bar_sync_count": {"type": "integer"}
+            }
+          },
+          "raw_file": {"type": "string", "description": "path under state/results with the full table"}
+        }
+      }
+    },
+    "findings": {
+      "type": "object",
+      "required": ["low_level", "algorithmic", "negative", "surprises", "open_questions"],
+      "properties": {
+        "low_level": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "algorithmic": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+        "negative": {"type": "array", "items": {"type": "string"}},
+        "surprises": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "techniques_adopted": {"type": "array", "items": {"type": "string", "pattern": "^T[0-9]+$"}},
+    "techniques_contributed": {"type": "array", "items": {"type": "string", "pattern": "^T[0-9]+$"}},
+    "report_path": {"type": "string"},
+    "source_paths": {"type": "array", "items": {"type": "string"}},
+    "verification": {
+      "type": "object",
+      "properties": {
+        "verified": {"type": "boolean"},
+        "verifier": {"type": "string"},
+        "date": {"type": "string"},
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}
