@@ -1,0 +1,62 @@
+{
+ "author": "opt-N10",
+ "approach_id": "N10",
+ "variant": "u32_ltrunc",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "all lanes of the hardware warp call the primitive together (the logical warps of a sub-warp instantiation run in lockstep)",
+  "sync_performed": "shuffles, ballots and one redux on the full warp mask, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to a power of two k (other k take the complete merge and a shuffle), k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N and N / MaxK a power of two, measured 32 to 256 at LW 32 and 8 to 128 at LW 4, 8, 16",
+  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word (sign flip, -0.0 mapped to +0.0), the index is never carried through the network and is recovered from the item's position (slot i of lane l is source index i x LW + l) by ballot rank",
+  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 and +0.0 are one word",
+  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost (within 0.04 percent in every measured pair of cells)",
+  "sorted_output_support": "not provided: the output is the selected set in class and index order (the complete-merge form N10_u32 has the sorted keys in position but places indices by rank, not by position)"
+ },
+ "report_path": "approaches/N10/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N10_u32_ltrunc.cuh",
+  "approaches/N10/n10_detail.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh"
+ ],
+ "techniques_adopted": [
+  "T1",
+  "T4",
+  "T7",
+  "T17",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42"
+ ],
+ "techniques_contributed": [
+  "T51"
+ ],
+ "correctness_notes": "Batch 1 (umbriel-b200-020, one lease, six consecutive run.py lock sections, canaries 32.001 cycles per op and 3776 us in every section). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Control N10_u32_trunc in the same lock section (section s6, prefer_smaller_index cells).",
+ "findings": {
+  "low_level": [
+   "The network is opt-W1's template recursion with the min and max exchange (T42) on the fp32 key twiddled to u32: 290 VIMNMX, 142 SHFL, 2 CREDUX.MIN, 16 VOTE, 30 POPC, 8 predicated STS in the N 128 k 16 latency kernel (two network copies), no BSSY, no BRA beyond the harness's five, 0 stack, 0 STL, 0 LDL in every warp cell (T36 check). Registers 30 to 64 in the latency kernel (W1_eager_same 24 to 59), 23 to 32 in the throughput kernel (40 at N 256 k 64), occupancy 8 blocks per SM (6 at N 256 k 64, same as the control). Level tile order (approaches/W1/warp_level_topk.cuh level_topk, all tiles sorted stage by stage at once, tile count halved per level) with the final merge truncated at stride k. Registers 30 to 64 in the latency kernel (identical to the eager form), throughput kernel 23 to 32 (40 at N 256 k 64)."
+  ],
+  "algorithmic": [
+   "Against the eager order with the same recovery (N10_u32_trunc) in the same lock section, prefer_smaller_index latency: N 32 identical (504, 442), N 64 754, 706, 678 against 751, 696, 661 (schedule noise, the same dependency graph at two tiles), N 128 k 4, 16, 32 1013, 953, 918 against 1166, 1106, 1071 (0.87x, 13 percent), N 128 k 64 952 against 933, N 256 k 4, 16, 32 1480, 1422, 1386 against 2022, 1966, 1931 (0.73x, 27 percent), N 256 k 64 1435 against 1566 (0.92x). Throughput N 128 298 to 309 against 294 to 305 (plus 1.5 percent), N 256 k 4 to 32 276 to 280 against 286 to 291 (minus 4 percent), N 256 k 64 262 against 222 (plus 18 percent).",
+   "Against the u64 word (W1_eager_same, through the control chain of the same session): N 128 k 16 953 against 1918 (0.50x), N 256 k 16 1422 against 3826 (0.37x)."
+  ],
+  "negative": [
+   "No gain at one or two tiles (N 32, N 64): the eager and the level loop are the same dependency graph there and the level form measured 0 to 17 cycles slower. At N 256 k 4 to 32 the level order costs 4 percent throughput while saving 27 percent latency (the T 8 case where every tile is live during phase 1)."
+  ],
+  "surprises": [
+   "With the two-class recovery the level order loses 4 percent throughput at N 256, with the one-ballot recovery of batch 2 it gains 23 percent in the same cells (N10_ge1_ltrunc 339 to 344 against N10_ge1_trunc 272 to 276): the throughput of these kernels is a schedule property, not a count property."
+  ],
+  "open_questions": [
+   "Why the level order loses 2 percent at N 128 k 64 (M 2, two tiles: 952 against 933) when the dependency graph is the same, the T28 kind of swing."
+  ]
+ }
+}

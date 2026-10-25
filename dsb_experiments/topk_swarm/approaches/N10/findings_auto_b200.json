@@ -1,0 +1,70 @@
+{
+ "author": "opt-N10",
+ "approach_id": "N10",
+ "variant": "auto",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "all lanes of the hardware warp call the primitive together (the logical warps of a sub-warp instantiation run in lockstep)",
+  "sync_performed": "shuffles, ballots and one redux on the full warp mask, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to a power of two k (other k take the complete merge and a shuffle), k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N and N / MaxK a power of two, measured 32 to 256 at LW 32 and 8 to 128 at LW 4, 8, 16",
+  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word (sign flip, -0.0 mapped to +0.0), the index is never carried through the network and is recovered from the item's position (slot i of lane l is source index i x LW + l) by ballot rank",
+  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 and +0.0 are one word",
+  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost (within 0.04 percent in every measured pair of cells)",
+  "sorted_output_support": "not provided: the output is the selected set in class and index order (the complete-merge form N10_u32 has the sorted keys in position but places indices by rank, not by position)"
+ },
+ "report_path": "approaches/N10/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N10_auto.cuh",
+  "approaches/N10/n10_detail.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh"
+ ],
+ "techniques_adopted": [
+  "T1",
+  "T4",
+  "T7",
+  "T17",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42"
+ ],
+ "techniques_contributed": [
+  "T51",
+  "T52"
+ ],
+ "correctness_notes": "Batch 3 (umbriel-b200-028, one lease, five consecutive run.py lock sections, canaries 32.001 cycles per op in every section). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Controls in the same lock section: W1_eager_same (section s1, both requirements), W1_minmax_pairs under not_guaranteed (section s2, prefer_smaller_index cells), N10_u32_trunc (section s5, patterns random, pivot_tie and all_equal, prefer_smaller_index cells). The all_equal pattern cells of the tie section are dropped from the card because the card schema's input_pattern enum has no all_equal value, their numbers (identical to pivot_tie within 2 cycles) are quoted in the findings and stay in the batch JSON.",
+ "findings": {
+  "low_level": [
+   "The combined form: fp32 key twiddled to u32, opt-W1's template recursion with the min and max exchange (T42), the final merge truncated at stride k with the k-th word by redux.sync.min (identity in the other lanes), the level tile order from four tiles on and the eager order below (same dependency graph at one or two tiles), the two-class recovery (two ballots per slot) up to two items per lane and the one-ballot recovery with the two-class pass behind a warp-uniform branch from four items per lane on. Every choice is a compile-time function of N, k and the logical warp size. Warp scope: registers 30 to 43 in the latency kernel up to N 64, 54 at N 128, 64 to 72 at N 256 (W1_eager_same 24 to 59), throughput kernel 23 to 32 (40 at N 256 k 64), occupancy 8 blocks per SM up to N 128 and 6 at N 256 (the control has 8 at N 256 k 4 to 32). 0 stack, 0 STL, 0 LDL, no BSSY at IPT 1 and 2, one BSSY and BSYNC region per call for the tie branch from IPT 4 on, BRA 5 (harness) plus the branch pair. SASS of the N 128 k 16 latency kernel as N10_ge1_ltrunc, of the N 64 k 32 kernel as N10_u32_trunc (424 instructions, 60 SHFL, 122 VIMNMX, 8 VOTE, 2 CREDUX.MIN)."
+  ],
+  "algorithmic": [
+   "Against the fp32 u64 index-in-key word (W1_eager_same, the card's must-beat), prefer_smaller_index latency cycles per call: N 32 k 4 504 against 601 (0.84x), N 32 k 16 442 against 601 (0.74x), N 64 k 4 751 against 934 (0.80x), k 16 696 (0.75x), k 32 661 against 934 (0.71x, must-beat at most 840), N 128 k 4 992 against 1918 (0.52x), k 16 960 against 1918 (0.50x, must-beat at most 1720), k 32 925 against 1917 (0.48x), k 64 944 against 2216 (0.43x), N 256 k 4 1304 against 3826 (0.34x), k 16 1273 (0.33x), k 32 1240 (0.32x), k 64 1341 against 4650 (0.29x). Throughput Gelem per s: N 32 259 and 285 against 184, N 64 283 to 301 against 177, N 128 318 to 329 against 165 to 167 and 259 against 140 at k 64, N 256 339 to 344 against 163 and 261 against 131 at k 64 (1.40x to 2.1x). Both must-beat cells pass by 29 and 50 percent against the 10 asked.",
+   "Against the best not_guaranteed fp32 route (W1_minmax_pairs under not_guaranteed): N 32 k 4 504 against 533 (0.95x), k 16 442 against 533 (0.83x), N 64 k 4 751 against 756 (0.99x), k 16 696 against 756 (0.92x), k 32 661 against 720 (0.92x), N 128 k 4 and 16 992 and 960 against 1649 (0.60x, 0.58x), k 32 925 against 2004 (0.46x), k 64 944 against 1217 (0.78x), N 256 k 4 to 32 1304 to 1240 against 4301 to 4545 (0.30x to 0.27x), k 64 1341 against 4547 (0.29x). Throughput 1.28x to 1.9x. The tie-break requirement costs nothing on fp32 in the W1 family any more, the exact route is the fastest fp32 route measured at every N from 32 to 256.",
+   "Price of excess ties at rank k (section s5, patterns pivot_tie and all_equal against random, the branch-free two-class form N10_u32_trunc measured on the same patterns as the control): N 64 k 16 and 32 identical on every pattern (696, 694, 692 and 661, 659, 657, the two-class form has no branch), N 128 k 16 1060 against 960 random (plus 100, the control 1104 to 1106 on every pattern), k 32 1019 against 925, N 256 k 16 1537 against 1273 (plus 264, control 1960 to 1966), k 32 1503 against 1240. With every item tied the combined form is still 0.55x and 0.40x of the u64 word at N 128 and 256.",
+   "Where the W1 family is the chosen primitive after wave 1 (N at most 64 with k 32, throughput at k 64, the sorted-output pass): N 64 k 32 661 against W2's about 930 (PRIORITIES section 4) and 720 for the pairs, throughput at k 64 259 and 261 Gelem per s at N 128 and 256 against W1 one-word bf16 224 to 237 and W2 135 to 178. The sorted-output pass is not served (the output is in class and index order)."
+  ],
+  "negative": [
+   "N 32 k 4 is the weakest warp cell (0.84x of the u64 word, 0.95x of the pairs): at one tile and IPT 1 the network is the same 13 stages for every route and the recovery adds about 58 cycles against two skipped stages.",
+   "N 256 runs at 6 blocks per SM in the throughput regime against 8 for the u64 word (72 registers in the latency kernel, the tie path's ballot words), the throughput still leads 2.1x.",
+   "No sorted output and no pairs output: a caller that needs the keys or the rank order must take the complete-merge form and pay one shuffle per selected item, not measured."
+  ],
+  "surprises": [
+   "The combined adapter reproduces the best measured form in every cell to the cycle (N 64 k 32 661 as N10_u32_trunc in batch 1, N 128 k 16 960 as N10_ge1_ltrunc in batch 2, N 256 k 32 1240) on a different node (umbriel-b200-028 against -020), the T28 schedule swing did not strike the switch points.",
+   "The level order's throughput gain at N 256 (339 to 344 against the eager one-ballot form's 272 to 276 in batch 2) survives in the combined form: 339 to 344 Gelem per s at 6 blocks per SM against the u64 word's 163 at 8."
+  ],
+  "open_questions": [
+   "The two-class pass at IPT 1 and 2 is issue bound at about 50 cycles per item per lane, an asm barrier forcing the ballots ahead of the popc chains was not tried.",
+   "A rows-per-group form (two independent rows per call as N5 does for bf16x2) is the natural throughput follow-up, the recovery is per row.",
+   "GB200 (aarch64 build) was not measured: the network is VIMNMX and host independent (T42), the recovery's ISETP, VOTE and POPC should be as well, but the W1 family rule (T20) asks for a same-host comparison before any cross-arch claim."
+  ]
+ }
+}
