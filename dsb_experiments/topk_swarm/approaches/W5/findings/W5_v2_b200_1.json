@@ -1,0 +1,52 @@
+{
+  "author": "opt-W5",
+  "approach_id": "W5",
+  "variant": "v2",
+  "commit": "9e60d70f4d",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 1024,
+    "sync_assumed": "warp convergence of the 32 lanes, the caller separates calls that reuse the output buffer or the temp storage by a __syncwarp (the harness does)",
+    "sync_performed": "one redux.min for the threshold, log2(IPT + 1) ballots for the prefix, one __syncwarp between the scatter and the gather, one redux.max per finish round, one redux.max for the fp32 next-word check (redux.add, max and min on the fp32 slow path, redux.add per level and two ballots per item on the overflow fallback), no barriers",
+    "k_range": "[4, 128] with 2k <= N, measured 8 to 64",
+    "n_range": "N = 32 x IPT, power of two, 256 to 65536 (bf16) or 32768 (fp32), measured 512 to 2048",
+    "type_constraints": "the filter compares raw float keys (bf16 widened by a shift), the finish word is W2's: bf16 16 twiddled key bits above a 16-bit inverted index (exact), fp32 top 32 - log2(capacity) twiddled key bits above the inverted buffer position (idea N4, exact after the tie pass), int32 indices from the striped position",
+    "nan_behavior": "as W2 in the finish word, the float filter compare is false for NaN so a NaN never passes, focus-set inputs contain no NaN",
+    "tie_break_support": "inherent (finish word and fallback tickets), same code for both requirements",
+    "sorted_output_support": "descending by key on the filter path (fp32 by truncated key with the tie class rewritten), ticket order on the overflow fallback"
+  },
+  "findings": {
+    "low_level": [
+      "Against W5_base in the same lock section the latency is flat or worse at bf16 (N 512 k 8 998 vs 961, N 1024 k 32 2279 vs 2162, N 2048 k 32 3094 vs 3093, k 64 5104 vs 5335) and flat at fp32 (N 2048 k 16 2592 vs 2616, k 64 6225 vs 6626), although the dynamic instruction count per call dropped from about 900 to about 600 (the bf16 pack went from 8 instructions per item on every item to 5 per candidate after the gather, the count became a tree and the scatter runs IPT / 8 position chains). The fixed cost still grows by about 23 cycles per lane item (N 512 to 1024 k 8: 998 to 1358, N 1024 to 2048: 1358 to 2126), so the instruction count is not what sets it.",
+      "Throughput follows the instruction count: 1.04x to 1.34x over W5_base at bf16 (N 2048 k 8 1770 vs 1323 Gelem per s, N 1024 k 32 732 vs 672) and 1.00x to 1.18x at fp32, because with 8 warps per block the per-warp dependency chain hides and issue slots are what remain.",
+      "SASS of the latency kernel (bf16 N 1024 k 8): the compiler keeps the 32 compare results as 0 or 1 in registers (FSETP, LOP3, SEL, IMAD.MOV per item, about 3 instructions) for the tree and recomputes nothing for the scatter, but it runs out of predicate registers and emits P2R moves before the 32 predicated STS, and each item of the scatter is IMAD (address), LOP3 (word), VIADD (position) and STS, 5 instructions. Registers 64 (N 512), 72 (N 1024), 128 (N 2048) for bf16 as before, fp32 throughput kernel 236 at N 2048 (base 147, occupancy 1 in both).",
+      "fp32 keeps W2's tie pass on buffer positions (24 key bits at capacity 256), the slow path never ran on random input, canary 32.001 at start and end, R squared 1.0000 everywhere."
+    ],
+    "algorithmic": [
+      "Against W2_packed_v3 (batch v2b, one lock section): bf16 N 1024 k 16 1767 vs 1485 (0.84x), k 32 2279 vs 2481 (1.09x), k 64 3397 vs 7308 (2.15x), N 2048 k 16 2535 vs 2377 (0.94x), k 32 3094 vs 4381 (1.42x), k 64 5104 vs 10071 (1.97x), fp32 N 1024 k 16 1916 vs 1547 (0.81x), k 32 2849 vs 3059 (1.07x), k 64 4763 vs 6774 (1.42x), N 2048 k 16 2592 vs 4392 (1.69x), k 32 3728 vs 7353 (1.97x), k 64 6225 vs 10187 (1.64x). Throughput 1.34x to 2.65x over W2 in every cell (bf16 N 2048 k 64 695 vs 262 Gelem per s).",
+      "The must-beat cell bf16 N 1024 k 32 stays above 1900 (2279), so the kill criterion of the W5 card holds for bf16 at N 1024: W5 is kept for k 64 and above at N 1024, for k 32 and above at N 2048, and for fp32 from k 16 at N 2048 (2592 against the 3300 threshold).",
+      "Reading the two variants together: the per-item cost of the striped filter in the latency regime is about 23 cycles per lane item independent of the per-item instruction count, which points at the per-item predicated shared stores (32 STS per lane per call at IPT 32 whether or not the lane has a candidate) or at the load issue of the striped 16-bit loads that the generate-only control does not fully account for. The phase profiler approaches/W5/phase_probe.cu (dependent clock stamps per phase) is the next measurement."
+    ],
+    "negative": [
+      "Removing 300 instructions per call from the filter (the pack of every item) did not move the latency: on one warp the filter is latency bound, not issue bound, and the pack overlapped with the load returns.",
+      "The pair-tree top 2 and the chunked scatter chains did not move N 1024 k 32 either (2279 vs 2162, a 5 percent loss inside the schedule noise of T28)."
+    ],
+    "surprises": [
+      "v2 is faster than base at N 2048 in every cell (bf16 k 8 2126 vs 2317, fp32 k 64 6225 vs 6626) but slower at N 512 (bf16 k 16 1366 vs 1195): the saved instructions only pay once the tile is large enough for the issue work to be on the critical path."
+    ],
+    "open_questions": [
+      "The phase breakdown of the fixed cost (loads, bound, count, prefix, scatter, gather, sort, rounds) on the measured inputs.",
+      "Whether the scatter should store two candidates per lane per STS (pairs) or skip the STS of items whose warp-wide ballot is zero, if the per-item shared stores turn out to be the cost.",
+      "A blocked-arrangement W5 with vector loads, if the striped 16-bit loads turn out to be the cost."
+    ]
+  },
+  "techniques_adopted": ["T1", "T3", "T4", "T7", "T17", "T18", "T19", "T21", "T28", "T32", "T36", "T41"],
+  "techniques_contributed": [],
+  "report_path": "approaches/W5/REPORT.md",
+  "source_paths": ["harness/adapters/W5_impl_v2.cuh", "harness/adapters/W5_v2.cuh", "harness/adapters/W5_impl.cuh"],
+  "correctness_notes": "oracle battery (13 cases per adapter per cell) passed on every cell of both batches, the overflow fallback is exercised by the tie_heavy, pivot_tie, all_equal and sorted cases."
+}

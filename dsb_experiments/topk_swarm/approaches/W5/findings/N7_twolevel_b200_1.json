@@ -1,0 +1,70 @@
+{
+  "author": "opt-W5",
+  "approach_id": "N7",
+  "variant": "twolevel",
+  "commit": "04da4571ad",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 4,
+    "sync_assumed": "warp convergence of the 32 lanes, the caller separates calls that reuse the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "one redux.sync per round, one __any_sync per block of 2 rounds, one redux.max after the rounds for fp32 (redux.add, max and min on the fp32 slow path), no barriers",
+    "k_range": "multiples of 4 in [4, 256] with 2k <= N, measured 16 to 128",
+    "n_range": "N = 32 x IPT with IPT >= 16 a power of two, N <= 65536 (bf16) or 32768 (fp32), measured 512 to 2048",
+    "type_constraints": "W2's packed word: bf16 16 twiddled key bits above a 16-bit inverted index (exact), fp32 top 32 - log2 N twiddled key bits above the index (idea N4, exact after W2's tie pass), int32 indices from the position",
+    "nan_behavior": "as W2_impl.cuh, focus-set inputs contain no NaN",
+    "tie_break_support": "inherent (packed word), same code for both requirements, measured with not_guaranteed",
+    "sorted_output_support": "inherent, slot r holds the r-th largest word (the fp32 tie pass may reorder the last slots of the tie class)"
+  },
+  "findings": {
+    "low_level": [
+      "Third build (this card, head 8, blocks of 2 rounds, rolled block loop): the round costs 45 to 74 cycles against 27 for W2's pruned list (slopes over k: bf16 N 1024 k 16 to 32 47 per round, k 32 to 64 71, k 64 to 128 59, N 512 45 to 58, N 2048 44 to 74). The SASS of the throughput kernel at bf16 N 1024 k 32 (968 instructions, 62 registers, no local memory) shows the loop body: per round CREDUX, the UR to R move, ISETP, 8 SEL and the emission (ISETP, LOP3, predicated STS), per block the two ISETP of the test, VOTE.ANY, a predicated BRA over the 280-instruction refill and the back-edge BRA, two taken branches per block of 2 rounds on one warp.",
+      "First build (batch n7a, unrolled block loop): the refill network was inlined once per block, 3737 VIMNMX in the throughput kernel against 382 for W2 and 11368 instructions in the latency kernel, round 70 to 185 cycles (bf16 N 1024 k 64 9903 against 7308). Second build (n7b, rolled loop, blocks of 4): 1000 instructions but the round still 70, 106 and 190 cycles at IPT 16, 32 and 64 (bf16 N 1024 k 64 7182) because the lookahead test (fewer than 2 B = 8 valid head words) fires after a single win and the refill (every remainder block sorted and merged, about 70 instructions per block of 8) ran in nearly every block, so the per-round cost scaled with the tile.",
+      "Registers 49 to 62 (bf16) and 64 to 102 (fp32 N 512 to 1024), 168 to 210 at fp32 N 2048 where W2's slow path keeps the keys live, no spills except W2's own at N 2048. Canary 32.001 at start and end, R squared 1.0000 in every cell."
+    ],
+    "algorithmic": [
+      "Against W2_packed_v3 in the same lock section: bf16 N 1024 k 64 4623 against 7308 (1.58x), k 128 8382 against 11872 (1.42x), N 2048 k 32 3009 against 4381 (1.46x), k 64 5371 against 10071 (1.88x), k 128 9451 against 21324 (2.26x), fp32 N 1024 k 64 3980 against 6774 (1.70x), N 2048 k 16 2267 against 4391 (1.94x), k 32 2843 against 7353 (2.59x), k 64 5357 against 10187 (1.90x). Losses at IPT 16 (bf16 N 512 k 16 to 64 0.72x to 0.79x) and bf16 N 1024 k 16 (0.92x), ties at k 16 elsewhere.",
+      "Kill criterion of the N7 card (2x under W2 at bf16 N 1024 k 64, at most 3300, within 10 percent of W5 there): not met, 4623 is 1.58x and 36 percent behind W5_v2's 3397 in the same session. The round cost model of the card (26 plus 3 for the vote plus 2) held for the redux chain but not for the block control: a vote, two taken branches and the runtime round indices cost about 18 cycles per round at blocks of 2, and the test cannot use longer blocks with a head of 8 (blocks of 4 fire after one win).",
+      "The prologue is as modeled: sort block 0 plus write-back merges, about 450 cycles at IPT 32 and 900 at IPT 64 (the k 16 cells, where the rounds are few: bf16 N 1024 k 16 1617 against W2 1485, N 2048 k 16 2305 against 2377)."
+    ],
+    "negative": [
+      "Unrolling the block loop replicates the refill network per block and the instruction fetch costs more than the deep list it replaces (n7a).",
+      "A lookahead refill test with blocks of B and a head of 2 B fires after one win: the head must hold at least 4 B words for the refill to be rare, which forces blocks of 2 at head 8 and pays the block control every second round (n7b, n7c).",
+      "At IPT 16 the remainder is one block of 8 and W2's list of 16 is already cheap, N7 loses 20 to 30 percent there."
+    ],
+    "surprises": [
+      "The per-round cost of the final build is almost independent of IPT (45 to 74 at IPT 16 to 64), so the refill is rare as designed and the remaining cost is control, not work.",
+      "N7 beats W5 at fp32 N 1024 k 32 (2227 against W5_v2's 2849) and fp32 N 2048 k 16 (2267 against 2592) in different lock sections, because the N4 word keeps W2's cheap route and N7 has no compaction phase."
+    ],
+    "open_questions": [
+      "Whether two blocks per loop iteration (two copies of the refill, one back-edge per 4 rounds) and a fall-through layout of the common path bring the round to about 35 cycles, which would put bf16 N 1024 k 64 near 3900, still above the 3300 threshold.",
+      "Whether a head of 16 with blocks of 4 (test: fewer than 8 valid, nine wins) is better than head 8 with blocks of 2 once the shift of 16 positions (37 cycles, T19) is weighed against half the block control.",
+      "A measurement against W5 in one lock section at fp32 N 1024 k 32 and N 2048 k 16, where N7 looked faster across sessions."
+    ]
+  },
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T7",
+    "T17",
+    "T19",
+    "T28",
+    "T34",
+    "T36",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T48",
+    "T49"
+  ],
+  "report_path": "approaches/W5/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N7_impl.cuh",
+    "harness/adapters/N7_twolevel.cuh",
+    "harness/adapters/W2_impl.cuh"
+  ],
+  "correctness_notes": "oracle battery passed on every cell of the three N7 batches (n7a at 9e60d70f4d, n7b at f3d46611e3, n7c at 04da4571ad), only n7c is carded, the earlier two are superseded builds whose numbers are in the findings and in state/results/opt-W5/."
+}
