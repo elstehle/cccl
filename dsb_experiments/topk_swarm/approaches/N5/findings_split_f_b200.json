@@ -1,0 +1,76 @@
+{
+ "author": "opt-N5",
+ "approach_id": "N5",
+ "variant": "split_f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "packed_striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "the whole hardware warp calls the primitive together (all logical warps at once), as the harness does",
+  "sync_performed": "shuffles, ballots and one any-vote over the full hardware warp, no barrier",
+  "type_constraints": "bf16 keys only, one row of N keys per call packed as bf16x2 words (the harness's packed_striped arrangement, items 2 (j LW + lane) and 2 (j LW + lane) + 1 in word j), the even items form set A in the low halves and the odd items set B in the high halves, one more bitonic merge on one-key words after the SIMD network, int32 source indices derived from the position. fp32 keys unsupported",
+  "nan_behavior": "a NaN key is never selected (it loses every max.bf16x2 and min.bf16x2 against a number and both set.gt and set.eq are false), so with fewer than k non-NaN keys output slots stay unwritten. Focus-set inputs carry no NaN. -0.0 equals +0.0: the network orders -0.0 below +0.0, the recovery classifies by IEEE comparison, the selected set is the oracle's set in every case (signed_zero pattern passes under both requirements). Denormals compared as values",
+  "tie_break_support": "both unsorted requirements with the same code: the tie class at the k-th key fills the remaining slots, in index order whenever it has to be capped (prefer_smaller_index exact by construction), measured identical throughput under both requirements in every cell",
+  "sorted_output_support": "none: the greater class is written in lane order, then the tie class (lane order on the common path, index order on the capped path). A sorted output would need one shuffle per selected key to move the recovered index to its network position",
+  "k_range": "[1, N / 2] with MaxK = round_up(k, LW) dividing N / 2, measured k 4, 16, 32, 64",
+  "n_range": "N = 2 x LW x words with (N / 2) / MaxK a power of two, N at least 64 at LW 32 (N 32 unsupported, each set would hold fewer keys than lanes), measured N 64 to 256"
+ },
+ "report_path": "approaches/N5/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N5_split_f.cuh",
+  "harness/adapters/N5_split.cuh",
+  "approaches/N5/n5_detail.cuh",
+  "approaches/N5/n5_net.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh",
+  "harness/topk_harness.cuh",
+  "harness/adapters/W1x_vimnmx_eager.cuh",
+  "harness/adapters/W1_eager_same.cuh"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T17",
+  "T18",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42",
+  "T47",
+  "T52"
+ ],
+ "techniques_contributed": [
+  "T53"
+ ],
+ "correctness_notes": "Oracle battery (13 cases) passed on every cell under both requirements. Control W1x_vimnmx_eager (the T42 one-word min max network) in the same lock section, final commit 8f613a317f (batch b3), the development batches b1 (ops_sel, 3ede7791e3) and b2 (ops_bf16, 30f5b8f821) under state/results/opt-N5/. N 32 cells are unsupported by the contract (listed under unsupported). prefer_smaller_index and not_guaranteed share the common path but compile to different kernels in the fast form (the exact ballot fallback is compiled in for prefer_smaller_index, the capped prefix for not_guaranteed), and the prefer_smaller_index kernel carries 3 to 16 more registers and runs 2 to 4 percent slower in throughput in most cells (up to 9 percent at LW 8 N 128), a T28 schedule and register effect of code that never executes on random input. The exact form compiles the same code for both requirements and measured identical throughput to 0.1 percent.",
+ "findings": {
+  "low_level": [
+   "Throughput kernel at N 128 k 32: 384 SASS instructions with both recovery paths compiled (about 330 on the common path) against the control's 336, 48 SHFL against 75 (35 SIMD stage shuffles for both sets of 64, one mirror shuffle, 5 merge stages, 5 scan and 2 broadcast), 82 HMNMX2 against 153 VIMNMX, 4 HSET2, ISETP 65 against 5 (the if-converted exchange rebuilds the direction predicate per stage, T53). Registers 30 at N 64 (8 blocks per SM), 37 to 40 at N 128 (6), 40 to 48 at N 256 (5 to 6), no spills, no stack.",
+   "The final one-word merge costs about 20 instructions on words whose low half is +0.0 (set A shifted to the high half, set B masked), one PRMT duplicates the k-th key into both halves for the recovery compares. With M 2 (k 64) the mirror takes two shuffles and the merge ten stage words.",
+   "T47: the split kernel saves 36 percent of the shuffles against the control but only 1.9x fewer exchange instructions on half the keys per SIMD lane, and the recovery's HSET2 and LOP3 sit on the same half-rate pipe as the exchange, so the instruction ratio and the measured ratio both stay near 1.0x at N 128."
+  ],
+  "algorithmic": [
+   "Same-session throughput against the T42 one-word network (b3, not_guaranteed): N 64 k 4 to 32 309 against 328 to 331 (0.94x), N 128 k 4 to 32 384 against 356 to 358 (1.07x to 1.08x), N 128 k 64 357 against 302 (1.18x), N 256 k 4 to 32 455 to 457 against 363 to 367 (1.24x to 1.26x), N 256 k 64 411 against 248 (1.65x). Against the card's reference W1_eager_same (268 at N 128 k 32 in session): 1.43x, above the card's 370. Against W2_packed_v3's card value at N 256 k 32 (332): 1.37x.",
+   "The split of one row into two SIMD sets wins where the network is long (N 256: four tiles per set, 1.24x) and where the control pays registers (k 64, 1.65x), and loses at N 64 where the network is one tile per set and the fixed recovery and merge cost (about 110 instructions) exceeds the saved stages. The two-row form (N5_rows_f, same session) is 15 to 25 points better in every cell because its SIMD words are full and it has no final merge.",
+   "Latency (reported, not the target): 1062 against 695 at N 64 (0.65x), 1210 against 1017 at N 128 (0.84x), 1604 against 1718 at N 256 k at most 32 (1.07x faster: the shorter network wins once the recovery is amortized), 1621 against 1322 at N 256 k 64 (0.82x).",
+   "Exact against fast recovery (b2, same session): 370 against 387 at N 128 k 32, 427 against 457 at N 256 k 32, 384 against 413 at N 256 k 64 (4 to 8 percent), 320 against 312 at N 64 (the scan's fixed cost)."
+  ],
+  "negative": [
+   "The split form never reaches 1.4x over the T42 one-word network (best 1.26x at k at most 32, 1.65x only at k 64), so it is not the card's primitive, it is the single-row drop-in that clears the card's absolute 370 at N 128 k 32 (384 to 387).",
+   "N 64 at warp scope loses 6 percent: one tile per set leaves nothing for the SIMD network to amortize the merge and the recovery over.",
+   "The exchange and direction forms of T53 apply unchanged (select form 352 against ternary form 336 instructions at N 128 k 32, measured 385 against 370 exact and 387 fast)."
+  ],
+  "surprises": [
+   "At N 256 k at most 32 the split row is faster than the one-word row in latency as well (1604 against 1718 cycles) although it does more dependent work after the network: the SIMD network has 35 instead of 75 dependent shuffle stages for the same N.",
+   "prefer_smaller_index and not_guaranteed share the common path but compile to different kernels in the fast form (the exact ballot fallback is compiled in for prefer_smaller_index, the capped prefix for not_guaranteed), and the prefer_smaller_index kernel carries 3 to 16 more registers and runs 2 to 4 percent slower in throughput in most cells (up to 9 percent at LW 8 N 128), a T28 schedule and register effect of code that never executes on random input. The exact form compiles the same code for both requirements and measured identical throughput to 0.1 percent."
+  ],
+  "open_questions": [
+   "Whether the final merge can be dropped by recovering from the two sets' thresholds separately (two k-th keys, two recovery passes over half the words each, then a merge of the two candidate sets by count), which trades 20 instructions of merge for a second scan.",
+   "The N 64 cell at LW 32 could use the two-row form's register layout (sets of 32 as two tiles of 16 at LW 16) instead of one tile per set, not built."
+  ]
+ }
+}
