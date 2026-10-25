@@ -158,6 +158,30 @@ the matrix, verification by the usual verifiers on the same node from the same b
 - The harness is pinned at 0.10 for the whole of phase 3, every batch records the version and the
   node, and `WINNERS_<arch>.md` prints both.
 
+## 6.2 Execution log and addenda (2026-10-25)
+
+- Block pass: umbriel-b200-047, 17:47Z to 19:02Z, 71 batches plus the W4_chunk8 addendum (the manifest
+  had W4_chunk4 on 8-run input, a contract mismatch the oracle caught, those batches are quarantined under
+  `state/results/eval-engineer/phase3/b200/rejected_contract_mismatch`). Compile and measurement
+  overlapped (two build chains, measurement starts per adapter on its build marker), which the
+  cycle and event-bracketed metrics tolerate. B1_det ran as a candidate of the prefer_smaller_index
+  cells instead of as a second control of 36 batches (compile budget), `winners.py --second-reference`.
+- Warp and sub-warp pass: umbriel-b200-047, 19:09Z to 20:50Z, 57 batches with numbers (named cells carry
+  not_guaranteed only, the sub-warp scope has no flip bands).
+- Addenda after the go: B1_det3 as a prefer_smaller_index candidate (random and random@runs4), and the
+  named sub-warp cells at every valid lane count (4, 8, 16: the first pass ran them at 4 lanes only,
+  run.py now expands a named sub-warp cell without an explicit lane count to all fitting sizes).
+- Phase 3b runs the `--check-sorted` oracle over the full battery, which is how verify-W4 found that
+  W2_packed fp32 (N4 truncation) and W5_v4 (tie_heavy, quantized_random) are not sorted.
+- Network outage: the Mac's tunnel to the clusters dropped at 21:26Z with the tie_heavy pass at 7 of 51
+  batches on umbriel-b200-035 and the GB200 pass at 8 of 141 on gb200-nvl4-ts2-105. `state/phase3/resume.sh`
+  waits for name resolution and runs `tools/phase3_resume.py`: reuse a ready dedicated node per arch,
+  otherwise request one through the broker, then per arch in order GB200 warp and sub-warp, named
+  sub-warp addendum, GB200 block (N 1024 and 4096); tie_heavy, B1_det3 addendum, named sub-warp
+  addendum, 3b. Builds skip existing binaries, measure scripts skip batches already measured
+  (`run.py --skip-if-done`), batches resumed on a different node carry a `note` in their meta and the
+  matrices print the node per cell and per table.
+
 ## 7. Go procedure
 
 1. Lead gives the go, broker names the B200 node and starts the pre-flight.
