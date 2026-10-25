@@ -187,11 +187,13 @@ Serialization: call `n` consumes `dep = out_idx[0]` of call `n - 1` (read after 
 masked with a kernel argument that is zero at run time but unknown to the compiler.
 
 - `data_dependent = true` (radix select, atomics, threshold filters: the work depends on the
-  data): call `n` of repetition `r` loads input `(r * chain + n + dep) & 15` out of 16 distinct
-  inputs of the cell's pattern, fresh data every call, the load address carries the dependency.
-  The rotation with `r` makes every chain length touch all 16 inputs over the repetitions, so the
-  cache behavior per call does not depend on the chain length (before 0.6 a chain of 16 left L1
-  where a chain of 8 stayed resident, which bent the fit at N 8192 and above).
+  data): call `n` loads input `(n * (16 / chain) + dep) & 15` out of 16 distinct inputs of the
+  cell's pattern, fresh data every call, the load address carries the dependency. Every chain
+  length sees a deterministic, evenly strided subset of the inputs (chain 16 all of them), the same
+  in every repetition, so the min over repetitions compares identical work. All harness loads
+  stream past L1 (`ld.global.cg`, since 0.10): a real kernel loads each tile once, and L1 residency
+  of the 16 inputs had made the control depend on the chain length and on the variant's
+  shared-memory carve-out.
 - `data_dependent = false` (sorting networks: the work is fixed): in-place chain on the register
   resident input, the first key is xor-perturbed with `dep`. The input degenerates over the chain,
   which does not matter for a data-oblivious primitive (the oracle runs separately on pristine
@@ -206,6 +208,42 @@ chain length and the fit quality are in the JSON (`slope_raw`, `slope_noop`, `ch
 `r2_raw`). The fold costs about one LOP3 per three items and is the residual error of the
 subtraction.
 
+### 3.1 Harness versions and their effect on numbers
+
+Cards record the harness version in their raw files. Known effects when comparing cards made with
+different versions (same adapter, same node):
+
+- 0.2 to 0.5: blocked loads vectorized (0.2), rows and control-req added (0.3 to 0.5). Data
+  dependent chains used input `n` for call `n`, so a chain of 16 touched 16 inputs and left L1
+  where a chain of 8 stayed resident: fits bent at N 8192 and above for 16 inputs over about
+  128 KB (fp32 N 4096 and up, bf16 N 8192 and up).
+- 0.6 to 0.9: input rotation with the repetition, control launched with the variant's dynamic
+  shared memory (`dyn_floor`). Large-smem controls (B3 at fp32 N 16384 and above) read 9 to 11
+  percent higher, so nets with such controls dropped by that much. Striped block kernels at bf16
+  N 4096 lost 7 to 9 percent of net because the control's per-call cost rose with the chain length
+  (per-repetition working set against the smaller L1) while the min over repetitions picked cached
+  repetitions for short chains. Kernels whose pass count depends on the input saw the min over
+  repetitions pick the cheaper half of the inputs at chain 8 under the rotation. Large-smem blocked
+  kernels were not affected by the chain-length dependence: B3_tuned fp32 N 32768 k 256 had a flat
+  control of 10424 to 10734 cycles per call across chain lengths under 0.8 (8382 to 8656 under 0.4,
+  the `dyn_floor` difference), because their working set never fit L1 in the first place
+  (verify-B4).
+- 0.10: loads stream past L1 in both regimes, deterministic strided input subsets per chain
+  length, no rotation. Controls are L2 bound and larger, the same at every chain length and for
+  every shared-memory footprint (validated on a GB200: the no-op per-call cost at chain 1 to 16 is
+  719, 691, 678, 672, 670 for a striped bf16 N 4096 kernel and 2599 to 2589 for blocked fp32
+  N 16384, fits R^2 at or above 0.9996). Against 0.6 on the same arch, B1_reference nets move by
+  under 1 percent at N 1024, by -3.5 percent (bf16) and -2 percent (fp32) at N 4096, and by +12
+  percent (bf16) and +3 percent (fp32) at N 16384, where the variant's own loads had partly hit L1
+  under 0.6 and now stream like the control's. The striped B4_v4 at bf16 N 4096 reads its 0.4
+  value again (3808 against 3818, not the 3461 of 0.8). Throughput ceilings drop to the L2
+  streaming rate (about 4 to 4.6 Telem/s at N 1024, 1.2 Telem/s for fp32 at N 16384), which is
+  what a kernel sees for a tile it loads once.
+
+Verifiers rerun a card with the harness version it was made with when they want to reproduce it to
+the cycle (the card's `harness/` files are in the commit named in the card), and with the current
+version when they want a comparable number.
+
 ## 4. Throughput regime
 
 Grid = `cudaOccupancyMaxActiveBlocksPerMultiprocessor x SMs` blocks (one occupancy wave) of
@@ -217,6 +255,11 @@ of 5 event timings after one warm-up launch. Occupancy, registers, shared memory
 reported next to the number. The no-op adapter's throughput is reported as
 `harness_ceiling_gelem_per_s`: if an adapter approaches it the harness loads, not the primitive,
 set the number.
+
+A regime whose launch does not fit the device (typically the throughput block of 8 warps times a
+large per-warp temp storage plus the double-buffered output exceeding the 227 KB opt-in limit) is
+reported as unsupported for that regime in the adapter's `error` field, the other regime's numbers
+stand, and the cell binary does not fail (harness 0.9).
 
 ## 5. Canary
 
@@ -291,7 +334,11 @@ not support come out without a control value and `make_card.py` drops them unles
 batch of the variant is merged through a second `--batch`. `--root` derives
 `--work <root>/work/<holder>`, `--out <root>/results/<holder>` and `--lock <root>/locks/gpu<i>.lock`. `--node-name` and `--arch-name` come from the lease line
 (inside a container the hostname is the container id, so pass them). Filters: `--keys`, `--req`, `--n`, `--k`, `--threads`,
-`--patterns`, `--regimes`, `--oracle-only`, `--no-battery`. `--build-only` and `--measure-only`
+`--patterns`, `--regimes`, `--oracle-only`, `--no-battery`. `--cell-list <file>` runs an
+explicit list of cells (`[{scope, key_type, threads, n, k, requirement}]`, the format
+`tools/winners.py --close` writes for the tie_heavy follow-up pass). `--check-sorted` (phase 3b)
+makes the oracle also verify the output order: keys non-increasing along the slots, and under an
+index tie-break the indices in tie-break order among equal keys. `--build-only` and `--measure-only`
 split the phases, `--dry-run` lists the cells. A cell binary that exits with an error (seen once as
 CUDA error 46, device busy, before the oracle) is retried once after 5 seconds (`--retries`), the
 batch records `retries` per run. Compiles never run under the lock.

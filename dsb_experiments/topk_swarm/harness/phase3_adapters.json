@@ -1,0 +1,74 @@
+{
+  "description": "Phase 3 final evaluation manifest: the adapters per scope (winners and runners-up from RESULTS_BOARD.md and knowledge base section 16), their controls, the cells inputs, and the approach source directories the adapters include. tools/phase3.py turns this into node scripts, tools/winners.py turns the batches into the winners matrix.",
+  "cells": {
+    "focus": "harness/cells_focus.json",
+    "flipbands": "harness/cells_flipbands.json",
+    "named": "ideas/named_cells.json"
+  },
+  "patterns_first_pass": "random",
+  "close_margin": 0.15,
+  "scopes": {
+    "block": {
+      "control": "B1_reference",
+      "control_supports_prefer_smaller_index": false,
+      "ship": ["approaches/B1", "approaches/B3", "approaches/B4"],
+      "adapters": [
+        {"id": "B2_packed", "note": "packed atomics extraction, 256 threads"},
+        {"id": "N8_b2packed", "threads": 128, "note": "B2_packed at 128 threads (N8 block-size study)"},
+        {"id": "B2_twolevel", "note": "two-level list rounds"},
+        {"id": "B1_idx", "note": "AIR with the index-only epilogue, 256 threads"},
+        {"id": "B1_idx", "threads": 512, "label": "T512", "note": "same at 512 threads"},
+        {"id": "B1_det2", "note": "AIR with the deterministic rank, both requirements"},
+        {"id": "B3_tuned", "note": "compacting radix select"},
+        {"id": "B4_v4", "note": "exact-bound prefilter, striped"},
+        {"id": "B1_n6b", "note": "AIR with the equi-width first pass"},
+        {"id": "N9_w2fin2", "note": "N6 first pass with a W2 finish"},
+        {"id": "W4_chunk4", "runs": 4, "cells": ["focus", "flipbands"], "n": "8192,16384,32768", "label": "runs4", "note": "chunk merge of 4 sorted runs, sorted-runs input only"},
+        {"id": "W4_chunk4", "runs": 8, "cells": ["focus", "flipbands"], "n": "8192,16384,32768", "label": "runs8", "note": "chunk merge of 8 sorted runs"}
+      ]
+    },
+    "warp": {
+      "control": "W1_reference",
+      "control_supports_prefer_smaller_index": false,
+      "ship": ["approaches/W1", "approaches/N10", "approaches/N5"],
+      "adapters": [
+        {"id": "W2_packed_v3", "note": "packed redux extraction, bf16 exact, fp32 via N4"},
+        {"id": "W5_v4", "note": "threshold filter with exact bound"},
+        {"id": "W1x_vimnmx_eager", "note": "bitonic network on the min and max route, bf16"},
+        {"id": "W1_level", "note": "level-halving network, bf16 min and max route"},
+        {"id": "N10_auto", "note": "fp32 exact route"},
+        {"id": "N5_rows_f", "regimes": "throughput", "note": "two bf16 rows per warp, throughput only"},
+        {"id": "N6w_atom32", "note": "equi-width bucket select at warp scope, large k"},
+        {"id": "W3_d4c", "note": "warp radix select, large k"},
+        {"id": "W4_wmerge", "note": "merge based, sorted output, large k"}
+      ]
+    },
+    "subwarp": {
+      "control": "W1_baseline_sub",
+      "control_fallback": "W1_reference_sub",
+      "control_supports_prefer_smaller_index": false,
+      "ship": ["approaches/W1", "approaches/N10", "approaches/N5"],
+      "adapters": [
+        {"id": "W2_packed_sw_v2"},
+        {"id": "W1_eager_same_sub"},
+        {"id": "N10_auto_sub"},
+        {"id": "N5_rows_fs_sub", "regimes": "throughput"}
+      ]
+    }
+  },
+  "gb200_pass": {
+    "scopes": ["warp", "subwarp", "block"],
+    "block_n": "1024,4096",
+    "note": "warp and sub-warp winners on every cell, block winners at N 1024 and 4096 only"
+  },
+  "phase3b": {
+    "cells": ["focus"],
+    "check_sorted": true,
+    "adapters": {
+      "warp": ["W4_wmerge", "W1x_vimnmx_eager", "W1_level", "N5_rows_f", "W5_v4"],
+      "subwarp": ["W1_eager_same_sub", "N5_rows_fs_sub"],
+      "block": [{"id": "W4_chunk4", "runs": 4, "n": "8192,16384,32768"}, "B6_radix"]
+    },
+    "note": "every adapter that declares output_sorted or has a documented post-sort, oracle with --check-sorted, expected ranking from approaches/W4/REPORT.md section 6"
+  }
+}

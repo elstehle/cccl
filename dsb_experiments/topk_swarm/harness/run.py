@@ -312,6 +312,9 @@ def main():
                     "not_guaranteed path in the same lock section)")
     ap.add_argument("--cells", default=os.path.join(HERE, "cells_focus.json"))
     ap.add_argument("--named-cells", help="ideas/named_cells.json: run these workload cells instead of the grid")
+    ap.add_argument("--cell-list", help="JSON list of explicit cells [{key_type, threads, n, k, requirement}] instead "
+                    "of the grid (e.g. the close cells a winners pass selects for the tie_heavy pattern)")
+    ap.add_argument("--check-sorted", action="store_true", help="phase 3b: the oracle also checks the output order")
     ap.add_argument("--keys", help="comma list, subset of the cells file")
     ap.add_argument("--req", help="comma list of requirements")
     ap.add_argument("--n", help="comma list of N")
@@ -366,6 +369,14 @@ def main():
         for name, why in skipped:
             log("skipping named cell %s: %s" % (name, why))
         spec = dict(spec, name="named")
+    elif args.cell_list:
+        items = json.load(open(args.cell_list))
+        items = items if isinstance(items, list) else items.get("cells", [])
+        cells = [{"key_type": c["key_type"], "threads": int(c["threads"]), "n": int(c["n"]), "k": int(c["k"]),
+                  "requirement": c["requirement"]} for c in items if c.get("scope", v_meta["scope"]) == v_meta["scope"]]
+        if args.keys:
+            cells = [c for c in cells if c["key_type"] in args.keys.split(",")]
+        spec = dict(spec, name="list")
     else:
         cells = expand_cells(spec, v_meta["scope"], args)
     if not cells:
@@ -500,6 +511,8 @@ def main():
                 extra = ["--out", out, "--pattern", pat, "--regimes", regimes, "--seeds", str(args.seeds)]
                 if args.runs and args.runs > 1:
                     extra += ["--runs", str(args.runs)]
+                if args.check_sorted:
+                    extra.append("--check-sorted")
                 if args.no_battery:
                     extra.append("--no-battery")
                 if args.oracle_only:
@@ -579,6 +592,8 @@ def main():
             out_cells.append(cell)
         if "device" in d and "device" not in meta["node"]:
             meta["node"]["device"] = d["device"]
+        if d.get("harness_version") and not meta.get("harness_version"):
+            meta["harness_version"] = d["harness_version"]
 
     meta["canary"] = canary
     meta["cells"] = out_cells

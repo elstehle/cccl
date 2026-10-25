@@ -141,7 +141,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.8";
+inline constexpr const char* harness_version = "0.10";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -463,6 +463,22 @@ struct smem_view
   }
 };
 
+// Harness input loads bypass L1 (ld.global.cg): a real kernel loads each tile once and never finds
+// it in L1, while the 16 harness inputs can be L1 resident, which made the control's per-call cost
+// depend on the chain length and on the variant's shared-memory carve-out (harness 0.6 to 0.9).
+template <typename T>
+__device__ __forceinline__ T stream_load(const T* p)
+{
+  if constexpr (sizeof(T) == 2)
+  {
+    return static_cast<T>(__ldcg(reinterpret_cast<const unsigned short*>(p)));
+  }
+  else
+  {
+    return __ldcg(p);
+  }
+}
+
 // Load one group's input (N keys as raw bits) into the adapter's declared arrangement and set the
 // matching source indices.
 template <class KeyT, int Threads, class A>
@@ -492,7 +508,7 @@ __device__ __forceinline__ void load_input(
 #pragma unroll
       for (int v = 0; v < vecs; ++v)
       {
-        const vec_t w = src[v];
+        const vec_t w = __ldcg(src + v);
         bits_t tmp[per_vec];
         memcpy(tmp, &w, sizeof(w));
 #pragma unroll
@@ -510,7 +526,7 @@ __device__ __forceinline__ void load_input(
       for (int i = 0; i < IPT; ++i)
       {
         const int item = lane * IPT + i;
-        ks[i]          = traits::from_bits(in[item]);
+        ks[i]          = traits::from_bits(stream_load(in + item));
         idx[i]         = item;
       }
     }
@@ -521,7 +537,7 @@ __device__ __forceinline__ void load_input(
     for (int i = 0; i < IPT; ++i)
     {
       const int item = i * T + lane;
-      ks[i]          = traits::from_bits(in[item]);
+      ks[i]          = traits::from_bits(stream_load(in + item));
       idx[i]         = item;
     }
   }
@@ -540,7 +556,8 @@ __device__ __forceinline__ void load_input(
 #pragma unroll
       for (int r = 0; r < P; ++r)
       {
-        w |= static_cast<uint32_t>(in[static_cast<size_t>(r) * N + item]) << (r * 8 * sizeof(typename traits::bits_t));
+        w |= static_cast<uint32_t>(stream_load(in + static_cast<size_t>(r) * N + item))
+             << (r * 8 * sizeof(typename traits::bits_t));
       }
       ks[j]  = w;
       idx[j] = item;
@@ -557,7 +574,7 @@ __device__ __forceinline__ void load_input(
     for (int j = 0; j < words; ++j)
     {
       const int word = j * T + lane;
-      ks[j]          = w[word];
+      ks[j]          = __ldcg(w + word);
 #pragma unroll
       for (int s = 0; s < P; ++s)
       {
@@ -701,11 +718,11 @@ __global__ void __launch_bounds__(Cfg::lat_block) oracle_kernel(
 }
 
 // Latency: chain of `chain` serialized calls, min over `reps` repetitions of the bracketed cycles.
-//   data-dependent : call n of repetition r loads input ((r * chain + n + dep) & 15) where dep is
-//                    the previous call's first output index masked with the runtime zero
-//                    `zero_mask`. The rotation with r makes every chain length touch all 16 inputs
-//                    over the repetitions, so the per-call cache behavior does not depend on the
-//                    chain length (a chain of 16 would otherwise leave L1 where a chain of 8 stays)
+//   data-dependent : call n loads input ((n * (16 / chain) + dep) & 15) where dep is the previous
+//                    call's first output index masked with the runtime zero `zero_mask`: every
+//                    chain length sees a deterministic, evenly strided subset of the 16 inputs
+//                    (chain 16 all of them), the same in every repetition, so the min over
+//                    repetitions compares identical work and the loads stream past L1 regardless
 //   data-oblivious : in-place chain on the register-resident input, first key xor-perturbed with
 //                    the masked previous output
 // A generate-only control (noop adapter) runs the identical kernel and is subtracted on the host.
@@ -735,7 +752,8 @@ __global__ void __launch_bounds__(Cfg::lat_block) lat_kernel(
   group_sync<T>();
   int dep = sm.idx_buf(0, group, groups)[0];
 
-  long long best = LLONG_MAX;
+  const int stride = (chain > 0 && chain < num_inputs) ? num_inputs / chain : 1;
+  long long best   = LLONG_MAX;
 #pragma unroll 1
   for (int rep = 0; rep < reps; ++rep)
   {
@@ -747,7 +765,7 @@ __global__ void __launch_bounds__(Cfg::lat_block) lat_kernel(
     {
       if constexpr (DataDep)
       {
-        const int which = (rep * chain + n + (dep & zero_mask)) & (num_inputs - 1);
+        const int which = (n * stride + (dep & zero_mask)) & (num_inputs - 1);
         load_input<typename Cfg::KeyT, Cfg::Threads, A>(
           g_in + static_cast<size_t>(which) * Cfg::keys_per_call, ks, idx, lane);
       }
@@ -1296,11 +1314,41 @@ struct oracle_verdict
 //   prefer_smaller_index : exact index set of the k first items in (key descending, index ascending)
 //   prefer_larger_index  : same with index descending
 //   pairs                : every returned key equals the input key at its index
-inline oracle_verdict
-check_topk(const std::vector<float>& v, int k, requirement req, const int* out_idx, const float* out_keys)
+inline oracle_verdict check_topk(
+  const std::vector<float>& v, int k, requirement req, const int* out_idx, const float* out_keys, bool sorted = false)
 {
   oracle_verdict r;
   const int n = static_cast<int>(v.size());
+  if (sorted)
+  {
+    // sorted output: keys non-increasing along the output slots, and under an index tie-break the
+    // indices ascending (prefer_smaller_index) or descending (prefer_larger_index) among equal keys
+    for (int i = 1; i < k; ++i)
+    {
+      const int a = out_idx[i - 1], b = out_idx[i];
+      if (a < 0 || a >= n || b < 0 || b >= n)
+      {
+        break; // reported below
+      }
+      if (v[a] < v[b])
+      {
+        r.ok  = false;
+        r.why = "output not sorted: slot " + std::to_string(i - 1) + " holds a smaller key than slot " + std::to_string(i);
+        return r;
+      }
+      if (v[a] == v[b] && req != requirement::not_guaranteed)
+      {
+        const bool bad = (req == requirement::prefer_smaller_index) ? (a > b) : (a < b);
+        if (bad)
+        {
+          r.ok  = false;
+          r.why = "equal keys at slots " + std::to_string(i - 1) + " and " + std::to_string(i)
+                + " are not in the tie-break index order";
+          return r;
+        }
+      }
+    }
+  }
   std::vector<char> seen(n, 0);
   for (int i = 0; i < k; ++i)
   {
@@ -1581,14 +1629,23 @@ inline json resources_json(const resources& r)
   return j;
 }
 
+// Returns false (and clears the error) when the dynamic shared memory cannot be granted, so a
+// regime whose launch configuration does not fit (8 warps of a large per-warp temp storage in the
+// throughput block) is reported as unsupported instead of killing the cell binary.
 template <class Kernel>
-void enable_large_smem(Kernel k, size_t dyn)
+bool enable_large_smem(Kernel k, size_t dyn)
 {
   if (dyn > 48 * 1024)
   {
-    TOPK_CHECK(cudaFuncSetAttribute(
-      reinterpret_cast<const void*>(k), cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(dyn)));
+    const cudaError_t e = cudaFuncSetAttribute(
+      reinterpret_cast<const void*>(k), cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(dyn));
+    if (e != cudaSuccess)
+    {
+      cudaGetLastError();
+      return false;
+    }
   }
+  return true;
 }
 
 inline void fit_line(const std::vector<double>& x, const std::vector<double>& y, double& slope, double& icpt, double& r2)
@@ -1701,6 +1758,7 @@ struct options
   int reps               = default_reps;
   int calls              = 0; // 0: default_calls(N)
   int runs               = 0; // 0 or 1: off, M: every input row is M sorted runs
+  bool check_sorted      = false; // phase 3b: the oracle also checks the output order
   bool verbose           = false;
 };
 
@@ -1756,6 +1814,10 @@ inline options parse_options(int argc, char** argv)
     {
       o.runs = atoi(next("--runs").c_str());
     }
+    else if (a == "--check-sorted")
+    {
+      o.check_sorted = true;
+    }
     else if (a == "--verbose")
     {
       o.verbose = true;
@@ -1763,7 +1825,7 @@ inline options parse_options(int argc, char** argv)
     else if (a == "--help")
     {
       printf("usage: cell [--out f.json] [--pattern p] [--regimes latency,throughput] [--oracle-only] "
-             "[--no-battery] [--seeds n] [--reps n] [--calls n] [--runs m] [--verbose]\n");
+             "[--no-battery] [--seeds n] [--reps n] [--calls n] [--runs m] [--check-sorted] [--verbose]\n");
       exit(0);
     }
     else
@@ -1815,7 +1877,7 @@ struct cell_runner
   static constexpr int K = Cfg::K;
 
   // ---- oracle
-  static bool oracle_one(const host_input<KeyT>& in, std::string& why)
+  static bool oracle_one(const host_input<KeyT>& in, std::string& why, bool check_sorted)
   {
     constexpr int groups = Cfg::lat_groups;
     constexpr int slots  = Cfg::out_slots;
@@ -1833,7 +1895,17 @@ struct cell_runner
     TOPK_CHECK(cudaMemset(d_idx, 0xff, static_cast<size_t>(groups) * slots * sizeof(int)));
     const size_t dyn = Cfg::dyn_bytes(groups);
     auto kern        = oracle_kernel<Cfg, A>;
-    enable_large_smem(kern, dyn);
+    if (!enable_large_smem(kern, dyn))
+    {
+      why = "dynamic shared memory of " + std::to_string(dyn) + " bytes exceeds the device limit";
+      cudaFree(d_in);
+      cudaFree(d_idx);
+      if (d_keys)
+      {
+        cudaFree(d_keys);
+      }
+      return false;
+    }
     kern<<<1, Cfg::lat_block, dyn>>>(d_in, d_idx, d_keys);
     cudaError_t e = cudaDeviceSynchronize();
     if (e != cudaSuccess)
@@ -1868,7 +1940,7 @@ struct cell_runner
       {
         const size_t at = static_cast<size_t>(g) * slots + static_cast<size_t>(r) * K;
         auto v = check_topk(Cfg::rows == 1 ? in.values : in.row(r), K, Cfg::Req, h_idx.data() + at,
-                            Cfg::pairs ? h_keys.data() + at : nullptr);
+                            Cfg::pairs ? h_keys.data() + at : nullptr, check_sorted);
         if (!v.ok)
         {
           ok  = false;
@@ -1933,7 +2005,7 @@ struct cell_runner
         auto in = make_input<KeyT>(it.pattern, N, K, static_cast<unsigned>(s), Cfg::rows, o.runs);
         std::string why;
         ++r.oracle_cases;
-        if (!oracle_one(in, why))
+        if (!oracle_one(in, why, o.check_sorted))
         {
           r.oracle_ok = false;
           r.oracle_failures.push_back(std::string(it.pattern) + " seed " + std::to_string(s) + ": " + why);
@@ -1950,13 +2022,16 @@ struct cell_runner
   // dyn_floor: the no-op control is launched with at least the variant's dynamic shared memory so
   // both kernels see the same L1 carve-out (and the same occupancy in the throughput regime)
   template <class C, class Ad>
-  static void
+  static bool
   latency_sweep(const bits_t* d_in, int reps, std::vector<long long>& minima, resources& res, size_t dyn_floor)
   {
     constexpr int groups = C::lat_groups;
     const size_t dyn     = std::max(C::dyn_bytes(groups), dyn_floor);
     auto kern            = lat_kernel<C, Ad, C::data_dependent>;
-    enable_large_smem(kern, dyn);
+    if (!enable_large_smem(kern, dyn))
+    {
+      return false;
+    }
     res = query_resources(kern, C::lat_block, dyn);
     long long* d_c;
     int* d_o;
@@ -1969,7 +2044,14 @@ struct cell_runner
       for (int i = 0; i < num_chain_points; ++i)
       {
         kern<<<1, C::lat_block, dyn>>>(d_in, chain_lengths[i], reps, 0, d_c, d_o);
-        TOPK_CHECK(cudaDeviceSynchronize());
+        const cudaError_t e = cudaDeviceSynchronize();
+        if (e != cudaSuccess)
+        {
+          cudaGetLastError();
+          cudaFree(d_c);
+          cudaFree(d_o);
+          return false;
+        }
         std::vector<long long> c(groups);
         TOPK_CHECK(cudaMemcpy(c.data(), d_c, groups * sizeof(long long), cudaMemcpyDeviceToHost));
         minima[i] = std::min(minima[i], c[0]);
@@ -1977,14 +2059,20 @@ struct cell_runner
     }
     TOPK_CHECK(cudaFree(d_c));
     TOPK_CHECK(cudaFree(d_o));
+    return true;
   }
 
   static void run_latency(const options& o, const bits_t* d_in, adapter_result& r)
   {
     std::vector<double> x(chain_lengths, chain_lengths + num_chain_points), y, yn;
     const size_t dyn_variant = Cfg::dyn_bytes(Cfg::lat_groups);
-    latency_sweep<Cfg, A>(d_in, o.reps, r.lat_minima, r.lat_res, dyn_variant);
-    latency_sweep<NoopCfg, Noop>(d_in, o.reps, r.lat_noop_minima, r.lat_noop_res, dyn_variant);
+    if (!latency_sweep<Cfg, A>(d_in, o.reps, r.lat_minima, r.lat_res, dyn_variant)
+        || !latency_sweep<NoopCfg, Noop>(d_in, o.reps, r.lat_noop_minima, r.lat_noop_res, dyn_variant))
+    {
+      r.error += "latency regime unsupported on this device: launch with " + std::to_string(dyn_variant)
+               + " bytes of dynamic shared memory failed; ";
+      return;
+    }
     for (int i = 0; i < num_chain_points; ++i)
     {
       y.push_back(static_cast<double>(r.lat_minima[i]));
@@ -2011,7 +2099,10 @@ struct cell_runner
     constexpr int groups = C::thr_groups;
     const size_t dyn     = std::max(C::dyn_bytes(groups), dyn_floor);
     auto kern            = thr_kernel<C, Ad>;
-    enable_large_smem(kern, dyn);
+    if (!enable_large_smem(kern, dyn))
+    {
+      return false;
+    }
     res = query_resources(kern, C::thr_block, dyn);
     if (res.occupancy <= 0)
     {
@@ -2064,7 +2155,9 @@ struct cell_runner
     if (!throughput_one<Cfg, A>(d_in, calls, dev, r.thr_value, r.thr_ms, r.thr_ms_all, r.thr_grid, r.thr_elements,
                                 r.thr_res, dyn_variant))
     {
-      r.error += "throughput kernel could not run (occupancy 0 or launch failure); ";
+      r.error += "throughput regime unsupported on this device: " + std::to_string(dyn_variant)
+               + " bytes of dynamic shared memory for " + std::to_string(Cfg::thr_groups)
+               + " groups per block exceed the limit or the kernel cannot launch, latency numbers stand; ";
       return;
     }
     throughput_one<NoopCfg, Noop>(d_in, calls, dev, r.thr_noop, noop_ms, dummy, noop_grid, noop_el, r.thr_noop_res,
@@ -2201,6 +2294,7 @@ json make_cells(const adapter_result& v,
                 const std::string& control_name,
                 int rows,
                 int runs,
+                bool check_sorted,
                 int threads,
                 int n,
                 int k,
@@ -2222,6 +2316,10 @@ json make_cells(const adapter_result& v,
     if (runs > 1)
     {
       j.add("runs", runs);
+    }
+    if (check_sorted)
+    {
+      j.add("output_sorted_checked", true);
     }
     j.add("threads", threads);
     j.add("requirement", to_string(req));
@@ -2349,6 +2447,7 @@ int run_cell(int argc, char** argv)
   root.add("control_is_aa", same_ab);
   root.add("pattern", o.pattern);
   root.add("runs", o.runs);
+  root.add("check_sorted", o.check_sorted);
   root.add("variant_supported", v_ok);
   root.add("control_supported", c_ok);
   root.add("oracle_selftest", oracle_selftest(N, K));
@@ -2406,7 +2505,7 @@ int run_cell(int argc, char** argv)
     root.add("status",
              !selftest_ok ? "selftest_failed" : vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
     root.add("cells",
-             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, VCfg::rows, o.runs, Threads, N, K, Req,
+             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, VCfg::rows, o.runs, o.check_sorted, Threads, N, K, Req,
                                              VA::output, o.pattern, can0, can1)
                           : json::array());
 
