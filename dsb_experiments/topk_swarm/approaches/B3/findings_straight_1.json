@@ -1,0 +1,59 @@
+{
+ "author": "opt-B3",
+ "approach_id": "B3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 4176,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+  "k_range": "[1, N) at run time, k == N unsupported",
+  "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+  "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+  "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+  "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "commit": "f89a43fa14",
+ "report_path": "approaches/B3/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B3_straight.cuh",
+  "approaches/B3/block_topk_compact.cuh",
+  "approaches/B3/model.py",
+  "harness/cells_b3.json"
+ ],
+ "techniques_adopted": [
+  "T9",
+  "T10",
+  "T11"
+ ],
+ "techniques_contributed": [
+  "T32"
+ ],
+ "correctness_notes": "Every cell passed the full oracle battery for both requirements (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized). Control is B3_padded in the same lock section. One change: every guarded per-item memory operation (histogram increment, compaction store, output store) is a compare plus a predicated instruction inside one inline PTX statement.",
+ "findings": {
+  "low_level": [
+   "ptxas keeps the branch around shared atomics whatever the PTX says: the fp32 N 16384 K 64 latency kernel has 482 BSSY against 764 for the padded control and 608 ATOMS with 0 predicated in both, the asm `@p red.shared.add.u32` is emitted as ISETP, BSSY, @P0 BRA, SHF, LOP3, ATOMS.POPC.INC.32, NOP, BSYNC per item. The stores were already predicated in the C++ form (876 of 880 STS in both kernels), so the BSSY reduction comes from the loop shape (position increments as selects outside any guarded region).",
+   "Registers: fp32 N 16384 latency 185 against 223, but bf16 N 8192 latency 80 against 64 and throughput 103 against 64 (occupancy 2 against 4 blocks per SM), bf16 N 16384 latency spills 96 bytes (0 before). The asm operands force the compare inputs to be materialized per item (ISETP 3954 against 3000 in the fp32 N 16384 kernel).",
+   "Instruction count 30786 against 32482 lines for the fp32 N 16384 latency kernel (two call copies)."
+  ],
+  "algorithmic": [
+   "Latency: compaction cells 1.00x to 1.10x (bf16 N 4096 k 32 1.097x, fp32 N 8192 k 64 1.072x, N 32768 k 256 1.023x and 1.075x), fp32 fallback cells 1.05x to 1.14x, bf16 fallback cells 0.88x to 0.98x (registers and spills). Throughput: bf16 0.77x to 1.07x, fp32 0.94x to 1.11x.",
+   "The remaining branch regions are the histogram atomics of the filtered passes, about four instructions per item per pass on top of the sunk address computation, paid by B1 as well (516 BSSY in its kernel of the same binary)."
+  ],
+  "negative": [
+   "Inline PTX predication does not remove the reconvergence regions around shared atomics on nvcc 13.4.92 and costs registers on bf16 (T32).",
+   "bf16 N 8192 throughput 0.84x and N 8192 k 1024 0.77x from the occupancy loss, the one cell group where this variant should be reverted to the C++ form."
+  ],
+  "surprises": [
+   "B1's own kernel branches around every histogram atomic at IPT 64 (0 predicated ATOMS), the July observation of predicated fire-and-forget atomics holds at IPT 4 only."
+  ],
+  "open_questions": [
+   "Would an unconditional atomic into a per-thread dummy word (256 private words, T10) beat the branch regions in the filtered passes? Estimated a wash at IPT 64, not measured.",
+   "Can the register cost on bf16 be avoided by keeping the asm only for the stores of the compaction sweep?"
+  ]
+ }
+}

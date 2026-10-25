@@ -1,0 +1,72 @@
+{
+ "author": "opt-B3",
+ "approach_id": "B3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2128,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+  "k_range": "[1, N) at run time, k == N unsupported",
+  "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+  "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+  "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+  "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "commit": "f269717c45",
+ "report_path": "approaches/B3/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B3_tuned.cuh",
+  "approaches/B3/block_topk_compact.cuh",
+  "approaches/B3/model.py",
+  "harness/cells_b3.json"
+ ],
+ "techniques_adopted": [
+  "T9",
+  "T10",
+  "T11",
+  "T21",
+  "T22",
+  "T27",
+  "T32"
+ ],
+ "techniques_contributed": [
+  "T29",
+  "T30",
+  "T31",
+  "T32"
+ ],
+ "correctness_notes": "Every cell passed the full oracle battery for both requirements (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized). Final direct comparison of the best B3 configuration against B1_reference (not_guaranteed control for both requirements through --control-req) on all B3 cells, same lock section, the kill experiment of the idea card included (N 8192 k 64, both types).",
+ "findings": {
+  "low_level": [
+   "Registers of the latency kernel at IPT 4, 8, 16, 32, 64, 128: bf16 32, 39, 63, 80, 128, 255 (B1 40, 48, 64, 128, 127, 255), fp32 40, 40, 79, 127, 255, 255 (B1 44, 48, 64, 128, 169, 255). Spills: bf16 96 bytes at N 16384 and 64 at N 32768 (B1 0), fp32 696 at N 32768 (B1 1024). Throughput occupancy: 6, 6, 6, 2, 2, 1 blocks per SM for bf16 against B1 8, 6, 4, 4, 2, 1 (the bf16 N 8192 kernel needs 103 registers for the predicated asm form, the loss of 2 blocks per SM is the 0.83x there), fp32 6, 5, 4, 2, 1, 1 against 6, 5, 4, 2, 1, 1.",
+   "Shared memory 3152 to 69712 bytes against B1 4256 to 147488 (candidate buffer of (N/1024 + 1) x 256 words of 4 or 8 bytes plus two 512-bin histograms from 16 or 32 items per thread, two 256-bin histograms below).",
+   "BAR.SYNC per latency kernel: 23 (bf16) and 35 (fp32) without compaction, 35 and 59 with, against B1 25 and 37. The compaction path executes 1 init, 3 per pass, 2 for the compaction and 1 for the final scan.",
+   "Canaries flat at 32.00 cycles and 3806 us at both ends of the batch."
+  ],
+  "algorithmic": [
+   "Latency against B1 (bf16 then fp32): N 1024 k 16 1.00x and 0.94x, k 64 1.06x and 0.99x, N 2048 k 16 0.99x and 0.96x, k 1024 1.36x and 1.35x, N 4096 k 32 1.10x and 1.03x, k 256 1.33x and 1.33x, N 8192 k 64 1.05x and 1.15x, k 1024 1.75x and 1.87x, N 16384 k 64 0.94x and 1.16x, k 1024 1.61x and 1.79x, N 32768 k 256 1.20x and 1.37x, k 2048 1.82x and 2.00x. Throughput follows: 0.90x to 1.07x at small k below N 8192, 1.07x to 1.26x at small k for fp32 from N 8192, 1.16x to 1.76x at k >= N/16, 0.83x and 0.91x at bf16 N 8192 and 16384 small k (occupancy).",
+   "Where the gain comes from: at k >= N/16 the scan-based index-only emission replaces B1's k-dependent ticket pair epilogue (T29, 5k to 13k cycles at k 1024 to 2048) and from 16 (fp32) or 32 (bf16) items per thread the compaction after a 9-bit first pass removes two to three tile sweeps of the later passes (fp32) or one (bf16). At small k and small N nothing is saved and the extra barriers and the scan cost 0 to 6 percent against B1.",
+   "Kill experiment of the idea card, N 8192 k 64 random, same session: 1.051x (bf16) and 1.149x (fp32) in latency, 0.833x and 1.068x in throughput, below the 1.3x threshold. The card's own clause holds: confined to N 32768 and fp32 (1.366x at N 32768 k 256 fp32, 1.196x bf16) and to be merged into B1 as an option (the compaction from 16 or 32 items per thread with a 9-bit first digit, and the scan emission at every size).",
+   "prefer_smaller_index costs nothing: identical code path, 0.997x to 1.003x of not_guaranteed in every cell (the tie ranks come from the same packed scan in index order). bf16 inputs tie at the k-th key in every cell (1.4 to 32 keys equal to the k-th), so the deterministic rank is exercised there.",
+   "The fp32 advantage over bf16 at equal N and k (1.15x against 1.05x at N 8192 k 64, 1.37x against 1.20x at N 32768 k 256) is the pass count: fp32 saves two or three later tile sweeps by compaction, bf16 one."
+  ],
+  "negative": [
+   "Compaction does not pay below 16 items per thread for fp32 or 32 for bf16, and at small k it never pays more than 1.37x at any N in the focus set: B1's later passes are cheap predicated sweeps, the card's model charged them as atomic sweeps.",
+   "bf16 at N 8192 and 16384 with small k loses in throughput (0.83x, 0.91x) through registers, the predicated asm store form should be reverted for 16-bit keys at 32 items per thread (T32).",
+   "N 1024 and 2048 at small k: 0.94x to 1.00x of B1 in latency and 0.90x to 0.97x in throughput, B3 has no business there, which PRIORITIES.md predicted."
+  ],
+  "surprises": [
+   "The largest wins of the approach (1.6x to 2.0x at k >= N/16) do not need compaction at all below 32 items per thread, they are the emission. T21 shows B1's optimizer reaching an index-only ticket epilogue that keeps the k dependence, so the final evaluation should run B3_tuned against B1_idx, where the gap at large k should shrink to the ticket serialization (about one cycle per selected item)."
+  ],
+  "open_questions": [
+   "Compaction after an N6 first pass (T25: 1 to 7 candidates instead of 14 percent of N) would make the later passes free at every N, the natural combination of the two cards.",
+   "A striped candidate layout with a block-uniform slot count (ceil(c1/256) slots) instead of N/1024 per thread would cut the per-slot cost of the later passes at N 16384 and 32768, it needs a ballot-table tie rank to keep index order (report section 5).",
+   "The B1 reference pays 516 branch regions per call at IPT 64 for its filtered histogram atomics just as B3 does (T32), an unconditional atomic into a per-thread dummy word is the untested alternative for both."
+  ]
+ }
+}

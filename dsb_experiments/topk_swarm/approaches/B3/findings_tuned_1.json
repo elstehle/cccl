@@ -1,0 +1,58 @@
+{
+ "author": "opt-B3",
+ "approach_id": "B3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2128,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+  "k_range": "[1, N) at run time, k == N unsupported",
+  "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+  "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+  "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+  "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "commit": "50039daee3",
+ "report_path": "approaches/B3/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B3_tuned.cuh",
+  "approaches/B3/block_topk_compact.cuh",
+  "approaches/B3/model.py",
+  "harness/cells_b3.json"
+ ],
+ "techniques_adopted": [
+  "T9",
+  "T10",
+  "T11",
+  "T21",
+  "T22",
+  "T27",
+  "T32"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Every cell passed the full oracle battery for both requirements (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized). Control is B3_digit9 in the same lock section. Two changes on disjoint cell groups: below 32 items per thread the adapter selects 8-bit digits and no compaction (the fallback path of the earlier variants, compaction compiled out), at 32 and above the code is digit9 with the scan and zeroing of every pass limited to that pass's live bins (256 after the first). This batch measured the threshold at 32 for both key types, the final adapter uses 16 for fp32 after the N 4096 fp32 rows of this batch.",
+ "findings": {
+  "low_level": [
+   "Without compaction the N 1024 bf16 latency kernel needs 32 registers (8 blocks per SM) against 40, BAR.SYNC 23 against 35 (the compaction path's barriers are compiled out), fp32 N 1024 40 against 48. At 32 items per thread and above the kernels are identical to digit9 except the scan width, registers and spills unchanged.",
+   "The live-bin scan (one bin per thread instead of two after the 9-bit first pass, one zeroing store instead of two) measures 0.999x to 1.001x at every cell from N 8192 on: the second scan item is hidden behind the shuffle chain and the barrier."
+  ],
+  "algorithmic": [
+   "Below 32 items per thread the no-compaction policy wins 1.18x to 1.23x at N 1024, 1.13x to 1.20x at N 2048 and 1.00x to 1.04x at N 4096 bf16 in latency, 1.13x to 1.19x in throughput, against the digit9 compaction. fp32 at N 4096 loses 0.94x (k 32) and 0.875x (k 256) without compaction: fp32 has two more passes to save than bf16 and compaction pays one tile size earlier, so the final adapter compacts from 16 items per thread for 32-bit keys.",
+   "The digit9 penalty at small N measured in batch 4 was therefore the compaction overhead at small tiles (count sweep, scan, store sweep, candidate loads, extra barriers), not the 512-bin scan."
+  ],
+  "negative": [
+   "Scanning only the live bins is not worth its template machinery on its own, it stays because it is free."
+  ],
+  "surprises": [
+   "Compaction is a loss at 16 items per thread for bf16 but a 7 to 14 percent win for fp32 at the same tile size, the pass count after the first pass decides, not the tile size alone."
+  ],
+  "open_questions": [
+   "bf16 at 32 items per thread sits at the threshold (1.00x to 1.05x against the fallback), the predicated asm form costs it 2 blocks per SM in throughput (T32), the C++ form with compaction at that size was not measured."
+  ]
+ }
+}
