@@ -1,0 +1,400 @@
+{
+ "approach_id": "B2",
+ "variant": "packed_n4kill",
+ "scope": "block",
+ "arch": "b200",
+ "cuda_version": "13.4.92",
+ "node": "umbriel-b200-091",
+ "date": "2026-10-25",
+ "commit": "8f15348fc3",
+ "author": "opt-B2b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 68,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "variant B2_packed: 1 init plus k rounds plus 1 tie count (plus the finish on the tie path). Control B2_valrounds (atomic_adaptive port): 1 init, k rounds, 1 early flood check, 1 count, 2 more on the flood path",
+  "k_range": "variant [1, min(N/2, 256)], control [2, 32] (one-warp histogram scan), measured k 4 and 16",
+  "n_range": "N = 256 x IPT, measured N 1024, 4096 and 8192 (IPT 4, 16, 32)",
+  "type_constraints": "fp32 keys only in this batch (the control has no bf16 path), int32 indices",
+  "nan_behavior": "both twiddle bitwise (positive NaN above +inf, negative NaN below -inf), -0.0 normalized to +0.0, never in focus-set inputs",
+  "tie_break_support": "variant inherent (index in the key word, exact finish on the tie class). Control not_guaranteed only: boundary ties are emitted in shared-memory ticket order",
+  "sorted_output_support": "variant inherent, control unsorted"
+ },
+ "correctness": {
+  "oracle_passed": true,
+  "cases": 78,
+  "notes": "Kill experiment of idea N4 (ideas/queue/N4_truncated_key_packing.md): B2_packed with fp32 truncated-key packing against the value-rounds path of the July atomic_adaptive design ported to the harness (B2_valrounds), same lock section, fp32, not_guaranteed. Both passed the 13-case oracle battery on all 6 cells. Part 1 of the kill experiment (host simulation of the tie class size, approaches/B2/tie_sim.cpp) is in the findings. Built under the holder name opt-B2 before the identity split, see the packed card."
+ },
+ "cells": [
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 1024,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 649.8037634,
+   "control_name": "B2_valrounds",
+   "control_value": 957.7150538,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 30,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 1024,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 863.7940646,
+   "control_name": "B2_valrounds",
+   "control_value": 779.9160111,
+   "canary_start": 3804.800034,
+   "canary_end": 3806.080103,
+   "resources": {
+    "registers": 30,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 9
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 1024,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1679.930108,
+   "control_name": "B2_valrounds",
+   "control_value": 2102.645161,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 45
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 1024,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 405.5072645,
+   "control_name": "B2_valrounds",
+   "control_value": 375.6390051,
+   "canary_start": 3806.175947,
+   "canary_end": 3806.080103,
+   "resources": {
+    "registers": 31,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1064.36828,
+   "control_name": "B2_valrounds",
+   "control_value": 1705.38172,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 955.0577339,
+   "control_name": "B2_valrounds",
+   "control_value": 943.0924216,
+   "canary_start": 3804.447889,
+   "canary_end": 3805.632114,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 9
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 2301.30914,
+   "control_name": "B2_valrounds",
+   "control_value": 3067.282258,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 45
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 4096,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 561.5311917,
+   "control_name": "B2_valrounds",
+   "control_value": 543.318862,
+   "canary_start": 3806.175947,
+   "canary_end": 3806.080103,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 8192,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 2085.569892,
+   "control_name": "B2_valrounds",
+   "control_value": 3254.974462,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 8192,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 660.3572947,
+   "control_name": "B2_valrounds",
+   "control_value": 640.2478229,
+   "canary_start": 3805.664062,
+   "canary_end": 3805.696011,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 9
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 8192,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 3318.844086,
+   "control_name": "B2_valrounds",
+   "control_value": 4980.240591,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 45
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 8192,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 511.0019383,
+   "control_name": "B2_valrounds",
+   "control_value": 496.5949852,
+   "canary_start": 3806.207895,
+   "canary_end": 3806.143999,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+  }
+ ],
+ "findings": {
+  "low_level": [
+   "Both adapters have the same registers at the same IPT (30 to 32, 64 and 128 at IPT 4, 16, 32) and 0 spills. The control's latency kernel has 27 (k 4) and 51 (k 16) BAR.SYNC against 21 and 45 for the variant: its early flood check and its count pass are two barrier round trips, and it carries 1680 to 13328 SASS instructions against 400 to 3096 for the variant (two resolve paths with ticket scatters, a 32-lane shuffle scan, the per-round histogram).",
+   "The control's epilogue is value based: after the k rounds it counts items at or above the k-th round value (IPT compares, atomicAdd, barrier, LDS), takes the fast path when exactly k are found (one ticket atomicAdd with return per selected item, 55 cycles uncontended per T9, serialized per lane) and the flood path otherwise. On fp32 random data the fast path runs every time (1.0 keys at rank k).",
+   "The variant's tie count is one compare per item plus one fire-and-forget atomicAdd of a packed (all, in) count and one barrier round trip, and its finish never ran on the 16 measured inputs of these cells (host simulation: 0.5 to 4 percent of inputs)."
+  ],
+  "algorithmic": [
+   "N4 beats the value-rounds path at every cell (latency, net cycles, same lock section): N 1024 k 4 650 vs 958 (32 percent fewer cycles), k 16 1680 vs 2103 (20 percent), N 4096 k 4 1064 vs 1705 (38 percent), k 16 2301 vs 3067 (25 percent), N 8192 k 4 2086 vs 3255 (36 percent), k 16 3319 vs 4980 (33 percent). Throughput gains are 1 to 11 percent (864 vs 780 Gelem/s at N 1024 k 4, 406 vs 376 at k 16) because both kernels keep the same occupancy and the epilogue is a smaller share of a batched call.",
+   "Verdict on the idea card's thresholds: the gain at N 1024 k 16 fp32 is 20 percent, above the 15 percent bar, and the tie count pass costs about one round (the fp32 fixed cost over bf16 is 270 cycles at IPT 4 including the twiddle and pack differences), below the 300-cycle bar. N4 survives and the value-rounds epilogue is retired for fp32 at N <= 8192. Part 1 (host simulation, 2000 seeds per cell on the harness generator): finish needed on 0.1 to 0.8 percent of inputs at N 1024, 0.4 to 2.3 percent at N 4096 k 4 to 16, 1.8 to 4.2 percent at N 8192 k 4 to 16, tie class at most 2 to 4, rising to 20 to 50 percent at N 32768 (17 key bits) where the second-level finish would run often.",
+   "The epilogue the value rounds pay (difference of the two adapters) is 310 cycles at N 1024 k 4, 420 at k 16, 640 and 770 at N 4096, 1170 and 1660 at N 8192: it grows with IPT (count compares and scatter are per item) and with k (ticket serialization), while the N4 count pass grows only with IPT. The July figure of about 890 cycles at N 1024 k 16 (atomic_adaptive 2331 against its 1443 skeleton) is 420 here because the skeleton of the port already includes the sort and the shifts.",
+   "The round slopes of the two adapters agree (fp32 85.8 vs (2103 - 958) / 12 = 95.4 at IPT 4, the control's rounds carry a slightly longer chain), so the whole gap is prologue plus epilogue, as the idea card's model said."
+  ],
+  "negative": [
+   "The value-rounds path has no cheap prefer_smaller_index: boundary ties come out in ticket order, and an exact variant would need a min-index resolution among the tie class, which is exactly what N4's packed word gives for free. The ported design is therefore the control, not a candidate.",
+   "The early flood check of atomic_adaptive (count against slot[1] after two rounds) costs a barrier round trip on every call and never triggers on random data. It was built for tie floods, which are oracle-only patterns here."
+  ],
+  "surprises": [
+   "The port of a 1024-element, k 16 design to IPT 16 and 32 scales worse than the packed rounds: 13328 SASS instructions and a 1660-cycle epilogue at N 8192 k 16, where the packed adapter's whole call is 3319 cycles."
+  ],
+  "open_questions": [
+   "At N 32768 (17 key bits) the finish would run on 20 to 50 percent of inputs: is a second-level finish still cheaper there than value rounds with a min-index ticket, or does B2 simply not go there (B3 and B4 own that N on the model).",
+   "Whether the tie count can be folded into the last round (post the count with the last head) to save the extra barrier."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T9",
+  "T10",
+  "T11",
+  "T19"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/B2/REPORT_B2b.md",
+ "source_paths": [
+  "harness/adapters/B2_packed.cuh",
+  "harness/adapters/B2_valrounds.cuh",
+  "harness/topk_harness.cuh"
+ ],
+ "_controls": [
+  "B2_valrounds"
+ ],
+ "_batches": [
+  "state/results/opt-B2b/B2_packed_vs_B2_valrounds_focus_kill1_20261025_125708.json"
+ ],
+ "_canary": [
+  {
+   "start": {
+    "timestamp": "2026-10-25T12:57:20Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3806.207895
+   },
+   "end": {
+    "timestamp": "2026-10-25T12:57:31Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3805.824041
+   }
+  }
+ ]
+}
