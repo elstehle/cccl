@@ -51,7 +51,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 368
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -76,7 +80,11 @@
     "smem_bytes": 2304,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 160
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -101,7 +109,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 536
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -126,7 +138,11 @@
     "smem_bytes": 2304,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -151,7 +167,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 792
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -176,7 +196,11 @@
     "smem_bytes": 4352,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 376
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -201,7 +225,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1304
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -226,7 +254,11 @@
     "smem_bytes": 8448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -251,7 +283,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -276,7 +312,11 @@
     "smem_bytes": 2304,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 584
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -301,7 +341,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1672
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -326,7 +370,11 @@
     "smem_bytes": 4352,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 816
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -351,7 +399,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2544
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -376,7 +428,11 @@
     "smem_bytes": 8448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1248
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -401,7 +457,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 9744
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -426,7 +486,11 @@
     "smem_bytes": 33024,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4840
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -451,7 +515,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 336
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -476,7 +544,11 @@
     "smem_bytes": 1152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 144
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -501,7 +573,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -526,7 +602,11 @@
     "smem_bytes": 1152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 192
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -551,7 +631,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -576,7 +660,11 @@
     "smem_bytes": 2176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 296
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -601,7 +689,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1024
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -626,7 +718,11 @@
     "smem_bytes": 4224,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 496
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -651,7 +747,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 768
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -676,7 +776,11 @@
     "smem_bytes": 1152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 360
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -701,7 +805,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1112
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -726,7 +834,11 @@
     "smem_bytes": 2176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 528
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -751,7 +863,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1808
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -776,7 +892,11 @@
     "smem_bytes": 4224,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 880
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -801,7 +921,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6344
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -826,7 +950,11 @@
     "smem_bytes": 16512,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3112
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -851,7 +979,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 368
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -876,7 +1008,11 @@
     "smem_bytes": 576,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 160
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -901,7 +1037,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 544
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -926,7 +1066,11 @@
     "smem_bytes": 1088,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -951,7 +1095,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 864
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -976,7 +1124,11 @@
     "smem_bytes": 2112,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 408
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1001,7 +1153,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 536
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1026,7 +1182,11 @@
     "smem_bytes": 576,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1051,7 +1211,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 808
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1076,7 +1240,11 @@
     "smem_bytes": 1088,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 376
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1101,7 +1269,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1352
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1126,7 +1298,11 @@
     "smem_bytes": 2112,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 640
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1151,7 +1327,11 @@
     "smem_bytes": 1040,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4456
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1176,7 +1356,11 @@
     "smem_bytes": 8256,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 5,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2280
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1201,7 +1385,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1226,7 +1414,11 @@
     "smem_bytes": 2304,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 280
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1251,7 +1443,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1168
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1276,7 +1472,11 @@
     "smem_bytes": 2304,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 520
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1301,7 +1501,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1416
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1326,7 +1530,11 @@
     "smem_bytes": 4352,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 664
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1351,7 +1559,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1936
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1376,7 +1588,11 @@
     "smem_bytes": 8448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 912
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1401,7 +1617,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 12,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4280
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1426,7 +1646,11 @@
     "smem_bytes": 2304,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1952
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1451,7 +1675,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 12,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4736
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1476,7 +1704,11 @@
     "smem_bytes": 4352,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2200
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1501,7 +1733,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 76,
     "occupancy_blocks_per_sm": 12,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 24,
+    "stl_count": 10,
+    "ldl_count": 7,
+    "sass_instructions": 5624
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1526,7 +1762,11 @@
     "smem_bytes": 8448,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2592
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1551,7 +1791,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 12760
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1576,7 +1820,11 @@
     "smem_bytes": 33024,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 6120
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1601,7 +1849,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 528
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1626,7 +1878,11 @@
     "smem_bytes": 1152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 232
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1651,7 +1907,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 776
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1676,7 +1936,11 @@
     "smem_bytes": 1152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 352
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1701,7 +1965,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 984
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1726,7 +1994,11 @@
     "smem_bytes": 2176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 448
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1751,7 +2023,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1376
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1776,7 +2052,11 @@
     "smem_bytes": 4224,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 664
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1801,7 +2081,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 20,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2232
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1826,7 +2110,11 @@
     "smem_bytes": 1152,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 960
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1851,7 +2139,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 16,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2552
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1876,7 +2168,11 @@
     "smem_bytes": 2176,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1120
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1901,7 +2197,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 16,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3264
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1926,7 +2226,11 @@
     "smem_bytes": 4224,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1496
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1951,7 +2255,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 12,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 7880
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -1976,7 +2284,11 @@
     "smem_bytes": 16512,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3864
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2001,7 +2313,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2026,7 +2342,11 @@
     "smem_bytes": 576,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 280
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2051,7 +2371,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 792
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2076,7 +2400,11 @@
     "smem_bytes": 1088,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 360
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2101,7 +2429,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1112
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2126,7 +2458,11 @@
     "smem_bytes": 2112,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 528
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2151,7 +2487,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1176
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2176,7 +2516,11 @@
     "smem_bytes": 576,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 520
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2201,7 +2545,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1440
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2226,7 +2574,11 @@
     "smem_bytes": 1088,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 656
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2251,7 +2603,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1968
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2276,7 +2632,11 @@
     "smem_bytes": 2112,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 920
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2301,7 +2661,11 @@
     "smem_bytes": 1040,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 28,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 5312
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   },
@@ -2326,7 +2690,11 @@
     "smem_bytes": 8256,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2592
    },
    "raw_file": "state/results/opt-W2/W2_packed_sw_vs_W2_packed_sw_focus_subwarp_20261025_133928.json"
   }
@@ -2359,12 +2727,15 @@
   "T17",
   "T19"
  ],
- "techniques_contributed": [],
+ "techniques_contributed": [
+  "T40"
+ ],
  "report_path": "approaches/W2/REPORT.md",
  "source_paths": [
   "harness/adapters/W2_impl.cuh",
   "harness/adapters/W2_packed_sw.cuh"
  ],
+ "clone_commit": "b6bfae9a37bb",
  "_controls": [
   "W2_packed_sw"
  ],

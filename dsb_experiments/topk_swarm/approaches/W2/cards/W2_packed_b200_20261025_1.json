@@ -51,7 +51,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 480
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -76,7 +80,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 256
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -101,7 +109,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 712
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -126,7 +138,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 368
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -151,7 +167,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1160
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -176,7 +196,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 592
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -201,7 +225,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1376
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -226,7 +254,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 696
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -251,7 +283,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1888
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -276,7 +312,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -301,7 +341,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3000
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -326,7 +370,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1520
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -351,7 +399,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 768
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -376,7 +428,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 400
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -401,7 +457,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1000
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -426,7 +486,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 520
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -451,7 +515,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1448
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -476,7 +544,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 744
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -501,7 +573,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 12,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -526,7 +602,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1536
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -551,7 +631,11 @@
     "smem_bytes": 144,
     "spill_bytes": 56,
     "occupancy_blocks_per_sm": 12,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 16,
+    "stl_count": 7,
+    "ldl_count": 5,
+    "sass_instructions": 3504
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -576,7 +660,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1768
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -601,7 +689,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4496
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -626,7 +718,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_slope_20261025_125428.json"
   },
@@ -651,7 +747,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 160
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -676,7 +776,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 88
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -701,7 +805,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 160
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -726,7 +834,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 88
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -751,7 +863,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -776,7 +892,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 168
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -801,7 +921,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -826,7 +950,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 168
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -851,7 +979,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 240
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -876,7 +1008,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 128
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -901,7 +1037,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 240
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -926,7 +1066,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 128
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -951,7 +1095,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 480
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -976,7 +1124,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 256
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1001,7 +1153,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 480
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1026,7 +1182,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 256
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1051,7 +1211,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1384
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1076,7 +1240,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 720
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1101,7 +1269,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1384
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1126,7 +1298,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 720
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1151,7 +1327,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 584
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1176,7 +1356,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 304
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1201,7 +1385,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 584
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1226,7 +1414,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 304
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1251,7 +1443,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1128
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1276,7 +1472,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 576
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1301,7 +1501,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1128
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1326,7 +1530,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 576
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1351,7 +1559,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3176
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1376,7 +1588,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2104
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1401,7 +1617,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3176
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1426,7 +1646,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 4,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2104
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1451,7 +1675,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 896
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1476,7 +1704,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 464
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1501,7 +1733,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 896
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1526,7 +1762,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 6,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 464
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1551,7 +1791,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1576,7 +1820,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1000
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1601,7 +1849,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1626,7 +1878,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1000
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1651,7 +1907,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3440
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1676,7 +1936,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1736
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1701,7 +1965,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3440
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1726,7 +1994,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1736
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1751,7 +2023,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 24,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8760
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1776,7 +2052,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4400
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1801,7 +2081,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 24,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 8760
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1826,7 +2110,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4400
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1851,7 +2139,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 24,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4568
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1876,7 +2168,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1901,7 +2197,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 24,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4568
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1926,7 +2226,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1951,7 +2255,11 @@
     "smem_bytes": 8208,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 24,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4568
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -1976,7 +2284,11 @@
     "smem_bytes": 65568,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2001,7 +2313,11 @@
     "smem_bytes": 8208,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 24,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4568
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2026,7 +2342,11 @@
     "smem_bytes": 65568,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2051,7 +2371,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 240
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2076,7 +2400,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 136
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2101,7 +2429,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 240
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2126,7 +2458,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 136
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2151,7 +2487,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 408
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2176,7 +2516,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 224
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2201,7 +2545,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 408
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2226,7 +2574,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 224
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2251,7 +2603,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 440
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2276,7 +2632,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 232
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2301,7 +2661,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 440
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2326,7 +2690,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 232
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2351,7 +2719,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 680
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2376,7 +2748,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 352
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2401,7 +2777,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 680
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2426,7 +2806,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 352
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2451,7 +2835,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1584
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2476,7 +2864,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 832
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2501,7 +2893,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1584
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2526,7 +2922,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 832
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2551,7 +2951,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 20,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1640
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2576,7 +2980,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 768
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2601,7 +3009,11 @@
     "smem_bytes": 48,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 20,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1640
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2626,7 +3038,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 768
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2651,7 +3067,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 16,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2152
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2676,7 +3096,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1056
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2701,7 +3125,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 16,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2152
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2726,7 +3154,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1056
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2751,7 +3183,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 16,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 5168
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2776,7 +3212,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2656
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2801,7 +3241,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 16,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 5168
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2826,7 +3270,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 2,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2656
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2851,7 +3299,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 20,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1912
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2876,7 +3328,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 936
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2901,7 +3357,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 20,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1912
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2926,7 +3386,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 3,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 936
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2951,7 +3415,11 @@
     "smem_bytes": 48,
     "spill_bytes": 56,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 16,
+    "stl_count": 7,
+    "ldl_count": 5,
+    "sass_instructions": 6296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -2976,7 +3444,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3001,7 +3473,11 @@
     "smem_bytes": 48,
     "spill_bytes": 56,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 16,
+    "stl_count": 7,
+    "ldl_count": 5,
+    "sass_instructions": 6296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3026,7 +3502,11 @@
     "smem_bytes": 288,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3051,7 +3531,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 7768
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3076,7 +3560,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3101,7 +3589,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 7768
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3126,7 +3618,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 3960
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3151,7 +3647,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 13240
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3176,7 +3676,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 144,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 72,
+    "stl_count": 18,
+    "ldl_count": 18,
+    "sass_instructions": 6736
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3201,7 +3705,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 13240
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3226,7 +3734,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 144,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 72,
+    "stl_count": 18,
+    "ldl_count": 18,
+    "sass_instructions": 6736
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3251,7 +3763,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 32,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 8,
+    "stl_count": 3,
+    "ldl_count": 3,
+    "sass_instructions": 8880
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3276,7 +3792,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3301,7 +3821,11 @@
     "smem_bytes": 2064,
     "spill_bytes": 32,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 8,
+    "stl_count": 3,
+    "ldl_count": 3,
+    "sass_instructions": 8880
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3326,7 +3850,11 @@
     "smem_bytes": 16416,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3351,7 +3879,11 @@
     "smem_bytes": 8208,
     "spill_bytes": 32,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 8,
+    "stl_count": 3,
+    "ldl_count": 3,
+    "sass_instructions": 8880
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3376,7 +3908,11 @@
     "smem_bytes": 65568,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3401,7 +3937,11 @@
     "smem_bytes": 8208,
     "spill_bytes": 32,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 8,
+    "stl_count": 3,
+    "ldl_count": 3,
+    "sass_instructions": 8880
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   },
@@ -3426,7 +3966,11 @@
     "smem_bytes": 65568,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 1,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 4296
    },
    "raw_file": "state/results/opt-W2/W2_packed_vs_W1_reference_focus_grid_a_20261025_133656.json"
   }
@@ -3472,13 +4016,16 @@
   "T19",
   "T20"
  ],
- "techniques_contributed": [],
+ "techniques_contributed": [
+  "T41"
+ ],
  "report_path": "approaches/W2/REPORT.md",
  "source_paths": [
   "harness/adapters/W2_impl.cuh",
   "harness/adapters/W2_packed.cuh",
   "approaches/W2/n4_tie_sim.py"
  ],
+ "clone_commit": "b6bfae9a37bb",
  "_controls": [
   "W1_reference",
   "W1_reference@not_guaranteed"

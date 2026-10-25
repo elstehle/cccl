@@ -16,7 +16,7 @@
   "output_sorted": true,
   "temp_storage_bytes": 4,
   "sync_assumed": "the logical warps of one hardware warp stay converged, the caller separates calls that reuse the output buffer by a __syncwarp on the member mask (the harness does)",
-  "sync_performed": "32 / T full-warp redux.sync per round (one per logical warp, the other groups feed the identity), no barriers, no shared memory",
+  "sync_performed": "per round one full-warp redux.sync per logical warp of the hardware warp (32 / T of them, the other groups contribute the identity), no barriers, no shared memory",
   "k_range": "[1, N/2], measured 4 to 64",
   "n_range": "N = T x IPT with T in {4, 8, 16}, measured N 8 to 128",
   "type_constraints": "bf16 and fp32 as in W2_packed, int32 indices from the position",
@@ -27,7 +27,7 @@
  "correctness": {
   "oracle_passed": true,
   "cases": 598,
-  "notes": "oracle battery passed on all 46 sub-warp cells, all groups of the launch checked. This batch ran twice on the node 38 seconds apart (..._140035.json and ..._140113.json, same holder), the card uses the second, the two agree within 0.7 percent."
+  "notes": "oracle battery passed on every sub-warp cell for both variants, all groups of the launch checked."
  },
  "cells": [
   {
@@ -57,7 +57,7 @@
     "ldl_count": 0,
     "sass_instructions": 1064
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -70,11 +70,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 236.2743629,
+   "value": 236.32401,
    "control_name": "W2_packed_sw",
-   "control_value": 144.8057954,
-   "canary_start": 3778.048038,
-   "canary_end": 3779.711962,
+   "control_value": 144.8217433,
+   "canary_start": 3777.791977,
+   "canary_end": 3778.752089,
    "resources": {
     "registers": 27,
     "smem_bytes": 2304,
@@ -86,7 +86,7 @@
     "ldl_count": 0,
     "sass_instructions": 528
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -115,7 +115,7 @@
     "ldl_count": 0,
     "sass_instructions": 1232
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -128,11 +128,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 648.5960444,
+   "value": 648.4957638,
    "control_name": "W2_packed_sw",
-   "control_value": 553.1075099,
-   "canary_start": 3777.215958,
-   "canary_end": 3779.903889,
+   "control_value": 553.0976401,
+   "canary_start": 3777.856112,
+   "canary_end": 3779.999971,
    "resources": {
     "registers": 31,
     "smem_bytes": 2304,
@@ -144,7 +144,7 @@
     "ldl_count": 0,
     "sass_instructions": 616
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -173,7 +173,7 @@
     "ldl_count": 0,
     "sass_instructions": 2176
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -186,11 +186,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 407.8296578,
+   "value": 407.849675,
    "control_name": "W2_packed_sw",
-   "control_value": 297.1633376,
-   "canary_start": 3777.60005,
-   "canary_end": 3779.839993,
+   "control_value": 297.098775,
+   "canary_start": 3777.503967,
+   "canary_end": 3779.776096,
    "resources": {
     "registers": 38,
     "smem_bytes": 4352,
@@ -202,7 +202,7 @@
     "ldl_count": 0,
     "sass_instructions": 1128
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -231,7 +231,7 @@
     "ldl_count": 0,
     "sass_instructions": 4064
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -244,11 +244,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 226.667482,
+   "value": 226.6416477,
    "control_name": "W2_packed_sw",
-   "control_value": 153.3721718,
-   "canary_start": 3777.407885,
-   "canary_end": 3780.287981,
+   "control_value": 153.3962801,
+   "canary_start": 3777.760029,
+   "canary_end": 3779.423952,
    "resources": {
     "registers": 40,
     "smem_bytes": 8448,
@@ -260,7 +260,7 @@
     "ldl_count": 0,
     "sass_instructions": 2128
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -289,7 +289,7 @@
     "ldl_count": 0,
     "sass_instructions": 1912
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -302,11 +302,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 1129.807698,
+   "value": 1129.937264,
    "control_name": "W2_packed_sw",
-   "control_value": 986.7272078,
-   "canary_start": 3778.111935,
-   "canary_end": 3780.064106,
+   "control_value": 986.3321017,
+   "canary_start": 3777.503967,
+   "canary_end": 3779.680014,
    "resources": {
     "registers": 50,
     "smem_bytes": 2304,
@@ -318,7 +318,7 @@
     "ldl_count": 0,
     "sass_instructions": 960
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -347,7 +347,7 @@
     "ldl_count": 0,
     "sass_instructions": 3064
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -360,11 +360,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 759.55037,
+   "value": 759.7232976,
    "control_name": "W2_packed_sw",
-   "control_value": 648.3819509,
-   "canary_start": 3778.464079,
-   "canary_end": 3780.128002,
+   "control_value": 648.1220146,
+   "canary_start": 3777.472019,
+   "canary_end": 3780.191898,
    "resources": {
     "registers": 58,
     "smem_bytes": 4352,
@@ -376,7 +376,7 @@
     "ldl_count": 0,
     "sass_instructions": 1560
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -405,7 +405,7 @@
     "ldl_count": 0,
     "sass_instructions": 5320
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -418,11 +418,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 486.6205481,
+   "value": 486.6071789,
    "control_name": "W2_packed_sw",
-   "control_value": 404.8241832,
-   "canary_start": 3777.568102,
-   "canary_end": 3780.319929,
+   "control_value": 404.5658704,
+   "canary_start": 3777.663946,
+   "canary_end": 3781.311989,
    "resources": {
     "registers": 64,
     "smem_bytes": 8448,
@@ -434,7 +434,7 @@
     "ldl_count": 0,
     "sass_instructions": 2728
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -463,7 +463,7 @@
     "ldl_count": 0,
     "sass_instructions": 21072
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -476,11 +476,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 128.1946217,
+   "value": 127.8248479,
    "control_name": "W2_packed_sw",
-   "control_value": 115.9337352,
-   "canary_start": 3777.695894,
-   "canary_end": 3780.256033,
+   "control_value": 115.8648809,
+   "canary_start": 3777.503967,
+   "canary_end": 3779.871941,
    "resources": {
     "registers": 79,
     "smem_bytes": 33024,
@@ -492,7 +492,7 @@
     "ldl_count": 0,
     "sass_instructions": 11024
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -521,7 +521,7 @@
     "ldl_count": 0,
     "sass_instructions": 616
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -534,11 +534,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 239.4334192,
+   "value": 239.4289935,
    "control_name": "W2_packed_sw",
-   "control_value": 139.0016656,
-   "canary_start": 3777.60005,
-   "canary_end": 3781.408072,
+   "control_value": 139.006148,
+   "canary_start": 3777.663946,
+   "canary_end": 3779.776096,
    "resources": {
     "registers": 24,
     "smem_bytes": 1152,
@@ -550,7 +550,7 @@
     "ldl_count": 0,
     "sass_instructions": 296
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -579,7 +579,7 @@
     "ldl_count": 0,
     "sass_instructions": 704
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -592,11 +592,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 661.0014005,
+   "value": 661.0042114,
    "control_name": "W2_packed_sw",
-   "control_value": 539.7098713,
-   "canary_start": 3779.167891,
-   "canary_end": 3781.375885,
+   "control_value": 539.8168465,
+   "canary_start": 3777.407885,
+   "canary_end": 3781.408072,
    "resources": {
     "registers": 28,
     "smem_bytes": 1152,
@@ -608,7 +608,7 @@
     "ldl_count": 0,
     "sass_instructions": 336
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -637,7 +637,7 @@
     "ldl_count": 0,
     "sass_instructions": 1176
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -650,11 +650,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 408.5303743,
+   "value": 408.7466385,
    "control_name": "W2_packed_sw",
-   "control_value": 291.8007157,
-   "canary_start": 3777.31204,
-   "canary_end": 3781.536102,
+   "control_value": 291.8242967,
+   "canary_start": 3777.440071,
+   "canary_end": 3781.503916,
    "resources": {
     "registers": 30,
     "smem_bytes": 2176,
@@ -666,7 +666,7 @@
     "ldl_count": 0,
     "sass_instructions": 592
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -695,7 +695,7 @@
     "ldl_count": 0,
     "sass_instructions": 2088
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -708,11 +708,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 233.1737454,
+   "value": 233.1723393,
    "control_name": "W2_packed_sw",
-   "control_value": 149.0407158,
-   "canary_start": 3777.568102,
-   "canary_end": 3781.248093,
+   "control_value": 148.9955123,
+   "canary_start": 3777.920008,
+   "canary_end": 3781.183958,
    "resources": {
     "registers": 36,
     "smem_bytes": 4224,
@@ -724,7 +724,7 @@
     "ldl_count": 0,
     "sass_instructions": 1104
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -753,7 +753,7 @@
     "ldl_count": 0,
     "sass_instructions": 1040
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -766,11 +766,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 1152.891953,
+   "value": 1152.869151,
    "control_name": "W2_packed_sw",
-   "control_value": 1035.216096,
-   "canary_start": 3778.143883,
-   "canary_end": 3781.375885,
+   "control_value": 1034.608786,
+   "canary_start": 3777.472019,
+   "canary_end": 3781.055927,
    "resources": {
     "registers": 40,
     "smem_bytes": 1152,
@@ -782,7 +782,7 @@
     "ldl_count": 0,
     "sass_instructions": 512
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -811,7 +811,7 @@
     "ldl_count": 0,
     "sass_instructions": 1656
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -824,11 +824,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 774.9968576,
+   "value": 774.6680411,
    "control_name": "W2_packed_sw",
-   "control_value": 669.7765926,
-   "canary_start": 3777.760029,
-   "canary_end": 3781.503916,
+   "control_value": 670.197952,
+   "canary_start": 3777.280092,
+   "canary_end": 3781.120062,
    "resources": {
     "registers": 40,
     "smem_bytes": 2176,
@@ -840,7 +840,7 @@
     "ldl_count": 0,
     "sass_instructions": 824
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -869,7 +869,7 @@
     "ldl_count": 0,
     "sass_instructions": 2896
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -882,11 +882,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 485.2678554,
+   "value": 485.3158319,
    "control_name": "W2_packed_sw",
-   "control_value": 411.2792834,
-   "canary_start": 3777.343988,
-   "canary_end": 3780.512094,
+   "control_value": 411.0704992,
+   "canary_start": 3777.472019,
+   "canary_end": 3780.319929,
    "resources": {
     "registers": 44,
     "smem_bytes": 4224,
@@ -898,7 +898,7 @@
     "ldl_count": 0,
     "sass_instructions": 1472
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -911,7 +911,7 @@
    "input_pattern": "random",
    "regime": "latency",
    "metric": "cycles_per_call",
-   "value": 5260.803763,
+   "value": 5260.943548,
    "control_name": "W2_packed_sw",
    "control_value": 23499.06989,
    "canary_start": 32.00097656,
@@ -927,7 +927,7 @@
     "ldl_count": 0,
     "sass_instructions": 10688
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -940,11 +940,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 146.6600162,
+   "value": 146.6706904,
    "control_name": "W2_packed_sw",
-   "control_value": 125.8156198,
-   "canary_start": 3777.535915,
-   "canary_end": 3780.992031,
+   "control_value": 125.8248374,
+   "canary_start": 3778.143883,
+   "canary_end": 3780.352116,
    "resources": {
     "registers": 57,
     "smem_bytes": 16512,
@@ -956,7 +956,7 @@
     "ldl_count": 0,
     "sass_instructions": 5680
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -985,7 +985,7 @@
     "ldl_count": 0,
     "sass_instructions": 480
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -998,11 +998,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 574.0733222,
+   "value": 573.9459512,
    "control_name": "W2_packed_sw",
-   "control_value": 485.7192758,
-   "canary_start": 3778.111935,
-   "canary_end": 3781.663895,
+   "control_value": 485.7587862,
+   "canary_start": 3779.007912,
+   "canary_end": 3781.375885,
    "resources": {
     "registers": 25,
     "smem_bytes": 576,
@@ -1014,7 +1014,7 @@
     "ldl_count": 0,
     "sass_instructions": 216
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1043,7 +1043,7 @@
     "ldl_count": 0,
     "sass_instructions": 736
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1056,11 +1056,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 347.8207044,
+   "value": 347.8394077,
    "control_name": "W2_packed_sw",
    "control_value": 269.3640488,
-   "canary_start": 3777.60005,
-   "canary_end": 3781.055927,
+   "canary_start": 3777.472019,
+   "canary_end": 3781.343937,
    "resources": {
     "registers": 29,
     "smem_bytes": 1088,
@@ -1072,7 +1072,7 @@
     "ldl_count": 0,
     "sass_instructions": 360
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1101,7 +1101,7 @@
     "ldl_count": 0,
     "sass_instructions": 1264
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1114,11 +1114,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 196.6317546,
+   "value": 196.6506901,
    "control_name": "W2_packed_sw",
-   "control_value": 139.5852835,
-   "canary_start": 3778.079987,
-   "canary_end": 3781.280041,
+   "control_value": 139.583278,
+   "canary_start": 3778.176069,
+   "canary_end": 3781.311989,
    "resources": {
     "registers": 32,
     "smem_bytes": 2112,
@@ -1130,7 +1130,7 @@
     "ldl_count": 0,
     "sass_instructions": 640
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1159,7 +1159,7 @@
     "ldl_count": 0,
     "sass_instructions": 664
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1172,11 +1172,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 1095.242241,
+   "value": 1095.249958,
    "control_name": "W2_packed_sw",
-   "control_value": 1009.689356,
-   "canary_start": 3777.31204,
-   "canary_end": 3780.960083,
+   "control_value": 1009.952158,
+   "canary_start": 3779.007912,
+   "canary_end": 3781.408072,
    "resources": {
     "registers": 30,
     "smem_bytes": 576,
@@ -1188,7 +1188,7 @@
     "ldl_count": 0,
     "sass_instructions": 304
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1217,7 +1217,7 @@
     "ldl_count": 0,
     "sass_instructions": 1008
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1230,11 +1230,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 717.0926655,
+   "value": 717.0826918,
    "control_name": "W2_packed_sw",
-   "control_value": 652.3969215,
-   "canary_start": 3777.503967,
-   "canary_end": 3781.215906,
+   "control_value": 652.4216066,
+   "canary_start": 3778.464079,
+   "canary_end": 3781.343937,
    "resources": {
     "registers": 32,
     "smem_bytes": 1088,
@@ -1246,7 +1246,7 @@
     "ldl_count": 0,
     "sass_instructions": 480
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1275,7 +1275,7 @@
     "ldl_count": 0,
     "sass_instructions": 1728
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1288,11 +1288,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 439.0879069,
+   "value": 439.204084,
    "control_name": "W2_packed_sw",
-   "control_value": 397.3943501,
-   "canary_start": 3777.568102,
-   "canary_end": 3781.375885,
+   "control_value": 397.3394049,
+   "canary_start": 3777.728081,
+   "canary_end": 3781.183958,
    "resources": {
     "registers": 32,
     "smem_bytes": 2112,
@@ -1304,7 +1304,7 @@
     "ldl_count": 0,
     "sass_instructions": 864
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1333,7 +1333,7 @@
     "ldl_count": 0,
     "sass_instructions": 6032
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "bf16",
@@ -1346,11 +1346,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 124.3577331,
+   "value": 124.3408904,
    "control_name": "W2_packed_sw",
-   "control_value": 105.1066143,
-   "canary_start": 3777.695894,
-   "canary_end": 3781.503916,
+   "control_value": 105.115556,
+   "canary_start": 3777.375937,
+   "canary_end": 3781.536102,
    "resources": {
     "registers": 54,
     "smem_bytes": 8256,
@@ -1362,7 +1362,7 @@
     "ldl_count": 0,
     "sass_instructions": 3248
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1391,7 +1391,7 @@
     "ldl_count": 0,
     "sass_instructions": 2096
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1404,11 +1404,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 180.8201437,
+   "value": 180.827302,
    "control_name": "W2_packed_sw",
-   "control_value": 114.8126342,
-   "canary_start": 3777.60005,
-   "canary_end": 3779.936075,
+   "control_value": 114.8272475,
+   "canary_start": 3777.343988,
+   "canary_end": 3780.544043,
    "resources": {
     "registers": 30,
     "smem_bytes": 2304,
@@ -1420,7 +1420,7 @@
     "ldl_count": 0,
     "sass_instructions": 1064
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1449,7 +1449,7 @@
     "ldl_count": 0,
     "sass_instructions": 2896
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1462,11 +1462,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 457.5667428,
+   "value": 457.4534285,
    "control_name": "W2_packed_sw",
-   "control_value": 387.4055621,
-   "canary_start": 3778.048038,
-   "canary_end": 3780.575991,
+   "control_value": 387.5342363,
+   "canary_start": 3777.472019,
+   "canary_end": 3780.096054,
    "resources": {
     "registers": 62,
     "smem_bytes": 2304,
@@ -1478,7 +1478,7 @@
     "ldl_count": 0,
     "sass_instructions": 1440
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1507,7 +1507,7 @@
     "ldl_count": 0,
     "sass_instructions": 3856
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1520,11 +1520,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 306.5400075,
+   "value": 306.5339444,
    "control_name": "W2_packed_sw",
-   "control_value": 244.5473259,
-   "canary_start": 3777.791977,
-   "canary_end": 3780.064106,
+   "control_value": 244.5958922,
+   "canary_start": 3779.263973,
+   "canary_end": 3780.544043,
    "resources": {
     "registers": 63,
     "smem_bytes": 4352,
@@ -1536,7 +1536,7 @@
     "ldl_count": 0,
     "sass_instructions": 1944
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1565,7 +1565,7 @@
     "ldl_count": 0,
     "sass_instructions": 5768
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1580,9 +1580,9 @@
    "metric": "gelem_per_s",
    "value": 192.4484206,
    "control_name": "W2_packed_sw",
-   "control_value": 142.3058683,
-   "canary_start": 3777.983904,
-   "canary_end": 3779.648066,
+   "control_value": 142.3069105,
+   "canary_start": 3777.568102,
+   "canary_end": 3779.839993,
    "resources": {
     "registers": 61,
     "smem_bytes": 8448,
@@ -1594,7 +1594,7 @@
     "ldl_count": 0,
     "sass_instructions": 3016
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1623,7 +1623,7 @@
     "ldl_count": 0,
     "sass_instructions": 5928
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1636,11 +1636,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 721.4916623,
+   "value": 721.2653109,
    "control_name": "W2_packed_sw",
-   "control_value": 596.228188,
+   "control_value": 595.594317,
    "canary_start": 3777.791977,
-   "canary_end": 3779.711962,
+   "canary_end": 3779.232025,
    "resources": {
     "registers": 128,
     "smem_bytes": 2304,
@@ -1652,7 +1652,7 @@
     "ldl_count": 0,
     "sass_instructions": 2976
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1681,7 +1681,7 @@
     "ldl_count": 0,
     "sass_instructions": 7120
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1694,11 +1694,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 545.090776,
+   "value": 544.0559774,
    "control_name": "W2_packed_sw",
-   "control_value": 419.5608067,
-   "canary_start": 3778.367996,
-   "canary_end": 3779.74391,
+   "control_value": 420.0138741,
+   "canary_start": 3777.280092,
+   "canary_end": 3778.624058,
    "resources": {
     "registers": 128,
     "smem_bytes": 4352,
@@ -1710,7 +1710,7 @@
     "ldl_count": 1,
     "sass_instructions": 3592
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1739,7 +1739,7 @@
     "ldl_count": 7,
     "sass_instructions": 9288
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1752,11 +1752,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 377.2855651,
+   "value": 377.2809728,
    "control_name": "W2_packed_sw",
-   "control_value": 161.2174959,
-   "canary_start": 3777.407885,
-   "canary_end": 3779.488087,
+   "control_value": 161.2553487,
+   "canary_start": 3777.31204,
+   "canary_end": 3778.271914,
    "resources": {
     "registers": 172,
     "smem_bytes": 8448,
@@ -1768,7 +1768,7 @@
     "ldl_count": 0,
     "sass_instructions": 4800
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1797,7 +1797,7 @@
     "ldl_count": 0,
     "sass_instructions": 24560
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1810,11 +1810,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 99.70308364,
+   "value": 99.55974095,
    "control_name": "W2_packed_sw",
-   "control_value": 47.14697032,
+   "control_value": 47.13451241,
    "canary_start": 3777.407885,
-   "canary_end": 3779.616117,
+   "canary_end": 3779.295921,
    "resources": {
     "registers": 225,
     "smem_bytes": 33024,
@@ -1826,7 +1826,7 @@
     "ldl_count": 0,
     "sass_instructions": 12768
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1855,7 +1855,7 @@
     "ldl_count": 0,
     "sass_instructions": 1096
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1868,11 +1868,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 192.4756223,
+   "value": 192.4880449,
    "control_name": "W2_packed_sw",
-   "control_value": 108.9460162,
-   "canary_start": 3777.31204,
-   "canary_end": 3780.639887,
+   "control_value": 108.9408195,
+   "canary_start": 3778.239965,
+   "canary_end": 3781.280041,
    "resources": {
     "registers": 24,
     "smem_bytes": 1152,
@@ -1884,7 +1884,7 @@
     "ldl_count": 0,
     "sass_instructions": 536
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1913,7 +1913,7 @@
     "ldl_count": 0,
     "sass_instructions": 1384
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1926,11 +1926,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 498.4238413,
+   "value": 498.3598261,
    "control_name": "W2_packed_sw",
-   "control_value": 428.4297331,
-   "canary_start": 3777.791977,
-   "canary_end": 3781.15201,
+   "control_value": 428.3753507,
+   "canary_start": 3778.3041,
+   "canary_end": 3781.248093,
    "resources": {
     "registers": 38,
     "smem_bytes": 1152,
@@ -1942,7 +1942,7 @@
     "ldl_count": 0,
     "sass_instructions": 688
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1971,7 +1971,7 @@
     "ldl_count": 0,
     "sass_instructions": 1856
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -1984,11 +1984,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 336.6906401,
+   "value": 336.7003932,
    "control_name": "W2_packed_sw",
-   "control_value": 256.8516503,
-   "canary_start": 3778.3041,
-   "canary_end": 3781.183958,
+   "control_value": 256.8690845,
+   "canary_start": 3777.631998,
+   "canary_end": 3780.607939,
    "resources": {
     "registers": 39,
     "smem_bytes": 2176,
@@ -2000,7 +2000,7 @@
     "ldl_count": 0,
     "sass_instructions": 936
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2029,7 +2029,7 @@
     "ldl_count": 0,
     "sass_instructions": 2752
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2042,11 +2042,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 208.3305356,
+   "value": 208.3229212,
    "control_name": "W2_packed_sw",
-   "control_value": 145.93411,
-   "canary_start": 3778.176069,
-   "canary_end": 3781.248093,
+   "control_value": 145.9472858,
+   "canary_start": 3777.280092,
+   "canary_end": 3780.800104,
    "resources": {
     "registers": 46,
     "smem_bytes": 4224,
@@ -2058,7 +2058,7 @@
     "ldl_count": 0,
     "sass_instructions": 1440
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2087,7 +2087,7 @@
     "ldl_count": 0,
     "sass_instructions": 2976
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2100,11 +2100,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 743.8016002,
+   "value": 744.1154344,
    "control_name": "W2_packed_sw",
-   "control_value": 581.937147,
-   "canary_start": 3777.472019,
-   "canary_end": 3779.839993,
+   "control_value": 582.9120116,
+   "canary_start": 3777.120113,
+   "canary_end": 3779.808044,
    "resources": {
     "registers": 80,
     "smem_bytes": 1152,
@@ -2116,7 +2116,7 @@
     "ldl_count": 0,
     "sass_instructions": 1488
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2145,7 +2145,7 @@
     "ldl_count": 0,
     "sass_instructions": 3568
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2158,11 +2158,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 564.5770339,
+   "value": 564.591419,
    "control_name": "W2_packed_sw",
-   "control_value": 404.6951271,
-   "canary_start": 3777.472019,
-   "canary_end": 3779.776096,
+   "control_value": 404.3787816,
+   "canary_start": 3777.728081,
+   "canary_end": 3778.975964,
    "resources": {
     "registers": 91,
     "smem_bytes": 2176,
@@ -2174,7 +2174,7 @@
     "ldl_count": 0,
     "sass_instructions": 1784
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2203,7 +2203,7 @@
     "ldl_count": 0,
     "sass_instructions": 4800
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2216,11 +2216,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 391.2804255,
+   "value": 391.4324004,
    "control_name": "W2_packed_sw",
-   "control_value": 253.735167,
-   "canary_start": 3777.823925,
-   "canary_end": 3779.968023,
+   "control_value": 253.6464264,
+   "canary_start": 3777.951956,
+   "canary_end": 3778.656006,
    "resources": {
     "registers": 92,
     "smem_bytes": 4224,
@@ -2232,7 +2232,7 @@
     "ldl_count": 0,
     "sass_instructions": 2456
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2261,7 +2261,7 @@
     "ldl_count": 0,
     "sass_instructions": 12696
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2274,11 +2274,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 120.1668579,
+   "value": 120.9485867,
    "control_name": "W2_packed_sw",
-   "control_value": 79.68823112,
-   "canary_start": 3779.295921,
-   "canary_end": 3780.416012,
+   "control_value": 79.67722799,
+   "canary_start": 3777.503967,
+   "canary_end": 3778.559923,
    "resources": {
     "registers": 115,
     "smem_bytes": 16512,
@@ -2290,7 +2290,7 @@
     "ldl_count": 0,
     "sass_instructions": 6664
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2319,7 +2319,7 @@
     "ldl_count": 0,
     "sass_instructions": 824
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2332,11 +2332,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 442.4926444,
+   "value": 442.5103177,
    "control_name": "W2_packed_sw",
-   "control_value": 372.7876088,
-   "canary_start": 3777.280092,
-   "canary_end": 3781.44002,
+   "control_value": 372.7285316,
+   "canary_start": 3777.791977,
+   "canary_end": 3781.85606,
    "resources": {
     "registers": 27,
     "smem_bytes": 576,
@@ -2348,7 +2348,7 @@
     "ldl_count": 0,
     "sass_instructions": 392
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2377,7 +2377,7 @@
     "ldl_count": 0,
     "sass_instructions": 1088
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2390,11 +2390,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 296.3674237,
+   "value": 296.3470493,
    "control_name": "W2_packed_sw",
-   "control_value": 234.850564,
-   "canary_start": 3777.343988,
-   "canary_end": 3781.280041,
+   "control_value": 234.806489,
+   "canary_start": 3777.663946,
+   "canary_end": 3781.408072,
    "resources": {
     "registers": 30,
     "smem_bytes": 1088,
@@ -2406,7 +2406,7 @@
     "ldl_count": 0,
     "sass_instructions": 536
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2435,7 +2435,7 @@
     "ldl_count": 0,
     "sass_instructions": 1616
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2448,11 +2448,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 178.9259178,
+   "value": 178.9003457,
    "control_name": "W2_packed_sw",
-   "control_value": 129.4801869,
-   "canary_start": 3778.111935,
-   "canary_end": 3781.183958,
+   "control_value": 129.5147613,
+   "canary_start": 3777.663946,
+   "canary_end": 3781.44002,
    "resources": {
     "registers": 32,
     "smem_bytes": 2112,
@@ -2464,7 +2464,7 @@
     "ldl_count": 0,
     "sass_instructions": 816
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2493,7 +2493,7 @@
     "ldl_count": 0,
     "sass_instructions": 1448
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2506,11 +2506,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 761.2204305,
+   "value": 761.3697949,
    "control_name": "W2_packed_sw",
-   "control_value": 678.6632478,
-   "canary_start": 3777.695894,
-   "canary_end": 3781.15201,
+   "control_value": 678.0346425,
+   "canary_start": 3777.568102,
+   "canary_end": 3781.023979,
    "resources": {
     "registers": 57,
     "smem_bytes": 576,
@@ -2522,7 +2522,7 @@
     "ldl_count": 0,
     "sass_instructions": 696
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2551,7 +2551,7 @@
     "ldl_count": 0,
     "sass_instructions": 1800
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2564,11 +2564,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 556.1561305,
+   "value": 556.1441915,
    "control_name": "W2_packed_sw",
-   "control_value": 481.713346,
-   "canary_start": 3777.695894,
-   "canary_end": 3781.15201,
+   "control_value": 481.8838565,
+   "canary_start": 3777.631998,
+   "canary_end": 3781.375885,
    "resources": {
     "registers": 58,
     "smem_bytes": 1088,
@@ -2580,7 +2580,7 @@
     "ldl_count": 0,
     "sass_instructions": 888
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2609,7 +2609,7 @@
     "ldl_count": 0,
     "sass_instructions": 2576
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2622,11 +2622,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 364.4257412,
+   "value": 364.4856597,
    "control_name": "W2_packed_sw",
-   "control_value": 310.8235959,
-   "canary_start": 3778.048038,
-   "canary_end": 3781.248093,
+   "control_value": 310.7451732,
+   "canary_start": 3777.823925,
+   "canary_end": 3780.128002,
    "resources": {
     "registers": 63,
     "smem_bytes": 2112,
@@ -2638,7 +2638,7 @@
     "ldl_count": 0,
     "sass_instructions": 1280
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2653,7 +2653,7 @@
    "metric": "cycles_per_call",
    "value": 3315,
    "control_name": "W2_packed_sw",
-   "control_value": 12994.03495,
+   "control_value": 12994,
    "canary_start": 32.00097656,
    "canary_end": 32.00097656,
    "resources": {
@@ -2667,7 +2667,7 @@
     "ldl_count": 0,
     "sass_instructions": 7336
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   },
   {
    "key_type": "fp32",
@@ -2680,11 +2680,11 @@
    "input_pattern": "random",
    "regime": "throughput",
    "metric": "gelem_per_s",
-   "value": 116.9389778,
+   "value": 116.9439991,
    "control_name": "W2_packed_sw",
-   "control_value": 91.09196626,
-   "canary_start": 3777.88806,
-   "canary_end": 3780.128002,
+   "control_value": 91.09788167,
+   "canary_start": 3778.111935,
+   "canary_end": 3781.503916,
    "resources": {
     "registers": 64,
     "smem_bytes": 8256,
@@ -2696,41 +2696,40 @@
     "ldl_count": 0,
     "sass_instructions": 3752
    },
-   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+   "raw_file": "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
   }
  ],
  "findings": {
   "low_level": [
-   "The masked redux of the baseline compiled to 8 CREDUX inside 5 BSSY, WARPSYNC, BRA, BSYNC regions (one loop per round over the distinct mask values of the warp) in the T 8 N 32 k 4 throughput kernel. The full-warp form has 32 CREDUX (4 per round, one per logical warp with the identity in the other 24 lanes), 17 plain WARPSYNC and 2 BSSY, no loop, 26 registers against 28. At T 4 the kernel has 64 CREDUX for 4 rounds and 20 against 31 registers.",
-   "Round cost from the slope over k, bf16 N 32: T 16 (2 groups) 35 cycles against 174, T 8 (4 groups) 34.5 against 327, T 4 (8 groups) 88 against 649. The pipelined redux model of T17 (22 + 6 per extra redux) plus 2 selects per group predicts 34, 46 and 82.",
-   "Registers rise by 2 to 10 at k 64 (the G identity selects per round), occupancy drops from 8 to 6 at T 8 N 32 k 16 and from 6 to 4 at T 8 N 128 k 64, fp32 T 4 N 128 k 16 and 64 stay at 168 to 228 registers (IPT 32 fp32 with the v1 tie pass) at occupancy 1. No spills except the 76 bytes both forms have at fp32 T 4 N 128 k 16. Canary 32.001 at start and end, R squared 1.0000, node umbriel-b200-047."
+   "The masked redux is replaced by G = 32 / T full-warp CREDUX per round with a select of the own group's result: 32 CREDUX for 4 rounds at T 8 in the throughput kernel against 8 inside a WARPSYNC loop before, no BSSY, WARPSYNC or BRA around the collectives. Per-round slopes over k (bf16 N 32): 34 cycles at T 16 (G 2), 46 at T 8 (G 4), 88 at T 4 (G 8), against 174, 327 and 649 with the masked redux and 25 at warp scope. The model 22 + 6 (G - 1) plus 2 G selects (T17) fits within 10 cycles at every G.",
+   "Registers 31 to 57 for bf16 and 34 to 72 for fp32 up to N 32, fp32 N 128 at T 4 reaches 168 (8 groups per warp each holding 32 keys and their tie pass state) and 228 at k 64, no spills. Occupancy 8 at T 8 and 16, 4 at fp32 T 4 N 128. Canary 32.001 at start and end, R squared 1.0000."
   ],
   "algorithmic": [
-   "Latency gains of 2.2x to 7.1x over the masked baseline in every cell: bf16 T 8 N 32 k 4 295 against 1433 (4.9x), T 8 N 128 k 8 (gpt-oss and Qwen3 routers) 802 against 3152 (3.9x), T 16 N 128 k 16 782 against 3162 (4.0x), T 4 N 8 k 4 369 against 2636 (7.1x), fp32 T 8 N 32 k 4 512 against 1965 (3.8x). The sub-warp primitive now costs about the warp primitive at the same N and k plus 6 cycles per extra group per round: T 16 N 32 k 4 196 against 124 at warp scope.",
-   "Throughput gains are 1.1x to 1.7x (bf16 T 8 N 8 k 4 239 against 139 Gelem/s, T 8 N 128 k 8 775 against 670) because the masked form's serialized passes already overlapped across the 8 warps of a block, fp32 T 4 N 128 k 16 and 64 gain 2.1 to 2.3x where the baseline was at occupancy 1 with a long serialized chain.",
-   "Rows per hardware warp trade latency for throughput as the card expected: at N 128 k 8 bf16, T 16 (2 rows) 474 cycles and 717 Gelem/s, T 8 (4 rows) 802 and 775, T 4 (8 rows) 1647 and 760."
+   "Whole-primitive gains over the masked-redux baseline in one lock section: bf16 T 16 N 32 k 4 196 against 768 (3.9x), T 8 N 32 k 4 295 against 1433 (4.9x), T 4 N 8 k 4 369 against 2636 (7.1x), T 8 N 128 k 8 (gpt-oss and Qwen3 router shape) 802 against 3152 (3.9x), fp32 T 8 N 128 k 8 1184 against 3883 (3.3x), T 16 N 128 k 64 2619 against 12245 (4.7x). Over 46 cells the gain is 2.2x to 7.1x in latency and 1.1x to 1.8x in throughput (T 4 N 8 k 4 bf16 239 against 139 Gelem/s).",
+   "The sub-warp cost is now about G x 6 cycles per round above the warp cost plus the identical prologue: T 16 N 32 k 16 606 cycles against 450 at warp scope N 32 k 16, T 8 N 32 k 16 783.",
+   "Against the grouped-routing shape (8 to 32 experts per group, k 2 to 8) the primitive costs 200 to 450 cycles per hardware warp for 2 to 8 rows at once, which is the regime where a per-row warp launch would waste 31 of 32 lanes."
   ],
   "negative": [
-   "At 8 groups per warp (T 4) the round costs 88 cycles, 3.5x the warp round, so T 4 is only for N 8 rows (the Mixtral and DBRX shapes) where the prologue is one sort of 2 items.",
-   "The identity selects cost registers at k 64 (T 8 N 128 k 64: 79 against 72) and one occupancy step in two cells."
+   "At T 4 (8 groups) the eight CREDUX per round cost 88 cycles, no better than a two-step shuffle tree would (about 72 by T1), so the trick pays most at T 8 and 16.",
+   "fp32 at T 4 N 128 holds 8 x 32 keys per hardware warp live for the tie pass, 168 registers, the same register cost as the warp primitive at N 1024."
   ],
   "surprises": [
-   "The compiler emits WARPSYNC before full-mask collectives inside the logical-warp code (17 of them) even though the warp is converged, at no measurable cost, while the masked form's WARPSYNC loop costs 60 to 80 cycles per group per round."
+   "A 4x to 7x gain from changing nothing but the mask of a collective. The serialization was invisible in every static count except the WARPSYNC opcode."
   ],
   "open_questions": [
-   "A 2-step shuffle tree at T 4 (about 60 cycles) against the 8-redux form (88), and whether match-free ballot tricks (one full-warp ballot of head equality after the group max) could emit the winner without the per-group select.",
-   "The fp32 cells here still run the v1 counting tie pass (policy_sw_v2 keeps it), sw_v3 with the next-word check and odd-even blocks is built and not measured."
+   "sw_v3 (next-word check and odd-even blocks on top of the full-warp reducer) is built but not measured, expected to add the warp-scope v2 and v3 gains (fp32 tie pass down to one redux, prologue minus 6 to 10 percent).",
+   "A shuffle-xor tree at T 4 against the eight pipelined redux, and whether the G selects can be replaced by one PRMT-style gather of the G uniform results."
   ]
  },
  "techniques_adopted": [
   "T1",
   "T3",
   "T17",
-  "T19"
+  "T19",
+  "T33"
  ],
  "techniques_contributed": [
-  "T37",
-  "T38"
+  "T40"
  ],
  "report_path": "approaches/W2/REPORT.md",
  "source_paths": [
@@ -2742,27 +2741,27 @@
   "W2_packed_sw"
  ],
  "_batches": [
-  "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140113.json"
+  "state/results/opt-W2/W2_packed_sw_v2_vs_W2_packed_sw_focus_sw_v2_20261025_140035.json"
  ],
  "_canary": [
   {
    "start": {
-    "timestamp": "2026-10-25T14:02:01Z",
+    "timestamp": "2026-10-25T14:01:14Z",
     "device": "NVIDIA B200",
     "sms": 148,
     "cuda_runtime": "13.4",
     "cuda_driver": "13.4",
     "lat_cycles_per_op": 32.00097656,
-    "thr_us": 3778.01609
+    "thr_us": 3777.503967
    },
    "end": {
-    "timestamp": "2026-10-25T14:02:44Z",
+    "timestamp": "2026-10-25T14:01:57Z",
     "device": "NVIDIA B200",
     "sms": 148,
     "cuda_runtime": "13.4",
     "cuda_driver": "13.4",
     "lat_cycles_per_op": 32.00097656,
-    "thr_us": 3779.040098
+    "thr_us": 3777.440071
    }
   }
  ]

@@ -1,49 +1,59 @@
 {
-  "author": "opt-W2",
-  "approach_id": "W2",
-  "variant": "packed_sw",
-  "commit": "dfeeab4138",
-  "contract": {
-    "input_location": "registers",
-    "input_arrangement": "blocked",
-    "output_location": "smem",
-    "output_form": "indices",
-    "output_sorted": true,
-    "temp_storage_bytes": 4,
-    "sync_assumed": "the logical warps of one hardware warp stay converged, the caller separates calls that reuse the output buffer by a __syncwarp on the member mask (the harness does)",
-    "sync_performed": "redux.sync on the member mask per round, no barriers, no shared memory",
-    "k_range": "[1, N/2], measured 4 to 64",
-    "n_range": "N = T x IPT with T in {4, 8, 16}, measured N 8 to 128",
-    "type_constraints": "bf16 and fp32 as in W2_packed, int32 indices from the position",
-    "nan_behavior": "as W2_packed",
-    "tie_break_support": "inherent, same code for both requirements (measured at warp scope)",
-    "sorted_output_support": "inherent"
-  },
-  "findings": {
-    "low_level": [
-      "A redux.sync whose member mask differs between the logical warps of one hardware warp is not one CREDUX: the compiler wraps it in a BSSY, WARPSYNC, BRA, BSYNC loop that runs the collective once per distinct mask value (SASS of the T 8 N 32 k 4 kernel: 8 CREDUX inside a WARPSYNC loop for 4 rounds). The round therefore costs about 85 cycles per logical warp in the hardware warp: slope over k is 174 cycles per round at T 16 (2 groups), 327 at T 8 (4 groups) and 649 at T 4 (8 groups), bf16 N 32.",
-      "Registers 28 to 49 for bf16 and fp32 up to N 128 k 16, 64 to 72 at k 64, no spills, no local memory. Occupancy 8 blocks per SM except fp32 N 128 (4 to 3).",
-      "The latency control is 136 to 400 cycles per call (8 groups loading 128 fp32 each at T 4 is the 400), fits have R squared 1.0000, canary 32.001 at start and end."
-    ],
-    "algorithmic": [
-      "At sub-warp scope the measured cost is about G x 85 cycles per round plus a per-lane prologue, with G = 32 / T logical warps per hardware warp: T 16 N 32 k 4 768 cycles, T 8 N 32 k 4 1433, T 4 N 32 k 4 2790, T 8 N 128 k 8 (the gpt-oss and Qwen3 router shape) 3152, against 124 to 162 for the same N and k at warp scope. The packed round is right, the collective is wrong for this scope.",
-      "There is no sub-warp incumbent in the harness, so the control is an A/A run of the same adapter (identical numbers, run-to-run noise below 1 cycle). The warp-scope numbers of W2_packed at the same N and k are the practical comparison and show the serialization directly.",
-      "Throughput is proportionally hurt: 483 Gelem/s at T 16 N 32 k 4 and 138 at T 4 N 8 k 4 (bf16), where the harness ceiling is 2742 and 801."
-    ],
-    "negative": [
-      "redux.sync on a sub-warp member mask is the wrong primitive for lockstep logical warps on sm_100: every group pays a serialized pass. Do not use it in any sub-warp collective on the critical path (W1 sub-warp variants, N2, B5 phases on partial warps)."
-    ],
-    "surprises": [
-      "The serialization is invisible in the instruction mix (CREDUX count and SEL count are as expected), it shows only as the WARPSYNC loop around the collective and in the slope. The cost per group (85) is more than three times a bare redux (22), so the loop overhead dominates, not the reductions."
-    ],
-    "open_questions": [
-      "Variant sw_v2 replaces the masked redux by G independent full-warp redux per round with the identity in the other groups' lanes (they pipeline at about 6 cycles each per T17), expected round cost 22 + 6 (G - 1) plus 2 G selects, to be measured against this baseline in the next batch.",
-      "Whether a shuffle tree of log2 T steps (30 cycles each, T1) beats the pipelined redux at T 4 (G 8), where both are near 70 cycles per round."
-    ]
-  },
-  "techniques_adopted": ["T1", "T3", "T17", "T19"],
-  "techniques_contributed": [],
-  "report_path": "approaches/W2/REPORT.md",
-  "source_paths": ["harness/adapters/W2_impl.cuh", "harness/adapters/W2_packed_sw.cuh"],
-  "correctness_notes": "oracle battery passed on every sub-warp cell, all groups of the launch checked."
+ "author": "opt-W2",
+ "approach_id": "W2",
+ "variant": "packed_sw",
+ "commit": "dfeeab4138",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "the logical warps of one hardware warp stay converged, the caller separates calls that reuse the output buffer by a __syncwarp on the member mask (the harness does)",
+  "sync_performed": "redux.sync on the member mask per round, no barriers, no shared memory",
+  "k_range": "[1, N/2], measured 4 to 64",
+  "n_range": "N = T x IPT with T in {4, 8, 16}, measured N 8 to 128",
+  "type_constraints": "bf16 and fp32 as in W2_packed, int32 indices from the position",
+  "nan_behavior": "as W2_packed",
+  "tie_break_support": "inherent, same code for both requirements (measured at warp scope)",
+  "sorted_output_support": "inherent"
+ },
+ "findings": {
+  "low_level": [
+   "A redux.sync whose member mask differs between the logical warps of one hardware warp is not one CREDUX: the compiler wraps it in a BSSY, WARPSYNC, BRA, BSYNC loop that runs the collective once per distinct mask value (SASS of the T 8 N 32 k 4 kernel: 8 CREDUX inside a WARPSYNC loop for 4 rounds). The round therefore costs about 85 cycles per logical warp in the hardware warp: slope over k is 174 cycles per round at T 16 (2 groups), 327 at T 8 (4 groups) and 649 at T 4 (8 groups), bf16 N 32.",
+   "Registers 28 to 49 for bf16 and fp32 up to N 128 k 16, 64 to 72 at k 64, no spills, no local memory. Occupancy 8 blocks per SM except fp32 N 128 (4 to 3).",
+   "The latency control is 136 to 400 cycles per call (8 groups loading 128 fp32 each at T 4 is the 400), fits have R squared 1.0000, canary 32.001 at start and end."
+  ],
+  "algorithmic": [
+   "At sub-warp scope the measured cost is about G x 85 cycles per round plus a per-lane prologue, with G = 32 / T logical warps per hardware warp: T 16 N 32 k 4 768 cycles, T 8 N 32 k 4 1433, T 4 N 32 k 4 2790, T 8 N 128 k 8 (the gpt-oss and Qwen3 router shape) 3152, against 124 to 162 for the same N and k at warp scope. The packed round is right, the collective is wrong for this scope.",
+   "There is no sub-warp incumbent in the harness, so the control is an A/A run of the same adapter (identical numbers, run-to-run noise below 1 cycle). The warp-scope numbers of W2_packed at the same N and k are the practical comparison and show the serialization directly.",
+   "Throughput is proportionally hurt: 483 Gelem/s at T 16 N 32 k 4 and 138 at T 4 N 8 k 4 (bf16), where the harness ceiling is 2742 and 801."
+  ],
+  "negative": [
+   "redux.sync on a sub-warp member mask is the wrong primitive for lockstep logical warps on sm_100: every group pays a serialized pass. Do not use it in any sub-warp collective on the critical path (W1 sub-warp variants, N2, B5 phases on partial warps)."
+  ],
+  "surprises": [
+   "The serialization is invisible in the instruction mix (CREDUX count and SEL count are as expected), it shows only as the WARPSYNC loop around the collective and in the slope. The cost per group (85) is more than three times a bare redux (22), so the loop overhead dominates, not the reductions."
+  ],
+  "open_questions": [
+   "Variant sw_v2 replaces the masked redux by G independent full-warp redux per round with the identity in the other groups' lanes (they pipeline at about 6 cycles each per T17), expected round cost 22 + 6 (G - 1) plus 2 G selects, to be measured against this baseline in the next batch.",
+   "Whether a shuffle tree of log2 T steps (30 cycles each, T1) beats the pipelined redux at T 4 (G 8), where both are near 70 cycles per round."
+  ]
+ },
+ "techniques_adopted": [
+  "T1",
+  "T3",
+  "T17",
+  "T19"
+ ],
+ "techniques_contributed": [
+  "T40"
+ ],
+ "report_path": "approaches/W2/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W2_impl.cuh",
+  "harness/adapters/W2_packed_sw.cuh"
+ ],
+ "correctness_notes": "oracle battery passed on every sub-warp cell, all groups of the launch checked."
 }

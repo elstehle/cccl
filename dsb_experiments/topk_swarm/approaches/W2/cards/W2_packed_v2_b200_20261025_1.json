@@ -16,9 +16,9 @@
   "output_sorted": true,
   "temp_storage_bytes": 4,
   "sync_assumed": "warp convergence of the 32 lanes, the caller separates calls that reuse the output buffer by a __syncwarp (the harness does)",
-  "sync_performed": "one redux.sync per round plus one redux.max (fp32 next-word check) over the full warp mask, no barriers, no shared memory",
+  "sync_performed": "one redux.sync per round plus one redux.max of the remaining heads (fp32 fast check), redux.add, redux.max and redux.min only on the fp32 slow path, no barriers",
   "k_range": "[1, N/2], measured 4 to 1024, k above 64 runs the rounds as a rolled loop",
-  "n_range": "N = 32 x IPT, power of two, measured 32 to 2048 (N 4096 at k 4 to 64 built but not yet measured, its k 256 and 1024 translation units compile for over 20 minutes)",
+  "n_range": "N = 32 x IPT, power of two, measured 256 to 2048",
   "type_constraints": "bf16 (16 twiddled key bits above a 16-bit inverted index, exact) and fp32 (top 32 - log2 N twiddled key bits above the index, idea N4, exact after the tie pass), int32 indices derived from the position",
   "nan_behavior": "a NaN with the sign bit clear twiddles above +inf and is selected first, a NaN with the sign bit set is never selected, the all-ones pattern may collide with the empty-list sentinel, focus-set inputs contain no NaN",
   "tie_break_support": "inherent: the packed word orders by (key descending, index ascending), prefer_smaller_index runs the same code and measured identical to not_guaranteed in every cell (124 vs 124 at N 32 k 4 bf16 up to 150107 vs 150109 at N 2048 k 1024)",
@@ -27,7 +27,7 @@
  "correctness": {
   "oracle_passed": true,
   "cases": 520,
-  "notes": "oracle battery passed on all 40 cells. This batch ran twice on the node 43 seconds apart (state/results/opt-W2/..._135810.json and ..._135853.json, same holder, same container, both under the GPU lock), the card uses the second, the two agree to the cycle in latency and within 1.2 percent in throughput."
+  "notes": "oracle battery passed on every cell of the batch, both variants."
  },
  "cells": [
   {
@@ -2353,27 +2353,27 @@
  ],
  "findings": {
   "low_level": [
-   "The next-word check replaces the per-item count of v1 by one more redux after the rounds: fp32 N 256 k 8 has 11 CREDUX (8 rounds, 1 check, 2 in the slow path that never runs) and 416 SASS instructions against 400 for v1's throughput kernel, but the register allocator no longer provisions the v1 count path and the throughput kernel drops from 56 to 40 registers at N 256 (occupancy 4 to 6 blocks per SM), 96 to 64 at N 512 (2 to 4), 172 to 115 at N 1024 k 16 (1 to 2).",
-   "Latency kernel registers also fall (fp32 N 512 k 16: 104 to 69, N 1024 k 16: 168 to 128) and the 56-byte spill of v1 at N 1024 k 16 is gone, but new spills appear at N 1024 k 32 (20 bytes) and N 2048 k 4 to 16 (160 to 232 bytes against 0 to 56 for v1), where the slow path's twiddled-key and member arrays (IPT entries each) are provisioned in the latency kernel's longer live range.",
-   "bf16 cells compile to the same code in v1 and v2 (the policy only changes the fp32 tie pass) and measure identical to the cycle in all 20 bf16 cells, which doubles as an A/A noise reference for the batch: 0 cycles of latency difference, throughput within 1 percent.",
-   "Fits R squared 1.0000, canary 32.001 cycles per op at start and end, node umbriel-b200-047."
+   "The fp32 fast check is one CREDUX of max(head, spare) plus a compare: CREDUX count 11 against 10 at N 256 k 8 (8 rounds, the check, the two slow-path reductions kept in the binary), instructions 416 against 448, ISETP 76 against 90. The spare (largest word a lane dropped in its selection network) costs one VIMNMX per merged position: 516 VIMNMX against 532 at N 1024 k 32, where v1 spent its instructions on the count instead.",
+   "Registers of the throughput kernel drop from 179 to 104 at fp32 N 1024 k 32, from 146 to 115 at k 16, from 255 to 186 at N 2048 k 16, occupancy 2 against 1 at N 1024. bf16 is byte for byte the v1 instruction stream (256 instructions, 8 CREDUX, 43 SEL, 48 VIMNMX at N 256 k 8) and measures identical cycles in every bf16 cell, which also confirms the refactored header reproduces the baseline.",
+   "Latency anomaly at fp32 N 1024 k 8 (1902 against 1407) and N 2048 k 16 and 32 (4594 against 3907, 6842 against 5688): the chain copy of the latency kernel issues 5 of the 8 LDG.128 key loads at the call start and sinks the other 3 into the selection network (SASS offsets 0x6ba0, 0x72a0, 0x75e0 against the first CREDUX at 0x8df0), so the load latency lands on the dependent chain, and it wraps every emission store in a BSSY.RECONVERGENT, BRA, BSYNC region (8 BSSY against 0 in v1). The warm-up copy of the same kernel keeps the loads together and the stores predicated. ptxas took the 104-register schedule over the latency-friendly one. The throughput kernel of the same TU is 20 percent faster than v1 at that cell (867 against 722 Gelem/s), so this is a latency-kernel schedule, not an algorithmic cost.",
+   "Spills: 160 to 232 bytes at fp32 N 2048 k 4 to 16 in the latency kernel at 168 registers (v1 had 0 to 56 at 255), none in the throughput kernels. Canary 32.001 at start and end, every fit R squared 1.0000."
   ],
   "algorithmic": [
-   "The fp32 overhead over bf16 at the same cell drops from 234 to 304 cycles (v1) to 80 to 115 cycles at N 256 (k 8: 463 against 365, k 16: 682 against 602, k 32: 1115 against 1000) and to 77 at N 1024 k 16 (1684 against 1607), which is the N4 card's modeled constant (about 150) or better. Gains over v1: 1.45x at N 256 k 4, 1.30x at k 8 and 16, 1.85x at N 512 k 4, 1.35x at N 512 k 8, 1.44x at N 1024 k 4, 1.21x at N 1024 k 16, shrinking to 1.02 to 1.08x at k 32 and 64 where the rounds dominate.",
-   "Throughput gains follow the occupancy: 1.20 to 1.26x at N 256 to 512 for k 4 to 8, 1.13 to 1.18x at k 16, 1.40x at N 1024 k 64 (occupancy 1 to 2).",
-   "The check is exact: the largest word not emitted is max over lanes of max(list head, spare), where spare is the largest word each lane dropped in its top-L prologue merge, tracked with one extra min and max per merged item. A tie-class member was left out exactly when that word shares the truncated key of the k-th word. The oracle battery (tie_heavy, pivot_tie, all_equal, quantized patterns force the slow path) passed on every cell."
+   "The next-word check makes the fp32 tie pass nearly free where the schedule cooperates: fp32 against bf16 at the same cell is now 62 cycles at N 256 k 4 (314 against 252, v1 204), 98 at k 8 (463 against 365, v1 234), 80 at k 16 (682 against 602, v1 288), 73 at N 512 k 4 (498 against 425, v1 495), 77 at N 1024 k 16 (1684 against 1607, v1 434). The N4 card's modeled constant of 150 is met with margin at IPT 8 and 16.",
+   "Gains over v1 on fp32: N 256 k 4 to 32 by 31, 23, 23, 14 percent, N 512 k 4 to 16 by 46, 26, 19 percent, N 1024 k 4 30 percent, k 16 17 percent, k 32 10 percent, k 64 8 percent, N 2048 k 4 18 percent and k 64 9 percent. Losses at N 1024 k 8 (35 percent) and N 2048 k 8, 16, 32 (1, 18, 20 percent), all from the latency-kernel schedule above. Throughput gains in every fp32 cell: 10 to 40 percent (N 1024 k 64: 212 against 152 Gelem/s).",
+   "Exactness argument: all emitted words are the k largest, the (k+1)-th largest is the maximum over lanes of max(remaining head, spare) because every lane's list holds its top L and the spare is its (L+1)-th, and a tie member was left out exactly when that word has the k-th word's truncated key. The oracle battery (tie_heavy, all_equal, pivot_tie, signed_zero, inf_denorm) exercises the slow path and passes on every cell."
   ],
   "negative": [
-   "Three fp32 cells got slower: N 1024 k 8 (1902 against 1407, 0.74x), N 2048 k 16 (4594 against 3907, 0.85x) and N 2048 k 32 (6842 against 5688, 0.83x), with N 2048 k 8 flat. The slow path keeps IPT twiddled keys and IPT member flags live from the check to the end, and at IPT 32 to 64 the compiler either spills them (N 2048) or schedules the prologue around them (N 1024 k 8 at 104 registers, no spill, still 500 cycles slower). Making the slow path recompute from the keys (or reload them) instead of materializing the arrays is the fix to try, not measured.",
-   "The spare tracking costs one VIMNMX pair per merged item, visible at N 2048 (1029 VIMNMX against about 960) but not in the bf16 numbers since bf16 does not track it."
+   "The slow path still materializes a twiddled copy and a member flag per item inside a rolled loop (unroll 1), which costs registers at IPT 32 and above even though it never runs on random data. Recomputing from the keys per slow round (they are live anyway) and a bitmask for the member flags would remove those arrays.",
+   "Register pressure drives ptxas to the load-sinking schedule in the latency kernel at IPT 32 and 64, which costs more latency than the count pass it replaced at three of the ten cells there."
   ],
   "surprises": [
-   "Removing the count loop cut registers by a third even though the slow path still references every key: the compiler provisions registers for the hot path's live ranges and the v1 count was hot.",
-   "fp32 at N 256 k 4 to 16 is now within 80 to 115 cycles of bf16 on a round structure that is identical, so the remaining fp32 cost is the wider prologue (32-bit twiddle and pack against the 16-bit shift and or) plus one redux."
+   "Reducing the work of the tie pass made two fp32 cells slower: fewer live registers gave ptxas the freedom to delay global loads into the prologue, and on a single-warp dependent chain that delay is pure latency. Throughput and latency moved in opposite directions on the same binary.",
+   "The emission store `if (lane == r % 32) out_idx[r] = ...` compiles to a predicated STS in one inlined copy and to a branch region in the other copy of the same kernel."
   ],
   "open_questions": [
-   "The three regressed cells: whether an outlined slow path (noinline function taking the keys by reference) or a reload of the keys from the input pointer removes the provisioned arrays.",
-   "Whether the spare tracking can be dropped by emitting k + 1 rounds (the (k+1)-th word is then the next word for free) at one extra round of 25 cycles, which also removes the min and max per merged item."
+   "v4: pin the key registers at the start of run with an empty asm (T24) so the loads cannot sink below the prologue, and store the uniform result from all lanes without a lane predicate (one unpredicated STS per round, same address, no BSSY), then remeasure fp32 N 1024 k 8 and N 2048 k 16 and 32 against v3.",
+   "Whether reloading the keys from global memory in the slow path (a real kernel has them in memory) frees the IPT live registers in the fast path, which would lift fp32 occupancy to the bf16 level."
   ]
  },
  "techniques_adopted": [
@@ -2384,10 +2384,7 @@
   "T19",
   "T20"
  ],
- "techniques_contributed": [
-  "T37",
-  "T38"
- ],
+ "techniques_contributed": [],
  "report_path": "approaches/W2/REPORT.md",
  "source_paths": [
   "harness/adapters/W2_impl.cuh",
