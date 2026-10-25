@@ -423,4 +423,12 @@ struct adapter_impl
     }
   }
 };
+
+// The combined form: truncated final merge always, level tile order from four tiles on (at one or
+// two tiles the two orders are the same dependency graph), one-ballot recovery from four items per
+// lane on (below that the two-class pass is cheaper than the branch).
+template <typename KeyT, int Threads, int N, int K, topk::requirement Req>
+struct auto_adapter
+    : adapter_impl<KeyT, Threads, N, K, Req, true, (N / max_k_of(Threads, K) >= 4), (N / Threads >= 4)>
+{};
 } // namespace n10
