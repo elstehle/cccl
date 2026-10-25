@@ -45,9 +45,26 @@
       "A measurement against W5 in one lock section at fp32 N 1024 k 32 and N 2048 k 16, where N7 looked faster across sessions."
     ]
   },
-  "techniques_adopted": ["T1", "T3", "T7", "T17", "T19", "T28", "T34", "T36", "T41"],
-  "techniques_contributed": ["T42", "T43"],
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T7",
+    "T17",
+    "T19",
+    "T28",
+    "T34",
+    "T36",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T48",
+    "T49"
+  ],
   "report_path": "approaches/W5/REPORT.md",
-  "source_paths": ["harness/adapters/N7_impl.cuh", "harness/adapters/N7_twolevel.cuh", "harness/adapters/W2_impl.cuh"],
+  "source_paths": [
+    "harness/adapters/N7_impl.cuh",
+    "harness/adapters/N7_twolevel.cuh",
+    "harness/adapters/W2_impl.cuh"
+  ],
   "correctness_notes": "oracle battery passed on every cell of the three N7 batches (n7a at 9e60d70f4d, n7b at f3d46611e3, n7c at 04da4571ad), only n7c is carded, the earlier two are superseded builds whose numbers are in the findings and in state/results/opt-W5/."
 }

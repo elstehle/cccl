@@ -97,6 +97,26 @@ as any lane has won once since its last refill, so the warp-uniform refill (sort
 about 70 instructions per block of 8) ran in nearly every block, and the per-round cost scales with the tile. The third
 build uses blocks of 2 (test: fewer than 4 valid, five wins of one lane).
 
+N7, third build (card N7_twolevel_b200_20261025_1, batch n7c, blocks of 2): bf16 N 1024 k 64 4623 against W2 7308
+(1.58x), k 128 8382 against 11872, N 2048 k 32 3009 against 4381, k 64 5371 against 10071, k 128 9451 against 21324
+(2.26x), fp32 N 1024 k 64 3980 against 6774, N 2048 k 16 2267 against 4391, k 32 2843 against 7353 (2.59x), k 64 5357
+against 10187. Losses at IPT 16 (0.72x to 0.79x) and bf16 N 1024 k 16 (0.92x). The round is 45 to 74 cycles against 27
+for W2's pruned list: the refill is now rare (the per-round cost no longer scales with IPT) and the rest is block control,
+one vote, two taken branches and runtime round indices per block of 2 rounds (SASS in the card, T49). The kill
+criterion of the N7 card (2x under W2 at bf16 N 1024 k 64, at most 3300, within 10 percent of W5) is not met: 4623 is
+1.58x and 36 percent behind W5_v2's 3397 and W5_v3's 3303 in the same session.
+
+W5_v3 (card W5_v3_b200_20261025_1, controls W5_v2 and W2_packed_v3): predicate-free flags (sign bit of a - t),
+integer count tree, unconditional stores with a per-lane dummy slot. Phase profile (`phase_probe3.cu`) at bf16 N 1024
+k 32: loads 258, top 2 162, threshold 80, count 98 (v2 314), prefix 216, scatter 332 (v2 341), gather 440 (v2 446), sort
+74, rounds 837, total 2497 (v2 2748). Harness: bf16 N 1024 k 8 1173 against v2 1358, k 32 2116 against 2279 and W2
+2481 (1.17x), k 64 3303 against 7308 (2.21x), N 2048 k 16 2018 against 2377 (1.18x), k 32 2675 against 4381 (1.64x),
+k 64 4427 against 10071 (2.27x), fp32 N 2048 k 16 2256 against 4391 (1.95x), k 32 3296 against 7354 (2.23x). Registers
+128 at N 1024 and 249 to 255 at N 2048 (v2 72 and 128 to 168), throughput 1 to 15 percent under v2 and 1.31x to 2.64x
+over W2. The scatter costs about 10 cycles per shared store instruction at every IPT and whether or not the stores are
+predicated, and the bf16 gather costs 430 to 530 cycles against 170 to 220 for fp32 (W2's twiddle with its compare per
+gathered word and the position predicate), which v4 attacks.
+
 ## 4. Ideas tried, with verdicts
 
 1. Baseline W5_base against W2_packed_v3 (batch base1): wins k 64 everywhere from N 512 (2.27x at bf16 N 1024 k 64,
@@ -114,6 +134,12 @@ build uses blocks of 2 (test: fewer than 4 valid, five wins of one lane).
    Rejected, fixed by blocks of 2 (n7c).
 5. W5_v2 raw-key filter (batches v2a, v2b): latency within 5 percent of base either way, throughput up 4 to 34 percent,
    the fixed cost unchanged at 23 cycles per lane item. Kept as the control of v3, the lesson is in the phase profile.
+6. N7 rolled with blocks of 2 (batch n7c, carded): 1.58x at bf16 N 1024 k 64, the round 45 to 74 cycles, kill criterion
+   (2x, within 10 percent of W5) not met. N7 is closed in this form, W5 owns the k 64 band at N 1024 to 2048, N7 keeps a
+   claim on fp32 N 1024 k 32 and N 2048 k 16 (2227 and 2267 across sessions against W5_v3's 2737 and 2256) and on the
+   k 128 cells where W5 has no measurement yet.
+7. W5_v3 predicate-free filter (batches v3a, v3b): 2 to 27 percent latency gain over v2 from the count phase (314 to 98
+   cycles), the kill cell at 1.17x (2116 against 1900), registers up, throughput slightly down. Kept as the control of v4.
 
 ## 5. Ideas not yet tried
 
@@ -135,5 +161,6 @@ See the findings of each card.
 
 ## 8. Pointers
 
-`ideas/queue/W5_threshold_filter.md`, `ideas/queue/N7_two_level_list_warp.md`, `TECHNIQUES.md` T1, T3, T4, T7, T17,
-T18, T19, T21, T32, T36, T41, `reference/GVR_V2_ALGORITHM_REPORT.md` sections 2.2 to 2.7, cards W2_packed_v3.
+`ideas/queue/W5_threshold_filter.md`, `ideas/queue/N7_two_level_list_warp.md`, `TECHNIQUES.md` T1, T3, T4, T7, T12,
+T17, T18, T19, T21, T28, T32, T36, T41 (adopted), T48 and T49 (contributed), `reference/GVR_V2_ALGORITHM_REPORT.md`
+sections 2.2 to 2.7, cards W2_packed_v3, W5_base, W5_v2, W5_v3, N7_twolevel.
