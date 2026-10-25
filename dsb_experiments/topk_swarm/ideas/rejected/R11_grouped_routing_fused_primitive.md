@@ -1,0 +1,7 @@
+# R11: A fused grouped-routing selector as a CUB primitive
+status: rejected as a primitive, kept as a workload decomposition (2026-10-25, algo-researcher)
+scope: warp
+seed: the DeepSeek V3 and Ling-1T grouped routing (8 groups of 32 experts, group score is the sum of the top 2 affinities per group, top 4 groups, top 8 experts among the 128 remaining)
+idea: one warp holds the 256 scores as 8 registers of 32 lanes (one group per register), computes the per-group top 2 by two redux rounds per register, the top 4 of 8 group scores by a sub-warp sort of 8, masks the losing groups and runs W2 for the final top 8. About 350 + 260 + 660 cycles on the W2 model, one token per warp.
+reason: it is a composition of three small top-k calls with a layout contract, not a primitive, and the 2026 flagships are dropping group routing: DeepSeek V4 Pro and Flash have no `n_group` in their configs and use hash routing in early layers, Kimi K2 and K3, GLM-4.5, Qwen3.5 and Nemotron 3 Ultra have one group. Only DeepSeek V3, R1, V3.2 and Ling-1T still use 8 groups of 32 with 4 groups kept. The cells it needs (sub-warp top 2 of 32, top 4 of 8, warp top 8 of 128 masked) are ordinary cells of the grid, with k 2 as the final-evaluation column.
+what survives: the decomposition in `ideas/WORKLOADS.md` and the named cells `deepseek_v3_group_top2`, `deepseek_v3_group_select`, `deepseek_v3_final_top8` in `ideas/named_cells.json`.

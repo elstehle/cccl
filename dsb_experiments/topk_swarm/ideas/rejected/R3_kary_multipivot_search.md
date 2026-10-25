@@ -1,0 +1,7 @@
+# R3: k-ary search and sample sort style multi-pivot selection as separate approaches
+status: rejected as separate cards, folded into W5 and B4 (2026-10-25, algo-researcher)
+scope: warp, block
+seed: the lead's list (sample sort style pivot selection, k-ary search measured negative once)
+idea: pick p pivots from a sorted sample, count the p plus 1 buckets with p compares and ballots per item, recurse into the bucket holding rank k. Shrinks the candidate set by p plus 1 per round instead of 2 (bit-serial) or 2^d (radix).
+reason: per round the per-item cost grows with p exactly as the shrink factor does, so there is no asymptotic gain, only a trade of per-round fixed cost against per-item cost, which W3's digit width already explores. The one measured k-ary result (4-ary and 8-ary merge-path probes, `reference/WARP_MERGE_SORT_RESULTS.md` section 14.1) was negative at every size because the extra probes cost on every step while the step saving only shows in the last rounds. Data-dependent pivots do buy distribution independence, which radix and bit-serial lack on clustered keys, but the first pivot from the sorted sample is exactly W5's and B4's bound, and a second pivot level is their finish. A separate card would duplicate them.
+what survives: W5 and B4 carry "a second order statistic as the retry rung" and "multi-pivot refine of the candidate set" in their explore lists. N6 gets the distribution independence from equi-width bins at radix cost.
