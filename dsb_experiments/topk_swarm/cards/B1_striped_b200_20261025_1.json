@@ -1191,5 +1191,11 @@
     "thr_us": 3778.176069
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B1",
+  "date": "2026-10-25",
+  "notes": "verify-B1 rerun 2026-10-25 on umbriel-b200-047 (B200, nvcc 13.4.92, sm_100), adapters and controls rebuilt from branch exp/topk-swarm/B1 commit 02fdf9dbdc on harness b6bfae9a37bb, same run.py flags, batch state/results/verify-B1/B1_striped_vs_B1_reference_focus_v_base1_20261025_134827.json. All 44 cells within 1.5 percent latency and 1.2 percent throughput of the card (rerun vs card: bf16 N1024 k16 1879.4 vs 1879.8 against control 1882.0 vs 1882.1; fp32 N4096 k16 3971.5 vs 3971.3 against 3705.2 vs 3703.9; fp32 N32768 k1024 30710.6 vs 30720.2 against 36044.5 vs 36123.8 = +17.4 vs +17.6 percent; fp32 N4096 k1024 throughput 382.4 vs 382.4 against 293.1 vs 293.1 Gelem/s). Canaries 32.00098 cycles start and end in both sessions, thr_us 3779.1/3778.2 vs card 3780.0/3778.2. Oracle 13 cases per cell (4 seeds plus 9-pattern battery) passed for variant and control in all 22 cells; prefer_smaller_index not supported, stated. Control B1_reference in the same lock section, not A/A. Anti-DCE: slope_raw 2018 vs noop 139 at N1024, chain minima monotone, r2 >= 0.998; SASS of the variant lat kernel 704 instructions with 24 ATOMS, 25 BAR.SYNC, SHF and ISETP present (bf16 N1024 k16), identical counts to the card; STL/LDL 31/31 at IPT128 bf16 match spill 248, 29/29 fp32 match 232. Registers, spill and barrier claims in the findings checked against the raw data and correct. Note: the card's commit field names the harness clone (b6bfae9a37bb); the adapter source that reproduces these binaries exactly is B1 branch commit 02fdf9dbdc."
+ }
 }

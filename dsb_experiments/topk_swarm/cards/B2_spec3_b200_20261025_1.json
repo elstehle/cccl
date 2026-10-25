@@ -1839,8 +1839,8 @@
    "The fixed cost dropped as designed: 553 at IPT 4 k 4 against 380 is 4 x 137 + 5, so the prologue net of the control is about zero (no init barrier, no slot zeroing, no slot read back), and the readout is one register per thread."
   ],
   "algorithmic": [
-   "The dependent-chain model does not explain the round. After the read back the chain is max tree 12, compare 6, select 6, store, barrier 28, LDS 33, about 85 cycles, yet the round costs 137, the same slope as B2_spec (138) whose mechanism was entirely different (un-aggregated atomics, two redux per warp). The common quantity is the number of CREDUX per round per SM: 8 in B2_packed (one per warp, the aggregation), 16 in B2_spec, 24 in B2_spec3, and the slopes are consistent with a redux unit shared SM-wide at about 5.7 cycles per CREDUX (T17's issue rate for independent redux in one warp): 24 x 5.7 = 137, 16 x 5.7 = 91 plus the atomics, 8 x 5.7 = 46 inside the 83.5 chain of the baseline. T11's classic-with-redux round (2 per warp, 93) and hybrid8-with-redux (149) fit the same reading. This is a hypothesis handed to the hardware researcher, not a measured fact.",
-   "If the redux unit is the limit, the baseline round (one CREDUX per warp) is already near the floor for an 8-warp block and any speculative-post scheme that needs two or more warp reductions per round cannot win at 256 threads. The remaining levers are fewer warps per block (128 threads: 4 CREDUX per round and a 20-cycle barrier) and fewer rounds, not a shorter chain.",
+   "The dependent-chain model does not explain the round and neither does redux throughput: the hardware researcher measured CREDUX as a per-scheduler resource at about 5.7 cycles each (T33), so the 3 refresh redux per warp per round cost 23 to 33 scheduler cycles that hide inside the round. The SASS of the measured binary explains the 137: ptxas moves the three CREDUX freely across BAR.SYNC (round to round they sit before the STS, between the STS and the barrier, or after the barrier and before the LDS.128, addresses 0a70, 0aa0 and 0c60 in the N 1024 k 16 bf16 kernel), and whenever one lands after the barrier its 22 cycles plus the UR to R move stand in front of the fold, the post value and the STS. The source order (redux issued before the store and the barrier, inputs independent of the round maximum) is not preserved by ptxas, so in most rounds a redux is on the chain after all, and the round is about BAR 28, CREDUX 22 to 33, fold and post 12 to 18, STS, LDS.128 33, max tree 12, compare and select 12.",
+   "With one aggregated CREDUX per warp per round the baseline is already the shortest chain ptxas will schedule for an 8-warp block: every variant that needs more than one warp reduction per round handed ptxas a redux it could place on the chain, and it did. The levers that remain are structural: fewer warps per block (128 threads, next batch) and fewer rounds, not a reordered chain.",
    "Correctness of the speculative state machine (b0, b1, x per warp, refreshed by c1 = third head, c2 = next item of the b0 lane after the one that is already x, c3 = next item of the b1 lane, folded by whether x > b1 when the warp won) held on all 13 oracle cases per cell including sorted input where one lane wins many rounds in a row, once the shift was applied in the same round (the deferred tail shift of spec and spec2 is unsound with the refresh).",
    "prefer_smaller_index remains free (identical cycles for both requirements in every cell, same binary)."
   ],
@@ -1850,13 +1850,14 @@
    "The register cost of carrying the warp state and three redux results in flight (plus 7 to 38 registers over B2_packed) lowers the occupancy of the bf16 kernel from 8 to 6 blocks per SM at IPT 4 and 16."
   ],
   "surprises": [
-   "A round with no shared atomics, no init barrier, a shorter dependent chain and fewer barriers per call is 60 percent slower than the baseline, and exactly as slow as the atomic burst variant. The redux count per round is the only quantity the two slow variants share.",
+   "A round with no shared atomics, no init barrier, a shorter dependent chain in the source and fewer barriers per call is 60 percent slower than the baseline, and exactly as slow as the atomic burst variant, because ptxas rescheduled the refresh redux onto the chain in most rounds.",
    "The fixed cost of the call can be made close to zero net of the harness control (553 at k 4 is four rounds), so B2's prologue at IPT 4 is not where the time goes, the round is."
   ],
   "open_questions": [
-   "Is redux.sync throughput shared across the SM at about one per 5 to 6 cycles (asked of the hardware researcher)? If so, the catalogue should model a block round as max(chain, 5.7 x CREDUX per round per SM) and the B5 design (two warp phases, several redux per warp per round) should be re-costed.",
+   "Can the issue point of a redux be pinned relative to BAR.SYNC from CUDA C++ at all? asm volatile keeps the PTX order but ptxas reorders CREDUX across the barrier, a fake register dependency on the read back pins the consumer but not the producer. Without that control the speculative-post family cannot be scheduled as designed on nvcc 13.4.",
    "Would a 128-thread block (4 CREDUX per round, barrier 20 cycles, IPT doubled) cut the round below 83.5 (next batch)?",
-   "A one-redux refresh: c2 and c3 can be merged into one redux selected by up = (x > b1), which is known before, leaving c1 and c23 (two per warp); with the throughput reading that is still 16 per round and not expected to win, so it was not built."
+   "A one-redux refresh: c2 and c3 can be merged into one redux selected by up = (x > b1), which is known before, leaving c1 and c23 (two per warp); with the throughput reading that is still 16 per round and not expected to win, so it was not built.",
+   "The hardware researcher's per-scheduler CREDUX, VOTE and SHFL throughput numbers (T33: 5.7, 7 and 4 cycles per instruction per scheduler) bound how many warp collectives a block round can afford before throughput matters: about 14 CREDUX per scheduler per 80-cycle round, far above what B2 or B5 issue."
   ]
  },
  "techniques_adopted": [
@@ -1865,7 +1866,8 @@
   "T11",
   "T17",
   "T19",
-  "T26"
+  "T26",
+  "T33"
  ],
  "techniques_contributed": [
   "T27"

@@ -1191,5 +1191,11 @@
     "thr_us": 3779.200077
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B1",
+  "date": "2026-10-25",
+  "notes": "verify-B1 rerun 2026-10-25 on umbriel-b200-047 (B200, nvcc 13.4.92), rebuilt from exp/topk-swarm/B1 commit 02fdf9dbdc, batch state/results/verify-B1/B1_n6b_vs_B1_n6_focus_v_n6c_20261025_135159.json. All 44 cells within 1.8 percent latency and 1.4 percent throughput, control drift at most 2.0 percent (rerun vs card: bf16 N4096 k256 4571.6 vs 4570.8 against B1_n6 5535.8 vs 5549.5 = +21.1 vs +21.4 percent; bf16 N1024 k256 2332.3 vs 2332.8 against 2702.8 vs 2703.8; bf16 N32768 k1024 31547 vs 31585 against 60992 vs 61996; fp32 N1024 k16 1661.0 vs 1663.9 against 1701.7 vs 1702.3). Canaries 32.00098 both ends, thr_us 3779.4/3777.9 vs card 3779.6/3779.2. Oracle 13/13 per cell for variant and control. Control B1_n6 (the 02fdf9dbdc build, SASS 1984 at IPT 4) in the same lock section, not A/A. SASS of the variant at bf16 N32768 k16 32208 instructions (card 32208), 330 STL and 1489 LDL matching 7276 spill bytes, 2560 ATOMS, 537 FFMA, 2064 IMNMX. TWO FINDINGS NEED CORRECTION (they cite the B1_n6 card's build, not this card's control): (1) low_level 'Registers 46 against 40 at IPT 4 ... 255 with 7276 bytes of spill against 8588 at IPT 128': the same-section control has 46 registers at IPT 4 (40 in the throughput kernel, same as the variant) and 7256 spill bytes at IPT 128, so per-bucket tracking costs 0 registers and 20 spill bytes, and the asm pin plus restructure in 02fdf9dbdc, not per-bucket tracking, took B1_n6 from 8588 to 7256 bytes (and from 30398 to 22521 cycles at bf16 N32768 k16 between the n6b and n6c batches). (2) the chained-to-B1_idx estimate: with a consistent B1_n6 build in both of this verifier's batches, B1_n6b against B1_idx is about +4.6 percent (bf16) and +7.9 percent (fp32) at N1024 k16, +22 and +30 percent at N4096 k16, and at N32768 it is ahead for fp32 k16 (+7.7) and k64 (+5), even at fp32 k256, behind at fp32 k1024 (-11) and at every bf16 cell (-13 to -32), so 'behind at N 32768 by the remaining spill' holds for bf16 only."
+ }
 }

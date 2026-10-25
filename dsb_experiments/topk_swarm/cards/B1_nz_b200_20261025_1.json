@@ -1185,5 +1185,11 @@
     "thr_us": 3779.167891
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B1",
+  "date": "2026-10-25",
+  "notes": "verify-B1 rerun 2026-10-25 on umbriel-b200-047 (B200, nvcc 13.4.92), rebuilt from exp/topk-swarm/B1 commit 02fdf9dbdc, batch state/results/verify-B1/B1_nz_vs_B1_idx_focus_v_nz1_20261025_135018.json. All 44 cells within 1.0 percent latency and 2.0 percent throughput (rerun vs card: bf16 N1024 k16 1794.6 vs 1795.7 against B1_idx 1768.3 vs 1765.4 = -1.5 vs -1.7 percent; bf16 N32768 k16 17315.7 vs 17439.7 against 16362.2 vs 16458.4 = -5.5 vs -5.6 percent; fp32 N32768 k16 throughput 428.9 vs 437.6 against 462.8 vs 463.3, the largest deviation). Canaries 32.00098 both ends, thr_us 3778.9/3778.0 vs card 3777.8/3779.2. Oracle 13/13 per cell for variant and control. Control B1_idx same lock section, not A/A. SASS 14648 vs 14056 for B1_idx at fp32 N32768 (card 14648), ISETP +256 for the per-item compare; the 166-register fp32 IPT128 allocation reproduces (card 166, control 250), 0 spill both. The 1.5 to 6 percent normalization cost holds."
+ }
 }

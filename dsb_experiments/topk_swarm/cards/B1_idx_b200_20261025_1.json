@@ -1191,5 +1191,11 @@
     "thr_us": 3779.711962
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B1",
+  "date": "2026-10-25",
+  "notes": "verify-B1 rerun 2026-10-25 on umbriel-b200-047 (B200, nvcc 13.4.92), rebuilt from exp/topk-swarm/B1 commit 02fdf9dbdc, batch state/results/verify-B1/B1_idx_vs_B1_striped_focus_v_idx1_20261025_134904.json. All 44 cells within 1.3 percent latency and 0.9 percent throughput (rerun vs card: bf16 N1024 k16 1767.0 vs 1767.2 against B1_striped 1879.3 vs 1879.0; bf16 N4096 k16 3370.8 vs 3370.9 against 3892.9 vs 3885.3; fp32 N32768 k16 14997.7 vs 15164.2 against 17729.0 vs 17965.8 = +18.2 vs +18.5 percent; bf16 N4096 k16 throughput 692.3 vs 692.2 against 558.9 vs 558.9). Canaries 32.00098 both ends, thr_us 3777.8/3777.8 vs card 3778.2/3779.7. Oracle 13/13 per cell for variant and control on all 22 cells. Control B1_striped same lock section, not A/A. Anti-DCE: slope_raw 1906 vs noop 139 at bf16 N1024 k16, chain minima monotone, r2 >= 0.997; SASS 656 instructions with 24 ATOMS, 19 BAR.SYNC, 9 SHF, 100 ISETP (bf16 N1024 k16), identical to the card; 0 STL/LDL at IPT128 with 248 to 250 registers as claimed. Findings' register, barrier and SASS claims match the raw data; one nit: 'occupancy unchanged at 4 blocks per SM' at N4096 throughput reads 5 for the variant against 4 for the control in the raw data. Commit field names the harness clone; 02fdf9dbdc reproduces the binaries exactly."
+ }
 }

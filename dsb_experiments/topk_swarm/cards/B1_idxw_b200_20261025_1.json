@@ -1188,5 +1188,11 @@
     "thr_us": 3779.295921
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B1",
+  "date": "2026-10-25",
+  "notes": "verify-B1 rerun 2026-10-25 on umbriel-b200-047 (B200, nvcc 13.4.92), rebuilt from exp/topk-swarm/B1 commit 02fdf9dbdc, batch state/results/verify-B1/B1_idxw_vs_B1_idx_focus_v_idxw1_20261025_134939.json. All 44 cells within 1.7 percent latency and 0.6 percent throughput (rerun vs card: bf16 N1024 k16 2316.1 vs 2316.8 against B1_idx 1766.6 vs 1767.2; fp32 N1024 k256 2715.6 vs 2715.5 against 2148.3 vs 2148.2 = -20.9 percent both; bf16 N32768 k16 58037.9 vs 59062.7 against 16358.3 vs 16461.3 = 3.55x vs 3.59x). Canaries 32.00098 both ends, thr_us 3778.7/3777.6 vs card 3779.6/3779.3. Oracle 13/13 per cell for variant and control. Control B1_idx same lock section, not A/A. SASS of the variant lat kernel 1008 instructions (card 1008) with 32 VOTE, 16 S2R SR_LTMASK, 80 POPC, 52 SHFL, 32 ATOMS: the per-slot ballot chain the card describes is in the binary. Negative result confirmed at every cell."
+ }
 }
