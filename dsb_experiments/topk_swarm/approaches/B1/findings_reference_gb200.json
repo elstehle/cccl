@@ -1,0 +1,59 @@
+{
+ "author": "eval-engineer",
+ "approach_id": "B1",
+ "variant": "reference",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 4128,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init plus 3 in the pairs exchange epilogue",
+  "k_range": "[1, N) at run time, k == N returns the input unchanged",
+  "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768 (the exchange buffer of N x 4 bytes is dynamic shared memory)",
+  "type_constraints": "fp32 and bf16 through the radix traits (fp16, fp64, fp8 have traits but are outside the focus set), int32 indices",
+  "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking and returned as the original key",
+  "tie_break_support": "not supported: ties at the k-th key are resolved by shared-memory atomic ticket order (not_guaranteed only). Knowledge base 4.5 describes the warp-redundant rank for prefer_smaller_index at about plus 1 percent",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "report_path": "approaches/B1/REFERENCE.md",
+ "source_paths": [
+  "harness/adapters/B1_reference.cuh",
+  "harness/topk_harness.cuh",
+  "cub/cub/block/specializations/block_topk_air.cuh"
+ ],
+ "techniques_adopted": [],
+ "techniques_contributed": [],
+ "correctness_notes": "prefer_smaller_index is unsupported by block_topk_air (atomic ticket order at the k-th key), those cells are listed as unsupported, not failed. Oracle battery per cell: random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized.",
+ "findings": {
+  "low_level": [
+   "Registers scale with items per thread because AIR keeps the keys, the int32 values and a memoized key copy live across the radix passes: 44 regs at IPT 4 (fp32), 64 at IPT 16, 169 at IPT 64, 255 with 992 to 1024 bytes of spill at IPT 128 (fp32) and 254 regs with 0 spill at IPT 128 (bf16). Occupancy follows: 6 blocks/SM at N 1024 fp32 (8 for bf16), 4 at N 4096, 1 at N 16384 and 32768 (fp32), 2 at N 16384 bf16.",
+   "SASS of the harness latency kernel (one warm-up call plus the chain body): 37 BAR.SYNC for fp32 (4 radix passes) against 25 for bf16 (2 passes), 0 STL and 0 LDL up to IPT 64, 32 to 33 STL and LDL at IPT 128. Shared memory is 4256 B at N 1024 and grows to 131232 B at N 32768 (the exchange buffer is N x 4 bytes, dynamic shared memory in the harness).",
+   "The data-dependent chain control (vectorized 16-byte blocked loads, fold, barrier, read-back) costs 139 to 147 cycles per call at N 1024, 271 (bf16) to 919 (fp32) at N 4096, 2.5k (bf16) to 4.6k (fp32) at N 16384 and 4.6k to 8.7k at N 32768. Net values at N >= 16384 therefore carry a few percent of uncertainty from the subtraction (the control varies by up to 1100 cycles with k at the same N, raw fits have R^2 >= 0.998).",
+   "Throughput ceiling of the harness (no-op adapter, loads only): 5.2 to 5.4 Telem/s at N 1024 (L1 resident), 2.1 Telem/s (fp32) and 7.6 Telem/s (bf16) at N 4096, 1.1 to 2.3 Telem/s at N 16384 and 32768. At N >= 16384 the primitive runs at 1 block/SM, so its own load phase is not hidden by another block: a kernel with prefetching would see a few percent more."
+  ],
+  "algorithmic": [
+   "Latency grows slowly with k at fixed N (k 4 to 256 at N 1024: 1785 to 2313 fp32, 1768 to 2129 bf16) and roughly linearly with N at fixed small k (fp32 k 16: 1905, 3705, 10463, 18955 for N 1024 to 32768), the histogram sweep over all items per pass dominates above N 4096, as the B1 idea card's cost model predicts (about 85 cycles per item per pass).",
+   "bf16 is not cheaper than fp32 at the same N and k in latency (1882 vs 1905 at N 1024 k 16, 9679 vs 10463 at N 16384 k 16): two 8-bit passes with no early exit cost about what fp32's 2 to 4 passes with early exit cost. In throughput bf16 wins only where it buys occupancy (N 16384: 526 vs 310 Gelem/s at 2 vs 1 blocks per SM, N 32768: 376 vs 324 without the fp32 spills).",
+   "Throughput peaks at N 4096 (fp32 521 to 572 Gelem/s, bf16 534 to 574 at k 16 and 4) where IPT 16 still allows 4 blocks per SM, and falls to 310 to 330 Gelem/s at N 16384 fp32 and 324 at N 32768 (1 block per SM, spills).",
+   "Large k costs: k = N/4 at N 16384 is 23.3k cycles fp32 against 10.5k at k 16, and at N 32768 k 4096 is 47.1k against 19.0k, the candidate scatter and the pair exchange grow with k.",
+   "Tie structure of the inputs the numbers were taken on: fp32 random has 1.0 keys at rank k, bf16 random has 1.4 (N 1024 k 4) to 54 (N 32768 k 4096) keys equal to the k-th, the not_guaranteed oracle accepts any subset of them."
+  ],
+  "negative": [
+   "Index-only output does not come cheaper than pairs output here: the adapter has to run the pairs path (key exchange plus value exchange, 3 barriers in the epilogue) and drop the keys, there is no values-only epilogue in block_topk_air.",
+   "The first measurement pass used scalar blocked loads in the harness: at N >= 16384 they cost 16.9k to 33.4k cycles per call (uncoalesced, 32 sectors per warp instruction), as much as AIR itself, and halved the apparent throughput. Vectorized 16-byte loads fixed this, scalar blocked loads are the wrong baseline for any blocked-arrangement primitive."
+  ],
+  "surprises": [
+   "The July main header figure (2499 cycles at N 1024 k 16 fp32, including its 50-cycle chain link) is no longer what main does: main now carries the productized optimization and measures 1905 net of the control, within 3 percent of the July v6 prototype (1857 with its link included). The throughput did not follow to the same degree: 355 Gelem/s here against 329 for the July header and 437 for v6 (main's exchange union adds barriers, and this harness reloads the input per call and averages 16 inputs instead of one).",
+   "At N 16384 k 4096 the net latency rose from 18.0k (first pass, scalar loads) to 23.3k (vectorized loads) while the raw dropped: the control is not perfectly additive at that design point, so numbers at N >= 16384 should be read with a few percent of tolerance.",
+   "Latency in cycles on GB200 matches B200 to within 1 percent in every cell (same SM), throughput is 7 to 10 percent higher than on B200 (clocks: the fixed FMA canary runs in 3614 us against 3778 us). Consistency check only, this card stands on its own."
+  ],
+  "open_questions": [
+   "A values-only epilogue (scatter indices by ticket, no key gather) is the obvious index-only saving, the B1 optimizer should measure it against the pairs path (the idea card estimates about 100 cycles).",
+   "Where does the k dependence come from exactly at N 1024 (k 4 to 256 adds 530 cycles fp32)? The ticket atomics on two counters and the two exchange rounds are the candidates.",
+   "Why does the control differ by 1100 cycles between k 1024 and k 4096 at N 16384 when only the output buffer size changes? A shared-memory carve-out effect on L1 is the suspect."
+  ]
+ }
+}

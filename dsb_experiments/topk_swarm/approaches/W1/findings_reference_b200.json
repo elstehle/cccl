@@ -1,0 +1,56 @@
+{
+ "author": "eval-engineer",
+ "approach_id": "W1",
+ "variant": "reference",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 1,
+  "sync_assumed": "none beyond warp convergence of the 32 lanes",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, MaxK] with MaxK = round_up(k, 32) <= N at compile time, k = 4 and k = 16 pay the k = 32 network",
+  "n_range": "N = 32 x IPT, IPT >= 1, measured 32 to 4096",
+  "type_constraints": "any trivially copyable key with a strict weak order, fp32 compared natively and bf16 through __hgt, int32 indices",
+  "nan_behavior": "comparisons with NaN are false, a NaN key lands at an unspecified position, never produced by focus-set inputs. -0.0 and +0.0 compare equal",
+  "tie_break_support": "not supported in the reference: deterministic network but ties are not index resolved (not_guaranteed only). Index-in-key or (key, index) comparison would add it, see the W1 idea card",
+  "sorted_output_support": "inherent: the first k striped positions are sorted descending"
+ },
+ "report_path": "approaches/W1/REFERENCE.md",
+ "source_paths": [
+  "harness/adapters/W1_reference.cuh",
+  "harness/topk_harness.cuh",
+  "cub/cub/warp/warp_bitonic_topk.cuh"
+ ],
+ "techniques_adopted": [],
+ "techniques_contributed": [],
+ "correctness_notes": "prefer_smaller_index is unsupported by WarpBitonicTopK (ties are not index resolved), those cells are listed as unsupported, not failed. Same oracle battery as B1.",
+ "findings": {
+  "low_level": [
+   "No shared memory, no barriers: the latency kernel has 0 BAR.SYNC, the chain control (in-place perturbation, fold, syncwarp, read-back) is 48 cycles per call. Registers: 19 (fp32) and 26 (bf16) at N 32, 32 to 36 at N 128, 56 to 63 at N 512, 151 to 168 at N 2048, 255 with 296 to 1544 bytes of spill at N 4096 (IPT 128), where occupancy drops to 1 block of 8 warps per SM.",
+   "bf16 keys need 24 to 57 percent more SASS instructions than fp32 for the same network (1656 vs 1160 at N 128 k 16, 25512 vs 17992 at N 2048 k 16): 16-bit keys are shuffled through 32-bit lanes with pack and unpack, and the comparison is __hgt. bf16 is slower than fp32 in every cell: 778 vs 583 cycles at N 32, 2267 vs 2041 at N 128, 12606 vs 9970 at N 512, 76k vs 49k at N 2048, 156k vs 130k at N 4096.",
+   "Per input element the network costs 18 to 32 cycles for k <= 32 (fp32: 583/32, 2041/128, 9970/512, 49343/2048, 130474/4096), one shuffle latency per element per stage with no overlap inside a warp. The throughput side shows the same bound: 198 Gelem/s at N 32 falling to 88 at N 4096 (fp32), 126 to 60 (bf16), at 8 warps per block and 8 blocks per SM for the small cells."
+  ],
+  "algorithmic": [
+   "MaxK is k rounded up to 32, so k 4 and k 16 cost exactly the k 32 network and share one number per N. Above 32 the cost grows with k: at N 2048 fp32, k 16 is 49k, k 64 is 66k, k 256 is 97k, k 1024 is 132k. Sorting MaxK items per chunk and merging MaxK is O(MaxK log^2 MaxK) per chunk and there are N/MaxK chunks, so the per element cost grows with log^2 MaxK.",
+   "Latency is linear in N for fixed MaxK (fp32 k 16: 2041, 9970, 49343 for N 128, 512, 2048 is 4.9x per 4x N) until registers run out: N 4096 costs 2.6x N 2048 because of the spills, not the network.",
+   "Against the block incumbent at matching N the warp network is an order of magnitude more expensive per element (B1 at N 4096 fp32 k 16: 3705 cycles for 4096 items, W1 at N 2048: 49k for 2048 items), so W1's place is small N (routing rows of 32 to 128) and the tail of a hierarchy, as the W1 idea card expects.",
+   "Output is sorted and deterministic for free, which no other focus-set reference gives. Ties are resolved by network position, so prefer_smaller_index needs the index inside the key or a (key, index) comparator, both of which the W1 optimizer owns."
+  ],
+  "negative": [
+   "The native bf16 comparison path is a loss on this network: every cell is slower than fp32, the opposite of the hoped-for 16-bit advantage. Packing two bf16 keys per 32-bit lane (the W1 idea card's packed arrangement) is the way to turn 16 bits into a win, comparing them one by one through __hgt is not.",
+   "N 4096 at 32 lanes (128 items per lane) is past the register file: 255 registers with spills in every k, the cell is a stress point rather than a design point for a warp primitive."
+  ],
+  "surprises": [
+   "The July figure for a single WarpBitonicTopK 128 to 16 call was about 2500 cycles (half of bitonic_hier's 5112 with its block barrier, smem staging and chain link), this harness measures 2041 net for the same shape and key type, consistent once the July overheads are taken out.",
+   "On GB200 the A/A control of the data-oblivious chain spreads by 2 to 4 percent at N 2048 fp32 (50216 vs 48859 at k 4, 141984 vs 136712 at k 1024) while B200 agrees to 0.01 percent, and the GB200 fp32 N 2048 k 1024 build shows 64 bytes of spill where B200 shows none at the same register count."
+  ],
+  "open_questions": [
+   "Which part of the bf16 penalty is the shuffle packing and which the __hgt compare? A packed two-keys-per-lane variant answers both at once.",
+   "Does the buffered threshold-compaction variant of PR #9281 beat the eager network for N much larger than MaxK (N 512 and up at k 16), where the eager form spends 90 percent of its time sorting chunks that are then discarded?",
+   "Is the GB200 A/A spread a clock effect on a shuffle-bound chain (cycles should be clock invariant) or an SM placement effect? Worth a repeat with more repetitions before any 3 percent GB200 claim is made for a warp primitive."
+  ]
+ }
+}
