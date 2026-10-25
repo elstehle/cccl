@@ -275,6 +275,116 @@ void run_rounds_sel(int blocks, const char* tag)
   cudaFree(ds);
 }
 
+// Round with a one-lane guarded atomic (BSSY, BRA, BSYNC), barrier, LDS, then 32 independent IMADs on
+// 4 accumulators (issue bound, one per cycle): high instruction rate right after a branch, like the 32
+// predicated selects of the B2 list shift. 128 rounds is about 85 KB.
+template <int ROUNDS, int BLOCK, bool BRANCH>
+__global__ void __launch_bounds__(BLOCK) body_rounds_ipc(long long* out, unsigned* smids, int reps)
+{
+  __shared__ unsigned slots[16];
+  unsigned sm = smid();
+  unsigned a0 = threadIdx.x * 2654435761u, a1 = a0 ^ 0x9e3779b9u, a2 = a0 + 0x7f4a7c15u, a3 = a0 * 3u;
+  unsigned c  = threadIdx.x + 1u;
+  for (int i = threadIdx.x; i < 16; i += BLOCK)
+  {
+    slots[i] = 0;
+  }
+  long long best = LLONG_MAX;
+#pragma unroll 1
+  for (int r = 0; r < reps; ++r)
+  {
+    __syncthreads();
+    long long t0 = clock64();
+    asm volatile("" ::: "memory");
+#pragma unroll
+    for (int rd = 0; rd < ROUNDS; ++rd)
+    {
+      if constexpr (BRANCH)
+      {
+        if (threadIdx.x == static_cast<unsigned>(rd & (BLOCK - 1)))
+        {
+          atomicMax(&slots[rd & 15], a0);
+        }
+      }
+      else
+      {
+        atomicMax(&slots[rd & 15], a0);
+      }
+      __syncthreads();
+      unsigned m = slots[rd & 15];
+      asm volatile(
+        "mad.lo.u32 %0, %0, 3, %4;\n mad.lo.u32 %1, %1, 5, %4;\n mad.lo.u32 %2, %2, 7, %4;\n mad.lo.u32 %3, %3, 9, %4;\n"
+        "mad.lo.u32 %0, %0, 3, %5;\n mad.lo.u32 %1, %1, 5, %5;\n mad.lo.u32 %2, %2, 7, %5;\n mad.lo.u32 %3, %3, 9, %5;\n"
+        "mad.lo.u32 %0, %0, 3, %4;\n mad.lo.u32 %1, %1, 5, %4;\n mad.lo.u32 %2, %2, 7, %4;\n mad.lo.u32 %3, %3, 9, %4;\n"
+        "mad.lo.u32 %0, %0, 3, %5;\n mad.lo.u32 %1, %1, 5, %5;\n mad.lo.u32 %2, %2, 7, %5;\n mad.lo.u32 %3, %3, 9, %5;\n"
+        "mad.lo.u32 %0, %0, 3, %4;\n mad.lo.u32 %1, %1, 5, %4;\n mad.lo.u32 %2, %2, 7, %4;\n mad.lo.u32 %3, %3, 9, %4;\n"
+        "mad.lo.u32 %0, %0, 3, %5;\n mad.lo.u32 %1, %1, 5, %5;\n mad.lo.u32 %2, %2, 7, %5;\n mad.lo.u32 %3, %3, 9, %5;\n"
+        "mad.lo.u32 %0, %0, 3, %4;\n mad.lo.u32 %1, %1, 5, %4;\n mad.lo.u32 %2, %2, 7, %4;\n mad.lo.u32 %3, %3, 9, %4;\n"
+        "mad.lo.u32 %0, %0, 3, %5;\n mad.lo.u32 %1, %1, 5, %5;\n mad.lo.u32 %2, %2, 7, %5;\n mad.lo.u32 %3, %3, 9, %5;\n"
+        : "+r"(a0), "+r"(a1), "+r"(a2), "+r"(a3)
+        : "r"(c), "r"(m));
+    }
+    unsigned v = a0 ^ a1 ^ a2 ^ a3;
+    if (sm == 0xffffffffu)
+    {
+      g_sink = static_cast<int>(v);
+    }
+    asm volatile("" ::: "memory");
+    __syncthreads();
+    long long t1 = clock64();
+    best = ::min(best, t1 - t0);
+  }
+  if (threadIdx.x == 0)
+  {
+    out[blockIdx.x]   = best;
+    smids[blockIdx.x] = sm;
+  }
+}
+
+template <int ROUNDS, int BLOCK, bool BRANCH>
+void run_rounds_ipc(int blocks, const char* tag)
+{
+  long long* d;
+  unsigned* ds;
+  cudaMalloc(&d, sizeof(long long) * blocks);
+  cudaMalloc(&ds, sizeof(unsigned) * blocks);
+  body_rounds_ipc<ROUNDS, BLOCK, BRANCH><<<blocks, BLOCK>>>(d, ds, 4);
+  cudaDeviceSynchronize();
+  body_rounds_ipc<ROUNDS, BLOCK, BRANCH><<<blocks, BLOCK>>>(d, ds, kReps);
+  cudaError_t err = cudaDeviceSynchronize();
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "KERNEL ERROR: %s\n", cudaGetErrorString(err));
+    return;
+  }
+  long long* h = new long long[blocks];
+  unsigned* hs = new unsigned[blocks];
+  cudaMemcpy(h, d, sizeof(long long) * blocks, cudaMemcpyDeviceToHost);
+  cudaMemcpy(hs, ds, sizeof(unsigned) * blocks, cudaMemcpyDeviceToHost);
+  long long mn = LLONG_MAX, mx = 0;
+  for (int b = 0; b < blocks; ++b)
+  {
+    mn = ::min(mn, h[b]);
+    mx = ::max(mx, h[b]);
+  }
+  printf("{\"name\":\"rounds-ipc %s %s ROUNDS %d BLOCK %d blocks %d\",\"rounds\":%d,\"block\":%d,\"blocks\":%d,\"branch\":%s,"
+         "\"cycles_min\":%lld,\"cycles_max\":%lld,\"per_round_min\":%.1f,\"per_round_max\":%.1f,"
+         "\"arch\":\"%s\",\"device\":\"%s\",\"node\":\"%s\",\"date\":\"%s\",\"file\":\"harness/micro/icache_micro.cu\",\"per_block\":[",
+         BRANCH ? "branchy" : "uniform", tag, ROUNDS, BLOCK, blocks, ROUNDS, BLOCK, blocks, BRANCH ? "true" : "false",
+         mn, mx, static_cast<double>(mn) / ROUNDS, static_cast<double>(mx) / ROUNDS,
+         g_meta.arch.c_str(), g_meta.device.c_str(), g_meta.node.c_str(), g_meta.date.c_str());
+  for (int b = 0; b < blocks; ++b)
+  {
+    printf("%s[%u,%lld]", b ? "," : "", hs[b], h[b]);
+  }
+  printf("]}\n");
+  fflush(stdout);
+  delete[] h;
+  delete[] hs;
+  cudaFree(d);
+  cudaFree(ds);
+}
+
 template <int ROUNDS, int BLOCK, bool BRANCH = false>
 void run_rounds(int blocks, const char* tag)
 {
@@ -634,6 +744,11 @@ int main(int argc, char** argv)
   run_rounds<128, 128, true>(1, "one block");
   run_rounds<128, 256, true>(1, "one block");
   run_rounds<128, 128, true>(sms, "one block per SM");
+  // branch then 32 independent IMADs per round: high issue rate right after the branch
+  run_rounds_ipc<128, 128, true>(1, "one block");
+  run_rounds_ipc<128, 128, false>(1, "one block");
+  run_rounds_ipc<128, 256, true>(1, "one block");
+  run_rounds_ipc<128, 128, true>(sms, "one block per SM");
   // select-heavy rounds with and without a divergent one-lane atomic branch, 128 rounds is about 90 KB of code
   run_rounds_sel<128, 128, false>(1, "one block");
   run_rounds_sel<128, 128, true>(1, "one block");
