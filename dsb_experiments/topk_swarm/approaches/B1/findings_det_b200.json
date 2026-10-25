@@ -1,0 +1,55 @@
+{
+ "author": "opt-B1",
+ "approach_id": "B1",
+ "report_path": "approaches/B1/REPORT.md",
+ "variant": "det",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2256,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init, plus 1 in the tie phase when the candidates at the k-th key exceed the remaining k",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = 256 x IPT, IPT 1 to 64 under prefer_smaller_index (the tie decision is a 64-bit mask per thread), measured 1024 and 4096",
+  "type_constraints": "fp32 and bf16 through the radix traits, int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is normalized to +0.0 once in the prologue so both zeros form one tie class",
+  "tie_break_support": "inherent under prefer_smaller_index: warp-redundant rank (knowledge base 4.5 approach C) over the exact ties after the last pass, index order on striped tiles, taken ties written at total_selected + rank without an atomic. Measured plus 19 to 51 percent latency against B1_idx not_guaranteed in this build, see findings",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [
+  "T4",
+  "T14"
+ ],
+ "techniques_contributed": [
+  "T23"
+ ],
+ "source_paths": [
+  "harness/adapters/B1_det.cuh",
+  "approaches/B1/block_topk_b1.cuh"
+ ],
+ "correctness_notes": "14 prefer_smaller_index cells at N 1024 and 4096, 13 oracle cases each including signed_zero (2k zeros of both signs, exact index set), all passed. The 8 cells at N 32768 are unsupported (IPT 128 exceeds the 64-bit tie mask). Control is B1_idx under not_guaranteed in the same lock section (harness 0.3 --control-req).",
+ "findings": {
+  "low_level": [
+   "The deterministic path adds the prologue normalization (one compare and one select per item), a tie phase that runs only when the exact ties exceed the remaining k (IPT ballots, IPT predicated table stores, one barrier, 8 table loads per owned slot, a 5-step shuffle scan, IPT base shuffles and popcs), and an epilogue whose selected-class atomic has a constant counter address. Registers 40 against 32 at IPT 4 (throughput occupancy 6 against 8), 64 against 47 at IPT 16, SASS 1304 against 992 (fp32 N 1024), 2 more BAR.SYNC (the tie barrier, warm-up and chain copy).",
+   "The structural cost is a codegen effect, not the tie phase: fp32 random has no ties at rank k (ties_at_k 1.0), so the tie phase never runs, yet the det kernel is 344 cycles slower at N 1024 k 16 (2138 against 1794). The SASS of its epilogue shows, per item, S2R SR_LANEID, VOTEU.ANY, FLO.U32, S2R SR_LTMASK, POPC, one predicated ATOMS.ADD, SHFL.IDX and the rank add: the compiler warp-aggregated the ticket atomic because its address (selected_offset[0]) is provably uniform and the increment constant, and the two special register reads (about 80 cycles of latency, T14) sit in the dependent chain of every item's store. The B1_idx epilogue indexes the counter by a data-dependent class and keeps the plain per-item ATOMS with no S2R in the timed region.",
+   "The tie phase itself (bf16 rows, 1.4 to 5.4 ties at rank k) costs about 70 cycles more than the structural part at N 1024 (bf16 plus 410 against fp32 plus 344 at k 16) and about 900 more at N 4096 k 64 (bf16 plus 1962 against fp32 plus 1096), the IPT table stores and base shuffles scale with IPT."
+  ],
+  "algorithmic": [
+   "Measured cost of prefer_smaller_index in this build, B200 same lock section: N 1024 k 16 bf16 2177 against 1767 (plus 23 percent), fp32 2138 against 1794 (plus 19 percent), k 256 bf16 2410 against 1971, fp32 2425 against 2148, N 4096 k 64 bf16 5801 against 3839 (plus 51 percent), fp32 5684 against 4588 (plus 24 percent). Throughput minus 17 to 38 percent. The knowledge base 4.5 figure of about plus 1 percent on random data for approach C does not hold for this build until the aggregation is defeated, see the open question.",
+   "The rank is index order for free on striped tiles (slot-major then thread order is item order), which the blocked arrangement does not give, and the taken ties need no atomic because their position is total_selected plus rank."
+  ],
+  "negative": [
+   "A constant counter address in a per-item ticket loop is a liability on sm_100 with nvcc 13.4: the automatic warp aggregation it triggers costs more than the atomics it saves when the sites are on the critical path. Use a data-dependent or opaque counter index."
+  ],
+  "surprises": [
+   "The compiler's automatic warp-aggregated atomic is the whole story of the 19 percent at fp32: 4 x (S2R SR_LTMASK plus S2R SR_LANEID) on a dependent path cost about as much as the two 8-bit radix passes' scan phases together."
+  ],
+  "open_questions": [
+   "The fix (an opaque counter index through an empty asm statement, now in approaches/B1/block_topk_b1.cuh) is implemented and not yet measured, the batch budget of this session was spent. Expected: the structural 344 cycles vanish and prefer_smaller_index costs the tie phase alone, about 70 cycles at IPT 4 on bf16 rows with ties and 0 on fp32 rows without.",
+   "IPT above 64 needs a wider tie mask (two 64-bit words, or a per-slot taken bit recomputed in the epilogue from the rank) to cover N 32768 at 256 threads."
+  ]
+ }
+}

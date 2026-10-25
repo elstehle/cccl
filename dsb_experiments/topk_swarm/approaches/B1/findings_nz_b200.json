@@ -1,0 +1,49 @@
+{
+ "author": "opt-B1",
+ "approach_id": "B1",
+ "report_path": "approaches/B1/REPORT.md",
+ "variant": "nz",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2128,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init, none in the epilogue",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768, temp storage independent of N",
+  "type_constraints": "fp32 and bf16 through the radix traits, int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is normalized to +0.0 once in the prologue (one compare and one select per item)",
+  "tie_break_support": "not in this variant: ties at the k-th key by atomic ticket order. B1_det carries the warp-redundant rank (index order on striped tiles) under prefer_smaller_index",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [
+  "T21"
+ ],
+ "techniques_contributed": [],
+ "source_paths": [
+  "harness/adapters/B1_nz.cuh",
+  "approaches/B1/block_topk_b1.cuh"
+ ],
+ "correctness_notes": "22 cells, 13 oracle cases each, all passed. Control is B1_idx in the same lock section.",
+ "findings": {
+  "low_level": [
+   "The prologue normalization is one ISETP and one SEL per item on the twiddled key (compare with the twiddled -0.0, select the twiddled +0.0). Registers unchanged at IPT 4 (32) and IPT 16 (47 to 48), and at IPT 128 the fp32 kernel moved from 250 to 166 registers with 0 spill at a 6 percent latency cost, another register tier lottery (knowledge base 2.5) on an unchanged algorithm.",
+   "Latency plus 1.5 to 2 percent at N 1024 (bf16 k 16 1796 against 1765, fp32 1819 against 1794), plus 2 to 3 percent at N 4096 (bf16 k 16 3484 against 3369), plus 3 to 6 percent at N 32768 (bf16 k 16 17440 against 16458, fp32 16062 against 15148). Throughput minus 1 to 7 percent."
+  ],
+  "algorithmic": [
+   "This is the cost of the -0.0 to +0.0 tie-class semantics on the index-only radix path, which prefer_smaller_index needs and not_guaranteed does not (the oracle compares keys with ==): 1.5 to 6 percent, in line with the 0.8 to 3 percent of the nz_check A/B on the device benchmarks (knowledge base 4.4). It accounts for about a tenth of the B1_det gap, the rest is the compiler's warp aggregation of the ticket atomic (T23) and the tie phase."
+  ],
+  "negative": [
+   "Normalizing in the prologue is not free even at two instructions per item, so the not_guaranteed path should keep it off, as the nz_check recommendation says."
+  ],
+  "surprises": [
+   "Two instructions per item in the prologue changed the fp32 IPT 128 kernel's register allocation from 250 to 166 with no spill either way, and the leaner allocation is the slower one by 6 percent."
+  ],
+  "open_questions": [
+   "Would normalizing on the float value before the twiddle (v + 0.0f, one FADD per item) be cheaper than the compare and select on the twiddled key, or does the compiler fold either into the twiddle sequence? Not measured."
+  ]
+ }
+}

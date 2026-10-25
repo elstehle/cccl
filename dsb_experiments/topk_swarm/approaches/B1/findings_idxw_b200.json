@@ -1,0 +1,52 @@
+{
+ "author": "opt-B1",
+ "approach_id": "B1",
+ "report_path": "approaches/B1/REPORT.md",
+ "variant": "idxw",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2128,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init, none in the epilogue",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768, temp storage independent of N",
+  "type_constraints": "fp32 and bf16 through the radix traits, int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is not normalized (any valid set under not_guaranteed, the oracle compares keys with ==)",
+  "tie_break_support": "not in this variant: ties at the k-th key by atomic ticket order. B1_det carries the warp-redundant rank (index order on striped tiles) under prefer_smaller_index",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [
+  "T4",
+  "T17"
+ ],
+ "techniques_contributed": [
+  "T22"
+ ],
+ "source_paths": [
+  "harness/adapters/B1_idxw.cuh",
+  "approaches/B1/block_topk_b1.cuh"
+ ],
+ "correctness_notes": "22 cells, 13 oracle cases each, all passed.",
+ "findings": {
+  "low_level": [
+   "Warp-aggregated tickets: per tile slot one ballot of the selected items, one shared atomic with return by lane 0 when the ballot is nonzero, a shuffle broadcast of the base and a popc rank below the lane, and the same for the tie class. SASS 1008 against 656 (bf16 N 1024) and 21576 against 10296 (bf16 N 32768) instructions in the latency kernel, 36 against 32 registers at IPT 4, barriers unchanged.",
+   "The per-slot chain ballot (27), popc (23), atomic with return (55), shuffle (30), popc and store is about 150 cycles long and the `if (ballot != 0)` guard around the atomic puts each slot's chain behind the previous one, so the epilogue costs about IPT x 150 cycles: 550 extra cycles at IPT 4 (2317 against 1767 bf16 N 1024 k 16) and 42000 at IPT 128 (59063 against 16461 bf16 N 32768 k 16, 3.6 times slower)."
+  ],
+  "algorithmic": [
+   "The per-item ticket issues one independent atomic per selected item and the hardware overlaps them, the per-slot aggregation issues a dependent chain per slot whatever the number of selected items, so aggregation can only pay where the selected items per slot are many (k of order N over 2) and the chain is written without the guard. At the focus set's k (at most N over 4) the per-item form wins every cell, by 24 to 73 percent in latency and 9 to 66 percent in throughput."
+  ],
+  "negative": [
+   "The N6 idea card's suggested emission ('index-only emission by ballot prefix, per-warp atomic base') is the wrong default for a block primitive at the focus set's k over N: ballot-per-slot emission costs about 150 cycles per tile slot in a dependent chain, against about 1 cycle per selected item for independent tickets. It is kept as a measured negative, the card's idea of a per-warp base belongs to the k near N over 2 regime (B6's territory), if anywhere."
+  ],
+  "surprises": [
+   "The compiler keeps the per-slot chain serialized even though the slots are independent: the `if (ballot != 0)` guard compiles to BSSY, BRA and BSYNC per slot and the atomics with return cannot be hoisted across them. The unguarded form (always issue, add zero) was not measured."
+  ],
+  "open_questions": [
+   "Would the unguarded form with all IPT ballots issued first (pipelined at 6 cycles each, T17) and the atomics with return issued back to back recover the overlap? The expected cost is about IPT x 15 cycles plus the serialized atomics (8 warps x IPT on one address), which still loses to per-item tickets at k below N over 8."
+  ]
+ }
+}

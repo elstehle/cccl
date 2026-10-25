@@ -1,0 +1,61 @@
+{
+ "author": "opt-B1",
+ "approach_id": "B1",
+ "report_path": "approaches/B1/REPORT.md",
+ "variant": "n6",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2256,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 after the bracket reduction (shared with the histogram zeroing), 2 per pass (1 to 3 fixed-point passes, then key passes over the candidates on the exact fallback), none in the epilogue",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768, temp storage independent of N",
+  "type_constraints": "fp32 and bf16 (bf16 widened to fp32 once in the prologue), int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN not supported (never produced by focus-set inputs). Infinities clamp into the end bins of the fixed-point image and are ordered exactly by the key passes if the pivot falls on them. -0.0 and +0.0 share one image, they form one tie class only under prefer_smaller_index where the prologue folds -0.0 onto +0.0",
+  "tie_break_support": "ticket order under not_guaranteed, warp-redundant rank under prefer_smaller_index (IPT at most 64), as B1_det",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [
+  "T1",
+  "T7"
+ ],
+ "techniques_contributed": [
+  "T24",
+  "T25"
+ ],
+ "source_paths": [
+  "harness/adapters/B1_n6.cuh",
+  "approaches/B1/block_topk_n6.cuh",
+  "approaches/B1/sim_passes.py",
+  "approaches/B1/sim_passes.md"
+ ],
+ "correctness_notes": "22 cells, 13 oracle cases each, all passed in this batch. The previous build of the same source failed the inf_denorm pattern in the 4 cells with k 1024 (full bracket [-inf, +inf] clamped to [-FLT_MAX, FLT_MAX], whose width overflows fp32 and made the scale 0, so that -inf times 0 gave NaN and -inf landed in a top bin): the scale is now finite and nonzero in every case and the image is clamped on both sides. That batch (n6a) is kept under state/results/opt-B1 for its 36 valid cells and is not a card.",
+ "findings": {
+  "low_level": [
+   "Per item per pass the fixed-point digit costs FADD, FFMA (with the 2^23 rounding constant), two IMNMX (clamps), LOP3 and ISETP (prefix filter), SHF and LOP3 (digit and bucket flip) before the ATOMS, against LOP3, ISETP, SHF, LOP3 for the radix digit: about 4 instructions more per item per pass. The bracket costs one FMNMX pair per item (per-thread max and min), three redux.sync (T1) and lane 0 stores per warp, and 24 shared loads plus 14 min or max per thread after the barrier that the histogram zeroing needs anyway: no extra barrier.",
+   "This build kept one fixed-point image per item live across the passes (the compiler hoisted the loop-invariant FADD and FFMA out of the pass sequence): 40 registers at IPT 4 against 32 for B1_idx, 80 against 47 at IPT 16 (occupancy 3 against 4 blocks per SM in throughput), 255 with 8572 to 8588 bytes of spill against 250 with 0 at IPT 128, where the spill dominates the result (30398 against 16464 cycles at bf16 N 32768 k 16). The previous build of the same algorithm (n6a, before the clamp and scale changes) spilled 1464 to 1508 bytes and measured 11983 at that cell, 27 percent faster than B1_idx: the per-pass recompute is a codegen lottery, which the next variant pins with an opaque per-pass copy of the bracket parameters.",
+   "Tie-class tracking in this build takes the min and max over all candidates of the pass, not over the pivot bucket, so a bf16 tie class inside a larger candidate set is detected one pass late: bf16 at N 1024 k 64 and 256 runs 3 fixed-point passes where 2 would do (2213 against 1877 and 2681 against 1971 for B1_idx's 2 radix passes)."
+  ],
+  "algorithmic": [
+   "Where the bracket pass replaces two radix passes by one (small k, the pivot bucket holds exactly the remaining k or a single value), N6 wins: N 1024 k 16 bf16 1700 against 1768, fp32 1673 against 1794, N 4096 k 16 bf16 2846 against 3369 (16 percent), fp32 2887 against 3663 (21 percent), fp32 N 4096 k 64 3906 against 4585, k 256 4607 against 5047, N 32768 k 16 fp32 14210 against 15154 despite 8.6 KB of spill. The host simulation (sim_passes.md section 2) predicted the pivot bin after one pass at 1.1 to 7.3 items (mean, at most 16) for every random cell with k at most 256 under the thread-max bracket, and the exact exit after the second pass in 97 to 100 percent of the rows, which the GPU confirms where the register footprint does not intervene.",
+   "Where ties at the k-th key need the tie-class exit (bf16, 1.4 to 54 ties at rank k) the late detection of this build costs a pass and N6 loses at k 64 and above (bf16 N 1024 k 256 2681 against 1971, N 4096 k 256 5570 against 4513). fp32 at k 256 is within 5 percent at N 1024 and 9 percent ahead at N 4096.",
+   "The kill criteria of the idea card: (1) one pass plus a finish on at least 90 percent of random and logit-like rows holds in the host simulation for every k at most 256 (100 percent of rows end with at most 16 items in the pivot bin, 97 to 100 percent are exact after the second pass), and fails for k above 256 without a tighter lower bound (217 items in the pivot bin at N 32768 k 4096). (2) the per-item cost of the bin function is about 4 instructions per item per pass over the radix extractor, under 10 percent of a pass at IPT 4 (the pass is dependency bound) and about 7 percent of the histogram sweep at IPT 128. N6 is not killed, its gain is real at small k and at fp32, and its weak spots (late tie exit, register footprint) are implementation, not idea."
+  ],
+  "negative": [
+   "Tracking the key min and max over all candidates of a pass (two atomics on two words) is not enough to exit on a bf16 tie class: the pivot bucket of pass p is a tie class long before the whole candidate set is, so bf16 paid a third pass at k 64 and 256 in every N.",
+   "Recomputing the fixed-point image per pass from the fp32 value is only cheap if the compiler does recompute it. Left to itself it keeps IPT images live across the passes, which costs 8 registers per item at IPT 4 and 8.6 KB of spill at IPT 128."
+  ],
+  "surprises": [
+   "One extra IMNMX per item (the upper clamp added for +inf) and a changed scale expression moved the kernel from 1464 to 8588 bytes of spill at IPT 128 and from 64 to 80 registers at IPT 16, with the algorithm unchanged: the compiler's decision to hoist the image across the passes flipped. The 2.5x swing at N 32768 between the two builds of the same algorithm is the largest codegen effect seen in this study so far.",
+   "The inf_denorm battery pattern caught the degenerate bracket: hi equal to plus infinity and lo to minus infinity give a width that overflows fp32, a zero scale and NaN images for the infinite items. The clamps and the finite nonzero scale cost one instruction per item per pass."
+  ],
+  "open_questions": [
+   "With per-bucket tracking (next variant) does bf16 reach the predicted one-pass exit at N 4096 and 32768 (the simulation says the pivot bin is a single bf16 value in 100 percent of the rows there for k at most 256)? The first pass does not track, so that exit still needs a representable-value test on the pivot bin's value interval, cheap and block-uniform, not yet written.",
+   "A tighter lower bound for k above 256 (the minimum over threads of the per-thread second or m-th largest, B4's bound) would extend the one-pass regime to k 256 m, the full bracket leaves 37 to 217 items in the pivot bin at k 1024 and 4096."
+  ]
+ }
+}

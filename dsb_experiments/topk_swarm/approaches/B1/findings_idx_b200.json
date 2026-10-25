@@ -1,0 +1,55 @@
+{
+ "author": "opt-B1",
+ "approach_id": "B1",
+ "report_path": "approaches/B1/REPORT.md",
+ "variant": "idx",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 2128,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init, none in the epilogue",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768, temp storage independent of N",
+  "type_constraints": "fp32 and bf16 through the radix traits, int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is not normalized (any valid set under not_guaranteed, the oracle compares keys with ==)",
+  "tie_break_support": "not in this variant: ties at the k-th key by atomic ticket order. B1_det carries the warp-redundant rank (index order on striped tiles) under prefer_smaller_index",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [],
+ "techniques_contributed": [
+  "T21"
+ ],
+ "source_paths": [
+  "harness/adapters/B1_idx.cuh",
+  "approaches/B1/block_topk_b1.cuh",
+  "harness/topk_harness.cuh"
+ ],
+ "correctness_notes": "22 cells, 13 oracle cases each (4 random seeds plus the 9-pattern battery), all passed. A first build wrote every tied candidate's ticket position into the k-slot output and faulted (illegal address) in all 22 cells before any number was taken, the fix bounds the tie writes to the remaining k.",
+ "findings": {
+  "low_level": [
+   "Index-only epilogue: the selected items write their striped source index (i x 256 + tid, computed, not carried) to the caller's output by a per-item shared atomic ticket, nothing is gathered. Against the striped pairs path this removes 3 of the epilogue's barriers (BAR.SYNC in the latency kernel 19 against 25 for bf16, 31 against 37 for fp32), the N x 4 byte exchange buffer (temp storage 2128 bytes at every N against 4128 plus N x 4 dynamic), the memoized key copy and the index registers: 32 registers at IPT 4 against 37 (bf16) and 38 (fp32), 47 to 48 against 64 at IPT 16, 248 to 250 with 0 spill against 255 with 232 to 248 bytes of spill at IPT 128. SASS 656 against 704 (bf16 N 1024), 10296 against 12184 (bf16 N 32768).",
+   "The raw shift-and-mask digit extractor replaces ShiftDigitExtractor (knowledge base 4.4), so no -0.0 check runs per key per pass, and the prologue normalization is off for this requirement.",
+   "The epilogue's ticket atomics keep a data-dependent counter address (selected_offset[item_class]), which the compiler does not warp-aggregate. The B1_det card shows what happens when it does."
+  ],
+  "algorithmic": [
+   "Latency gains over B1_striped (B200, same lock section): N 1024 bf16 1767 against 1879 (k 16), 1878 against 1979 (k 64), 1971 against 2075 (k 256), fp32 1794 against 1921, 1902 against 2017, 2148 against 2251: 5 to 7 percent, the three barriers and the two exchange trips of the pairs epilogue. N 4096: 8 to 15 percent (bf16 k 16 3371 against 3885, fp32 k 64 4587 against 4847), N 32768: 14 to 19 percent (fp32 k 16 15164 against 17966), where the spill traffic of the pairs path goes as well.",
+   "Throughput gains 8 to 12 percent at N 1024 (bf16 k 16 409 against 365 Gelem per s), 17 to 24 percent at N 4096 (bf16 k 16 692 against 559, fp32 k 16 694 against 557) with occupancy unchanged at 4 blocks per SM, 11 to 23 percent at N 32768 (fp32 k 16 461 against 380) at 1 block per SM. The temp storage no longer grows with N, so a batched agent could run more blocks per SM than the 1 block that the 131 KB exchange buffer allowed, which the harness does not model (its dynamic smem is per cell).",
+   "The k dependence of the pairs path stays (bf16 N 1024 k 16 to 256 adds 204 cycles here against 196 for the pairs path): it is the k tickets on one counter (about one per cycle, T9) plus the per-pass scan, not the exchange."
+  ],
+  "negative": [
+   "Nothing in this variant lost, but the gain is bounded by the epilogue's share: 5 to 7 percent at N 1024 where the two radix passes dominate (about 1500 of the 1767 cycles)."
+  ],
+  "surprises": [
+   "The bf16 spill of the striped pairs path at IPT 128 (248 bytes) came from the memoized key copy: without it the index-only kernel holds 128 fp32 or bf16 keys in 248 to 250 registers with 0 spill.",
+   "Deriving the source index from the position (i x Threads + tid) instead of the loaded idx array costs nothing and frees IPT registers, which is what keeps IPT 128 out of spills."
+  ],
+  "open_questions": [
+   "How much of the remaining k dependence is the ticket counter (one atomic per selected item on one address)? A deterministic position from a block scan over per-thread selected counts would remove the atomics but costs a scan (about 300 cycles), the knowledge base 4.5 study measured positions from ranks as 13 to 22 percent slower at k 16.",
+   "The index-only contract fits every consumer in PLAN.md section 3.1 (arg top-k), a pairs variant of this epilogue (scatter 8-byte pairs by the same ticket into a caller buffer) was not measured."
+  ]
+ }
+}

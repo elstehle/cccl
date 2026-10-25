@@ -1,0 +1,55 @@
+{
+ "author": "opt-B1",
+ "approach_id": "B1",
+ "report_path": "approaches/B1/REPORT.md",
+ "variant": "n6b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 6352,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 after the bracket reduction (shared with the histogram zeroing), 2 per pass (1 to 3 fixed-point passes with per-bucket tie tracking from the second on, then key passes over the candidates on the exact fallback), none in the epilogue",
+  "k_range": "[1, N) at run time",
+  "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768, temp storage independent of N",
+  "type_constraints": "fp32 and bf16 (bf16 widened to fp32 once in the prologue), int32 indices derived from the striped tile position",
+  "nan_behavior": "NaN not supported (never produced by focus-set inputs). Infinities clamp into the end bins of the fixed-point image and are ordered exactly by the key passes if the pivot falls on them. -0.0 and +0.0 share one image, they form one tie class only under prefer_smaller_index where the prologue folds -0.0 onto +0.0",
+  "tie_break_support": "ticket order under not_guaranteed, warp-redundant rank under prefer_smaller_index (IPT at most 64), as B1_det",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "techniques_adopted": [
+  "T1",
+  "T7",
+  "T24",
+  "T25"
+ ],
+ "techniques_contributed": [],
+ "source_paths": [
+  "harness/adapters/B1_n6b.cuh",
+  "approaches/B1/block_topk_n6.cuh"
+ ],
+ "correctness_notes": "22 cells, 13 oracle cases each, all passed. Control is B1_n6 (the n6b build) in the same lock section.",
+ "findings": {
+  "low_level": [
+   "Per-bucket tracking: from the second pass on every candidate item issues atomicMin and atomicMax of its key bits into the min and max word of its histogram bucket (2 x 256 words, double buffered, 4 KB more temp storage, reset by two stores per thread in the histogram phase next to the histogram zeroing), and the pass reads the pivot bucket's pair after the scan barrier (two loads). The bracket parameters go through an empty asm statement per pass so the image is recomputed (FADD, FFMA, two IMNMX per item per pass) instead of being kept live.",
+   "Registers 46 against 40 at IPT 4 (the per-bucket slot index), 80 against 80 at IPT 16 and 255 with 7276 bytes of spill against 8588 at IPT 128: the asm pin did not remove the hoisted state at large IPT, so something else holds 128 words per thread across the passes (the twiddled key per item is a candidate, computed in the tracking passes and the fallback). Occupancy in throughput 6, 3 and 1 blocks per SM, the same as the control.",
+   "The exits now fire on the pivot bucket: bf16 rows at k 64 and 256 end after the second pass as the simulation predicted (the tie class of the pivot sub-bin), which the control detected one pass later."
+  ],
+  "algorithmic": [
+   "Against the previous N6 build (same session): bf16 N 1024 k 64 2039 against 2234 (minus 9 percent), k 256 2333 against 2704 (minus 14 percent), N 4096 k 256 4571 against 5549 (minus 18 percent), k 1024 5221 against 6294, N 32768 k 1024 31584 against 61996 (the control ran the key-pass fallback there), fp32 within 1 to 4 percent at N 1024 and 4096 (no ties, the exit did not change) and 10 to 22 percent at N 32768 k 64 to 1024. Throughput follows, 1 to 88 percent.",
+   "Chained to B1_idx through the n6b batch (not a same-section comparison, an estimate for the report only): N6 with per-bucket tracking is about 6 to 9 percent faster than the radix index-only path at k 16 for both types at N 1024, 16 to 21 percent at N 4096 k 16, 10 to 16 percent at fp32 N 4096 k 64 and 256, about even at fp32 N 1024 k 64 to 256, 7 to 17 percent slower at bf16 N 1024 k 64 and 256 (the two passes cost more per pass and the bracket is extra), and slower at N 32768 by the spill. The first N6 build (1.5 KB spill, batch n6a) measured 8623 against 15144 at fp32 N 32768 k 16 and 11983 against 16468 at bf16, so the large-N potential is a register problem, not an algorithmic one."
+  ],
+  "negative": [
+   "The empty-asm pin on the bracket parameters alone does not bring the IPT 128 kernel back to the 250 registers of the radix path: 7276 bytes of spill remain and N 32768 stays 15 to 50 percent behind B1_idx in this build."
+  ],
+  "surprises": [
+   "Per-bucket tracking costs nothing measurable at fp32 (2 extra atomics per candidate item, a few candidates) and 6 registers at IPT 4, while it buys a whole pass on bf16 rows with ties, which are the common case for bf16 logits."
+  ],
+  "open_questions": [
+   "What holds the extra 128 registers at IPT 128? ptxas -v of the n6c build against the idx1 build is the next step (the gen directories hold both), candidates are the twiddled key per item of the tracking passes and the second image copy for the fallback, a two-half item loop would bound either.",
+   "The first pass does not track, so the bf16 one-pass exit at N 4096 and 32768 (pivot bin a single bf16 value in all simulated rows for k at most 256) needs the representable-value test on the pivot bin's value interval, block-uniform and cheap, not yet written."
+  ]
+ }
+}
