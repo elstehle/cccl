@@ -1,0 +1,70 @@
+{
+  "author": "opt-N8",
+  "approach_id": "N8",
+  "variant": "b2packed",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 68,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and the finish barriers on the rare tie path (B2_packed's code, inherited unchanged)",
+    "k_range": "[1, min(N/2, 256)] at compile time",
+    "n_range": "N = Threads x IPT with Threads in {64, 128, 256, 512} and IPT a power of two at most 64 for both key types; this batch 256 and 512 threads at N 8192, 16384 and 32768 (IPT 16 to 64, N 32768 at 256 threads is IPT 128 and unsupported)",
+    "type_constraints": "bf16 packed with the inverted 16-bit index, fp32 as the N4 truncated word (top 32 - log2 N key bits plus the index) with the exact tie finish, int32 indices",
+    "nan_behavior": "twiddled bitwise: a positive NaN ranks above +inf, a negative NaN below -inf, never in focus-set inputs; -0.0 is normalized to +0.0 so the two zeros tie by index",
+    "tie_break_support": "inherent (index in the low half of the word), not measured in this batch (not_guaranteed only), within 1 percent in the first card",
+    "sorted_output_support": "inherent, the k slots are sorted by key descending then index ascending"
+  },
+  "report_path": "approaches/N8/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N8_b2packed.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/adapters/N8_b1idx.cuh",
+    "harness/adapters/B1_idx.cuh",
+    "approaches/B1/block_topk_b1.cuh",
+    "harness/cells_n8.json",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T11",
+    "T26",
+    "T33",
+    "T34",
+    "T36",
+    "T38"
+  ],
+  "techniques_contributed": [
+    "T43"
+  ],
+  "correctness_notes": "Second block-size batch of B2_packed (inherited unchanged through N8_b2packed): 256 and 512 threads at N 8192, 16384 and 32768, k 4, 16, 64, both key types, not_guaranteed only, against B1_idx at the same block size (N8_b1idx), one lock section on umbriel-b200-020. 36 shapes, 6 unsupported by the variant (N 32768 at 256 threads is IPT 128, outside the adapter's IPT 64 cap, T34), 30 measured, oracle 13 cases per shape for variant and control, all passed. The 256-thread cells reproduce the bigN card B2_packed_b200_20261025_2 within 1 percent (bf16 N 16384 k 4 1928 against 1927, k 16 3872 against 3869). The two-level list's 256-thread numbers quoted in the findings are from card B2_twolevel_b200_20261025_2 (same node, 17 minutes earlier, other lock section).",
+  "findings": {
+    "low_level": [
+      "At 512 threads the full sorted list is IPT 16 at N 8192 (31 to 32 registers bf16, 64 fp32), IPT 32 at N 16384 (32 to 40 bf16, 104 to 127 fp32) and IPT 64 at N 32768 (64 to 107 bf16 with 68 bytes of spill at k 16, 128 fp32 with 296 to 532 bytes of spill, 152 to 240 bytes of stack, 37 to 67 STL and LDL): the 128-register cap of a 512-thread block binds for the two-word fp32 list at IPT 64 and even for the bf16 k 16 kernel, where the 256-thread IPT 64 kernel had 72 to 80 registers and 0 spill.",
+      "Round slope at 512 threads (16 warps, k 4 to 16): about 175 cycles at IPT 16 (bf16 N 8192), 203 at IPT 32 (N 16384), 196 at IPT 64 (N 32768), against 113, 162 and (two-level, 256 threads) 34 per round at the same N. The 48 + 4 W + IPT model of the first card (fit on 2 to 8 warps) predicts 128, 144 and 176 and undershoots at 16 warps: the barrier is 44 cycles there (T11) and the 16 aggregated posts per round serialize on the one slot address.",
+      "Fixed cost at 512 threads: bf16 N 8192 about 520 (sort16 at 16 warps, against 950 for sort32 at 8 warps), N 16384 about 1570 (sort32), N 32768 about 3080 (sort64 of 543 pairs); fp32 N 32768 about 7350. The prologue of a 16-warp block issues two warps per scheduler and is 1.4x to 1.8x slower per thread than the same sort in a 4-warp block (card 1: 540 for sort32 at 128 threads).",
+      "SASS of the latency kernels at 512 threads: 504, 952, 3072 instructions bf16 N 8192 k 4, 16, 64; 2224, 2896, 7736 at N 32768. Occupancy 4 blocks per SM for the bf16 N 8192 and 16384 kernels (32 to 40 registers, 2048 threads per SM), 2 at N 32768 (64 registers), 1 at fp32 N 16384 and 32768."
+    ],
+    "algorithmic": [
+      "512 against 256 threads (full sorted list, latency, ratio 256 over 512): bf16 N 8192 1.15x, 0.83x, 0.83x at k 4, 16, 64 (1223, 3322, 11944 against 1407, 2767, 9907); N 16384 0.81x, 0.80x, 0.75x (2379, 4811, 18200 against 1928, 3872, 13724); fp32 N 8192 1.21x, 0.93x, 0.82x, N 16384 0.67x, 0.67x, 0.78x. The 16-warp block wins only the k 4 cells of N 8192 (the prologue halves from sort32 to sort16 and 4 rounds at 175 do not cost it back) and loses every cell with 16 or more rounds. Throughput: bf16 N 8192 1.09x, 0.86x, 0.86x, N 16384 1.25x, 1.01x, 0.85x; fp32 N 8192 1.35x, 1.06x, 0.92x, N 16384 0.88x, 0.87x, 0.81x.",
+      "512 threads at N 32768 (the only block size at which the full sorted list runs there), against the two-level list at 256 threads (card B2_twolevel_b200_20261025_2, same node): bf16 3869 against 4490 at k 4 (1.16x for the full list), 6227 against 4895 at k 16 (0.79x), 25763 against 23710 at k 64 (0.92x); fp32 8193 against 5900 (0.72x), 10698 against 7717 (0.72x), 34733 against 16186 (0.47x). Throughput bf16 1217 against 1385 and 889 against 988 Gelem per s (0.88x and 0.90x), fp32 559 against 665 and 489 against 585. The two-level list at 256 threads stays the B2 shape for N 32768 except bf16 k 4.",
+      "Against B1_idx at 512 threads (the new radix incumbent shape at this N, same lock section): B2 at 512 threads wins bf16 N 32768 k 4 and 16 (3869 and 6227 against 13479 and 13505, 3.5x and 2.2x), fp32 k 4 and 16 (8193 and 10698 against 12002 and 11806, 1.46x and 1.10x), loses k 64 (0.41x to 0.53x); at N 16384 it wins k 4 and 16 by 3.2x and 1.6x bf16 and 1.8x and 1.2x fp32. The crossover with B1_idx at 512 threads is therefore between k 16 and 64 at N 16384 and 32768 for the full list, and the two-level list at 256 threads holds those cells with more margin (4490 and 4895 against B1_idx's 13479 and 13505: 3.0x and 2.8x).",
+      "Block size recommendation for B2_packed (full sorted list) above N 4096: 256 threads at N 8192 and 16384 for k 16 and above (both regimes), 512 threads only for k 4 at N 8192 (1.15x and 1.21x latency, 1.09x and 1.35x throughput) and as the one shape at N 32768 (where the two-level list at 256 threads is better at k 16 and above). Together with card 1 and the two-level card, B2's block size is 128 threads at N 1024 to 4096 (latency) or 64 (throughput), 256 from N 8192, and the list form, not the block size, is the lever at N 16384 and 32768."
+    ],
+    "negative": [
+      "16-warp blocks make the B2 round 175 to 203 cycles against 69.5 to 113 at 4 to 8 warps, so every cell with 16 or more rounds loses (0.67x to 0.93x in latency at N 8192 and 16384), and the fp32 list at IPT 64 spills under the 128-register cap (296 to 532 bytes) where the 256-thread IPT 64 kernel did not.",
+      "The 512-thread full list does not replace the two-level list at N 32768: 0.72x to 0.92x in latency and 0.88x to 0.90x in throughput at k 16 and 64 bf16, 0.47x to 0.72x fp32.",
+      "The one-wave throughput gain of small blocks (card 1) does not reverse into a gain for large blocks at large N: the 512-thread kernels are 0.81x to 0.92x of the 256-thread ones at k 16 and 64 although they run the same or more threads per SM."
+    ],
+    "surprises": [
+      "The k 4 cells flip to 512 threads at N 8192 (1.15x bf16, 1.21x fp32): with 4 rounds the prologue is most of the call, and sort16 on 16 warps beats sort32 on 8, although each of the 4 rounds costs 60 cycles more.",
+      "The bf16 N 32768 k 16 kernel at 512 threads spills 68 bytes at 107 registers while the k 4 and k 64 kernels of the same shape do not (64 and 107 registers, 0 spill): ptxas chose a different register target for the mid-size kernel (T28's fragility, here of the register allocation rather than the schedule)."
+    ],
+    "open_questions": [
+      "The per-warp term of the round model beyond 8 warps: the 16-warp round is 45 to 60 cycles above the 48 + 4 W + IPT fit, the hardware researcher's aggregated-round micro at 64 to 512 threads (asked) would separate the 44-cycle barrier from the 16 serialized posts.",
+      "Whether a 512-thread two-level list (head of 4 at IPT 64, 16 warps) would be a better N 32768 shape than the 256-thread one at IPT 128 (255 registers, fp32 spills): the round would cost about 150 (16 warps) against the measured 34 per round of the 256-thread two-level kernel, so no."
+    ]
+  }
+}

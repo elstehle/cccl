@@ -1,0 +1,67 @@
+{
+  "author": "opt-N8",
+  "approach_id": "B2",
+  "variant": "twolevel",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 64,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds the __syncthreads_or tie check and the finish rounds on the rare tie path (B2_twolevel's code, unchanged)",
+    "k_range": "[1, N/2] at compile time, measured k 4 to 64",
+    "n_range": "N = Threads x IPT with Threads in {128, 256, 512} and IPT a power of two, N <= 65536; this batch 128 and 256 threads at N 8192, 16384 and 32768 (IPT 32 to 256)",
+    "type_constraints": "bf16 packed with the inverted 16-bit index, fp32 as the truncated word (top 32 - log2 N key bits plus the index) with the exact tie finish, int32 indices",
+    "nan_behavior": "twiddled in the negate form: a positive NaN ranks above +inf, a negative NaN below -inf, -0.0 equals +0.0, never in focus-set inputs",
+    "tie_break_support": "inherent, prefer_smaller_index and not_guaranteed run the same binary, within 1 percent in this batch",
+    "sorted_output_support": "inherent, the k slots are sorted by key descending then index ascending"
+  },
+  "report_path": "approaches/N8/REPORT.md",
+  "source_paths": [
+    "harness/adapters/B2_twolevel.cuh",
+    "harness/adapters/B2_detail.cuh",
+    "harness/adapters/B1_idx.cuh",
+    "approaches/B1/block_topk_b1.cuh",
+    "harness/cells_n8.json",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T11",
+    "T26",
+    "T34",
+    "T36",
+    "T38"
+  ],
+  "techniques_contributed": [],
+  "correctness_notes": "Block-size sweep of the unchanged wave 1 adapter B2_twolevel at 128 and 256 threads in one lock section on umbriel-b200-020 (card _2 of the variant, the first card measured 256 threads against B2_packed), against B1_idx at the same block size with --control-req not_guaranteed for the prefer_smaller_index cells. 72 shapes (bf16 and fp32, N 8192, 16384, 32768, k 4, 16, 64, both requirements, two block sizes), oracle 13 cases per shape for variant and control, all passed, no failed or unsupported cells. The 256-thread cells reproduce card B2_twolevel_b200_20261025_1 within 3 percent (bf16 N 32768 k 16 4895 against 4774, N 16384 k 16 3362 against 3252). Written by opt-N8 for the N8 block-size study, the adapter source is opt-B2b's.",
+  "findings": {
+    "low_level": [
+      "128 threads double the per-thread list: IPT 64 at N 8192 (79 to 80 registers bf16, 255 fp32, 0 spill), IPT 128 at N 16384 (168 to 255 registers bf16 with 0 spill, 255 fp32 with 96 to 944 bytes of spill and 24 to 424 bytes of stack), IPT 256 at N 32768 (255 registers, 1864 to 6680 bytes of spill bf16, 7228 to 8976 fp32, stack 616 to 1816 bytes, 229 to 1010 STL per kernel). At 256 threads the same N are IPT 32, 64 and 128 with 48 to 79, 40 to 79 and 254 to 255 registers, 0 spill for bf16 and 96 to 944 bytes for fp32 at N 32768 (the wave 1 figures).",
+      "SASS size doubles with IPT at the same k: 5568 against 2968 instructions at bf16 N 8192 k 16 (128 against 256 threads), 13008 against 5568 at N 16384, 26568 against 12824 at N 32768; the k 64 kernels reach 44456 (bf16 N 16384 at 128 threads) and 50392 instructions (N 32768). The refill sweep over the unsorted rest (IPT - 4 words) is the part that grows, the head shift stays at 3 selects.",
+      "The control B1_idx at 128 threads sits at 162 to 168 registers at N 8192 and 16384 (IPT 64 and 128, 0 spill bf16 at N 8192, 140 bytes at N 16384) and at 255 registers with 1.5 to 2.7 KB of spill at N 32768 (IPT 256), where it costs 60k to 81k cycles against 15.5k to 17.1k at 256 threads: B1_idx's valid block sizes at N 32768 are 256 and above.",
+      "Occupancy in the throughput regime: 128-thread two-level 12, 6 to 7, 2, 2 blocks per SM for bf16 N 8192 k 4, k 16 to 64, N 16384, N 32768 against 8, 5 to 6, 3 to 6, 1 at 256 threads. The 1-block 256-thread kernels at N 32768 (254 to 255 registers) and the 2-block 128-thread kernels there hold the same 256 threads per SM."
+    ],
+    "algorithmic": [
+      "128 against 256 threads, latency (ratio 256 over 128): bf16 N 8192 0.94x, 1.01x, 1.06x at k 4, 16, 64 (1003, 2618, 13310 against 946, 2648, 14098); N 16384 0.34x, 0.56x, 0.68x (2892, 5971, 20315 against 994, 3362, 13737); N 32768 0.62x, 0.46x, 0.89x (7288, 10647, 26515 against 4490, 4895, 23710). fp32 N 8192 1.46x, 0.91x, 1.07x (1290, 3701, 13842 against 1881, 3364, 14870); N 16384 0.50x, 0.70x, 1.06x; N 32768 0.57x, 0.56x, 0.57x. The two-level list ties between 128 and 256 threads at N 8192 and needs 256 threads from N 16384 on, because IPT 128 and 256 per thread exceed the register file at 128 threads (the IPT 128 kernel at 128 threads has the same 255 registers as the IPT 128 kernel at 256 threads but half the warps to hide its stalls, and IPT 256 spills).",
+      "Throughput (ratio 128 over 256): bf16 N 8192 1.01x, 1.12x, 0.96x at k 4, 16, 64 (1953, 1288, 417 against 1938, 1145, 436 Gelem per s); N 16384 0.75x, 0.93x, 0.57x; N 32768 0.80x, 0.99x, 1.43x (the k 64 cell: 511 against 357, the 2-block 128-thread kernel over the 1-block 256-thread one). fp32 N 8192 1.10x, 1.00x, 0.91x; N 16384 0.98x, 1.19x, 1.53x; N 32768 0.85x, 0.81x, 0.85x. The 128-thread form wins throughput only where the 256-thread form is at 1 block per SM and k is large enough for the list refills to dominate (k 64 at N 16384 fp32 and N 32768 bf16).",
+      "Against B1_idx at 256 threads (its best shape in this batch, same lock section), the two-level list at 256 threads keeps the wave 1 verdict: bf16 N 32768 k 4 and 16 4490 and 4895 against 16817 and 16842 (3.7x and 3.4x), N 16384 994 and 3362 against 8950 and 9037, N 8192 946 and 2648 against 5045 and 5238; fp32 N 32768 5900 and 7717 against 15834 and 15511 (2.7x and 2.0x). At k 64 B1_idx wins everywhere (bf16 N 32768 23710 against 17093, fp32 16186 against 19057 is the one two-level win at k 64, 1.18x). The N8 radix batch moves B1_idx to 512 threads at N 16384 and 32768 (13507 at bf16 N 32768 k 16, 11805 fp32), which does not change the k at most 16 ownership (3.4x becomes 2.8x) and takes the fp32 N 32768 k 64 cell back (14166 against 16186).",
+      "Block size recommendation for B2_twolevel: 256 threads at N 16384 and 32768 (both regimes), 128 or 256 at N 8192 (latency tie within 6 percent, 128 wins fp32 k 4 by 1.46x and throughput by up to 1.12x at k 16). The 128-thread shape of B2_packed (card 3, N 1024 to 4096) and the 256-thread shape of B2_twolevel (N 8192 to 32768) meet at N 8192 where either list at either block size is within 10 percent."
+    ],
+    "negative": [
+      "128 threads at N 16384 and 32768 lose by 0.34x to 0.89x in latency: IPT 128 at 4 warps has no latency hiding (bf16 N 16384 k 4: 2892 against 994 cycles, both 0 spill, the 128-thread kernel at 168 registers) and IPT 256 spills 1.8 to 9 KB.",
+      "The 128-thread shape does not extend the two-level list to N 65536 (IPT 512 at 128 threads would be far past the register file) and adds nothing at N 8192 beyond a tie, so the block size is not a lever for this list above N 4096.",
+      "B1_idx at 128 threads is unusable at N 32768 (60k to 81k cycles, 1.5 to 2.7 KB of spill): the control's own block-size range starts at 256 there."
+    ],
+    "surprises": [
+      "fp32 N 8192 k 4 at 128 threads: 1290 against 1881 cycles at 256 threads (1.46x) with 255 against 128 registers and 0 spill in both, while k 16 at the same shapes is 0.91x. The IPT 64 fp32 prologue (twiddle, truncated word, groups of 4 sorted and merged) is cheaper at 128 threads where the 4-warp block issues it with one warp per scheduler, and 4 rounds are not enough for the deeper list to cost it back; at k 16 the 12 further rounds at IPT 64 are.",
+      "The one 128-thread throughput win at large N is the k 64 cell at bf16 N 32768 (1.43x): the two-level kernel with 2.7 KB of spill at 2 blocks per SM beats the spill-free 1-block kernel, so at 1 block per SM the latency of the 255-register kernel is the throughput."
+    ],
+    "open_questions": [
+      "A two-level list with the rest in shared memory at IPT 128 and above (B2b report section 5) is the lever the block size cannot replace at N 32768; it would also allow 128 threads there.",
+      "Whether the fp32 N 8192 k 4 gain at 128 threads (1.46x) is the prologue codegen (one warp per scheduler issue) or node dependent as the 128-thread k 64 kernels of B2_packed were (verify-B2); measured on umbriel-b200-020 only.",
+      "The warp-uniform refill variant (B2_twolevel_any) was not swept over block sizes; at 256 threads it was within a few percent of B2_twolevel."
+    ]
+  }
+}
