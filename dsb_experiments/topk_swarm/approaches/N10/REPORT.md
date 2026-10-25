@@ -202,8 +202,8 @@ prefer_larger_index would be the mirror (lanes above me in the rank) and was not
   to be measured (BRIEF section 4).
 - The eager one-ballot kernel's throughput loss at N 256 (272 against 339 for the level order at the
   same occupancy) is unexplained, a schedule effect of the T28 kind.
-- The card schema's input_pattern enum has no all_equal value, the all_equal cells of the tie
-  sections are quoted in the findings and dropped from the cards.
+- The all_equal and pivot_tie tie-cost cells are in the N10_ge1_trunc and N10_auto cards (the card
+  schema accepted all_equal from harness 0.5 on).
 
 ## 8. Pointers
 
