@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GPU lease tool for the topk_swarm node registry (see nodes/README.md).
 
-  python3 tools/lease.py acquire --holder <name> --arch any|b200|gb200 [--min-remaining 45m] [--wait 30m]
+  python3 tools/lease.py acquire --holder <name> --arch any|b200|gb200 [--node <name>] [--min-remaining 45m] [--wait 30m]
   python3 tools/lease.py release --holder <name>
   python3 tools/lease.py status
 
@@ -46,14 +46,17 @@ def lease_line(node, gpu):
         node.get("lease_expires"), node.get("login")))
 
 
-def try_acquire(reg, holder, arch, min_remaining_s):
-    """Returns (node, gpu) or None. Mutates reg.data and calls reg.save() on success."""
+def try_acquire(reg, holder, arch, min_remaining_s, want_node=None):
+    """Returns (node, gpu) or None. Mutates reg.data and calls reg.save() on success.
+    want_node restricts the choice to one node (name or ssh host), for reruns on a card's node."""
     now = utcnow()
     candidates = []
     for node in reg.data.get("nodes", []):
         if node.get("status") not in LEASABLE_STATES:
             continue
         if arch != "any" and node.get("arch") != arch:
+            continue
+        if want_node and want_node not in (node.get("name"), node.get("ssh")):
             continue
         rem = remaining_seconds(node, now)
         if rem is None or rem < min_remaining_s:
@@ -81,7 +84,7 @@ def cmd_acquire(args):
     first = True
     while True:
         with Registry() as reg:
-            got = try_acquire(reg, args.holder, args.arch, min_remaining_s)
+            got = try_acquire(reg, args.holder, args.arch, min_remaining_s, args.node)
             if got is None:
                 nodes = reg.data.get("nodes", [])
         if got is not None:
@@ -91,8 +94,8 @@ def cmd_acquire(args):
             return 0
         if first:
             ready = [n for n in nodes if n.get("status") in LEASABLE_STATES]
-            sys.stderr.write("lease: no free %s GPU with >= %s remaining (%d ready node(s)), waiting up to %s\n"
-                             % (args.arch, args.min_remaining, len(ready), args.wait))
+            sys.stderr.write("lease: no free %s GPU%s with >= %s remaining (%d ready node(s)), waiting up to %s\n"
+                             % (args.arch, (" on " + args.node) if args.node else "", args.min_remaining, len(ready), args.wait))
             first = False
         if time.monotonic() >= deadline:
             audit("acquire-timeout", args.holder, "arch=%s wait=%s" % (args.arch, args.wait))
@@ -140,6 +143,7 @@ def main(argv=None):
     a = sub.add_parser("acquire", help="take a free GPU lease")
     a.add_argument("--holder", required=True)
     a.add_argument("--arch", default="any", choices=["any", "b200", "gb200"])
+    a.add_argument("--node", default=None, help="only this node (name or ssh host), e.g. to rerun on a card's node")
     a.add_argument("--min-remaining", default="45m", help="minimum lease time left (default 45m)")
     a.add_argument("--wait", default="30m", help="how long to wait for a free GPU (default 30m, 0 for none)")
     a.set_defaults(func=cmd_acquire)
