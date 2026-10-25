@@ -221,6 +221,45 @@ __device__ __forceinline__ unsigned round_shift_twolevel(unsigned* slot, unsigne
   return m;
 }
 
+// Round of the two-level list with a warp-uniform refill test: one __any_sync over "my head ran
+// empty" and a uniform branch around the refill, so the common round carries one VOTE and no
+// divergent branch with its reconvergence point. Inside the branch every lane of the warp runs the
+// refill predicated on its own need (the rest is untouched where need is false).
+template <int IPT, int H>
+__device__ __forceinline__ unsigned round_shift_twolevel_any(unsigned* slot, unsigned (&p)[IPT])
+{
+  atomicMax(slot, p[0]);
+  __syncthreads();
+  const unsigned m = *slot;
+  const bool w     = (p[0] == m);
+#pragma unroll
+  for (int i = 0; i + 1 < H; ++i)
+  {
+    p[i] = w ? p[i + 1] : p[i];
+  }
+  p[H - 1] = w ? 0u : p[H - 1];
+  if constexpr (IPT > H)
+  {
+    const bool need = (p[0] == 0u);
+    if (__any_sync(0xffffffffu, need))
+    {
+      unsigned mx = p[H];
+#pragma unroll
+      for (int i = H + 1; i < IPT; ++i)
+      {
+        mx = mx > p[i] ? mx : p[i];
+      }
+#pragma unroll
+      for (int i = H; i < IPT; ++i)
+      {
+        p[i] = (need && (p[i] == mx)) ? 0u : p[i];
+      }
+      p[0] = need ? mx : p[0];
+    }
+  }
+  return m;
+}
+
 // Round of the two-level list with a warp pre-reduction: one redux.sync.max per warp and one
 // atomic per warp (8 same-address atomics per round instead of 256), the rest as above.
 template <int IPT, int H>

@@ -1,0 +1,57 @@
+{
+  "author": "opt-B2b",
+  "approach_id": "B2",
+  "variant": "tiecheck",
+  "commit": "8d2a49e496",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 68,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds one __syncthreads_or (a barrier with a block-wide OR) for the tie check instead of B2_packed's atomicAdd, barrier and read back, plus 1 and the re-ranked rounds on the rare tie path",
+    "k_range": "[1, min(N/2, 256)] at compile time, the slot array is k words and k rounds above 256 lose to any radix path",
+    "n_range": "N = Threads x IPT with IPT a power of two, IPT <= 128 for bf16 and <= 64 for fp32, N <= 65536 (16 index bits), measured N 1024 to 8192 at 256 threads",
+    "type_constraints": "bf16 (twiddled 16-bit key and 16-bit inverted index in one word) and fp32 (idea N4: top 32 - log2 N key bits and the inverted index in one word, exact tie finish), int32 indices derived from the blocked position",
+    "nan_behavior": "twiddled bitwise: a positive NaN ranks above +inf, a negative NaN below -inf, never in focus-set inputs. A negative NaN with all mantissa bits set at the last index packs to the empty-slot word 0 and is never selected. -0.0 is normalized to +0.0 before packing (one FADD or one HADD2 per word), so the zeros tie by index",
+    "tie_break_support": "inherent: the inverted index is the low part of the packed word, prefer_smaller_index and not_guaranteed run the same binary, measured identical within 1 percent in the same lock section (raw file)",
+    "sorted_output_support": "inherent: slot r is the r-th largest, the output is sorted by key descending then index ascending at no extra cost"
+  },
+  "report_path": "approaches/B2/REPORT_B2b.md",
+  "source_paths": [
+    "harness/adapters/B2_tiecheck.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T7",
+    "T9",
+    "T10",
+    "T11",
+    "T19"
+  ],
+  "techniques_contributed": [],
+  "correctness_notes": "fp32 only (the bf16 path is B2_packed's and was not re-measured). Oracle battery per cell, 13 cases including pivot_tie, tie_heavy, all_equal and quantized_random which exercise the tie finish, 36 cells (18 shapes x both requirements) all passed. Control B2_packed in the same lock section, both requirements, same selection in every cell.",
+  "findings": {
+    "low_level": [
+      "The change removes, on the common path after the k rounds, the per-item class count (IPT ISETP), the fire-and-forget atomicAdd of the count (one aggregated CREDUX plus ATOMS per warp), one BAR.SYNC round trip, the LDS read back and the compare that decides the finish, and replaces them with one __syncthreads_or over `my largest remaining word is in the tie class`. Kernel-wide at fp32 N 8192 k 4 (latency kernel): 2216 against 2544 instructions, CREDUX 8 against 10, ATOMS 10 against 12, registers 128 against 128 (31 against 32 at IPT 4, 64 against 64 at IPT 16).",
+      "Measured saving (latency, random, same lock section, cycles per call): IPT 4 (N 1024) 75, 108, 220 at k 4, 16, 64; IPT 16 (N 4096) 227, 154, 136; IPT 32 (N 8192) 570, 551, 262. Ratios 1.13x, 1.07x, 1.04x; 1.27x, 1.07x, 1.02x; 1.38x, 1.20x, 1.03x. Throughput 1.09x, 1.05x, 1.02x; 1.06x, 0.98x, 1.01x; 1.17x, 1.06x, 1.02x (Gelem/s 940 against 864 at N 1024 k 4, 776 against 661 at N 8192 k 4).",
+      "The saving grows with IPT (the count pass is IPT compares per thread plus a barrier, all serial after the last round) and is largest at small k, where it is a fifth to a quarter of the call; at k 64 the call is round-dominated and the saving is 2 to 4 percent."
+    ],
+    "algorithmic": [
+      "The tie check after the rounds needs only each thread's head: the per-thread list is sorted and every remaining word is at most the k-th slot, so a thread can have a member of the tie class of the k-th truncated key among its remaining words only if its head is one. A block-wide OR over that predicate decides the finish; counting class members was never necessary on the common path. The finish itself (second-level packing of the dropped key bits, rounds on the class members from the first class slot) is unchanged and still runs on 0.1 to 4.2 percent of random inputs (N4 host simulation).",
+      "Adopt into the fp32 B2 path: 75 to 570 cycles per call at zero register cost, both requirements identical within 1 percent (same binary). B2_twolevel's run32 already uses this form, this batch isolates its value against B2_packed."
+    ],
+    "negative": [
+      "No cell loses. The one throughput cell below 1.0 (N 4096 k 16, 0.98x) is within the regime's noise (the latency cell of the same shape gains 7 percent)."
+    ],
+    "surprises": [
+      "At IPT 32 and k 4 the saving (570 cycles) is about four barrier round trips (T9) plus the 32 compares: the count pass sits after the last round where nothing overlaps it, so its atomicAdd, barrier, read back and compare chain are paid in full, and its removal shortens the call by more than the pass's instruction count suggests."
+    ],
+    "open_questions": [
+      "Whether the OR can ride on the last round's barrier (the k-th key is known only after that barrier, so it would need one more named barrier or an arrive and wait split) and whether the finish path can skip its per-slot scan for the first class slot by the same head-only argument."
+    ]
+  }
+}

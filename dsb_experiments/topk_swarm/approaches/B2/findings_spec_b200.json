@@ -1,0 +1,64 @@
+{
+  "author": "opt-B2b",
+  "approach_id": "B2",
+  "variant": "spec",
+  "commit": "8d2a49e496",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 196,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and 1 plus the re-ranked rounds on the rare tie path (as B2_packed)",
+    "k_range": "[1, min(N/2, 256)] at compile time, the slot array is k words and k rounds above 256 lose to any radix path",
+    "n_range": "N = Threads x IPT with IPT a power of two, IPT <= 128 for bf16 and <= 64 for fp32, N <= 65536 (16 index bits), measured N 1024 to 8192 at 256 threads",
+    "type_constraints": "bf16 (twiddled 16-bit key and 16-bit inverted index in one word) and fp32 (idea N4: top 32 - log2 N key bits and the inverted index in one word, exact tie finish), int32 indices derived from the blocked position",
+    "nan_behavior": "twiddled bitwise: a positive NaN ranks above +inf, a negative NaN below -inf, never in focus-set inputs. A negative NaN with all mantissa bits set at the last index packs to the empty-slot word 0 and is never selected. -0.0 is normalized to +0.0 before packing (one FADD or one HADD2 per word), so the zeros tie by index",
+    "tie_break_support": "inherent: the inverted index is the low part of the packed word, prefer_smaller_index and not_guaranteed run the same binary, measured identical within 1 percent in the same lock section (raw file)",
+    "sorted_output_support": "inherent: slot r is the r-th largest, the output is sorted by key descending then index ascending at no extra cost"
+  },
+  "report_path": "approaches/B2/REPORT_B2b.md",
+  "source_paths": [
+    "harness/adapters/B2_spec.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T9",
+    "T10",
+    "T11",
+    "T19"
+  ],
+  "techniques_contributed": [],
+  "correctness_notes": "Oracle battery per cell (13 cases: random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized), 72 cells (36 shapes x both requirements) all passed in a separate oracle-only pass and again in the measurement pass. The selection is B2_packed's in every cell, the variant changes only how a round posts. Control B2_packed measured in the same lock section, both requirements.",
+  "findings": {
+    "low_level": [
+      "Round SASS at IPT 4 (bf16 N 1024 k 16, latency kernel, cuobjdump of the batch binary): B2_packed is 10 instructions per round (BAR.SYNC.DEFER_BLOCKING, LDS, ISETP, SEL, SEL, CREDUX.MAX, SEL, SEL, IMAD.U32, ATOMS.MAX), B2_spec is 22 (BAR.SYNC, VIADD, LDS, ISETP, SEL, SEL, CREDUX.MAX, ISETP, SEL, SEL, IMAD.U32, ISETP, SEL, CREDUX.MAX, IMAD.U32, ISETP, SEL, SEL, ISETP, SEL, SEL, ATOMS.MAX). The two CREDUX are the wmax and wsec refresh, both scheduled before the atomic of the next round, and the one ATOMS.MAX is executed by all 32 lanes with a per-lane address (the slot for the posting lanes, a dummy word for the others), so the ptxas aggregation into CREDUX plus one elected atomic is defeated as designed. Whole latency kernel 464 against 840 instructions at IPT 4 and k 16, 952 against 1472 at IPT 16. CREDUX count 64 against 32, ATOMS 32 and 32, BAR 39 and 39 (two calls plus the harness).",
+      "Round slope net of the control (latency, random, same lock section, k 4 to 16 and 16 to 64): bf16 138 cycles per round at IPT 4 (B2_packed 83.4 and 83.7), 166 and 238 at IPT 16 (112 and 109), 184 and 428 at IPT 32 (114 and 148). fp32 142 and 141 at IPT 4 (85.9 and 85.6), 174 and 241 at IPT 16 (103 and 112), 162 and 426 at IPT 32 (103 and 145). The fixed cost is unchanged within noise (bf16 N 1024: 40 against 45 net of the control).",
+      "Registers (ptxas -v, latency kernel): bf16 26 to 28 against 21 at IPT 4, 46 to 47 against 32 at IPT 16, 55 to 75 against 40 to 48 at IPT 32. fp32 32 against 30 to 32, 80 against 64, 128 to 160 against 128, with 20 bytes of spill at fp32 N 8192 k 16 (B2_packed has none). Occupancy in the throughput regime drops from 8 to 5 blocks per SM at bf16 N 4096 k 16 and from 8 to 6 at N 8192 k 4.",
+      "The deferred shift tail (items 1 and up applied one round late) keeps the winner flag and the previous head live across the barrier, which is where the extra registers and the k-dependent slope growth at IPT 16 and 32 come from (166 to 238 and 184 to 428 cycles per round, where B2_packed is k-flat at IPT 16)."
+    ],
+    "algorithmic": [
+      "Hypothesis refuted: taking the warp pre-reduction off the dependent chain by posting from the lanes that hold the warp's stale maximum and second maximum (plus the previous winner) does not shorten the round, it lengthens it by 55 cycles at IPT 4 and by 60 to 280 at IPT 16 and 32. B2_spec loses to B2_packed in all 36 shapes: latency cost ratio 1.08x to 2.46x (median 1.48x), throughput 1.06x to 2.58x (median 1.63x), both requirements identical within 2 percent.",
+      "Two reasons, both structural. (1) The aggregated post (CREDUX.MAX plus one elected ATOMS.MAX, about 22 plus 10 cycles) is the cheapest way to get a warp's 32 candidates into one slot: once more than one lane per warp posts, the instruction runs un-aggregated with per-lane addresses, which T10 measured at 32 to 59 cycles per warp instruction. (2) Nothing a warp executes before arriving at a block barrier is in that barrier's shadow: every warp does the same two redux before BAR.SYNC, so the barrier completes later by exactly that amount. CUDA C++ has no split arrive and wait for __syncthreads, so the shadow does not exist for this code shape.",
+      "The best block round therefore remains B2_packed's: read back, one compare and select for the head, the aggregated post, the barrier, about 83 cycles at IPT 4 of which the barrier is about 28 (T9) and the redux 22 (T1). Fewer rounds, not a cheaper round, is the remaining B2 lever (B5's warp phase at 26 cycles per round, T19)."
+    ],
+    "negative": [
+      "Stale warp maximum posting is retired for block scope: every variant that posts from more than one lane per warp pays the un-aggregated shared atomic, and every reduction it adds before the barrier is on the critical path. The variant adds two CREDUX per round and loses 1.08x to 2.46x across the focus grid.",
+      "Deferring the tail of the winner's shift by one round saves nothing measurable and costs registers (47 against 32 at IPT 16, 75 against 48 at IPT 32) and a k-dependent slope: the shift was never on the dependent chain in B2_packed, where the IPT - 1 SEL run under the barrier wait.",
+      "A dummy shared word per warp (32 words of TempStorage) to defeat the aggregation is the wrong tool: ptxas re-aggregates a predicated same-address atomicMax of a few lanes into CREDUX plus one atomic (that is B2_packed's code), and the only way to keep several lanes posting is to give them different addresses, which makes the instruction serialize."
+    ],
+    "surprises": [
+      "ptxas aggregates a predicated fire-and-forget atomicMax (two or three active lanes per warp) exactly like the unpredicated one, into CREDUX.MAX plus one elected ATOMS.MAX, so predication alone cannot change the posting shape, only the address pattern can.",
+      "The un-aggregated 32-lane ATOMS.MAX costs about as much as the whole aggregated round: 138 against 83 cycles per round means the serialized same-address atomic plus the two redux cost 55 more than CREDUX plus one atomic, consistent with T10's 32 to 59 cycles for SEL-selected addresses.",
+      "fp32 N 8192 k 16 spills 20 bytes in the latency kernel with 128 registers while the control at the same shape does not, although both kernels hold the same 32 twiddled words and 32 packed words; the extra live state of the deferred shift tips it over."
+    ],
+    "open_questions": [
+      "Whether a split barrier (bar.arrive on a named barrier after the post, bar.sync before the read back, or an mbarrier) can hide anything useful in the block round: the round's own work between post and read back is empty by construction, so the candidate is the IPT - 1 SEL of the shift, already hidden under the barrier wait in B2_packed.",
+      "Whether red.shared.max through inline PTX from the elected lane, without the CREDUX (lane 0 posting the head of a per-warp sorted structure), changes the round: it needs a warp-level structure that B5 provides anyway."
+    ]
+  }
+}

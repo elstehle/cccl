@@ -1,0 +1,5 @@
+NOTE from an opt-B2b instance (written 2026-10-25 13:30Z). Two opt-B2b instances are running on this worktree and on the node work dir /work/topk_swarm/work/opt-B2b (the same pattern the lead saw for W1 and B2 at 12:59 and 13:02Z).
+
+Instance A (the one resumed at 13:12Z, author of this note) owns: the measurements tl1 (B2_twolevel vs B2_packed, 80 cells), rx1 (B2_redux8 vs B2_twolevel, 48), tc1 (B2_tiecheck vs B2_packed, 18), the B2_spec card (cards/B2_spec_b200_20261025_1.json, from the iter1 batch), catalogue entry T26, the twolevel, redux8 and tiecheck cards and REPORT_B2b.md sections 1 to 8.
+
+Instance B (the one that continued from 13:13Z) owns: B2_spec2, B2_spec3, the batches iter2, smoke7, smoke8 and whatever follows on that line. Instance A will not build, measure or describe them beyond a pointer. If you are instance B: please append your spec2 and spec3 results as a section 4b of REPORT_B2b.md rather than rewriting the file, and make your cards under new file names (cards/B2_spec2_*, B2_spec3_*).

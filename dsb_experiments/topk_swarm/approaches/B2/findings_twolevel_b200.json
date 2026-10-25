@@ -1,0 +1,74 @@
+{
+  "author": "opt-B2b",
+  "approach_id": "B2",
+  "variant": "twolevel",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 64,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 init plus k rounds for bf16, plus one __syncthreads_or for the fp32 tie check, plus 1 and k minus a rounds on the fp32 finish path (a is the first slot of the tie class)",
+    "k_range": "[1, N/2] at compile time, k rounds, the round loop is fully unrolled up to k 64 and by 8 above",
+    "n_range": "N = Threads x IPT with IPT a power of two, N <= 65536 (16-bit index half for bf16, log2 N index bits for fp32), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "bf16 keys packed as 16-bit twiddled key over 16-bit inverted index, fp32 keys packed as the top 32 - log2 N twiddled key bits over the inverted index with an exact finish on the tie class of the k-th truncated key, int32 indices derived from positions",
+    "nan_behavior": "a NaN twiddles above +inf (positive NaN) or below -inf (negative NaN) and is selected or dropped accordingly, never produced by focus-set inputs. -0.0 and +0.0 map to the same twiddled key (negate twiddle) and tie by index",
+    "tie_break_support": "inherent: the packed word orders by (key, smaller index first), the same code runs for both requirements, measured cost zero",
+    "sorted_output_support": "inherent for bf16 (the slots are the answer sorted by key descending then index ascending), for fp32 sorted except inside the finished tie class"
+  },
+  "report_path": "approaches/B2/REPORT_B2b.md",
+  "source_paths": [
+    "harness/adapters/B2_twolevel.cuh",
+    "harness/adapters/B2_detail.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T7",
+    "T9",
+    "T10",
+    "T11",
+    "T19"
+  ],
+  "techniques_contributed": [
+    "T26"
+  ],
+  "commit": "8d2a49e496",
+  "correctness_notes": "Oracle battery per cell, 13 cases (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized), 160 cells (80 shapes x both requirements, N 1024 to 32768, bf16 and fp32) all passed, including the fp32 tie finish on the tie patterns and the exact prefer_smaller_index check. The 16 fp32 N 32768 cells (IPT 128) have no control because B2_packed supports fp32 up to IPT 64 and are dropped from the card; their values (not_guaranteed, latency cycles per call / throughput Gelem/s): k 4 5783 / 652, k 16 7446 / 572, k 64 15824 / 337, k 256 44093 / 157, at 255 registers with 96 to 944 bytes of spill, one block per SM. Control B2_packed measured in the same lock section, both requirements. The 27x to 220x ratios of the bf16 N 32768 cells are an artifact of the control's code generation (its 128-word list lives in a 12800-byte local stack frame), not a merit of the variant; the meaningful comparison there is with B1 (other session, see findings).",
+  "findings": {
+    "low_level": [
+      "Round SASS at IPT 16 (bf16 N 4096 k 16, latency kernel, cuobjdump): B2_packed 37 instructions per round, the IPT - 1 SEL of the shift scheduled before the LDS so they run under the barrier wait, then ISETP, CREDUX.MAX, IMAD.U32, ATOMS.MAX, no branch (5 BRA, 0 BSSY in the kernel). B2_twolevel 48 per round: LDS, ISETP, SEL, ISETP, BRA (the divergent refill test), the refill body inline (5 three-input VIMNMX3, 12 ISETP, 12 SEL), NOP, BSYNC, then VOTEU.ANY, CREDUX.MAX, UFLO (after a reconvergence point the aggregation needs the active mask and an election), SEL, BSSY, SEL, ISETP, SEL, IMAD.U32, ATOMS.MAX. 22 BSSY/BSYNC pairs and 27 BRA in the kernel, 1632 against 952 instructions. At IPT 32: 2968 against 1536 (SEL 724 against 224, VIMNMX 408 against 644), at IPT 128: 12824 against 43112.",
+      "Round slope (latency, random, cycles per round for k 4 to 16, 16 to 64, 64 to 256, two-level against B2_packed in the same lock section). bf16: IPT 4 84, 83, 89 against 83, 84, 83 (H = IPT, same structure); IPT 16 159, 148, 126 against 112, 109, 110; IPT 32 140, 227, 111 against 113, 148, 261; IPT 64 189, 207, 124 against 164, 205, 421; IPT 128 25, 379, 91 (control in local memory). fp32: IPT 4 81, 83, 87 against 86, 86, 86; IPT 16 140, 163, 121 against 103, 112, 111; IPT 32 123, 228, 138 against 105, 145, 263; IPT 64 207, 210, 126 against 136, 228, 438.",
+      "Fixed cost (k to 0 extrapolation from k 4 and 16, net of the control). bf16: 46 against 46 at IPT 4, 38 against 272 at IPT 16, 400 against 968 at IPT 32, 234 against 1264 at IPT 64, about 4380 at IPT 128. fp32: 383 against 307 at IPT 4, 438 against 651 at IPT 16, 1397 against 1639 at IPT 32, 1184 against 2079 at IPT 64. The partial sort (sorted groups of 4 merged in a tree that keeps the 4 largest) replaces the full Batcher network: VIMNMX 408 against 644 at IPT 32 and 1662 against 5884 at IPT 128 kernel-wide.",
+      "Registers (ptxas, latency kernel) two-level: bf16 21 (IPT 4), 28 to 32 (IPT 16), 32 to 48 (IPT 32), 40 to 79 (IPT 64), 254 to 255 (IPT 128) with 0 spill at every bf16 shape; fp32 32, 79 to 80, 128, 254 to 255 (IPT 64), and 255 with 96 to 944 bytes of spill at IPT 128. Occupancy (blocks per SM): bf16 8, 8, 5, 3 to 6, 1; fp32 8, 3, 2, 1. B2_packed control: 21, 32, 40 to 48, 72 (bf16 k 16) and at IPT 128 128 registers with a 12800-byte stack frame per thread (0 bytes spill in ptxas's accounting, 10646 STL and 11833 LDL in the SASS): the 128-word list was demoted to local memory, 985k to 1.1M cycles per call.",
+      "BAR.SYNC counts and shared memory are B2_packed's (15, 39, 135 static barriers for k 4, 16, 64 in the bf16 latency kernel, k words of slots, fp32 adds k words and one int). The fp32 path uses the head-only tie check of B2_tiecheck (one __syncthreads_or) instead of B2_packed's count pass."
+    ],
+    "algorithmic": [
+      "Latency against B2_packed (same lock section, random, not_guaranteed, ratio control over variant, k 4, 16, 64, 256). bf16: IPT 4 0.99, 0.99, 1.00, 0.95; IPT 16 1.07, 0.80, 0.75, 0.83; IPT 32 1.48, 1.05, 0.73, 1.71; IPT 64 1.94, 1.19, 1.04, 2.55; IPT 128 220, 217, 40, 27 (control in local memory). fp32: IPT 4 0.92, 1.00, 1.03, 0.99; IPT 16 1.07, 0.86, 0.73, 0.86; IPT 32 1.09, 0.99, 0.72, 1.49; IPT 64 1.30, 0.95, 1.04, 2.56. Absolute bf16 latency cycles: N 8192 k 4 961 (control 1420), k 16 2643 (2776); N 16384 k 4 988 (1919), k 16 3252 (3883), k 256 37067 (94521); N 32768 k 4 4479, k 16 4774, k 64 22947, k 256 40493.",
+      "Throughput against B2_packed (Gelem/s ratio variant over control, same k order). bf16: IPT 16 1.09, 1.13, 1.28, 1.52; IPT 32 1.25, 1.25, 1.66, 2.90; IPT 64 1.58, 1.36, 1.56, 3.92; IPT 128 115 to 240. fp32: IPT 16 1.04, 1.12, 1.22, 1.36; IPT 32 1.11, 1.11, 1.18, 2.19; IPT 64 1.15, 1.00, 1.02, 2.34. In the throughput regime the two-level list wins at every IPT >= 16 and every k, with 3 to 8 blocks per SM the IPT - 1 SEL per round of the full shift are issue slots the other blocks cannot use.",
+      "Cost model: cycles = fixed(IPT) + k x round(IPT, k). The two-level list saves 234 (IPT 16), 570 (IPT 32) and 1030 (IPT 64) cycles of prologue and costs, in the latency regime, 47 (IPT 16), 27 to 80 (IPT 32) and 2 to 25 (IPT 64) more per round because of the divergent refill branch, while it saves 150 (IPT 32) and 300 (IPT 64) per round where B2_packed runs its rolled loop (K x IPT > 4096). Latency crossover against B2_packed: k about 5 at IPT 16, about 20 at IPT 32, every k at IPT 64 and 128. The per-thread structure to ship is therefore chosen per (IPT, k): full sorted list up to IPT 16 and at IPT 32 for k 16 to 64, two-level above.",
+      "Against B1 (B1_reference card, same arch and toolkit, other node and session, context only): bf16 N 16384 k 16 3252 against 9679 (3.0x), N 32768 k 4 4479 against 19745 (4.4x), k 16 4774 against 19709 (4.1x); fp32 N 16384 k 16 4495 against 10463 (2.3x), N 32768 k 16 7446 against 18955 (2.5x, no B2_packed control at that shape). At k 64 B1 wins at N >= 16384 (0.79x and 0.88x bf16). Throughput at N 32768 bf16 k 16: 965 against 376 Gelem/s with one block per SM on both sides (255 and 254 registers). This extends the B2 region from N <= 8192 to N 32768 for k <= 16, where the approach card expected B4 and B1.",
+      "prefer_smaller_index is inherent and free (same binary, measured within 2 percent across all 80 shapes), output sorted by key then index for bf16 and outside the finished tie class for fp32.",
+      "The refill branch is taken by a thread only after H = 4 wins of that thread, which on random input happens rarely at k <= 64 (expected wins per thread k over 256), so the measured round penalty is the static cost of the branch (reconvergence point, election after it), not the refill work."
+    ],
+    "negative": [
+      "In the latency regime at IPT 16 and 32 for k 16 to 64 the two-level list loses 20 to 27 percent to the full sorted list: the divergent refill test puts a BSSY/BSYNC region and a VOTEU/UFLO election into every round, which costs more than the 12 to 28 SEL it removes, and those SEL were hidden under the barrier wait anyway.",
+      "fp32 at IPT 4 has a 76-cycle higher fixed cost than B2_packed (383 against 307) although H = IPT makes the list identical: the B2_trunc32-derived prologue (separate twiddled copy, mask arithmetic) is a slightly worse code shape than B2_packed's, independent of the two-level idea.",
+      "IPT 128 at 255 registers is not a finished regime: one block per SM, erratic per-round cost across k (25, 379, 91 cycles) because the fully unrolled k 64 kernel is instruction-cache bound, and fp32 spills 96 to 944 bytes.",
+      "The bf16 N 32768 ratios against B2_packed (27x to 220x) say nothing about the two-level list: the control's list is in local memory there (12800-byte stack frame). B2_packed's supported range should be cut to IPT <= 64 for bf16 as well."
+    ],
+    "surprises": [
+      "ptxas demotes B2_packed's 128-word register array to a 12800-byte local stack frame at IPT 128 while reporting 0 bytes of spill, so the `spill_bytes` resource field is green for a kernel that runs at 985k cycles; the stack frame line and the STL/LDL counts are the fields to watch above IPT 64.",
+      "Full unrolling of the rounds is wrong above IPT 16: in the same variant the fully unrolled k 64 kernel at IPT 32 costs 227 cycles per round and the k 256 kernel, unrolled by 8, 111, so the unroll policy (full up to k 64) is a free lever, predicted to bring bf16 N 8192 k 64 from 13551 to about 7500 cycles, below B2_packed's 9869.",
+      "Latency and throughput disagree in sign at IPT 16 to 32 for k 16 to 64 (bf16 N 8192 k 64: 0.73x latency, 1.66x throughput): the barrier-bound latency chain pays the reconvergence, the issue-bound throughput regime pays the SEL of the full shift."
+    ],
+    "open_questions": [
+      "Whether a warp-uniform refill test (one __any_sync and a uniform branch, B2_twolevel_any on the branch) removes the latency-regime penalty while keeping the throughput gain (measurement in flight at the time of this card).",
+      "The unroll policy per IPT (unroll by 8 above IPT 16 for every k) and its effect on the k 64 cells at IPT 32 and 64.",
+      "A head of 8 at IPT >= 64 and a shared-memory resident rest at IPT 128 to bring the registers below 128 (two blocks per SM) and remove the fp32 spills.",
+      "A same-session comparison with B1 at N 16384 and 32768, where both are at 254 to 255 registers (the final evaluation), and whether B4 at N 32768 k <= 16 beats 4.5k to 4.8k cycles."
+    ]
+  }
+}
