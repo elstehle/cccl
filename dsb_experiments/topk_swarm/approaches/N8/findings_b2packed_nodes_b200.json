@@ -1,0 +1,60 @@
+{
+  "author": "opt-N8",
+  "approach_id": "N8",
+  "variant": "b2packed",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 68,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and the finish barriers on the rare tie path (B2_packed's code, inherited unchanged)",
+    "k_range": "[1, min(N/2, 256)] at compile time",
+    "n_range": "N = Threads x IPT with Threads in {64, 128, 256, 512} and IPT a power of two at most 64; this card 128 and 256 threads at N 2048 and 4096 (IPT 8 to 32)",
+    "type_constraints": "bf16 packed with the inverted 16-bit index, fp32 as the N4 truncated word (top 32 - log2 N key bits plus the index) with the exact tie finish, int32 indices",
+    "nan_behavior": "twiddled bitwise: a positive NaN ranks above +inf, a negative NaN below -inf, never in focus-set inputs; -0.0 is normalized to +0.0 so the two zeros tie by index",
+    "tie_break_support": "inherent (index in the low half of the word), prefer_smaller_index within 0.4 percent of not_guaranteed on both nodes",
+    "sorted_output_support": "inherent, the k slots are sorted by key descending then index ascending"
+  },
+  "report_path": "approaches/N8/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N8_b2packed.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/adapters/B1_reference.cuh",
+    "harness/cells_n8.json",
+    "harness/topk_harness.cuh",
+    "approaches/N8/smi_summary.py"
+  ],
+  "techniques_adopted": ["T11", "T26", "T34", "T36", "T38", "T43"],
+  "techniques_contributed": ["T50"],
+  "correctness_notes": "TWO-NODE CARD, asked by the lead after verify-B2 refuted card B2_packed_b200_20261025_3 at its N 4096 k 64 cells. The same binary set (N8_b2packed inheriting B2_packed unchanged, control B1_reference at the same block size with --control-req not_guaranteed, source commit 07f4c8ff6d) was built and measured on two B200 nodes in two lock sections: umbriel-b200-068 (batch N8_b2packed_vs_B1_reference_n8_ns068_20261025_152940, 15:29Z) and umbriel-b200-020 (batch N8_b2packed_vs_B1_reference_n8_ns020_20261025_154336, 15:43Z). 48 shapes per node (bf16 and fp32, 128 and 256 threads, N 2048 and 4096, k 16, 32, 64, both requirements), 96 cells per node, oracle 13 cases per shape for variant and control on both nodes, all passed, no failed or unsupported cells. Every shape therefore appears twice in this card, once per node; the node of a cell is the node in its raw_file batch name (ns068 or ns020). The card's node field names both. An nvidia-smi trace at 100 ms ran during both measurement sections (state/results/opt-N8/smi_ns068_umbriel-b200-068.csv, smi_ns020_umbriel-b200-020.csv): SM clock 1965 MHz on every busy sample on both nodes, memory 3996 MHz, no event reason beyond the idle flag, canaries 32.00098 cycles per op and 3776 us on both. The latency comparison between nodes is between lock sections on different GPUs, which the brief forbids inside a card except for exactly this purpose (same binary, same control, declared); every within-node ratio is same-section.",
+  "findings": {
+    "low_level": [
+      "94 of the 96 cells agree between the nodes to within 0.7 percent (variant ratio -020 over -068 between 0.974 and 1.007 in latency, 0.997 to 1.002 in throughput, the control within 0.6 percent everywhere). The two exceptions are the 128-thread N 4096 k 64 latency cells: bf16 7831 against 6056 cycles (1.293x, 5008 SASS instructions, 78 KB of straight-line code, 48 registers, 0 spill) and fp32 8264 against 6205 (1.332x, 6552 instructions, 102 KB, 128 registers, 0 spill). Their own throughput cells agree (258.0 against 258.9 and 207.6 against 207.7 Gelem per s), their controls agree (6071 against 6062, 7092 against 7039), and their 256-thread siblings agree (7290.4 against 7290.2 and 7696 against 7687, 3064 and 3728 instructions, two warps per scheduler).",
+      "The largest unaffected kernels bracket the threshold: fp32 128 threads N 4096 k 32 (4120 instructions, 64 KB, one warp per scheduler) 3394 against 3439 (0.987x), fp32 128 threads N 2048 k 64 (3728 instructions, 58 KB) 5503 against 5504, bf16 128 threads N 2048 k 64 (3064 instructions, 48 KB) 4950 against 4950, fp32 256 threads N 4096 k 64 (3728 instructions, 58 KB, two warps per scheduler) 7696 against 7687. The effect appears between 64 KB and 78 KB of code at one warp per scheduler and nowhere at two warps per scheduler up to 58 KB.",
+      "The chain minima of the affected cells are higher on -020 at every chain length by the same factor (bf16 8257, 16588, 33060, 66004, 131892 against 6472, 12936, 25864, 51720, 103432 for chains 1, 2, 4, 8, 16, r2 1.0000 on both, generate-only control 408 on both): a steady per-call cost, not a cold instruction cache paid once per chain.",
+      "Clocks during the sections (nvidia-smi 100 ms): -068 863 samples, SM 1965 MHz on all 539 busy samples, power median 263 W and max 297 W, 35 C; -020 595 samples, SM 1965 MHz on all 271 busy samples, power median 196 W and max 338 W, 38 C; memory 3996 MHz on both, event reasons only 0x0 and 0x1 (idle). The SM to memory clock ratio is the same on both nodes, so a fetch cost that scales with it would not differ.",
+      "Registers, spills, stack and SASS instruction counts are identical on both nodes for every kernel (same binary), 0 STL and LDL throughout. Both requirements are the same binary and measure within 0.4 percent on both nodes."
+    ],
+    "algorithmic": [
+      "The refuted k 64 statement of card B2_packed_b200_20261025_3 restated with the node caveat: at N 4096 k 64 the 128-thread B2 is 1.20x (bf16) and 1.24x (fp32) under its 256-thread form on umbriel-b200-068 and 1.17x and 1.18x... on umbriel-b200-047 (card 3 and verify-B2's repeats, 6254 and 6219), and 0.93x on umbriel-b200-020 (7831 and 8264 against 7290 and 7696); against B1_reference at 128 threads it ties on -068 and -047 (1.00x bf16, 1.13x fp32) and loses on -020 (0.78x, 0.86x). Against B1 at 256 threads, the shape that matters for the final evaluation, it loses on every node (0.73x to 0.75x against B1_reference at 4405 to 4675, further against B1_idx), so the crossover with B1 at k 64 does not move with the block size whichever node measures it. The k 64 row of the 128-thread recommendation is therefore dropped and the recommendation is 128 threads for k up to 32.",
+      "New cells, node invariant: k 32 at N 4096 at 128 threads 3205 against 3801 at 256 threads bf16 (1.19x) and 3394 to 3439 against 4066 to 4070 fp32 (1.18x), k 32 at N 2048 2680 against 3005 (1.12x) and 2921 against 3320 (1.14x), k 64 at N 2048 4950 against 5889 (1.19x) and 5503 against 6188 (1.12x). The 128-thread gain of 1.07x to 1.20x over 256 threads holds at every k from 16 to 64 at N 2048 and at k 16 to 32 at N 4096 on both nodes, and only the two kernels above 64 KB carry the node caveat. Against B1_reference at 256 threads B2 at 128 threads wins k 16 (2.01x, 1.62x at N 4096), ties k 32 at N 2048 (1.00x, 1.01x) and loses k 32 at N 4096 (3205 against 4147 is a win of 1.29x bf16 and 1.16x fp32 against B1_reference, but 0.87x against B1_idx's 3838 from the B1_idx card) and k 64 everywhere.",
+      "Throughput is node invariant to 0.3 percent in all 48 throughput cells including the two affected kernels, whose throughput kernels are 2512 and 3272 instructions (39 and 51 KB) and run 10 and 4 blocks per SM; the 128-thread form wins throughput over 256 threads at every N 2048 and 4096 cell (1.12x to 1.25x bf16, 0.96x to 1.14x fp32)."
+    ],
+    "negative": [
+      "One of three B200 nodes measures the two largest one-warp-per-scheduler kernels of B2 at plus 29 and plus 33 percent with every other cell of the batch identical to the cycle, so a latency number for a fully unrolled 128-thread kernel above about 64 KB is node dependent and a single-node card cannot carry it (T47).",
+      "The k 64 conclusions of card 3 do not survive: on no node does the 128-thread B2 at N 4096 k 64 beat B1 at 256 threads."
+    ],
+    "surprises": [
+      "The split is binary, not graded: kernels of 58 to 64 KB at one warp per scheduler are identical on both nodes to 0.3 percent (the fp32 k 32 kernel is even 1.3 percent faster on the slow node) and the 78 KB kernel costs 29 percent more, as if a per-SM instruction cache capacity were crossed on one node and not the other.",
+      "Nothing in the clock trace distinguishes the nodes: 1965 MHz SM and 3996 MHz memory on every busy sample of both sections."
+    ],
+    "open_questions": [
+      "The mechanism (hw-researcher's probe found no fetch cost for straight-line code up to 128 KB on -047 and -091 and an L2 hit latency map of 279 to 308 cycles; its -020 run is pending). The code-size threshold between 64 KB (4120 instructions) and 78 KB (5008 instructions) at 128 threads has not been bisected.",
+      "Whether the same node penalizes the 64-thread k 64 kernels of card N8_b2packed_b200_20261025_1 (7736 and 11320 instructions at N 4096, measured on -020 only) and the 512-thread k 64 kernels of card 2 (7736 instructions at N 32768 bf16, 11568 fp32, also -020 only).",
+      "Whether rolling the round loop by 8 above k 32 (B2b report section 5, unroll policy) removes the node dependence together with the instruction-cache pressure, at the cost of the T38 pruning."
+    ]
+  }
+}
