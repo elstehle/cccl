@@ -2495,5 +2495,11 @@
     "thr_us": 3778.01609
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B3",
+  "date": "2026-10-25",
+  "notes": "verify-B3 rerun 2026-10-25: adapters and controls rebuilt on umbriel-b200-020 (nvcc 13.4.92, sm_100) from git archive of the card's own commit and of a236c7225a, measured on umbriel-b200-047 (B200, CUDA 13.4) under lease verify-B3 with the card's run.py flags (cells_b3.json, random, latency and throughput, 4 seeds, full battery), variant and control in one flock section, canary first and last, raw batches under state/results/verify-B3/. VERIFIED for its commit, with a transfer caveat. Own commit f89a43fa14 (B3_straight_vs_B3_padded_b3_vb3o_str3_20261025_143013.json): 96 of 96 cells within 0.5 percent latency and 0.2 percent throughput, resources identical. Rerun against card: bf16 N4096 k32 lat 3801 vs 4169 (1.097x) against 3802 vs 4171 (1.097x), fp32 N32768 k2048 lat 26775 vs 30481 (1.138x) against 26773 vs 30459 (1.138x), fp32 N16384 k1024 1.104x against 1.103x, bf16 N32768 k2048 0.882x against 0.884x, bf16 N8192 k1024 throughput 460 vs 596 (0.772x, 103 registers, 2 blocks per SM) against 0.772x. SASS at f89a43fa14, fp32 N16384 K64 latency kernel: straight 482 BSSY, 505 BRA, 608 ATOMS with 0 predicated, 880 STS with 876 predicated, 3954 ISETP against padded 764 BSSY, 787 BRA, 608 ATOMS, 3000 ISETP, exactly the T32 numbers. Registers 193 against 223 in the raw (the card text says 185). Caveat: the variant does not transfer to the current source. Rebuilt at a236c7225a (vb3h_str3_20261025_141512.json) the fp32 fallback cells are 7 to 10 percent slower than at f89a43fa14 (fp32 N32768 k2048 29505 vs 30775, 1.043x instead of 1.138x, fp32 N16384 k1024 1.013x instead of 1.103x, fp32 N8192 k1024 1.013x instead of 1.096x) and bf16 N32768 k2048 is 11 percent faster (0.988x instead of 0.884x), the compaction cells unchanged. The cause is commit 50039daee3 (compile-time pass index and step lambda in run_pass and finish), so the finding fp32 fallback cells 1.05x to 1.14x holds for f89a43fa14 only."
+ }
 }

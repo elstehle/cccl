@@ -396,5 +396,11 @@
     "thr_us": 3805.824041
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B2",
+  "date": "2026-10-25",
+  "notes": "VERIFIED (kill experiment survives on the rerun). Same rebuild as the packed card (B2_valrounds.cuh unchanged since 8f15348fc3, 48 kernels with identical registers and spills). Control is the named B2_valrounds (atomic_adaptive port) in the same lock section, not A/A; its latency kernel carries 2224 instructions with 52 ATOMS.ADD, 52 VOTEU, 88 SHFL and 51 BAR.SYNC at N1024 k16 (the ticket and histogram epilogue) against 632 for the variant. Oracle 13 cases x 6 shapes passed for both, selftest true. Part 1 reproduced on the Mac with approaches/B2/tie_sim.cpp (2000 seeds): P(finish) 0.10 to 0.80 pct at N 1024, 0.40 to 2.3 pct at N 4096 k 4 to 16, 1.75 to 4.15 pct at N 8192 k 4 to 16, max tie class 2 to 5, 20 to 50 pct at N 32768 (17 key bits) for k 16 to 64. Part 2 bars re-met on the rerun: N1024 k16 fp32 gain over the value rounds stays at 20 pct (bar 15), fp32 fixed cost over bf16 about 270 cycles at IPT 4 (bar 300). Anti-DCE and SASS as for the packed card, 0 STL/LDL, round slopes of both adapters agree with the card. Rerun by verify-B2 on umbriel-b200-020 (NVIDIA B200, B200, nvcc 13.4.92, clone b6bfae9a37) 2026-10-25T14:21Z, batch B2_packed_vs_B2_valrounds_focus_vkill1_20261025_142058, same run.py flags, canary 32.00097656 cycles/op at start and end, throughput canary 3777.7 to 3775.4 us. 12 card cells compared: variant median 0.51 pct, max 1.74 pct; control median 0.40 pct, max 1.00 pct. Rerun/card latency (variant/control cycles), not_guaranteed: fp32 T256 N1024 k4 650/958.9 vs card 649.8/957.7; fp32 T256 N1024 k16 1680/2102 vs card 1680/2103; fp32 T256 N4096 k4 1060/1706 vs card 1064/1705; fp32 T256 N4096 k16 2294/3066 vs card 2301/3067; fp32 T256 N8192 k4 2081/3251 vs card 2086/3255; fp32 T256 N8192 k16 3327/4976 vs card 3319/4980."
+ }
 }

@@ -2509,5 +2509,11 @@
     "thr_us": 3806.047916
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B3",
+  "date": "2026-10-25",
+  "notes": "verify-B3 rerun 2026-10-25: adapters and controls rebuilt on umbriel-b200-020 (nvcc 13.4.92, sm_100) from git archive of the card's own commit and of a236c7225a, measured on umbriel-b200-047 (B200, CUDA 13.4) under lease verify-B3 with the card's run.py flags (cells_b3.json, random, latency and throughput, 4 seeds, full battery), variant and control in one flock section, canary first and last, raw batches under state/results/verify-B3/. VERIFIED. Rebuilt at a236c7225a, whose harness and approaches/B3 sources are byte-identical to the card's commit f269717c45 (B3_tuned_vs_B1_reference_b3_vb3h_fin7_20261025_142243.json, umbriel-b200-047 instead of the card's 091): 96 of 96 cells within 0.6 percent latency and 1.6 percent throughput, zero flagged cells, registers and spills identical, canaries 32.001 cycles and 3778.3 to 3777.9 us. Rerun against card: fp32 N32768 k2048 lat 20765 vs 41686 (2.007x) against 20804 vs 41673 (2.003x), throughput 321 vs 188 (1.707x) against 317 vs 187 (1.702x). Kill experiment N8192 k64: bf16 lat 6252 vs 6597 (1.055x) against 6275 vs 6595 (1.051x), fp32 6080 vs 6987 (1.149x) against 6083 vs 6992 (1.149x), bf16 throughput 459 vs 548 (0.838x) against 453 vs 544 (0.833x), fp32 390 vs 365 (1.069x) against 387 vs 363 (1.068x), the kill verdict (below 1.3x at N8192, confined to N32768 and fp32) stands. fp32 N32768 k256 1.361x against 1.366x, bf16 1.190x against 1.196x, bf16 N16384 k64 0.938x against 0.943x, bf16 N8192 k1024 1.754x against 1.749x. prefer_smaller_index 0.9965x to 1.0023x of not_guaranteed in the card and the same in the rerun (same code path), measured against B1_reference@not_guaranteed in the same lock section (B1 has no tie-break support), not A/A. Oracle 13 cases per cell passed. SASS of the tuned latency kernels contains the primitive's work: fp32 N16384 K64 465 SHF, 4008 ISETP, 608 ATOMS, 884 STS, 608 POPC, 59 BAR.SYNC, 0 STL and LDL, fp32 N32768 K256 66 STL and 64 LDL for the 696 spill bytes, bf16 N1024 K16 23 BAR.SYNC, B1 control 516 BSSY, 527 BRA, 640 ATOMS, 324 STS as T32 states. The register, spill and barrier claims of the findings match the raw batch (B1 bf16 40, 48, 64, 128, 127, 255 and fp32 44, 48, 64, 128, 169, 255, B1 fp32 N32768 1024 spill bytes)."
+ }
 }

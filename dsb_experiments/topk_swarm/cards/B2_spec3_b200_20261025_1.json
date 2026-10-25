@@ -1905,5 +1905,11 @@
     "thr_us": 3777.856112
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B2",
+  "date": "2026-10-25",
+  "notes": "VERIFIED (negative result reproduced, different node than the card: 020 instead of 047). Rebuilt from e8dd15cd72 (B2_spec3.cuh added at the card commit 5dd6ef58aa), 288 kernels with identical registers and spills. Control B2_packed in the same lock section, both requirements, not A/A. Oracle 13 cases x 36 shapes passed for both, selftest true. SASS of the rebuilt bf16 N1024 k16 latency kernel: 1128 instructions, no ATOMS, 64 LDS.128 (two per round), 96 VIMNMX3 (three per round), 90 CREDUX.MAX, 37 BAR.SYNC (no init barrier), 34 STS; the refresh CREDUX are indeed placed on both sides of BAR.SYNC round by round (for example CREDUX at 0a30 before the barrier at 0a50 and two at 0a70, 0aa0 after it before the LDS.128 at 0ad0; one at 0c60 after the barrier at 0c40; three at 1dd0 to 1df0 after the barrier at 1d40), with the IMAD.U32 UR-to-R moves right after, as the card and T33 state. Minor imprecision: low_level says 0 spills, which holds for the latency kernels; the throughput kernel at bf16 N8192 k64 has 16 B (2 STL, 2 LDL), as the card's own cell records. Both requirements identical within 0.45 pct. Anti-DCE conditions hold (r2 >= 0.9988). Rerun by verify-B2 on umbriel-b200-020 (NVIDIA B200, B200, nvcc 13.4.92, clone b6bfae9a37) 2026-10-25T14:22Z, batch B2_spec3_vs_B2_packed_focus_vspec3_20261025_142229, same run.py flags, canary 32.00097656 cycles/op at start and end, throughput canary 3776.6 to 3775.5 us. 72 card cells compared: variant median 0.08 pct, max 1.01 pct; control median 0.07 pct, max 1.18 pct. Rerun/card latency (variant/control cycles), not_guaranteed: bf16 T256 N1024 k4 552.5/379.6 vs card 552.6/379.5; bf16 T256 N1024 k16 2197/1380 vs card 2200/1380; bf16 T256 N1024 k64 8744/5397 vs card 8728/5397; bf16 T256 N4096 k4 864.3/718.1 vs card 863.9/717.9; bf16 T256 N4096 k16 2835/2057 vs card 2835/2057; bf16 T256 N4096 k64 1.525e+04/7290 vs card 1.522e+04/7290; bf16 T256 N8192 k4 1472/1403 vs card 1473/1401; bf16 T256 N8192 k16 3652/2774 vs card 3665/2769; bf16 T256 N8192 k64 2.298e+04/9910 vs card 2.296e+04/9857; fp32 T256 N1024 k4 839.6/649.8 vs card 840.5/649.8; fp32 T256 N1024 k16 2486/1680 vs card 2484/1680; fp32 T256 N1024 k64 1.035e+04/5789 vs card 1.033e+04/5789; fp32 T256 N4096 k4 1283/1059 vs card 1288/1060; fp32 T256 N4096 k16 3541/2300 vs card 3571/2303."
+ }
 }

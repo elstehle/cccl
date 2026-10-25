@@ -2493,5 +2493,11 @@
     "thr_us": 3777.407885
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B3",
+  "date": "2026-10-25",
+  "notes": "verify-B3 rerun 2026-10-25: adapters and controls rebuilt on umbriel-b200-020 (nvcc 13.4.92, sm_100) from git archive of the card's own commit and of a236c7225a, measured on umbriel-b200-047 (B200, CUDA 13.4) under lease verify-B3 with the card's run.py flags (cells_b3.json, random, latency and throughput, 4 seeds, full battery), variant and control in one flock section, canary first and last, raw batches under state/results/verify-B3/. VERIFIED. Own commit f89a43fa14 (B3_digit9_vs_B3_straight_b3_vb3o_dig4_20261025_142908.json): 96 of 96 cells within 0.4 percent in both regimes, resources identical. Rerun against card: fp32 N32768 k2048 lat 20854 vs 26767 (1.284x) against 20839 vs 26745 (1.283x), bf16 N32768 k2048 1.268x against 1.268x, bf16 N8192 k1024 1.036x against 1.036x, bf16 N1024 k64 2368 vs 1952 (0.824x) against 2369 vs 1952 (0.824x), fp32 N1024 k64 0.812x against 0.811x. The T30 GPU numbers hold. Control B3_straight in the same lock section, oracle and anti-DCE checks pass. Text nit: the optimizer's summary line 1.15x to 1.28x from N 8192 overstates bf16 N8192 k1024, which the card itself lists at 1.036x. HEAD rebuild at a236c7225a (vb3h_dig4_20261025_141340.json): the gains shift with the drift of the B3_straight control (fp32 N32768 k2048 1.416x and bf16 N32768 k2048 1.118x at HEAD) and the variant's fp32 N1024 and N4096 cells are 4 to 6.5 percent faster at HEAD (fp32 N4096 registers 64 to 79, 72 spill bytes to 0), code drift from commit 50039daee3. SASS at HEAD: digit9 against straight has the same BSSY and ATOMS counts, STS 884 against 880 (the second zeroing store), as the card describes."
+ }
 }

@@ -2494,5 +2494,11 @@
     "thr_us": 3805.919886
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-B3",
+  "date": "2026-10-25",
+  "notes": "verify-B3 rerun 2026-10-25: adapters and controls rebuilt on umbriel-b200-020 (nvcc 13.4.92, sm_100) from git archive of the card's own commit and of a236c7225a, measured on umbriel-b200-047 (B200, CUDA 13.4) under lease verify-B3 with the card's run.py flags (cells_b3.json, random, latency and throughput, 4 seeds, full battery), variant and control in one flock section, canary first and last, raw batches under state/results/verify-B3/. VERIFIED. Own commit 50039daee3 (B3_tuned_vs_B3_digit9_b3_vb3o_tun6_20261025_143327.json): 96 of 96 cells within 0.8 percent latency and 1.7 percent throughput, resources identical. Rerun against card: bf16 N1024 k16 lat 1885 vs 2325 (1.233x, 32 registers) against 1885 vs 2325 (1.233x), fp32 N4096 k256 4561 vs 3993 (0.876x) against 4564 vs 3992 (0.875x), fp32 N4096 k32 0.941x against 0.942x, bf16 N8192 k64 6255 vs 6249 (0.999x) against 1.000x, fp32 N32768 k2048 0.999x against 0.999x (live-bin scan neutral as claimed). Control B3_digit9 in the same lock section, oracle and anti-DCE checks pass. HEAD rebuild at a236c7225a (vb3h_tun6_20261025_142031.json): identical except the 8 fp32 N4096 cells, where the final adapter (f269717c45) compacts from 16 items per thread: 3993 vs 3987 (0.998x) and 3864 vs 3860 (0.999x), BAR.SYNC 35 to 59, which confirms the threshold decision this card motivates. SASS: tuned at bf16 N1024 K16 has 23 BAR.SYNC and 10 BSSY against digit9's 35 and 14, and identical code to digit9 at 32 items per thread and above."
+ }
 }
