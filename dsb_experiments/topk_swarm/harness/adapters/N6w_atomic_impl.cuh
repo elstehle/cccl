@@ -71,7 +71,7 @@ __device__ __forceinline__ void bracket_pass_atomic(const float (&v)[IPT], range
   const float hi    = fminf(untw(st.tmax), FLT_MAX);
   const float width = hi - lo;
   float scale       = static_cast<float>(BINS) / width;
-  scale             = (width > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN; // see bracket_pass
+  scale             = (scale > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN; // see bracket_pass
 
 #pragma unroll
   for (int b = 0; b < BPL; ++b)

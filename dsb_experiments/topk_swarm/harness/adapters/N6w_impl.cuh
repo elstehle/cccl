@@ -72,7 +72,8 @@ __host__ __device__ constexpr int cmax(int a, int b)
 // items whose ballots are issued back to back before any consumer
 __host__ __device__ constexpr int chunk_items(int ipt)
 {
-  return ipt >= 128 ? 4 : cmin(ipt, 8);
+  const int want = ipt >= 128 ? 4 : 8;
+  return (ipt % want == 0) ? want : (ipt % 4 == 0) ? 4 : (ipt % 2 == 0) ? 2 : 1;
 }
 
 template <typename KeyT>
@@ -405,7 +406,7 @@ __device__ __forceinline__ void bracket_pass(const float (&v)[IPT], range& st, i
   // a degenerate bracket (zero or overflowing width) keeps a tiny positive scale: a zero scale
   // would turn infinite items into NaN images (inf times 0) and put -inf into the top bin
   float scale = 32.0f / width;
-  scale       = (width > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN;
+  scale       = (scale > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN; // 32 / inf is +0, not caught by width > 0
   const bucket_masks<5> bm(lane);
 
   bins5<IPT> bins;
