@@ -646,6 +646,17 @@ def cmd_tick(args):
     for jid in dying:
         release_node(jid)
     rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
+    if rc == 3:
+        # The cap blocks a renewal. Give up unheld expiring nodes now instead of at the 5 minute mark,
+        # so the replacement still gets most of the 45 minute overlap.
+        with Registry() as reg:
+            idle_expiring = [n["job_id"] for n in reg.data["nodes"]
+                             if n.get("status") == "expiring" and not any(g.get("holder") for g in n.get("gpus", []))]
+        for jid in idle_expiring:
+            print("cap full and renewal pending, releasing idle expiring job %s" % jid)
+            release_node(jid)
+        if idle_expiring:
+            rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
     with Registry() as reg:
         todo = [n["job_id"] for n in reg.data["nodes"] if n.get("status") == "requested" and n.get("ssh")]
     for jid in todo:

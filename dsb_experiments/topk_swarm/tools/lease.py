@@ -11,8 +11,12 @@ acquire prints one line on success and exits 0:
 holds a matching GPU, that lease is printed again (idempotent). With nothing free it polls
 the registry until --wait elapses, then exits 2. Exit 1 on usage or registry errors.
 
-Only gpus[].holder and gpus[].since are changed, under fcntl.flock on state/nodes.lock,
-with an atomic write of state/nodes.json.
+Only gpus[].holder, gpus[].since and gpus[].queue are changed, under fcntl.flock on
+state/nodes.lock, with an atomic write of state/nodes.json.
+
+Node-specific waits are first come first served: `acquire --node X --wait T` registers the
+holder in that node's gpus[].queue (entry expires after T). While a queue is non-empty, only
+its head may take the GPU, plain acquires skip it. The entry is removed on success or timeout.
 """
 import argparse
 import os
@@ -21,8 +25,10 @@ import sys
 import time
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
+import datetime  # noqa: E402
+
 from swarmlib import (LEASABLE_STATES, LOGS, Registry, fmt_remaining, iso, parse_duration,  # noqa: E402
-                      remaining_seconds, utcnow)
+                      parse_iso, remaining_seconds, utcnow)
 
 POLL_SECONDS = 15
 LEASE_LOG = LOGS / "lease.log"
@@ -46,11 +52,41 @@ def lease_line(node, gpu):
         node.get("lease_expires"), node.get("login")))
 
 
-def try_acquire(reg, holder, arch, min_remaining_s, want_node=None):
-    """Returns (node, gpu) or None. Mutates reg.data and calls reg.save() on success.
-    want_node restricts the choice to one node (name or ssh host), for reruns on a card's node."""
+def prune_queue(gpu, now):
+    """Drop expired waiters. Returns (queue, changed)."""
+    old = gpu.get("queue") or []
+    q = [w for w in old if parse_iso(w.get("until")) is not None and parse_iso(w["until"]) > now]
+    changed = len(q) != len(old)
+    if q:
+        gpu["queue"] = q
+    elif "queue" in gpu:
+        del gpu["queue"]
+    return q, changed
+
+
+def dequeue(reg, holder):
+    """Remove holder from every queue. Returns True if anything changed."""
+    changed = False
+    for node in reg.data.get("nodes", []):
+        for gpu in node.get("gpus", []):
+            q = gpu.get("queue") or []
+            nq = [w for w in q if w.get("holder") != holder]
+            if len(nq) != len(q):
+                changed = True
+                if nq:
+                    gpu["queue"] = nq
+                else:
+                    del gpu["queue"]
+    return changed
+
+
+def try_acquire(reg, holder, arch, min_remaining_s, want_node=None, wait_until=None):
+    """Returns (node, gpu) or None. Mutates reg.data and calls reg.save() when anything changed.
+    want_node restricts the choice to one node (name or ssh host), for reruns on a card's node.
+    With want_node and wait_until the holder is queued on that node, first come first served."""
     now = utcnow()
     candidates = []
+    changed = False
     for node in reg.data.get("nodes", []):
         if node.get("status") not in LEASABLE_STATES:
             continue
@@ -63,16 +99,30 @@ def try_acquire(reg, holder, arch, min_remaining_s, want_node=None):
             continue
         for gpu in node.get("gpus", []):
             if gpu.get("holder") == holder:
+                if dequeue(reg, holder):
+                    reg.save()
                 return node, gpu  # already held, idempotent
         for gpu in node.get("gpus", []):
-            if not gpu.get("holder"):
-                candidates.append((rem, node, gpu))
-                break
+            q, pruned = prune_queue(gpu, now)
+            changed = changed or pruned
+            if want_node and wait_until is not None and not any(w.get("holder") == holder for w in q):
+                q.append({"holder": holder, "since": iso(now), "until": iso(wait_until)})
+                gpu["queue"] = q
+                changed = True
+            if gpu.get("holder"):
+                continue
+            if q and q[0].get("holder") != holder:
+                continue  # reserved for the first waiter
+            candidates.append((rem, node, gpu))
+            break
     if not candidates:
+        if changed:
+            reg.save()
         return None
     rem, node, gpu = max(candidates, key=lambda c: c[0])
     gpu["holder"] = holder
     gpu["since"] = iso(now)
+    dequeue(reg, holder)
     reg.save()
     return node, gpu
 
@@ -81,10 +131,11 @@ def cmd_acquire(args):
     min_remaining_s = parse_duration(args.min_remaining)
     wait_s = parse_duration(args.wait)
     deadline = time.monotonic() + wait_s
+    wait_until = (utcnow() + datetime.timedelta(seconds=wait_s + 60)) if (args.node and wait_s > 0) else None
     first = True
     while True:
         with Registry() as reg:
-            got = try_acquire(reg, args.holder, args.arch, min_remaining_s, args.node)
+            got = try_acquire(reg, args.holder, args.arch, min_remaining_s, args.node, wait_until)
             if got is None:
                 nodes = reg.data.get("nodes", [])
         if got is not None:
@@ -98,7 +149,11 @@ def cmd_acquire(args):
                              % (args.arch, (" on " + args.node) if args.node else "", args.min_remaining, len(ready), args.wait))
             first = False
         if time.monotonic() >= deadline:
-            audit("acquire-timeout", args.holder, "arch=%s wait=%s" % (args.arch, args.wait))
+            if wait_until is not None:
+                with Registry() as reg:
+                    if dequeue(reg, args.holder):
+                        reg.save()
+            audit("acquire-timeout", args.holder, "arch=%s node=%s wait=%s" % (args.arch, args.node, args.wait))
             sys.stderr.write("lease: nothing free after %s, giving up\n" % args.wait)
             return 2
         time.sleep(min(POLL_SECONDS, max(1, deadline - time.monotonic())))
@@ -131,7 +186,9 @@ def cmd_status(args):
     for node in nodes:
         if node.get("status") in ("released", "lost") and not args.all:
             continue
-        gpus = ", ".join("gpu%s=%s" % (g.get("index"), g.get("holder") or "free") for g in node.get("gpus", [])) or "-"
+        gpus = ", ".join("gpu%s=%s%s" % (g.get("index"), g.get("holder") or "free",
+                                          (" (queue: %s)" % ",".join(w["holder"] for w in g["queue"])) if g.get("queue") else "")
+                         for g in node.get("gpus", [])) or "-"
         print(fmt % (node.get("name"), node.get("cluster"), node.get("arch"), node.get("status"),
                      node.get("job_id"), fmt_remaining(remaining_seconds(node, now)), gpus))
     return 0
