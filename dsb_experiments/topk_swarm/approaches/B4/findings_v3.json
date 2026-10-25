@@ -1,0 +1,58 @@
+{
+  "author": "opt-B4",
+  "approach_id": "B4",
+  "variant": "v3",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 38300,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 bracket and histogram reset, 1 in the count scan, 1 after the compaction stores, 3 per finishing pass (histogram, scan internal, state), 1 before the warp finish; the multi-pass emission adds 1 in its scan, the lazy tie test 1",
+    "k_range": "[1, N) at run time, the bound is accepted only when the candidate count is at least k (always for k <= Threads), else the tile fallback runs",
+    "n_range": "N = Threads x IPT, Threads 128, 256 or 512, IPT >= 1, N <= 32768 (16-bit count fields), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "fp32 and bf16 keys, int32 indices derived from the striped position",
+    "nan_behavior": "the sweeps compare fp32 values (a NaN key is never a candidate and never a thread maximum unless all its items are NaN), the candidates are twiddled: a NaN with the sign bit clear orders above +inf, one with the sign bit set below -inf, the all-ones pattern collides with the empty-slot sentinel of the warp finish (unsupported), never produced by focus-set inputs. -0.0 equals +0.0 in the value-domain sweeps and is folded onto +0.0 when the candidates are twiddled under prefer_smaller_index",
+    "tie_break_support": "not_guaranteed and prefer_smaller_index, one code path: the warp finish orders the pivot set by (key descending, index ascending), a tie class larger than 32 is taken in ticket order under not_guaranteed and ranked by index passes under prefer_smaller_index, the items above the pivot set are an exact set under both",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  },
+  "report_path": "approaches/B4/REPORT.md",
+  "source_paths": [
+    "harness/adapters/B4_v3.cuh",
+    "approaches/B4/block_topk_bound_v3.cuh",
+    "approaches/B4/profile_phases.cu",
+    "harness/cells_b4.json"
+  ],
+  "techniques_adopted": ["T1", "T3", "T7", "T17", "T19", "T21", "T23", "T25", "T29", "T31", "T32", "T36", "T39"],
+  "techniques_contributed": ["T56", "T57"],
+  "correctness_notes": "All 92 cells passed the oracle battery (13 cases per cell) under both requirements, including signed_zero under prefer_smaller_index (value-domain sweeps treat the zeros as equal, the fold happens at candidate load), tie_heavy, pivot_tie and all_equal (tile fallback), inf_denorm, sorted inputs.",
+  "findings": {
+    "low_level": [
+      "Changes against B4_v2: the register sweeps run on the fp32 value of the key (bf16 widened by a shift), the thread maxima with FMNMX, the candidate compare with FSETP, no twiddle sweep over the tile; the candidate word holds the raw fp32 bit pattern (bf16: its 16 bits above the inverted index in one word, fp32: two words) and the candidates are twiddled and -0.0 folded when loaded, 16 slots; the candidate loads are unconditional from a clamped address (SEL, LDS, no branch); when a single pass decided the selection the emission takes each selected item's position from the exclusive bin prefix written by the pass scan plus a per-bin ticket (atomicAdd with return on a data-dependent address, the zeroed second histogram buffer is the ticket array), no classify sweep, no scan, no barrier before the stores; the multi-pass emission of v2 remains. Registers 61 to 64 at IPT 4, 128 at IPT 16, 128 to 153 at IPT 32, 254 to 255 from IPT 64, spill 1416 to 1648 bytes at IPT 128 (v2 596 to 884, B1_idx 0), prefer_smaller_index 2464 to 2560.",
+      "Phase profile (clock64 stamps, approaches/B4/profile_phases.cu, median cycles): fp32 N 32768 k 256 bracket 462 (v2 1371), count and scan 2472 (1747), compaction 1892 (3078), candidate loads 692 (805), pass 989 (950), emission 1792 (v2 classify 1515 plus scan 426 plus stores 788), total 8904 (11153); bf16 N 4096 k 16 bracket 360, count and scan 758, compaction 265, loads 976, pass 920, emission 1108, total 4452 (v2 5306). The prologue no longer twiddles 128 items (bracket 1371 to 462) but the count sweep grew by 700 cycles, so the three sweeps are 4800 at IPT 128 either way: about 10 cycles per item slot for 7 to 8.5 instructions per item at two warps per scheduler, the issue rate of this kernel shape is about one instruction per four cycles per warp, half of the nominal.",
+      "The single-pass ticket emission still costs 1100 to 1800 cycles for about 6 live slots: each slot's ticket (ATOMS with return, 55 cycles), bin prefix load and store sit inside a reconvergence region (`if (above || piv)`), so the slots execute one after the other at the atomic's latency. The same holds for the pass histogram atomics behind their `if`. The candidate loads at 700 to 1000 cycles for 16 LDS plus 10 ALU per slot are of the same kind (about 110 instructions, 6 cycles each)."
+    ],
+    "algorithmic": [
+      "Against B4_v2 in the same lock section (B200, cycles per call, not_guaranteed, bf16 then fp32): N 1024 k 16 2425 and 2268 against 2857 and 3009 (1.18x and 1.33x), N 4096 k 16 4024 and 3824 against 4949 and 5180 (1.23x and 1.35x), k 64 4465 and 4192 against 5063 and 5273, k 256 4653 and 4396 against 5147 and 5345, N 8192 k 64 4730 and 4232 against 5622 and 5479 (1.19x and 1.29x), N 16384 k 64 5590 and 4686 against 6772 and 6236 (1.21x and 1.33x), k 256 6107 and 5178 against 7019 and 6519, N 32768 k 16 7348 and 6004 against 9081 and 8411 (1.24x and 1.40x), k 64 7740 and 6419 against 9206 and 8515, k 256 8109 and 6741 against 9327 and 8639 (1.15x and 1.28x), k 1024 12538 and 10323 against 13956 and 12935, k 2048 27640 and 30776 against 22721 and 24570 (0.82x and 0.80x, the unconditional loads over 64 slots). Throughput N 32768 826 and 952 Gelem per s against 722 and 767, N 16384 634 and 745 against 522 and 571, N 8192 600 and 676 against 526 and 511, N 4096 377 and 394 against 321 and 297. prefer_smaller_index within 4 to 17 percent of not_guaranteed (bf16 N 32768 k 64 9053 against 7740, fp32 6654 against 6419).",
+      "Chained to the B4_base cards through v2 (estimates, not same-section numbers): v3 against B3_tuned at N 32768 k 256 fp32 6741 against 20009 (2.97x), bf16 k 64 7740 against 19117 (2.47x), N 16384 k 64 5590 and 4686 against 11004 and 10452 (1.97x and 2.23x), N 8192 k 64 4730 and 4232 against 6259 and 6085 (1.32x and 1.44x), N 4096 k 64 4465 and 4192 against 3798 and 4152 (0.85x and 0.99x). Against B1_idx: N 32768 k 256 fp32 6741 against 21765 (3.2x), bf16 k 64 7740 against 16806 (2.17x), N 16384 k 64 5590 and 4686 against 9340 and 10421 (1.67x and 2.22x), N 8192 k 64 4730 and 4232 against 5785 and 6087 (1.22x and 1.44x), N 4096 k 64 4465 and 4192 against 3837 and 4593 (0.86x and 1.10x). The card's must-beat thresholds: N 32768 k 64 to 256 (11k to 13k) met with 2x margin, N 16384 k 64 (7k) met, N 8192 k 64 (4k) missed by 6 percent for fp32 and 18 percent for bf16.",
+      "The fp32 cells are now 10 to 20 percent faster than the bf16 cells at the same N (6004 against 7348 at N 32768 k 16): the bf16 path pays the widen in the sweeps and a longer twiddle at the candidate load, and holds the same 128 registers for a 16-bit key as fp32 does (T18 and the packed arrangement are the route to a cheaper bf16 sweep).",
+      "k 2048 at N 16384 and 32768 is 1.6x to 1.9x slower than B3_tuned and B4's weakest region: 27 to 51 live slots of 64, two or three passes and the unconditional load of all 64 slots. The group guard on the loads restores v2's k 2048 numbers (v4)."
+    ],
+    "negative": [
+      "The value-domain sweeps saved 900 cycles in the bracket and 1200 in the compaction at IPT 128 but the count sweep gave 700 back; the sweeps are issue bound at about 10 cycles per item slot and the only lever left there is fewer instructions per item (packed bf16 compares, T18).",
+      "The single-pass ticket emission removed the classify sweep and the scan (about 1700 cycles at N 4096) but kept a reconvergence region per slot, so it costs 1100 to 1800 cycles where a pipelined version would cost about 400 (v4).",
+      "Unconditional loads of all smax slots are wrong when smax is far above the live slot count: k 2048 lost 20 percent against v2."
+    ],
+    "surprises": [
+      "Shared-memory stores of the compaction sweep are not the bottleneck the first profile suggested (the 3100 cycles of v2 were the twiddle rematerialized into the sweep by the register allocator); with the sweep on raw values the compaction is 1900 cycles for 128 predicated stores per thread.",
+      "The warp finish is a negligible share at every N (the w2 barrier plus 1 to 7 rounds, under 300 cycles); the whole cost of B4 is sweeps and block-wide structure, not the selection logic."
+    ],
+    "open_questions": [
+      "v4 (branch-free dummy-address atomics in the pass and the emission, group-guarded loads) is measured against v3 in batch b7 and against B3_tuned in batch b8.",
+      "A packed bf16 variant (packed_striped arrangement, HSET2 compares and HMNMX2 maxima, two keys per instruction in the sweeps) is the next lever for bf16 at IPT 64 and 128, predicted 1000 cycles at N 32768.",
+      "The IPT 128 spill (1.4 to 2.6 KB) comes from the tile fallback's twiddle and key passes being compiled into the same function as the fast path; a __noinline__ fallback or a fallback that re-reads the keys from the caller's memory would free the fast path."
+    ]
+  }
+}

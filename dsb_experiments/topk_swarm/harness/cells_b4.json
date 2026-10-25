@@ -1,0 +1,15 @@
+{
+  "name": "b4",
+  "description": "B4 grid: the focus block grid plus N 8192 and k 2048 (the card's focus cells 1 to 5 and the boundary cells), bf16 and fp32, both unsorted requirements, random input, both regimes.",
+  "key_types": ["bf16", "fp32"],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": ["not_guaranteed", "prefer_smaller_index"],
+  "input_patterns": ["random"],
+  "regimes": ["latency", "throughput"],
+  "k_values": [16, 64, 256, 1024, 2048, 4096],
+  "k_max_fraction": 0.5,
+  "scopes": {
+    "block": {"threads": [256], "n": [1024, 4096, 8192, 16384, 32768]}
+  }
+}

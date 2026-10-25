@@ -1,0 +1,73 @@
+{
+  "author": "opt-B4",
+  "approach_id": "B4",
+  "variant": "v4",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 39300,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 bracket and histogram reset, 1 in the count scan, 1 after the compaction stores, 3 per finishing pass (histogram, scan internal, state), 1 before the warp finish; the multi-pass emission adds 1 in its scan, the lazy tie test 1",
+    "k_range": "[1, N) at run time, the bound is accepted only when the candidate count is at least k (always for k <= Threads), else the tile fallback runs",
+    "n_range": "N = Threads x IPT, Threads 128, 256 or 512, IPT >= 1, N <= 32768 (16-bit count fields), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "fp32 and bf16 keys, int32 indices derived from the striped position",
+    "nan_behavior": "the sweeps compare fp32 values (a NaN key is never a candidate and never a thread maximum unless all its items are NaN), the candidates are twiddled: a NaN with the sign bit clear orders above +inf, one with the sign bit set below -inf, the all-ones pattern collides with the empty-slot sentinel of the warp finish (unsupported), never produced by focus-set inputs. -0.0 equals +0.0 in the value-domain sweeps and is folded onto +0.0 when the candidates are twiddled under prefer_smaller_index",
+    "tie_break_support": "not_guaranteed and prefer_smaller_index, one code path: the warp finish orders the pivot set by (key descending, index ascending), a tie class larger than 32 is taken in ticket order under not_guaranteed and ranked by index passes under prefer_smaller_index, the items above the pivot set are an exact set under both",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  },
+  "report_path": "approaches/B4/REPORT.md",
+  "source_paths": [
+    "harness/adapters/B4_v4.cuh",
+    "approaches/B4/block_topk_bound_v4.cuh",
+    "approaches/B4/profile_phases.cu",
+    "harness/cells_b4.json"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T7",
+    "T17",
+    "T19",
+    "T21",
+    "T23",
+    "T25",
+    "T29",
+    "T31",
+    "T32",
+    "T36",
+    "T39"
+  ],
+  "techniques_contributed": [
+    "T56",
+    "T57"
+  ],
+  "correctness_notes": "All 92 cells passed the oracle battery (13 cases per cell) under both requirements, including signed_zero under prefer_smaller_index (value-domain sweeps treat the zeros as equal, the fold happens at candidate load), tie_heavy, pivot_tie and all_equal (tile fallback), inf_denorm, sorted inputs.",
+  "findings": {
+    "low_level": [
+      "Changes against B4_v3: the pass histogram and the single-pass emission tickets are branch-free, every slot issues its shared atomic, to the bin when the slot takes part and to a private dummy word of the thread otherwise (T32's proposal), so no reconvergence region sits between the slots; the candidate loads are guarded per uniform group of four slots instead of loading all smax slots. Registers 64 at IPT 4, 126 to 128 at IPT 16 and 32, 255 from IPT 64, spill 2632 bytes (bf16) and 3416 (fp32) at IPT 128 against v3's 1648 and 1416 (the dummy-address selects keep 16 more addresses live), prefer_smaller_index 2560 and 2968.",
+      "Phase profile (clock64 stamps, median cycles): fp32 N 32768 k 256 bracket 454, count and scan 2438, compaction 1876, loads 730, pass 720 (v3 989), emission 2059 (v3 1792), total 8855 (v3 8904); bf16 N 4096 k 16 loads 682 (976), pass 742 (920), emission 1279 (1108), total 4221 (4452). The branch-free pass saves 200 to 270 cycles, the branch-free emission costs 170 to 270 more: sixteen atomicAdd with return per thread (ten of them to dummy words) and sixteen dependent bin-prefix loads cost more than six tickets behind branches, the atomic with return is 55 cycles and the shared atomic unit serves the whole block.",
+      "SASS: the pass body is SEL (address), SHF, LOP3, IADD, ATOMS per slot without BSSY, the emission body SEL, ATOMS (with return), LDS, IADD, two predicated STS per slot without BSSY. The group guards remain uniform branches per four slots."
+    ],
+    "algorithmic": [
+      "Against B4_v3 in the same lock section (B200, cycles per call, not_guaranteed, bf16 then fp32): N 1024 k 16 2529 and 2460 against 2425 and 2268 (0.96x and 0.92x), N 4096 k 16 3817 and 3944 against 4023 and 3822 (1.05x and 0.97x), k 64 4241 and 4348 against 4462 and 4195, N 8192 k 64 4639 and 4292 against 4736 and 4224 (1.02x and 0.98x), N 16384 k 64 5191 and 4664 against 5602 and 4687 (1.08x and 1.00x), k 256 5587 and 5097 against 6106 and 5175, N 32768 k 16 7338 and 6256 against 7348 and 6011 (1.00x and 0.96x), k 64 7767 and 6664 against 7752 and 6415, k 256 8067 and 6962 against 8110 and 6728 (1.01x and 0.97x), k 1024 11941 and 10478 against 12568 and 10318, k 2048 25988 and 25794 against 27539 and 30704 (1.06x and 1.19x). Throughput within 3 percent everywhere except N 4096 (415 and 417 against 377 and 394 Gelem per s) and k 2048. prefer_smaller_index: bf16 N 32768 k 64 8589 against v3's 9067 (the grouped loads), fp32 6716 against 6656.",
+      "Verdict: a wash within 3 percent at the focus cells, 1.1x to 1.2x at k 2048 (loads by group), 0.92x to 0.96x at N 1024 (sixteen tickets for four live slots). v4 is the variant of the final pairing against B3_tuned (card B4_v4_b200_20261025_2) because it is the committed last build and within noise of v3 at N 8192 and above; v3 is the better choice below N 4096.",
+      "Against B3_tuned in the same lock section (batch b8, the final pairing, B200, cycles per call, not_guaranteed, bf16 then fp32): N 32768 k 16 7346 and 6256 against 19130 and 18604 (2.60x and 2.97x), k 64 7800 and 6689 against 19129 and 19454 (2.45x and 2.91x), k 256 8087 and 6969 against 19139 and 20021 (2.37x and 2.87x), k 1024 11940 and 10491 against 19235 and 20409 (1.61x and 1.95x), k 2048 26016 and 25802 against 19236 and 20782 (0.74x and 0.81x); N 16384 k 16 4766 and 4249 against 10983 and 10178 (2.30x and 2.40x), k 64 5190 and 4666 against 11004 and 10459 (2.12x and 2.24x), k 256 5594 and 5096 against 11019 and 11352 (1.97x and 2.23x), k 1024 9177 and 8789 against 11025 and 11308 (1.20x and 1.29x), k 2048 18599 and 19902 against 11035 and 11397 (0.59x and 0.57x); N 8192 k 16 4272 and 3910 against 6261 and 5880 (1.47x and 1.50x), k 64 4639 and 4291 against 6260 and 6092 (1.35x and 1.42x), k 256 4926 and 4535 against 6289 and 6157 (1.28x and 1.36x), k 1024 8707 and 8107 against 6312 and 6686 (0.72x and 0.82x); N 4096 k 16 3818 and 3942 against 3796 and 3714 (0.99x and 0.94x), k 64 4240 and 4340 against 3797 and 4143 (0.90x and 0.95x), k 256 4390 and 4492 against 3947 and 4002 (0.90x and 0.89x); N 1024 k 16 2534 and 2457 against 1885 and 2034 (0.74x and 0.83x). prefer_smaller_index: bf16 N 32768 k 64 8594 against 19113 (2.22x), fp32 6723 against 19520 (2.90x), bf16 N 16384 k 64 5840 against 11007 (1.88x), fp32 4956 against 10462 (2.11x). Throughput (Gelem per s): N 32768 832 and 941 against 400 and 345 (2.08x and 2.73x), N 16384 669 and 738 against 465 and 312 (1.44x and 2.37x), N 8192 646 and 693 against 459 and 398 (1.41x and 1.74x), N 4096 414 and 417 against 543 and 459 (0.76x and 0.91x). Registers 255 from IPT 64 (B3_tuned 128 to 255), occupancy 1 block per SM at IPT 64 and 128 (B3_tuned 2 and 1)."
+    ],
+    "negative": [
+      "Branch-free atomics with return to dummy addresses (the emission tickets) do not pay: issuing an atomic with return for every slot costs more than the reconvergence regions it removes, because the returned value is on the critical path of the store and the extra atomics load the shared memory unit of the whole block. The same trick on fire-and-forget histogram atomics (the pass) pays about 200 cycles.",
+      "Neither v3 nor v4 moves the register sweeps (4700 cycles at IPT 128, half of the call); the instruction count per item is the lever and this session did not get to the packed bf16 arrangement."
+    ],
+    "surprises": [
+      "T32's dummy-word proposal splits by atomic kind: a gain for fire-and-forget histogram increments, a loss for tickets with return.",
+      "After four builds the finish (loads, pass, emission, warp finish) is about 3300 cycles at every N and the sweeps scale with IPT at about 37 cycles per item: B4's cost is 3300 plus 37 x IPT, so it crosses B1_idx and B3_tuned between N 4096 and N 8192 and reaches 3x at N 32768."
+    ],
+    "open_questions": [
+      "The emission tickets behind branches (v3) with the branch-free pass (v4) would combine the two gains, one more build.",
+      "Packed bf16 sweeps (T18, packed_striped arrangement) and a lighter block scan are the remaining levers for the sweeps and the structure, predicted 1000 and 300 cycles at N 32768.",
+      "A same-session pairing of the final variant with B1_idx and B2_twolevel (k 16) was not run within the batch budget, the chain through the B4_base cards stands in for it."
+    ]
+  }
+}

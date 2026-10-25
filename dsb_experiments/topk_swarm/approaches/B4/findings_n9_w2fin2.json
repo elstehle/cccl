@@ -1,0 +1,60 @@
+{
+  "author": "opt-B4",
+  "approach_id": "N9",
+  "variant": "w2fin2",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 6620,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: as B1_n6b (1 init, 2 per pass), plus 1 before the warp finish when the pivot bin after the first pass holds at most 32 items",
+    "k_range": "[1, N) at run time",
+    "n_range": "N = Threads x IPT, Threads 128, 256 or 512, N <= 32768, prefer_smaller_index up to IPT 64 (N6's tie mask), measured N 1024 and 4096 at 256 threads",
+    "type_constraints": "fp32 and bf16 keys, int32 indices derived from the striped position",
+    "nan_behavior": "as B1_n6b: NaN unsupported, -0.0 folded onto +0.0 under prefer_smaller_index only; the warp finish treats the all-ones packed word as the empty-slot sentinel (a negative NaN with a full mantissa, never produced by focus-set inputs)",
+    "tie_break_support": "both requirements: the warp finish orders the pivot bin by (key descending, index ascending), so it is exact under prefer_smaller_index without N6's warp-redundant rank; the items above the pivot bin are scattered by ticket as in N6",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  },
+  "report_path": "approaches/B4/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N9_w2fin2.cuh",
+    "approaches/B4/block_topk_n6_w2.cuh",
+    "approaches/B1/block_topk_n6.cuh"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T19",
+    "T23",
+    "T25",
+    "T38"
+  ],
+  "techniques_contributed": [],
+  "correctness_notes": "All 48 cells passed the oracle battery (13 cases per cell) under both requirements.",
+  "findings": {
+    "low_level": [
+      "One change against N9_w2fin: the items above the pivot bin and the pivot bin's members draw their ticket from one atomicAdd with return on a counter indexed by the item's class (0 above, 1 pivot), the shape of B1_idx's epilogue, instead of two atomics on constant addresses that ptxas warp-aggregates (T23). Registers 40 at bf16 N 1024 (N9_w2fin 46, B1_n6b 46), 80 at N 4096, prefer_smaller_index 58 and 128, no spill.",
+      "The warp finish itself is unchanged: one redux.max per round on the packed bf16 word, two for fp32, k_rem rounds (1 to 7 on these cells), one barrier before warp 0 reads the 32-word buffer."
+    ],
+    "algorithmic": [
+      "Against B1_n6b in the same lock section (B200, cycles per call, random normal input), not_guaranteed: bf16 N 1024 k 16 1722 against 1686 (plus 2 percent), k 64 1851 against 2041 (minus 9), k 256 1976 against 2332 (minus 15), N 4096 k 16 2828 against 2749 (plus 3), k 64 3359 against 4043 (minus 17), k 256 4012 against 4569 (minus 12); fp32 N 1024 k 16 1707 against 1660 (plus 3), k 64 1871 against 1961 (minus 5), k 256 1995 against 2236 (minus 11), N 4096 k 16 2815 against 2811, k 64 3364 against 3779 (minus 11), k 256 3994 against 4464 (minus 11). prefer_smaller_index: bf16 N 1024 k 16 1937 against 2234 (minus 13), k 256 2040 against 2905 (minus 30), N 4096 k 64 3651 against 6188 (minus 41), k 256 4377 against 6913 (minus 37); fp32 N 1024 k 16 1953 against 2094 (minus 7), N 4096 k 64 3812 against 5092 (minus 25), k 256 4367 against 5988 (minus 27). Throughput follows (bf16 N 4096 k 64 579 against 511 Gelem per s, prefer_smaller_index 451 against 298).",
+      "The gain grows with k because N6b's second pass runs in more rows as k grows (first-pass exit 0.97, 0.54, 0.16 of the bf16 N 1024 rows at k 16, 64, 256 in the host simulation) and the finish costs a few hundred cycles whatever k_rem is. At k 16 the pass is rare and the finish is a wash within 3 percent.",
+      "Chained to B1_idx through the B1_n6b card (estimate, not a same-section number): N6 with the warp finish is now ahead of the radix incumbent at bf16 N 1024 k 64 (1851 against B1_idx 1878) and N 4096 k 64 (3359 against 3838), the cells where N6b lost, and ahead at fp32 N 4096 k 64 to 256 by 27 to 30 percent (3364 against 4587, 3994 against 5047)."
+    ],
+    "negative": [
+      "The N9 kill criterion as written (15 percent off B1_n6b at N 1024 and 4096 k 16 bf16 under not_guaranteed) is not met by either build: plus 2 to 3 percent, because the second pass the finish replaces runs in at most 3 percent of those rows (bf16) and 27 percent (fp32).",
+      "The first build's constant-address pivot ticket cost 50 to 750 cycles per call through the warp aggregation of T23: 1770 against 1722 at bf16 N 1024 k 16, 5082 against 4012 at N 4096 k 256. Never ticket into a constant shared address from an unrolled item loop."
+    ],
+    "surprises": [
+      "The class-indexed ticket (B1_idx's spelling) is the second measured case where the address shape alone moves a block kernel by 10 to 20 percent (T23, T39 asked for exactly this same-kernel A/B of the ticket spelling).",
+      "A warp of redux rounds on (key, inverted index) words is the cheapest exact tie resolution at block scope: it removes N6's warp-redundant rank entirely and the prefer_smaller_index price of N6 drops from 20 to 50 percent to 3 to 13 percent at these cells."
+    ],
+    "open_questions": [
+      "Whether the pivot bin's members can reach warp 0 without any atomic (a ballot per item slot and a warp prefix, T22 warns of the dependent chain) and whether that or a 64-word buffer (list depth 2) pays at k 256 where the bin holds up to 24 items.",
+      "N6 with this finish at N 8192 to 32768, where B4 takes over the first pass, was not measured: the two should be one primitive (B4's candidate finish is this finish)."
+    ]
+  }
+}
