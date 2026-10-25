@@ -20,7 +20,7 @@
 //   and __syncwarp inside, no barriers. NaN: unsupported, focus-set inputs contain no NaN.
 #pragma once
 
-#include "N6w_impl.cuh"
+#include "N6w_v1_impl.cuh"
 
 struct N6w_ballot_info
 {
@@ -33,7 +33,7 @@ struct N6w_ballot_info
 
   static constexpr bool supported(topk::key_type kt, int threads, int n, int k, topk::requirement req)
   {
-    return n6w::supported_shape(kt, threads, n, k, req);
+    return n6w_v1::supported_shape(kt, threads, n, k, req);
   }
 };
 
@@ -46,11 +46,11 @@ struct N6w_ballot
   static constexpr topk::output_form output            = topk::output_form::indices;
   using key_storage                                    = KeyT[IPT];
 
-  static constexpr int IdxBits = n6w::ceil_log2(N);
+  static constexpr int IdxBits = n6w_v1::ceil_log2(N);
   static constexpr int FIPT    = (IPT <= 16) ? 2 : 4; // finish list words per lane
   static constexpr int FIN_CAP = 32 * FIPT; // largest pivot bin the W2 finish takes
   static constexpr int MAXLEV  = 4; // bracket passes before the radix digit fallback
-  static constexpr int M_raw   = n6w::next_pow2((K + 31) / 32);
+  static constexpr int M_raw   = n6w_v1::next_pow2((K + 31) / 32);
   static constexpr int M       = (M_raw <= 8 && IPT % M_raw == 0) ? M_raw : 0; // 0: full range bracket
 
   struct TempStorage
@@ -61,7 +61,7 @@ struct N6w_ballot
   __device__ __forceinline__ static void
   run(key_storage& keys, int (&)[items_per_thread], TempStorage& ts, int* out_idx, KeyT*)
   {
-    using namespace n6w;
+    using namespace n6w_v1;
     const int lane     = topk::group_lane<32>();
     const int idx_base = lane * IPT;
     const uint32_t lt  = lanemask_lt();

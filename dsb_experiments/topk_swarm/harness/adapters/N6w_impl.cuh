@@ -18,6 +18,11 @@
 // into the mask of lanes whose item is in bucket j and counts it with popc. A suffix scan over the
 // lanes locates the bucket holding the r-th largest candidate.
 //
+// Issue order: the ballots of a chunk of items are issued before any of them is consumed. With one
+// ballot group per item followed by its LOP3 and POPC consumers in program order, the in-order
+// issue stalls on every item for the ballot latency, and the pass costs about 70 cycles per item
+// instead of the 6 cycles per pipelined ballot of T17 (measured in the first N6w_ballot batch).
+//
 // Emission: the selected items (image above the threshold, plus the first `take` items equal to it
 // in index order) are written at their rank among the selected items, computed from one ballot per
 // slot in lane-major order, which is index order on the blocked arrangement. prefer_smaller_index
@@ -38,10 +43,10 @@
 namespace n6w
 {
 
-inline constexpr unsigned FULL     = 0xffffffffu;
-inline constexpr uint32_t IMG0     = 0x4b000000u; // bits of 2^23, the image of bin 0
-inline constexpr float TWO23       = 8388608.0f;
-inline constexpr int ALL_TIES      = 0x7fffffff;
+inline constexpr unsigned FULL = 0xffffffffu;
+inline constexpr uint32_t IMG0 = 0x4b000000u; // bits of 2^23, the image of bin 0
+inline constexpr float TWO23   = 8388608.0f;
+inline constexpr int ALL_TIES  = 0x7fffffff;
 
 __host__ __device__ constexpr int ceil_log2(int x)
 {
@@ -63,6 +68,11 @@ __host__ __device__ constexpr int cmin(int a, int b)
 __host__ __device__ constexpr int cmax(int a, int b)
 {
   return a > b ? a : b;
+}
+// items whose ballots are issued back to back before any consumer
+__host__ __device__ constexpr int chunk_items(int ipt)
+{
+  return ipt >= 128 ? 4 : cmin(ipt, 8);
 }
 
 template <typename KeyT>
@@ -349,13 +359,37 @@ struct bucket_masks
   }
 };
 
+// 5-bit bin per item, six items per word
+template <int IPT>
+struct bins5
+{
+  static constexpr int W = (IPT + 5) / 6;
+  uint32_t w[W];
+  __device__ __forceinline__ bins5()
+  {
+#pragma unroll
+    for (int j = 0; j < W; ++j)
+    {
+      w[j] = 0u;
+    }
+  }
+  __device__ __forceinline__ void set(int i, uint32_t x)
+  {
+    w[i / 6] |= (x & 31u) << (5 * (i % 6));
+  }
+  __device__ __forceinline__ uint32_t get(int i) const
+  {
+    return (w[i / 6] >> (5 * (i % 6))) & 31u;
+  }
+};
+
 // ------------------------------------------------------------------------------------------------
 // Bracket pass (N6): 32 equal width bins over the value range of the current candidates
 // ------------------------------------------------------------------------------------------------
 // bin image: u = bits(fma(v - lo, scale, 2^23)) clamped into [IMG0, IMG0 + 31], monotone in v
 __device__ __forceinline__ uint32_t bin_image(float v, float lo, float scale)
 {
-  const float d = v - lo;
+  const float d   = v - lo;
   const int32_t x = __float_as_int(fmaf(d, scale, TWO23));
   const int32_t y = ::max(x, static_cast<int32_t>(IMG0));
   return ::min(static_cast<uint32_t>(y), IMG0 + 31u);
@@ -364,51 +398,66 @@ __device__ __forceinline__ uint32_t bin_image(float v, float lo, float scale)
 template <typename KeyT, int IPT, bool ALL>
 __device__ __forceinline__ void bracket_pass(const float (&v)[IPT], range& st, int lane)
 {
+  constexpr int CH  = chunk_items(IPT);
   const float lo    = fmaxf(untw(st.tmin), -FLT_MAX);
   const float hi    = fminf(untw(st.tmax), FLT_MAX);
   const float width = hi - lo;
   // a degenerate bracket (zero or overflowing width) keeps a tiny positive scale: a zero scale
   // would turn infinite items into NaN images (inf times 0) and put -inf into the top bin
-  float scale       = 32.0f / width;
-  scale             = (width > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN;
+  float scale = 32.0f / width;
+  scale       = (width > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN;
   const bucket_masks<5> bm(lane);
 
-  uint32_t u[IPT];
+  bins5<IPT> bins;
   int cnt = 0;
 #pragma unroll
-  for (int i = 0; i < IPT; ++i)
+  for (int c0 = 0; c0 < IPT; c0 += CH)
   {
-    uint32_t x = bin_image(v[i], lo, scale);
-    uint32_t cm = FULL;
-    if constexpr (!ALL)
-    {
-      const uint32_t t = tw_of<KeyT>(v[i]);
-      const bool c     = (t >= st.tmin) & (t <= st.tmax);
-      x                = c ? x : 0u;
-      cm               = __ballot_sync(FULL, c);
-    }
-    u[i] = x;
-    uint32_t bal[5];
+    uint32_t bal[CH][5];
+    uint32_t cm[CH];
 #pragma unroll
-    for (int b = 0; b < 5; ++b)
+    for (int j = 0; j < CH; ++j)
     {
-      bal[b] = __ballot_sync(FULL, (x >> b) & 1u);
+      const int i = c0 + j;
+      uint32_t x  = bin_image(v[i], lo, scale);
+      cm[j]       = FULL;
+      if constexpr (!ALL)
+      {
+        const uint32_t t = tw_of<KeyT>(v[i]);
+        const bool c     = (t >= st.tmin) & (t <= st.tmax);
+        x                = c ? x : 0u;
+        cm[j]            = __ballot_sync(FULL, c);
+      }
+      bins.set(i, x);
+#pragma unroll
+      for (int b = 0; b < 5; ++b)
+      {
+        bal[j][b] = __ballot_sync(FULL, (x >> b) & 1u);
+      }
     }
-    cnt += __popc(bm.match(bal) & cm);
+#pragma unroll
+    for (int j = 0; j < CH; ++j)
+    {
+      cnt += __popc(bm.match(bal[j]) & cm[j]);
+    }
   }
   const int s = suffix_scan(cnt, lane);
   int p, np, above;
   locate(s, cnt, st.r, p, np, above);
 
-  const uint32_t pu = IMG0 + static_cast<uint32_t>(p);
+  const uint32_t pb = static_cast<uint32_t>(p);
   uint32_t tmin = FULL, tmax = 0u;
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
     const uint32_t t = tw_of<KeyT>(v[i]);
-    const bool c     = (u[i] == pu);
-    tmin             = c ? ::min(tmin, t) : tmin;
-    tmax             = c ? ::max(tmax, t) : tmax;
+    bool c           = (bins.get(i) == pb);
+    if constexpr (!ALL)
+    {
+      c = c & (t >= st.tmin) & (t <= st.tmax);
+    }
+    tmin = c ? ::min(tmin, t) : tmin;
+    tmax = c ? ::max(tmax, t) : tmax;
   }
   st.tmin = __reduce_min_sync(FULL, tmin);
   st.tmax = __reduce_max_sync(FULL, tmax);
@@ -424,37 +473,48 @@ template <typename KeyT, int IPT, int D, bool ALL, bool VALID = false>
 __device__ __forceinline__ void digit_pass(const uint32_t (&tw)[IPT], range& st, int lane, int nv = 0)
 {
   static_assert(D >= 1 && D <= 5, "one bucket per lane");
-  constexpr int KB = key_bits<KeyT>;
-  const int nb     = ALL ? 0 : __clz(st.tmin ^ st.tmax); // resolved bits from the top
-  const int d      = ::min(D, KB - nb);
-  const int shift  = 32 - nb - d;
+  constexpr int CH     = chunk_items(IPT);
+  constexpr int KB     = key_bits<KeyT>;
+  const int nb         = ALL ? 0 : __clz(st.tmin ^ st.tmax); // resolved bits from the top
+  const int d          = ::min(D, KB - nb);
+  const int shift      = 32 - nb - d;
   const uint32_t dmask = (1u << d) - 1u;
   const bucket_masks<D> bm(lane);
 
   int cnt = 0;
 #pragma unroll
-  for (int i = 0; i < IPT; ++i)
+  for (int c0 = 0; c0 < IPT; c0 += CH)
   {
-    const uint32_t t = tw[i];
-    uint32_t dig     = (t >> shift) & dmask;
-    uint32_t cm      = FULL;
-    if constexpr (!ALL)
-    {
-      bool c = (t >= st.tmin) & (t <= st.tmax);
-      if constexpr (VALID)
-      {
-        c = c & (lane + 32 * i < nv);
-      }
-      dig = c ? dig : 0u;
-      cm  = __ballot_sync(FULL, c);
-    }
-    uint32_t bal[D];
+    uint32_t bal[CH][D];
+    uint32_t cm[CH];
 #pragma unroll
-    for (int b = 0; b < D; ++b)
+    for (int j = 0; j < CH; ++j)
     {
-      bal[b] = __ballot_sync(FULL, (dig >> b) & 1u);
+      const int i      = c0 + j;
+      const uint32_t t = tw[i];
+      uint32_t dig     = (t >> shift) & dmask;
+      cm[j]            = FULL;
+      if constexpr (!ALL)
+      {
+        bool c = (t >= st.tmin) & (t <= st.tmax);
+        if constexpr (VALID)
+        {
+          c = c & (lane + 32 * i < nv);
+        }
+        dig   = c ? dig : 0u;
+        cm[j] = __ballot_sync(FULL, c);
+      }
+#pragma unroll
+      for (int b = 0; b < D; ++b)
+      {
+        bal[j][b] = __ballot_sync(FULL, (dig >> b) & 1u);
+      }
     }
-    cnt += __popc(bm.match(bal) & cm);
+#pragma unroll
+    for (int j = 0; j < CH; ++j)
+    {
+      cnt += __popc(bm.match(bal[j]) & cm[j]);
+    }
   }
   // lanes beyond the 2^d buckets of this pass share the masks of lower lanes and must not count
   cnt         = (lane < (1 << d)) ? cnt : 0;
@@ -477,19 +537,30 @@ __device__ __forceinline__ void digit_pass(const uint32_t (&tw)[IPT], range& st,
 template <typename KeyT, int IPT, bool ALL>
 __device__ __forceinline__ void bit_pass(const uint32_t (&tw)[IPT], range& st, int lane)
 {
-  const int nb    = ALL ? 0 : __clz(st.tmin ^ st.tmax);
-  const int shift = 31 - nb;
-  int c1          = 0;
+  constexpr int CH = chunk_items(IPT);
+  const int nb     = ALL ? 0 : __clz(st.tmin ^ st.tmax);
+  const int shift  = 31 - nb;
+  int c1           = 0;
 #pragma unroll
-  for (int i = 0; i < IPT; ++i)
+  for (int c0 = 0; c0 < IPT; c0 += CH)
   {
-    const uint32_t t = tw[i];
-    bool f           = (t >> shift) & 1u;
-    if constexpr (!ALL)
+    uint32_t bal[CH];
+#pragma unroll
+    for (int j = 0; j < CH; ++j)
     {
-      f = f & (t >= st.tmin) & (t <= st.tmax);
+      const uint32_t t = tw[c0 + j];
+      bool f           = (t >> shift) & 1u;
+      if constexpr (!ALL)
+      {
+        f = f & (t >= st.tmin) & (t <= st.tmax);
+      }
+      bal[j] = __ballot_sync(FULL, f);
     }
-    c1 += __popc(__ballot_sync(FULL, f));
+#pragma unroll
+    for (int j = 0; j < CH; ++j)
+    {
+      c1 += __popc(bal[j]);
+    }
   }
   const uint32_t keep = ~((2u << shift) - 1u);
   const uint32_t low  = (1u << shift) - 1u;
@@ -557,16 +628,33 @@ struct val_index
   }
 };
 
+// one ballot per slot, chunked, into bal[IPT]
+template <int IPT>
+__device__ __forceinline__ void ballot_flags(const flags<IPT>& fl, uint32_t (&bal)[IPT])
+{
+  constexpr int CH = chunk_items(IPT);
+#pragma unroll
+  for (int c0 = 0; c0 < IPT; c0 += CH)
+  {
+#pragma unroll
+    for (int j = 0; j < CH; ++j)
+    {
+      bal[c0 + j] = __ballot_sync(FULL, fl.get(c0 + j));
+    }
+  }
+}
+
 // lane-major: flagged items on lower lanes precede this lane's items
 template <int IPT>
 __device__ __forceinline__ int rank_base(const flags<IPT>& fl, uint32_t lt)
 {
+  uint32_t bal[IPT];
+  ballot_flags<IPT>(fl, bal);
   int R = 0;
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
-    const unsigned b = __ballot_sync(FULL, fl.get(i));
-    R += __popc(b & lt);
+    R += __popc(bal[i] & lt);
   }
   return R;
 }
@@ -592,17 +680,17 @@ scatter_flags(const flags<IPT>& fl, const uint32_t (&tw)[IPT], Idx idx, Val val,
   }
   else
   {
+    uint32_t bal[IPT];
+    ballot_flags<IPT>(fl, bal);
     int base = 0;
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      const bool f     = fl.get(i);
-      const unsigned b = __ballot_sync(FULL, f);
-      if (f)
+      if (fl.get(i))
       {
-        dst[base + __popc(b & lt)] = val(tw[i], idx(i));
+        dst[base + __popc(bal[i] & lt)] = val(tw[i], idx(i));
       }
-      base += __popc(b);
+      base += __popc(bal[i]);
     }
   }
 }
@@ -643,14 +731,15 @@ emit_threshold(const uint32_t (&tw)[IPT], uint32_t thr, int take, int* out_idx, 
     }
     else
     {
+      uint32_t bal[IPT];
+      ballot_flags<IPT>(tie, bal);
       int base = 0;
 #pragma unroll
       for (int i = 0; i < IPT; ++i)
       {
-        const bool t     = tie.get(i);
-        const unsigned b = __ballot_sync(FULL, t);
-        sel.set(i, (tw[i] > thr) | (t & (base + __popc(b & lt) < take)));
-        base += __popc(b);
+        const bool t = tie.get(i);
+        sel.set(i, (tw[i] > thr) | (t & (base + __popc(bal[i] & lt) < take)));
+        base += __popc(bal[i]);
       }
     }
   }

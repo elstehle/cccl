@@ -80,35 +80,45 @@ __device__ __forceinline__ void bracket_pass_atomic(const float (&v)[IPT], range
   }
   __syncwarp();
 
-  uint32_t u[IPT];
+  static_assert(BINS <= 256, "bin index packed into 8 bits");
+  uint32_t ub[(IPT + 3) / 4]; // 8-bit bin per item, four per word
+#pragma unroll
+  for (int j = 0; j < (IPT + 3) / 4; ++j)
+  {
+    ub[j] = 0u;
+  }
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
-    uint32_t x     = bin_image_n<BINS>(v[i], lo, scale);
-    uint32_t* addr = hist + (x & (BINS - 1u));
+    const uint32_t x = bin_image_n<BINS>(v[i], lo, scale);
+    const uint32_t b = x & (BINS - 1u);
+    uint32_t* addr   = hist + b;
     if constexpr (!ALL)
     {
       const uint32_t t = tw_of<KeyT>(v[i]);
       const bool c     = (t >= st.tmin) & (t <= st.tmax);
-      x                = c ? x : 0u;
       addr             = c ? addr : dummy + lane;
     }
-    u[i] = x;
+    ub[i / 4] |= b << (8 * (i % 4));
     atomicAdd(addr, 1u);
   }
   __syncwarp();
   int pbin, np, above;
   locate_bins<BINS>(hist, st.r, lane, pbin, np, above);
 
-  const uint32_t pu = IMG0 + static_cast<uint32_t>(pbin);
+  const uint32_t pb = static_cast<uint32_t>(pbin);
   uint32_t tmin = FULL, tmax = 0u;
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
     const uint32_t t = tw_of<KeyT>(v[i]);
-    const bool c     = (u[i] == pu);
-    tmin             = c ? ::min(tmin, t) : tmin;
-    tmax             = c ? ::max(tmax, t) : tmax;
+    bool c           = ((ub[i / 4] >> (8 * (i % 4))) & 0xffu) == pb;
+    if constexpr (!ALL)
+    {
+      c = c & (t >= st.tmin) & (t <= st.tmax);
+    }
+    tmin = c ? ::min(tmin, t) : tmin;
+    tmax = c ? ::max(tmax, t) : tmax;
   }
   st.tmin = __reduce_min_sync(FULL, tmin);
   st.tmax = __reduce_max_sync(FULL, tmax);
