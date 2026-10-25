@@ -1,0 +1,57 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "minmax_pairs_sub",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N, logical warps of 4, 8 and 16 lanes, measured N 8 to 128 (IPT up to 32)",
+  "type_constraints": "fp32 keys compared with fmaxf and fminf, bf16 keys with __hmax and __hmin, int32 index carried as the value and moved when the key moved",
+  "nan_behavior": "fmaxf, fminf, __hmax and __hmin return the non-NaN operand, so a NaN key loses every exchange and is never selected, never produced by focus-set inputs. -0.0 and +0.0 compare equal and keep their index",
+  "tie_break_support": "not supported: equal keys keep their network position (not_guaranteed only), see W1_eager_same for the index-in-key route",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_minmax_pairs_sub.cuh",
+  "harness/adapters/W1_minmax_pairs.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [
+  "T28"
+ ],
+ "correctness_notes": "Oracle battery passed on all 76 cell configurations (logical warps 4, 8, 16, N 8 to 128, not_guaranteed). Control: W1_baseline_sub (the CUB pairs network at the same logical warp size) in the same lock section. W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "Registers 32 to 168 against 30 to 111 for the CUB pairs (fp32 LW 4 N 128 k 64: 168 against 111, LW 4 N 128 k 16: 150 against 80), no spills, 6 blocks per SM from N 64 on against 8. The min max exchange keeps both the old and the new key live for the FSETP.NEU that moves the index, one more register per in-flight exchange than the compare-and-select form.",
+   "In-register exchange (stride >= LW, no shuffle): FSETP, FMNMX, FMNMX, SEL, SEL against the CUB form's FSETP and four selects, the same count, so the sub-warp gain cannot come from the exchange and comes from the shorter dependency through FMNMX (the index select waits for the key compare in both forms, but the key result itself is one FMNMX and not FSETP plus FSEL)."
+  ],
+  "algorithmic": [
+   "fp32 against the CUB pairs (latency): LW 4 1.17x to 2.24x (N 16 k 4 318 against 713, N 32 k 8 612 against 1273, N 128 k 16 4240 against 8580, N 128 k 64 10748 against 13160), LW 8 0.90x to 1.27x (N 8 k 4 205 against 261, N 128 k 8 4189 against 4867, N 128 k 16 6155 against 5535), LW 16 0.89x to 1.40x (N 16 1.16x, N 32 k 16 664 against 927, N 64 and N 128 0.89x to 0.93x). Throughput 0.85x to 1.04x, mostly within 4 percent (the 6 against 8 blocks per SM cost).",
+   "bf16 pairs through __hmax and __hmin against the CUB pairs: LW 4 wins at k 4 (1.31x to 1.67x) and loses at k >= 8 from N 64 on (0.79x to 0.94x), LW 8 and 16 lose 0.64x to 0.97x except N 8 to 16 (1.11x to 1.34x), throughput 1.04x to 1.25x everywhere (fewer instructions than __hgt plus select, lower occupancy). The bf16 route at sub-warp is the one-word packing (W1_eager_same_sub, 1.8x to 2.8x throughput), not pairs.",
+   "Together with the W1_eager_same_sub card the sub-warp routes are: bf16 one-word packed at every LW, fp32 min max pairs at LW 4 (1.2x to 2.2x) and LW 8 (parity to 1.27x), and at LW 16 the CUB pairs network as it is (the min max form is within 0.9x to 1.1x and swings both ways, T28)."
+  ],
+  "negative": [
+   "fp32 min max pairs at LW 16 N 64 and 128: 0.89x to 0.93x against the CUB pairs with 1.4x the registers, no gain to claim there.",
+   "bf16 pairs with native min and max at sub-warp: dropped, as at warp scope."
+  ],
+  "surprises": [
+   "The sub-warp gain of the min max form is largest where the network is almost entirely in-register (LW 4, IPT 8 to 32), although the in-register exchange has the same instruction count in both forms: the FMNMX result feeds the next stage one instruction earlier than FSETP plus FSEL, and at 5 to 15 dependent in-register stages per tile that is 20 to 50 percent of the chain."
+  ],
+  "open_questions": [
+   "Whether the LW 16 loss is a schedule artifact (T28) or the occupancy: the throughput regime is within 4 percent there, the latency regime is single-warp, so occupancy cannot be the cause and a rescheduled build should be tried."
+  ]
+ }
+}

@@ -1,0 +1,52 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "baseline",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = round_up(k, LW) <= N, k 8 to 64 measured",
+  "n_range": "N = LW x IPT, measured 32 to 256 at LW 32",
+  "type_constraints": "cub::detail::WarpBitonicTopK as on the branch: fp32 or bf16 keys, not_guaranteed through the pairs network with int32 values (the reference), prefer_smaller_index through the keys-only network on a (key, index) struct with a composite comparator (key first, smaller index first among equal keys)",
+  "nan_behavior": "comparisons with NaN are false, a NaN lands at an unspecified position, never produced by focus-set inputs. -0.0 and +0.0 compare equal under both requirements",
+  "tie_break_support": "composite comparator in the unchanged primitive: exact prefer_smaller_index at 1.8x to 5.8x the cycles of the not_guaranteed reference (this card), 3.0x the SASS instructions",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_baseline.cuh",
+  "cub/cub/warp/warp_bitonic_topk.cuh",
+  "cub/cub/warp/warp_bitonic_sort.cuh"
+ ],
+ "techniques_adopted": [],
+ "techniques_contributed": [
+  "T35"
+ ],
+ "correctness_notes": "Oracle battery passed on every prefer_smaller_index cell (exact result against the host reference, including tie_heavy, all_equal, pivot_tie and signed_zero). Control is W1_reference under not_guaranteed in the same lock section (harness 0.3 --control-req). W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "The composite comparator written with short-circuit || and && compiles to a branch region per compare-exchange: the fp32 N 128 k 32 latency kernel has 3448 SASS instructions against 1152 for the reference, with 300 BSSY, 300 BSYNC, 305 BRA, 612 FSETP, 455 ISETP and 449 PLOP3 for 150 exchanges, no spills (0 bytes stack), registers 35 against 32 (fp32 N 128), 46 against 36 (bf16 N 128), 77 against 42 (bf16 N 256).",
+   "The 8-byte struct key goes through the generic word path of cuda::device::warp_shuffle_xor (two SHFL per stage, 300 per kernel at N 128, the same count as the pairs reference), so the shuffle traffic is not the cost, the branches and the doubled comparator evaluation are."
+  ],
+  "algorithmic": [
+   "prefer_smaller_index through the unchanged primitive costs 1.8x (bf16 N 32: 1396 against 779) to 5.8x (fp32 N 256 k 32: 26895 against 4606) the cycles of the not_guaranteed reference, and the ratio grows with N because the branch regions serialize the tile sorts that the predicated network overlaps: fp32 N 32 2541 against 583 (4.4x), N 64 5876 against 925 (6.4x), N 128 12833 against 2062 (6.2x), bf16 N 128 4893 against 2267 (2.2x), N 256 13015 against 5950 (2.2x). Throughput drops to 0.4x (fp32) and 0.6x (bf16).",
+   "This is the cost of the naive (key, index) comparator route to the requirement. The index-in-key route (W1_eager_same) gets the same exact result at the cycles of the not_guaranteed path, and the branch-free comparator (W1_kvcmp) isolates how much of this is the branches."
+  ],
+  "negative": [
+   "A composite comparator with short-circuit operators inside WarpBitonicSortNetwork: 3x the instructions and 2x to 6x the cycles. Never write a network comparator with || or &&."
+  ],
+  "surprises": [
+   "The branch regions appear even though every compare-exchange in the network is written as a predicated assignment: the short circuit inside the comparator is enough for cicc to emit control flow, and ptxas keeps it (BSSY and BSYNC around every exchange)."
+  ],
+  "open_questions": [
+   "How much of the 2x to 6x remains with a branch-free comparator (bitwise | and &), answered by the W1_kvcmp card."
+  ]
+ }
+}

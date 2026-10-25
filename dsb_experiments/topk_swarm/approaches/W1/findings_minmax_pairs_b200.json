@@ -1,0 +1,59 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "minmax_pairs",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 8 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N, measured 32 to 256 at LW 32",
+  "type_constraints": "fp32 keys compared with fmaxf and fminf, bf16 keys with __hmax and __hmin, int32 index carried as the value and moved when the key moved",
+  "nan_behavior": "fmaxf, fminf, __hmax and __hmin return the non-NaN operand, so a NaN key loses every exchange and is never selected, never produced by focus-set inputs. -0.0 and +0.0 compare equal and keep their index",
+  "tie_break_support": "not supported: equal keys keep their network position (not_guaranteed only), see W1_eager_same for the index-in-key route",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_minmax_pairs.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [
+  "T28"
+ ],
+ "correctness_notes": "Oracle battery passed on every cell (not_guaranteed, the tie cases keep their network position and the set is checked). Controls in the same lock section: W1_reference (first batch), W1_eager_same under not_guaranteed (second batch, the fp32 route comparison). W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "The exchange `nk = keep_min ? fminf(m, o) : fmaxf(m, o)` compiles to FMNMX plus a predicated duplicate `@P FMNMX` writing the same register (the compiler does not use the predicate operand of FMNMX to select min or max), then FSETP.NEU (did my key change) and SEL for the index: 306 FMNMX, 156 FSETP, 152 SEL and 300 SHFL per N 128 k 32 kernel, 1136 SASS instructions against 1152 for the reference (306 FSETP, 314 SEL). Registers 24 to 52 against 19 to 59, no spills, 6 blocks per SM from N 128 on against 8 for the reference (the index path keeps one more live value per tile).",
+   "Per stage at IPT 1 the min max key path is the cheapest form measured: 35 cycles (531 over 15 stages at fp32 N 32) against 39 for the reference's FSETP and SEL and 40 for the 64-bit word, so the predicated duplicate costs about one FMNMX and the shuffle latency (30) remains the floor.",
+   "bf16 pairs through __hmax and __hmin: 1472 instructions against 1656 for the reference at N 128 (HMNMX2 replaces HSETP2 plus PLOP3), 24 to 64 registers, but the 16-bit key still rides a 32-bit shuffle, so this route is dominated by the packed word (W1_eager_same)."
+  ],
+  "algorithmic": [
+   "fp32 against the reference (latency, not_guaranteed): N 32 k 8 531 against 583 (1.10x), N 64 k 32 720 against 925 (1.28x), N 128 k 16 1649 against 2041 (1.24x), N 128 k 32 2004 against 2041 (1.02x, see surprises), N 128 k 64 1217 against 2152 (1.77x), N 256 k 16 4301 against 4606 (1.07x), N 256 k 64 4547 against 5104 (1.12x). Throughput 1.00x to 1.05x (203 against 198 Gelem/s at N 32, 181 against 179 at N 128, 180 against 177 at N 256).",
+   "bf16 pairs against the reference: N 32 680 against 779 (1.15x) and throughput 148 against 125, but N 64 and above are slower (1369 against 1164 at N 64 k 32, 3219 against 2340 at N 128 k 32, 6531 against 5640 at N 256 k 32) with 6 blocks per SM, the min max form does not rescue bf16 pairs, the one-word packing does.",
+   "fp32 route per cell (second batch, W1_minmax_pairs against W1_eager_same u64 in one lock section, not_guaranteed): the pairs win latency at N 32 (531 against 601, 1.13x), N 64 (720 to 756 against 934, 1.24x to 1.30x), N 128 k 8 and 16 (1649 against 1915, 1.16x) and N 128 k 64 (1217 against 2216, 1.82x), lose at N 128 k 32 (2004 against 1917, 0.96x, the T28 schedule cell) and at N 256 k 8 to 32 (4301 to 4545 against 3826, 0.84x to 0.89x), and tie at N 256 k 64 (4547 against 4650). Throughput: the pairs win every cell by 9 to 10 percent (203 against 184 Gelem/s at N 32, 198 against 177 at N 64, 181 against 166 at N 128, 180 against 163 at N 256) with 6 against 8 blocks per SM, so the u64 word's extra ISETP.EX step costs more issue slots than its occupancy buys. Verdict for fp32 not_guaranteed at warp scope: min max pairs up to N 128 and for throughput everywhere, the u64 word only for latency at N 256 with k <= 32.",
+   "The N 128 k 64 cell (two registers per tile, two tiles) is the fastest fp32 N 128 cell of the study at 1217 cycles: with MaxK 64 the critical path is one 64-element sort plus one merge instead of a 32-element sort plus three dependent merges, and the compiler overlaps the four register sorts. A caller that can afford MaxK = 2 k gets a shorter chain for free at this N."
+  ],
+  "negative": [
+   "No tie-break support: equal keys keep their position, so this route cannot serve prefer_smaller_index, switching to the 64-bit word costs switching to the 64-bit word for the requirement costs 13 percent at N 32 (601 against 531), 24 to 30 percent at N 64 (934 against 720 to 756), 16 percent at N 128 k <= 16 (1915 against 1649) and 82 percent at N 128 k 64 (2216 against 1217), gains 11 to 16 percent at N 256 k <= 32 (3826 against 4301 to 4545), and costs 9 to 10 percent throughput in every cell (psi_vs_pairs batch, W1_eager_same under prefer_smaller_index against W1_minmax_pairs under not_guaranteed in one lock section).",
+   "bf16 pairs with native min and max: slower than the reference from N 64 on and 1.8x to 2.7x slower than the packed word, dropped."
+  ],
+  "surprises": [
+   "The same network measures 1649 cycles at k 8 and k 16 and 2004 at k 32 (N 128, MaxK 32 in all three, 1120 against 1136 instructions, same opcode histogram): the epilogue predicate on the index store changed the whole ptxas schedule, catalogue entry T28. The 1.02x of the k 32 cell is a schedule artifact, the 1.24x of k 16 is the network."
+  ],
+  "open_questions": [
+   "Whether a single FMNMX with a register predicate (no CUDA C or PTX form found) would bring the stage to 30 plus 6 cycles, and whether writing the exchange as two FMNMX plus SEL on the result reschedules better at k 32.",
+   "The fp32 pairs at IPT 8 and above (N 512 and up), where the pairs' two shuffles per stage against the u64 word's two shuffles plus one more ALU step may flip the route again."
+  ]
+ }
+}

@@ -1,0 +1,58 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "eager_same_sub",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N, logical warps of 4, 8 and 16 lanes, measured N 8 to 128 (IPT up to 32)",
+  "type_constraints": "bf16 keys as one 32-bit word (twiddled key high, inverted index low), fp32 keys as one 64-bit word, int32 indices",
+  "nan_behavior": "a NaN is twiddled by its sign bit (positive NaN above +inf, negative NaN below -inf) and selected or dropped deterministically, never produced by focus-set inputs. -0.0 is canonicalized to +0.0 before packing",
+  "tie_break_support": "inherent: the word order is (key descending, index ascending), prefer_smaller_index costs nothing (same instantiation, same cycles)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_eager_same_sub.cuh",
+  "harness/adapters/W1_eager_same.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "techniques_adopted": [
+  "T3",
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [
+  "T28"
+ ],
+ "correctness_notes": "Oracle battery passed on all 152 cell configurations (logical warps 4, 8, 16, N 8 to 128, both requirements, exact prefer_smaller_index result). Control: W1_baseline_sub (the CUB pairs network at the same logical warp size) under not_guaranteed in the same lock section for both requirements. The sub-warp latency kernel's no-op floor is 87 to 109 cycles against 48 at warp scope, the chain slope already subtracts it. W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "bf16 one-word network: registers 28 to 72 against 23 to 64 for the CUB pairs, 116 against 63 at LW 4 N 128 k 64 (IPT 32, MaxK 64), no spills, 8 blocks per SM in every cell but the LW 4 N 128 ones. fp32 u64 word: 35 to 167 registers against 27 to 128 (LW 4 N 128 k 64: 167, IPT 32 at two registers per element), no spills, 5 to 6 blocks per SM at N 128.",
+   "At a small logical warp the network is mostly in-register exchanges (log2 IPT of the log2 N stages need no shuffle), so the one-shuffle advantage of a packed word shrinks and its compare cost per exchange decides: one ISETP plus one SEL for the u32 word against ISETP, ISETP.EX and two SEL for the u64 word, against FSETP plus two or three SEL for the CUB pairs."
+  ],
+  "algorithmic": [
+   "bf16 packed against the CUB pairs at not_guaranteed (latency): LW 4 1.27x to 2.07x (N 32 k 4 893 against 1199, N 128 k 64 7938 against 16417), LW 8 1.05x to 1.91x (N 128 k 64 5243 against 10039), LW 16 1.01x to 1.51x with one loss at N 128 k 64 (4182 against 3704, 0.89x). Throughput 1.8x to 2.8x in every cell from N 16 on (LW 4 N 16 k 4 735 against 411 Gelem/s, LW 8 N 128 k 64 282 against 102), 1.05x to 1.31x at N 8 where the fixed per-call cost dominates. prefer_smaller_index is free: the 76 psi cells measure the same cycles as their ng twins.",
+   "fp32 u64 word against the CUB pairs: a loss at sub-warp scope. LW 4 0.71x to 1.00x except N 8 (1.36x) and N 32 k 16 (1.22x), LW 8 0.76x to 1.07x, LW 16 0.79x to 1.11x, throughput 0.79x to 1.00x. The fp32 index-in-key route does not transfer below LW 32, see W1_minmax_pairs_sub for the route that wins there.",
+   "The gain of the one-word bf16 network grows with IPT and with k: at LW 4 the k 64 cells (MaxK 64, two tiles of 16 registers) show 2.07x, the k 4 cells (MaxK 4, 32 tiles of one register) 1.3x to 1.8x. More registers per tile means more in-register exchanges per shuffle stage, where one ISETP plus SEL against __hgt's HSETP2, PLOP3 and PRMT chain is the whole difference."
+  ],
+  "negative": [
+   "fp32 as a 64-bit word at logical warps of 4 to 16 lanes: 0.7x to 0.9x latency and 0.8x to 1.0x throughput against the CUB pairs, twice the registers. Dropped for sub-warp fp32."
+  ],
+  "surprises": [
+   "The highest throughput of the W1 study is a sub-warp cell: bf16 LW 4 N 16 k 4 at 735 Gelem/s (CUB 411), eight independent 4-lane sorts per warp with one word per element keep the shuffle pipe and the ALU both busy."
+  ],
+  "open_questions": [
+   "A one-word fp32 route for sub-warp: the key alone in 32 bits with the index recovered after the network (match the selected key against the tile by ballot, smaller lane first) would give the requirement at one word per element for N <= 128, not built in this slice.",
+   "LW 2 and 1 (N 8 to 32 per thread) were not measured, the harness grid starts at 4."
+  ]
+ }
+}

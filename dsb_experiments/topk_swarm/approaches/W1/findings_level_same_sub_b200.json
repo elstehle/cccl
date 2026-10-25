@@ -1,0 +1,52 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "level_same_sub",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 8 and 16 measured",
+  "n_range": "N = LW x IPT with N over MaxK a power of two, logical warps 8 and 16, measured N 64 and 128 (4 to 16 tiles)",
+  "type_constraints": "bf16 keys as one 32-bit word (twiddled key high, inverted index low), fp32 keys as one 64-bit word, int32 indices",
+  "nan_behavior": "a NaN is twiddled by its sign bit (positive NaN above +inf, negative NaN below -inf) and selected or dropped deterministically, never produced by focus-set inputs. -0.0 is canonicalized to +0.0 before packing",
+  "tie_break_support": "inherent: the word order is (key descending, index ascending), prefer_smaller_index costs nothing (same instantiation, same cycles)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_level_same_sub.cuh",
+  "harness/adapters/W1_eager_same_sub.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Oracle battery passed on all 16 cell configurations, variant and control (W1_eager_same_sub, identical network code and policies) in the same lock section. W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "Same instruction mix as the eager loop (same shuffle count by construction), 18 to 27 more registers at LW 8 (58 against 40 at N 64, 64 against 40 at bf16 N 128, 72 against 58 and 63 at fp32 N 128) and 11 to 30 more at LW 16 (43 against 32, 59 to 64 against 31 to 40), no spills. The interleaved tile sorts keep every tile live until its level."
+  ],
+  "algorithmic": [
+   "Kill experiment at sub-warp scope, where the tile count T = N over MaxK reaches 8 to 16 and the eager chain has 7 to 15 dependent merges: LW 8 (T 8 to 16) latency 0.91x to 1.17x (bf16 N 64 k 8 1835 against 1941, bf16 N 64 k 16 2207 against 2015, fp32 N 128 k 8 4523 against 5299, fp32 N 128 k 16 6496 against 6495), LW 16 (T 4 to 8) 0.98x to 1.07x. Throughput 0.92x to 1.05x.",
+   "The only cell above 1.1x is fp32 LW 8 N 128 k 8 (16 tiles, 1.17x), consistent with the dependency-depth argument (4 levels against 15 dependent merges) but far below the card's 1.3x threshold and paid with 14 more registers and 6 percent throughput. The restructuring does not pay at any measured tile count from 2 to 16, at warp or sub-warp scope. N2 is killed."
+  ],
+  "negative": [
+   "Level-parallel loop at sub-warp scope: 0.91x to 1.17x latency, 0.92x to 1.05x throughput, 11 to 30 more registers. Not worth a code path."
+  ],
+  "surprises": [
+   "bf16 LW 8 N 64 k 16 is 9 percent slower level-parallel than eager with the same shuffles and 18 more registers: the eager loop's dependent merges leave ptxas a simpler block to schedule than 8 interleaved sorts."
+  ],
+  "open_questions": [
+   "T 32 and above (N >= 1024 at warp scope, N >= 256 at LW 8) were not measured, the trend from T 2 to 16 (1.00x, 1.0x to 1.08x, 1.0x to 1.17x) does not suggest the threshold is reached before the registers run out."
+  ]
+ }
+}
