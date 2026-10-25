@@ -4247,7 +4247,9 @@
   "T38",
   "T41"
  ],
- "techniques_contributed": [],
+ "techniques_contributed": [
+  "T60"
+ ],
  "report_path": "approaches/N6w/REPORT.md",
  "source_paths": [
   "harness/adapters/N6w_impl.cuh",

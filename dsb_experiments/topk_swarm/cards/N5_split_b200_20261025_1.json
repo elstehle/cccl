@@ -1467,5 +1467,11 @@
     "thr_us": 3780.191898
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N5",
+  "date": "2026-10-25",
+  "notes": "verify-N5 rerun 2026-10-25 on the card's node umbriel-b200-018 (B200, nvcc 13.4.92, container 6167d8b718ce as in the card), lease holder verify-N5, rebuilt from a git archive of exp/topk-swarm/N5 at the card's commit 30f5b8f821 (harness 0.5, SOURCE_COMMIT written, run.py --source-commit 30f5b8f821), built and measured under one lease. Batch state/results/verify-N5/N5_split_vs_W1x_vimnmx_eager_focus_vH_20261025_163151.json (N 64, 128, 256 x k 32, 64, both requirements, both regimes, one lock section, canaries 32.00098 cycles per op at both ends and 3780.1 us at both ends). 20 of the card's 44 cells rerun (k 4 and 16 not rerun), all matched: every latency cell identical to the cycle, every throughput cell within 0.1 percent. Headline cells (rerun against card, control W1x_vimnmx_eager in the same lock section): N 128 k 32 369.7 against 369.7 with 358.2 against 358.3 (1.03x), N 256 k 32 426.5 against 426.5 with 367.3 against 367.3 (1.16x). Random cells N 64 k 32 319.8 against 319.7 with 330.6 (0.97x) and N 256 k 64 383.9 against 383.7 with 248.5 (1.54x). Latency 1145 against 1017 at N 128 k 32 (0.89x) and 1573 against 1718 at N 256 k 32 (1.09x, the split row faster), as the card says. Both requirements measure the same to 0.1 percent and compile the same kernel. Control named, same lock section, control_is_aa false. Oracle 13 of 13 on variant and control in every cell, self test true. Harness ceiling: the variant reaches at most 0.10 of the no-op adapter's Gelem per s. Resources: 0 bytes stack frame, 0 bytes spill, no STL and no LDL in any kernel built, registers as the card lists. SASS of the N 128 k 32 throughput kernel: 336 instructions, the control's count, with 48 SHFL, 82 HMNMX2, 4 HSET2, 4 VOTE, 6 POPC and 53 ISETP (the finding says 51, a count slip). Same node as the card, no cross-node measurement, small kernels. Verified."
+ }
 }

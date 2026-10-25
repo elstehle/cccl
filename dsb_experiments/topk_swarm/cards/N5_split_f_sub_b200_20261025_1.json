@@ -2340,5 +2340,11 @@
     "thr_us": 3781.375885
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N5",
+  "date": "2026-10-25",
+  "notes": "verify-N5 rerun 2026-10-25 on the card's node umbriel-b200-018 (B200, nvcc 13.4.92, container 6167d8b718ce as in the card), lease holder verify-N5, rebuilt from a git archive of exp/topk-swarm/N5 at the card's commit 8f613a317f (harness 0.5, SOURCE_COMMIT written, run.py --source-commit 8f613a317f), built and measured under one lease. Batch state/results/verify-N5/N5_split_f_sub_vs_W1_eager_same_sub_focus_vE_20261025_163042.json (LW 8 and 16, N 32 and 128 x k 16, 32, 64, both requirements, both regimes, one lock section, canaries 32.00098 cycles per op at both ends and 3781.4 and 3781.2 us). 32 of the card's 72 cells rerun (the N 64 rows and k 4 were not rerun), all matched: every latency cell identical to the cycle, every throughput cell within 0.1 percent. Headline cells (rerun against card, control W1_eager_same_sub in the same lock section): LW 8 N 128 k 64 450.3 against 450.3 with 281.4 against 281.4 (1.60x, the card's must-beat), LW 16 N 128 k 16 523.2 against 523.1 with 335.8 against 335.8 (1.56x). Random cells LW 16 N 128 k 32 450.8 against 450.7 with 285.3 and LW 8 N 32 k 16 503.1 against 503.0 with 471.1 (1.07x). The latency gains hold (LW 8 N 128 k 16 1822 against 4522, 2.48x, LW 8 N 128 k 64 2078 against 5243, 2.52x, LW 16 N 128 k 64 1755 against 4182, 2.38x). Control named, same lock section, control_is_aa false. Oracle 13 of 13 on variant and control in every cell, self test true. Harness ceiling: the variant reaches at most 0.15 of the no-op adapter's Gelem per s in these cells. Resources: 0 bytes stack frame, 0 bytes spill, no STL and no LDL in any kernel built (ptxas -v and cuobjdump), registers as the card lists. prefer_smaller_index against not_guaranteed in throughput: 3.7 percent faster to 3.1 percent slower (LW 8 N 128 k 64 436.5 against 450.3), consistent with the card's correctness notes and again contradicting the contract field tie_break_support (\"identical throughput under both requirements in every cell\"), a text slip carried over from the exact form. Same node as the card, no cross-node measurement. Verified."
+ }
 }
