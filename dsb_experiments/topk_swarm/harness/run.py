@@ -74,6 +74,8 @@ def read_adapter_meta(header_path):
 
 
 def expand_cells(spec, scope, args):
+    if scope not in spec.get("scopes", {}):
+        return []  # this cells file has no grid for the scope (e.g. no sub-warp flip bands)
     sc = spec["scopes"][scope]
     keys = args.keys.split(",") if args.keys else spec["key_types"]
     reqs = args.req.split(",") if args.req else spec["requirements"]
@@ -382,7 +384,8 @@ def main():
     else:
         cells = expand_cells(spec, v_meta["scope"], args)
     if not cells:
-        raise SystemExit("no cells after filtering")
+        log("no cells for scope %s in %s after filtering, nothing to do" % (v_meta["scope"], args.named_cells or args.cell_list or args.cells))
+        return 0
 
     stamp = utc_now().strftime("%Y%m%d_%H%M%S")
     batch = "%s_vs_%s_%s_%s_%s" % (variant, control, spec.get("name", "cells"), args.label, stamp)

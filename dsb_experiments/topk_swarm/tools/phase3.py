@@ -147,6 +147,9 @@ def main():
                     if nm == "named":
                         cells_sets.append(["--named-cells", "cells/" + os.path.basename(path)])
                     else:
+                        spec_scopes = json.load(open(os.path.join(SWARM, path))).get("scopes", {})
+                        if scope not in spec_scopes:
+                            continue  # no grid for this scope in that cells file (no sub-warp flip bands)
                         cells_sets.append(["--cells", "cells/" + os.path.basename(path)])
             for cells_arg in cells_sets:
                 for req in a.get("requirements", REQS):
