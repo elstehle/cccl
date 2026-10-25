@@ -30,7 +30,6 @@
   ],
   "techniques_adopted": [
     "T1",
-    "T9",
     "T10",
     "T11",
     "T26",
@@ -39,7 +38,9 @@
     "T34",
     "T36",
     "T38",
-    "T41"
+    "T41",
+    "T46",
+    "T9"
   ],
   "techniques_contributed": [
     "T43",
@@ -57,7 +58,7 @@
     ],
     "algorithmic": [
       "Kill cell bf16 N 1024 k 16 latency: 1422 cycles at 64 threads against 1182 at 128 and 1380 at 256 (fp32 1724, 1494, 1680). The 64-thread block is 0.83x of the 128-thread block and 0.97x of the 256-thread block, the threshold of ideas/PRIORITIES.md (1.15x under 128 threads, at most 1030) is missed by 38 percent, the idea card's 1060 prediction assumed a 58-cycle round and the measured round is 77. The 64-thread form of B2 is retired for the latency regime.",
-      "Why the 2-warp round is not cheaper: the measured rounds 83.5 (8 warps, IPT 4), 69.5 (4 warps, IPT 8) and 77 (2 warps, IPT 16) fit about 48 + 4 W + IPT cycles with W warps per block for IPT up to 16 (also 91 at (8, 8) and 78 at (4, 16) from the N 2048 cells). Halving the warps saves 4 cycles per warp (barrier plus one aggregated post per warp, T11 and T26) and doubling IPT costs one cycle per list word, because the IPT - 1 predicated selects of the shift are issued in program order before the next round's post (an in-order warp). With N = 32 W IPT the sum is smallest near W = sqrt(N / 128): 2 to 4 warps at N 1024 (tie in the round, 128 wins by the prologue), 4 at N 2048, 4 to 8 at N 4096, never 2 warps where the prologue sort is 32 or 64 words.",
+      "Why the 2-warp round is not cheaper: the measured rounds 83.5 (8 warps, IPT 4), 69.5 (4 warps, IPT 8) and 77 (2 warps, IPT 16) fit about 48 + 4 W + IPT cycles with W warps per block for IPT up to 16 (also 91 at (8, 8) and 78 at (4, 16) from the N 2048 cells). Halving the warps saves 4 cycles per warp (barrier plus one aggregated post per warp, T11 and T26) and doubling IPT costs one cycle per list word, because the IPT - 1 predicated selects of the shift are issued in program order before the next round's post (an in-order warp). With N = 32 W IPT the sum is smallest near W = sqrt(N / 128): 2 to 4 warps at N 1024 (tie in the round, 128 wins by the prologue), 4 at N 2048, 4 to 8 at N 4096, never 2 warps where the prologue sort is 32 or 64 words. Precision of the fit (verify-N8): T43's remark that the fp32 rounds match bf16 within 5 cycles holds at N 1024 only; at N 2048 the fp32 rounds are 72 cycles at both 64 and 128 threads against fits of 88 and 80 (residuals minus 16 and minus 8) and 90 at 256 threads, so the fit is a bf16 fit with residuals of at most 8 cycles, and T46 (the hardware researcher's list-free rounds) places the per-warp term in the barrier alone.",
       "Best block size per (N, k) in the latency regime (ratio of the best over the 256-thread form, bf16 then fp32): N 1024 k 4 128 threads (1.09x, 1.06x), k 8 128 (1.15x, 1.05x), k 16 128 (1.17x, 1.12x), k 32 128 (1.20x, 1.19x), k 64 128 (1.20x, 1.20x); N 2048 k 8 tie 128 and 256 (0.99x, 0.97x), k 16 128 (1.07x, 1.06x), k 32 128 (1.12x, 1.14x); N 4096 k 16 128 (1.08x, 1.11x), k 64 256 (0.93x, 0.93x on this node, verify-B2 found the 128-thread k 64 kernel node dependent, 6254 on umbriel-b200-047 against 7831 here). 64 threads is never the best latency shape.",
       "Throughput regime (one occupancy wave, Gelem per s, ratio of 64 over 256 threads): bf16 N 1024 1759 against 1289 (1.36x), 1325 against 843 (1.57x), 820 against 495 (1.66x), 443 against 273 (1.63x), 234 against 144 (1.62x) at k 4, 8, 16, 32, 64; N 2048 1315 against 1119 (1.18x), 949 against 652 (1.46x), 536 against 357 (1.50x) at k 8, 16, 32; N 4096 962 against 806 (1.19x) at k 16, 286 against 229 (1.25x) at k 64. fp32 N 1024 1.20x, 1.40x, 1.48x, 1.52x, 1.56x; N 2048 0.83x, 1.12x, 1.30x (128 registers, 8 blocks per SM); N 4096 1.06x and 0.73x (254 registers, 4 blocks per SM). 128 threads sits between (bf16 N 1024 1.29x to 1.35x over 256). The regime flips the verdict: the block size that loses 3 to 17 percent in latency wins 18 to 66 percent in throughput wherever the register tier allows 16 or more blocks per SM.",
       "Against the incumbent at its best shape (B1_idx at 256 threads, same lock section): 64-thread B2 wins throughput up to k 32 at bf16 N 1024 (443 against 388 at k 32, 820 against 409 at k 16), up to k 16 at N 2048 (949 against 559) and N 4096 (962 against 692), and k at most 16 for fp32 N 1024 (604 against 412); the 256-thread B2 wins only up to k 16 at N 1024 (495 against 409) and ties or loses at k 32 (273 against 388). In latency the picture is the 128-thread card's: B2 at 128 threads beats B1_idx at 256 threads up to k 16 at N 1024 to 4096 (1182 against 1767, 1474 against 2310, 1907 against 3371 bf16) and loses from k 32 at N 1024 (2280 against 1851) and k 64 elsewhere.",
@@ -75,7 +76,7 @@
     ],
     "open_questions": [
       "Whether the 64-thread throughput edge survives in a batched device kernel that loads each block's tile from global memory once (the harness reloads from L1 or L2 per call and the loads are part of the measured time at every block size); a device-agent measurement with 64, 128 and 256-thread blocks on the segmented_topk benchmark would settle it.",
-      "The barrier cost at 64 threads is not in the catalogue (T11 has 128, 256 and 512); asked of the hardware researcher together with an IPT-free aggregated round at 2, 4, 8 and 16 warps, to split the 48 + 4 W + IPT model into barrier, post and shift.",
+      "The barrier cost at 64 threads is not in the catalogue (T11 has 128, 256 and 512); asked of the hardware researcher together with an IPT-free aggregated round at 2, 4, 8 and 16 warps, to split the 48 + 4 W + IPT model into barrier, post and shift. Precision of the fit (verify-N8): T43's remark that the fp32 rounds match bf16 within 5 cycles holds at N 1024 only; at N 2048 the fp32 rounds are 72 cycles at both 64 and 128 threads against fits of 88 and 80 (residuals minus 16 and minus 8) and 90 at 256 threads, so the fit is a bf16 fit with residuals of at most 8 cycles, and T46 (the hardware researcher's list-free rounds) places the per-warp term in the barrier alone.",
       "Whether a two-level list (sorted head of 4, T38 pruning kept) at 64 threads recovers the latency: the shift would drop from 15 to 3 selects per round, but B2_twolevel measured a slower round at IPT 16 at 256 threads (divergent refill, B2b report 3.3), so the expected gain is at most the 8 cycles of the shift and the shape would still trail 128 threads.",
       "Node dependence of the large unrolled kernels: the 128-thread N 4096 k 64 cells differ by 25 to 33 percent between umbriel-b200-020 and -047 (verify-B2), and the 64-thread N 4096 k 64 kernels (7736 and 11320 instructions) were measured on -020 only."
     ]
