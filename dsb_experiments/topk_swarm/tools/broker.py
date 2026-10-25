@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from swarmlib import (ACTIVE_STATES, LOGS, RESULTS, SWARM, Registry, fmt_remaining, iso,  # noqa: E402
-                      node_label, parse_duration, remaining_seconds, utcnow)
+                      node_label, parse_duration, parse_iso, remaining_seconds, utcnow)
 
 USER = "estehle"
 HOLD_SCRIPT = "~/b200_alloc/topk_hold.sh"
@@ -377,8 +377,10 @@ def release_node(key, force=False):
     return 0 if r.ok else 1
 
 
-def bootstrap_node(key, image=None, timeout=2400):
-    """Run the on-node bootstrap for a running job and mark it ready. Returns 0 ok, 1 error, 2 duplicate host."""
+def bootstrap_node(key, image=None, timeout=2400, force=False):
+    """Run the on-node bootstrap for a running job and mark it ready. Returns 0 ok, 1 error, 2 duplicate host.
+    A node already in `bootstrapping` for less than 20 minutes is skipped unless force, so the tick loop
+    and a hand-run bootstrap never work on the same job at once."""
     queues = all_queues()
     with Registry() as reg:
         reconcile(reg.data, queues)
@@ -389,6 +391,12 @@ def bootstrap_node(key, image=None, timeout=2400):
             return 1
         if node["status"] not in ACTIVE_STATES:
             print("%s is %s, not bootstrapping" % (node_label(node), node["status"]))
+            reg.save()
+            return 1
+        started = parse_iso(node.get("bootstrap_started"))
+        if node["status"] == "bootstrapping" and not force and started is not None \
+                and (utcnow() - started).total_seconds() < 20 * 60:
+            print("%s: bootstrap already running since %s, skipping (pass --force to retry)" % (node_label(node), node["bootstrap_started"]))
             reg.save()
             return 1
         if not node.get("ssh"):
@@ -404,6 +412,7 @@ def bootstrap_node(key, image=None, timeout=2400):
             release_node(node["job_id"], force=True)
             return 2
         node["status"] = "bootstrapping"
+        node["bootstrap_started"] = iso(utcnow())
         reg.save()
         cluster, login, host, jid = node["cluster"], node["login"], node["ssh"], node["job_id"]
         label = node_label(node)
@@ -554,7 +563,7 @@ def cmd_request(args):
 
 
 def cmd_bootstrap(args):
-    return bootstrap_node(args.node, image=args.image, timeout=args.timeout)
+    return bootstrap_node(args.node, image=args.image, timeout=args.timeout, force=args.force)
 
 
 def cmd_release(args):
@@ -664,6 +673,7 @@ def main(argv=None):
     b.add_argument("node", help="node name, ssh host or job id")
     b.add_argument("--image", default=None)
     b.add_argument("--timeout", type=int, default=2400, help="seconds for the on-node bootstrap script")
+    b.add_argument("--force", action="store_true", help="retry a node that is already marked bootstrapping")
     b.set_defaults(func=cmd_bootstrap)
     rl = sub.add_parser("release")
     rl.add_argument("node")
