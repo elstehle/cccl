@@ -10,7 +10,8 @@
 // not in the head, and the head is the lane's sorted top H.
 //
 // Rounds are W2's (one redux of the heads, the unique winner shifts its head by one), so the round
-// costs the depth-8 price (T19, T41) at any items per lane. The head of a lane can only run dry
+// costs the depth-8 price (T19, T41) at any items per lane. The loop over blocks is rolled so the
+// refill network is emitted once. The head of a lane can only run dry
 // after H wins. Rounds run in blocks of B (H = 2 B). At the top of block b every lane tests whether
 // its head was below full at the end of block b - 1 and still has remainder words, one
 // __any_sync over the warp decides, and the refill (every remainder block sorted again and merged
@@ -127,21 +128,13 @@ __device__ __forceinline__ uint32_t twolevel_rounds(uint32_t (&a)[P], int lane, 
   constexpr int NB = K / B;
   int rem_count    = P - H;
   uint32_t m       = 0;
-  if constexpr (K <= 64)
-  {
-#pragma unroll
-    for (int b = 0; b < NB; ++b)
-    {
-      m = round_block<T, H, B>(a, rem_count, b * B, b + 1 == NB, lane, red, emit);
-    }
-  }
-  else
-  {
+  // The block loop stays rolled at every k: an unrolled loop inlines the refill network once per
+  // block (15 copies at k 64, 3700 min max instructions in the kernel) and the instruction cache
+  // then costs more per round than the deep list it replaces.
 #pragma unroll 1
-    for (int b = 0; b < NB; ++b)
-    {
-      m = round_block<T, H, B>(a, rem_count, b * B, b + 1 == NB, lane, red, emit);
-    }
+  for (int b = 0; b < NB; ++b)
+  {
+    m = round_block<T, H, B>(a, rem_count, b * B, b + 1 == NB, lane, red, emit);
   }
   return m;
 }
