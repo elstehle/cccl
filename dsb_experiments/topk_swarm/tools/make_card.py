@@ -122,6 +122,9 @@ def main():
                     "optimizer's worktree HEAD). Required unless every batch recorded one from harness/SOURCE_COMMIT")
     ap.add_argument("--allow-missing-control", action="store_true",
                     help="keep cells without a control value (control_value set to the variant value, flagged)")
+    ap.add_argument("--allow-selftest-failure", action="store_true",
+                    help="keep cells whose oracle self-test recorded false (harness 0.3 and earlier report a false "
+                    "negative at k == N/2 from a self-test construction defect, the oracle itself was intact), flagged")
     args = ap.parse_args()
 
     schema = json.load(open(args.schema))
@@ -172,6 +175,15 @@ def main():
                 notes.append("dropped cell N%d k%d %s %s %s: oracle failed" % (c["n"], c["k"], c["key_type"],
                                                                                c["requirement"], c["regime"]))
                 continue
+            if raw.get("oracle_selftest") is False:
+                if args.allow_selftest_failure:
+                    notes.append("cell N%d k%d %s %s %s: oracle self-test recorded false (kept, flagged: harness "
+                                 "<= 0.3 self-test defect at k == N/2, see harness/README.md section 2)" % (
+                                     c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
+                else:
+                    notes.append("dropped cell N%d k%d %s %s %s: oracle self-test false" % (
+                        c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
+                    continue
             if "control_value" not in c:
                 if args.allow_missing_control:
                     c["control_name"] = "none"

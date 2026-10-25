@@ -120,7 +120,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.3";
+inline constexpr const char* harness_version = "0.4";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -1216,15 +1216,31 @@ check_topk(const std::vector<float>& v, int k, requirement req, const int* out_i
   return r;
 }
 
-// Host self-test of the oracle: the exact reference passes, a wrong index set fails. Run once per
-// cell so a silently broken oracle can never bless a number.
+// Host self-test of the oracle: the exact reference passes, a wrong set fails, a duplicate fails,
+// and under not_guaranteed any k of the tied zeros pass while prefer_smaller_index accepts only the
+// smallest indices. Run once per cell so a silently broken oracle can never bless a number. The
+// test builds its own input (negative keys plus min(2k, n - 1) zeros of alternating sign), so at
+// least one non-zero key exists for the wrong set at every k < n.
 inline bool oracle_selftest(int n, int k)
 {
-  if (2 * k > n)
+  if (k < 1 || k >= n)
   {
     return true;
   }
-  auto v = make_pattern("signed_zero", n, k, 1);
+  std::vector<float> v = normal_values(n, 1);
+  for (auto& x : v)
+  {
+    x = -std::fabs(x) - 1.f;
+  }
+  std::mt19937_64 rng(12345u);
+  std::vector<int> pos(n);
+  std::iota(pos.begin(), pos.end(), 0);
+  std::shuffle(pos.begin(), pos.end(), rng);
+  const int zeros = std::min(2 * k, n - 1);
+  for (int j = 0; j < zeros; ++j)
+  {
+    v[pos[j]] = (j & 1) ? -0.0f : 0.0f;
+  }
   std::vector<int> order(n);
   std::iota(order.begin(), order.end(), 0);
   std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
@@ -1233,21 +1249,24 @@ inline bool oracle_selftest(int n, int k)
   std::vector<int> exact(order.begin(), order.begin() + k);
   bool ok = check_topk(v, k, requirement::prefer_smaller_index, exact.data(), nullptr).ok
          && check_topk(v, k, requirement::not_guaranteed, exact.data(), nullptr).ok;
-  // any-k-zeros is valid under not_guaranteed but (for 2k zeros) not under prefer_smaller_index
-  std::vector<int> other(order.begin() + k, order.begin() + 2 * k);
-  ok = ok && check_topk(v, k, requirement::not_guaranteed, other.data(), nullptr).ok
-     && !check_topk(v, k, requirement::prefer_smaller_index, other.data(), nullptr).ok;
-  // a non-top element must fail both
+  // any k of the zeros are valid under not_guaranteed but not under prefer_smaller_index
+  if (2 * k <= zeros)
+  {
+    std::vector<int> other(order.begin() + k, order.begin() + 2 * k);
+    ok = ok && check_topk(v, k, requirement::not_guaranteed, other.data(), nullptr).ok
+       && !check_topk(v, k, requirement::prefer_smaller_index, other.data(), nullptr).ok;
+  }
+  // a non-top element (the smallest key, negative by construction) must fail both
   std::vector<int> wrong(exact);
   wrong[0] = order[n - 1];
   ok = ok && !check_topk(v, k, requirement::not_guaranteed, wrong.data(), nullptr).ok
      && !check_topk(v, k, requirement::prefer_smaller_index, wrong.data(), nullptr).ok;
   // a duplicate index must fail
-  std::vector<int> dup(exact);
   if (k > 1)
   {
+    std::vector<int> dup(exact);
     dup[1] = dup[0];
-    ok     = ok && !check_topk(v, k, requirement::not_guaranteed, dup.data(), nullptr).ok;
+    ok = ok && !check_topk(v, k, requirement::not_guaranteed, dup.data(), nullptr).ok;
   }
   return ok;
 }
@@ -2159,7 +2178,9 @@ int run_cell(int argc, char** argv)
     {
       root.add("control", adapter_json(cr));
     }
-    root.add("status", vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
+    const bool selftest_ok = oracle_selftest(N, K);
+    root.add("status",
+             !selftest_ok ? "selftest_failed" : vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
     root.add("cells",
              vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, Threads, N, K, Req,
                                              VA::output, o.pattern, can0, can1)

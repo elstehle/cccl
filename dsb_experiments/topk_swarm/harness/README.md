@@ -120,7 +120,12 @@ cell gets no number and the failure text lands in the JSON. Checks per output:
 4. pairs: every returned key equals the input key at its index.
 
 The oracle self-tests on the host at every run (the exact reference passes, a wrong set fails, a
-duplicate fails) and the result is recorded (`oracle_selftest` in the JSON).
+duplicate fails, any k of tied zeros pass under not_guaranteed and only the smallest indices under
+prefer_smaller_index) and the result is recorded (`oracle_selftest` in the JSON). A false self-test
+sets the cell status to `selftest_failed`, run.py lists it under `failed`, and make_card.py drops
+the cell unless `--allow-selftest-failure`. Harness 0.3 and earlier recorded a false negative at
+k == N/2 (the self-test's own input had no non-zero key left for its "wrong" set, the oracle was
+intact), fixed in 0.4, cards built from such batches keep those cells with a note.
 
 Every measured input also reports its tie structure at rank k (`input_tie_stats` per adapter,
 `ties_at_k_mean` and `ties_at_k_max` per cell: how many keys equal the k-th largest, over the 16

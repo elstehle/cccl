@@ -537,6 +537,10 @@ def main():
         if not d.get("variant", {}).get("oracle_passed", False):
             failed.append({"cell": c["name"], "pattern": rec["pattern"], "reason": "oracle_failed",
                            "failures": d.get("variant", {}).get("oracle_failures", [])})
+        if d.get("oracle_selftest") is False:
+            failed.append({"cell": c["name"], "pattern": rec["pattern"], "reason": "oracle_selftest_failed"})
+            log("  WARNING oracle self-test false for %s (harness defect, the cell's numbers are not trusted)"
+                % c["name"])
         ptx = ptxas_by_cell.get(c["name"], {})
         sas = sass_by_cell.get(c["name"], {})
         for side in ("variant", "control"):
