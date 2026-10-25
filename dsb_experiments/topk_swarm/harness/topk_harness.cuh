@@ -141,7 +141,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.6";
+inline constexpr const char* harness_version = "0.7";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -1014,6 +1014,25 @@ inline float quantize32(float base)
   return r + fr / 32.0f;
 }
 
+// Sign of the j-th zero in the signed-zero patterns: true means -0.0. The share of +0.0 depends on
+// the seed: 0 alternating (1/2), 1 one quarter plus, 2 three quarters plus, 3 all minus, 4 all plus.
+inline bool signed_zero_sign(unsigned seed, int j)
+{
+  switch (seed % 5)
+  {
+    case 0:
+      return (j & 1) != 0;
+    case 1:
+      return (j % 4) != 0;
+    case 2:
+      return (j % 4) == 0;
+    case 3:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Pattern definitions (BLOCK_TOPK_LATENCY_SPEC.md section 7, segmented_topk common.cuh, and the
 // special-value cases of BRIEF.md section 4). The returned values are fp32 and are rounded to the
 // key type afterwards, so bf16 inputs carry the ties that rounding introduces.
@@ -1074,8 +1093,11 @@ inline std::vector<float> make_pattern(const std::string& p, int n, int k, unsig
   }
   else if (p == "signed_zero")
   {
-    // Everything negative except 2k zeros of alternating sign at random positions: the top-k are
-    // zeros of both signs, so -0.0 == +0.0 decides membership under the tie-break requirement
+    // Everything negative except 2k zeros at random positions: the top-k are zeros, so
+    // -0.0 == +0.0 decides membership. The share of +0.0 among the zeros follows the seed
+    // (1/2, 1/4, 3/4, none, all), so for seeds with fewer than k plus zeros a primitive that drops
+    // -0.0 when its threshold is +0.0 fails under not_guaranteed as well, not only under the
+    // exact index check of prefer_smaller_index.
     v = normal_values(n, seed);
     for (auto& x : v)
     {
@@ -1088,7 +1110,52 @@ inline std::vector<float> make_pattern(const std::string& p, int n, int k, unsig
     const int zeros = std::min(2 * k, n);
     for (int j = 0; j < zeros; ++j)
     {
-      v[pos[j]] = (j & 1) ? -0.0f : 0.0f;
+      v[pos[j]] = signed_zero_sign(seed, j) ? -0.0f : 0.0f;
+    }
+  }
+  else if (p == "signed_zero_boundary")
+  {
+    // k/2 positive keys above a flood of k zeros of both signs (one quarter plus), everything
+    // else negative: the k-th rank falls inside the zeros, so a threshold of either zero sign
+    // must keep both signs and only the index decides which zeros belong to the exact set
+    v = normal_values(n, seed);
+    for (auto& x : v)
+    {
+      x = -std::fabs(x) - 1.f;
+    }
+    std::mt19937_64 rng(seed * 104723u + 5u);
+    std::vector<int> pos(n);
+    std::iota(pos.begin(), pos.end(), 0);
+    std::shuffle(pos.begin(), pos.end(), rng);
+    const int positives = std::max(1, k / 2);
+    const int zeros     = std::min(k, n - positives);
+    for (int j = 0; j < positives; ++j)
+    {
+      v[pos[j]] = std::fabs(v[pos[j]]);
+    }
+    for (int j = 0; j < zeros; ++j)
+    {
+      v[pos[positives + j]] = (j % 4 == 0) ? 0.0f : -0.0f;
+    }
+  }
+  else if (p == "pivot_tie_zero")
+  {
+    // pivot_tie with signed zeros at the pivot: -1.0 everywhere, gt_count keys of 1.0 at the
+    // tail, and 2k zeros of both signs at random positions so the k-th rank falls on a zero
+    const int gt = std::max(1, std::min(k / 4, n / 8));
+    v.assign(n, -1.f);
+    for (int j = n - gt; j < n; ++j)
+    {
+      v[j] = 1.f;
+    }
+    std::mt19937_64 rng(seed * 15485863u + 11u);
+    std::vector<int> pos(n - gt);
+    std::iota(pos.begin(), pos.end(), 0);
+    std::shuffle(pos.begin(), pos.end(), rng);
+    const int zeros = std::min(2 * k, n - gt);
+    for (int j = 0; j < zeros; ++j)
+    {
+      v[pos[j]] = signed_zero_sign(seed, j) ? -0.0f : 0.0f;
     }
   }
   else if (p == "inf_denorm")
@@ -1783,13 +1850,28 @@ struct cell_runner
     battery.push_back({o.pattern.c_str(), o.seeds});
     if (o.battery)
     {
-      const char* extra[] = {"tie_heavy", "sorted_asc", "sorted_desc", "pivot_tie", "all_equal", "signed_zero",
-                             "inf_denorm", "quantized_random", "relu_quantized"};
-      for (const char* p : extra)
+      struct extra_item
       {
-        if (o.pattern != p)
+        const char* pattern;
+        int seeds;
+      };
+      const extra_item extra[] = {
+        {"tie_heavy", 1},
+        {"sorted_asc", 1},
+        {"sorted_desc", 1},
+        {"pivot_tie", 1},
+        {"all_equal", 1},
+        {"signed_zero", 5}, // plus share 1/2, 1/4, 3/4, none, all
+        {"signed_zero_boundary", 2},
+        {"pivot_tie_zero", 3},
+        {"inf_denorm", 1},
+        {"quantized_random", 1},
+        {"relu_quantized", 1}};
+      for (const auto& e : extra)
+      {
+        if (o.pattern != e.pattern)
         {
-          battery.push_back({p, 1});
+          battery.push_back({e.pattern, e.seeds});
         }
       }
       if (o.pattern != "random")

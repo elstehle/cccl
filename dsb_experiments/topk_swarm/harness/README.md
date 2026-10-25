@@ -122,8 +122,21 @@ at compile time, one that does not support it returns false from `supported()`.
 
 Every cell runs the oracle before any number, on the cell's own pattern (`--seeds`, default 4
 seeds) plus a fixed battery: `tie_heavy`, `sorted_asc`, `sorted_desc`, `pivot_tie`, `all_equal`,
-`signed_zero`, `inf_denorm`, `quantized_random`, `relu_quantized` (and two `random` seeds when the
-cell pattern is something else). All groups of the launch are checked. A single failure means the
+`signed_zero` (5 seeds), `signed_zero_boundary` (2), `pivot_tie_zero` (3), `inf_denorm`,
+`quantized_random`, `relu_quantized` (and two `random` seeds when the cell pattern is something
+else), 23 cases per cell plus the cell's own seeds.
+
+Signed zeros (harness 0.7, after a threshold primitive dropped -0.0 items at a +0.0 threshold and
+passed the old single signed_zero seed under not_guaranteed because exactly k plus zeros remained):
+the five `signed_zero` seeds vary the share of +0.0 among the 2k zeros (one half, one quarter,
+three quarters, none, all), so with fewer than k plus zeros a primitive that drops -0.0 fails under
+not_guaranteed too, and under prefer_smaller_index the exact index check demands the smallest
+indices regardless of sign. `signed_zero_boundary` puts k/2 positive keys above k zeros (one
+quarter plus) so the k-th rank sits inside the zeros with both signs present. `pivot_tie_zero` is
+pivot_tie with 2k signed zeros at the pivot below the 1.0 tail. A cell instantiated under
+not_guaranteed is checked for set validity only, the exact check applies to the
+prefer_smaller_index cell of the same shape, so a batch must contain both requirements to cover
+both. All groups of the launch are checked. A single failure means the
 cell gets no number and the failure text lands in the JSON. Checks per output:
 
 1. All K indices are in `[0, N)` and distinct.
@@ -152,7 +165,7 @@ rounding introduces): `random` normal(0, 1); `quantized_random`, `relu_quantized
 the sorted normal sample; `pivot_tie` all 1.0 with `max(1, min(k/4, N/8))` values 2.0 at the tail
 (boundary flood of equal keys); `all_equal`; `signed_zero` negative keys with 2k zeros of
 alternating sign at random positions; `inf_denorm` normal sample with +-inf, denormals and the
-largest finite values mixed in.
+largest finite values mixed in; `signed_zero_boundary` and `pivot_tie_zero` as described above.
 
 ## 3. Latency regime
 
