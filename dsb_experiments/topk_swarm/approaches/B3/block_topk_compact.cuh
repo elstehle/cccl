@@ -127,7 +127,21 @@ struct cand_traits<32>
   }
 };
 
-template <typename KeyT, int Threads, int ItemsPerThread, int CapDivisor = 4, int FirstDigitBits = 8>
+// Candidate buffer layout. Thread t holds compacted items [t * cpt, (t + 1) * cpt) in both.
+//   plain : item q at word q, the loads of a warp stride cpt words and conflict on the banks
+//   padded: item q at word q + q / cpt (one pad word per thread), odd stride, conflict free
+enum class cand_layout
+{
+  plain,
+  padded
+};
+
+template <typename KeyT,
+          int Threads,
+          int ItemsPerThread,
+          int CapDivisor           = 4,
+          int FirstDigitBits       = 8,
+          cand_layout Layout       = cand_layout::plain>
 class block_topk_compact
 {
 public:
@@ -138,6 +152,9 @@ public:
   static constexpr int tile_items  = Threads * ItemsPerThread;
   static constexpr int cap         = tile_items / CapDivisor; // candidates kept after the first pass
   static constexpr int cpt         = (cap + Threads - 1) / Threads; // candidates per thread, blocked
+  static constexpr bool padded     = (Layout == cand_layout::padded) && (cpt > 1);
+  static constexpr int cand_stride = padded ? cpt + 1 : cpt; // words per thread in the buffer
+  static constexpr int cand_words  = padded ? cand_stride * Threads : cap;
   using ckt                        = ck_traits<KeyT>;
   static constexpr int key_bits    = ckt::key_bits;
   static constexpr u32 key_mask    = (key_bits == 32) ? 0xFFFFFFFFu : ((1u << key_bits) - 1u);
@@ -174,7 +191,7 @@ public:
     u32 histogram[2][num_buckets];
     typename scan_t::TempStorage scan;
     uint2 state; // x = (selected << first_bits) | bucket, y = candidates in the bucket
-    cand_word_t cands[cap];
+    cand_word_t cands[cand_words];
   };
 
   __device__ __forceinline__ block_topk_compact(TempStorage& s)
@@ -227,11 +244,19 @@ public:
 #pragma unroll
       for (int j = 0; j < cpt; ++j)
       {
-        // Unconditional load from a clamped address, validity is tested where the item is used
-        const int pos       = tid * cpt + j;
-        const cand_word_t w = storage.cands[(pos < cap) ? pos : (cap - 1)];
-        cck[j]              = cand::ck(w);
-        cidx[j]             = cand::idx(w);
+        const int pos = tid * cpt + j;
+        cand_word_t w;
+        if constexpr (padded)
+        {
+          w = (pos < c1) ? storage.cands[tid * cand_stride + j] : cand::make(0u, 0);
+        }
+        else
+        {
+          // Unconditional load from a clamped address, validity is tested where the item is used
+          w = storage.cands[(pos < cap) ? pos : (cap - 1)];
+        }
+        cck[j] = cand::ck(w);
+        cidx[j] = cand::idx(w);
       }
       const int cbase   = tid * cpt;
       const auto cvalid = [cbase, c1](int j) {
@@ -377,7 +402,9 @@ private:
       }
       if (eq)
       {
-        storage.cands[pos_eq++] = cand::make(ck[i], base + i);
+        const u32 word = padded ? pos_eq + pos_eq / static_cast<u32>(cpt) : pos_eq;
+        storage.cands[word] = cand::make(ck[i], base + i);
+        ++pos_eq;
       }
     }
   }
