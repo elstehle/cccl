@@ -26,7 +26,7 @@
 
 namespace w1
 {
-template <typename W, int LW, int M, int T, typename Shfl = shfl_split32>
+template <typename W, int LW, int M, int T, typename Shfl = shfl_split32, typename Ops = word_ops<W>>
 struct level_topk
 {
   static_assert(is_pow2(LW) && is_pow2(M) && is_pow2(T), "logical warp, tile words and tile count must be powers of two");
@@ -55,7 +55,7 @@ struct level_topk
         if constexpr ((Rr & rs) == 0)
         {
           constexpr bool desc = (((Rr * LW) & Size) != 0) != DescTile;
-          word_ops<W>::exchange_regs(k[Base + Rr], k[Base + (Rr | rs)], desc);
+          Ops::exchange_regs(k[Base + Rr], k[Base + (Rr | rs)], desc);
         }
       }
       else
@@ -75,7 +75,7 @@ struct level_topk
         }
         const bool keep_max = upper != desc;
         const W other       = Shfl::xor_(k[Base + Rr], Stride, mask);
-        word_ops<W>::exchange(k[Base + Rr], other, keep_max);
+        Ops::exchange(k[Base + Rr], other, keep_max);
       }
       stage_word<Base, Size, Stride, DescTile, Rr + 1>(k, lane, mask, upper);
     }
@@ -142,7 +142,7 @@ struct level_topk
     {
       if constexpr (Rr < M)
       {
-        k[JI * M + Rr] = word_ops<W>::max(k[2 * JI * M + Rr], k[(2 * JI + 1) * M + Rr]);
+        k[JI * M + Rr] = Ops::max(k[2 * JI * M + Rr], k[(2 * JI + 1) * M + Rr]);
         pair_tiles<Tn, JI, Rr + 1>(k);
       }
       else
@@ -166,6 +166,71 @@ struct level_topk
   {
     sort_sizes<2>(k, lane, mask);
     levels<T / 2>(k, lane, mask);
+  }
+};
+// The eager tile loop of cub::detail::WarpBitonicTopK on the same stage machinery: sort tile 0
+// descending, then for every further tile sort it ascending, keep the larger word per position
+// (tile 0 becomes bitonic) and merge tile 0 descending. Same source order as the CUB loop (one
+// tile's sort, pairing and merge before the next tile's sort). Used by the W1x codegen experiment.
+template <typename W, int LW, int M, int T, typename Shfl = shfl_split32, typename Ops = word_ops<W>>
+struct eager_topk
+{
+  using net              = level_topk<W, LW, M, T, Shfl, Ops>;
+  static constexpr int L = net::L;
+  static constexpr int R = net::R;
+
+  template <int TI, bool Desc, int Size, int Stride>
+  __device__ __forceinline__ static void sort_tile_strides(W (&k)[R], int lane, unsigned mask)
+  {
+    if constexpr (Stride >= 1)
+    {
+      net::template stage<TI * M, Size, Stride, Desc>(k, lane, mask);
+      sort_tile_strides<TI, Desc, Size, Stride / 2>(k, lane, mask);
+    }
+  }
+  template <int TI, bool Desc, int Size>
+  __device__ __forceinline__ static void sort_tile_sizes(W (&k)[R], int lane, unsigned mask)
+  {
+    if constexpr (Size <= L)
+    {
+      sort_tile_strides<TI, Desc, Size, Size / 2>(k, lane, mask);
+      sort_tile_sizes<TI, Desc, Size * 2>(k, lane, mask);
+    }
+  }
+  template <int TI, int Rr>
+  __device__ __forceinline__ static void pair_tile(W (&k)[R])
+  {
+    if constexpr (Rr < M)
+    {
+      k[Rr] = Ops::max(k[Rr], k[TI * M + Rr]);
+      pair_tile<TI, Rr + 1>(k);
+    }
+  }
+  template <int Stride>
+  __device__ __forceinline__ static void merge_tile0(W (&k)[R], int lane, unsigned mask)
+  {
+    if constexpr (Stride >= 1)
+    {
+      net::template stage<0, L, Stride, true>(k, lane, mask);
+      merge_tile0<Stride / 2>(k, lane, mask);
+    }
+  }
+  template <int TI>
+  __device__ __forceinline__ static void tiles(W (&k)[R], int lane, unsigned mask)
+  {
+    if constexpr (TI < T)
+    {
+      sort_tile_sizes<TI, false, 2>(k, lane, mask);
+      pair_tile<TI, 0>(k);
+      merge_tile0<L / 2>(k, lane, mask);
+      tiles<TI + 1>(k, lane, mask);
+    }
+  }
+
+  __device__ __forceinline__ static void run(W (&k)[R], int lane, unsigned mask)
+  {
+    sort_tile_sizes<0, true, 2>(k, lane, mask);
+    tiles<1>(k, lane, mask);
   }
 };
 } // namespace w1
