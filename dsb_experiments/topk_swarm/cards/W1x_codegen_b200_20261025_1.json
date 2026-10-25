@@ -1,0 +1,362 @@
+{
+ "approach_id": "W1",
+ "variant": "codegen",
+ "scope": "warp",
+ "arch": "b200",
+ "cuda_version": "13.4.92",
+ "node": "umbriel-b200-047",
+ "date": "2026-10-25",
+ "commit": "babb055d8a",
+ "author": "exp-W1codegen",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 1,
+  "sync_assumed": "none beyond warp convergence of the logical warp's lanes",
+  "sync_performed": "shuffles only, no barrier",
+  "type_constraints": "bf16 keys packed into one 32-bit word (key bits high, inverted 16-bit index low, N at most 65536), int32 source indices derived from the striped position. The card's kernel is W1x_vimnmx_eager (the eager tile loop of cub::detail::WarpBitonicTopK in opt-W1's template recursion with the min and max exchange), the experiment measured five kernels on this word, see findings",
+  "nan_behavior": "a NaN key orders by its sign bit (positive NaN above every finite key, negative NaN below), deterministic, never produced by focus-set inputs. -0.0 is mapped to +0.0 before packing so the two zeros compare equal",
+  "tie_break_support": "inherent in the word order: among equal keys the smaller index gives the larger word, prefer_smaller_index is the same code (not re-measured here, the W1_packed and W1_level cards show identical cycles for both requirements)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted by (key descending, index ascending)",
+  "k_range": "[1, MaxK] with MaxK = round_up(k, 32) dividing N, measured k 32 and 64",
+  "n_range": "N = 32 x IPT with N a multiple of MaxK, measured 128 and 256 (bf16 N at most 65536)"
+ },
+ "correctness": {
+  "oracle_passed": true,
+  "cases": 52,
+  "notes": "Oracle battery (13 cases) passed on every cell for all five kernels and the control. Control W1_packed (cub::detail::WarpBitonicTopK on the same word) in the same lock section of every batch. The experiment is five consecutive lock sections of one lease on umbriel-b200-047 (kernel against W1_packed each): W1_level_vs_W1_packed_focus_codegen_20261025_144714.json, W1x_vimnmx_eager 144735 (this card's cells), W1x_cub_level 144753, W1x_cub_eager 144803, W1_eager_same 144813, all under state/results/exp-W1codegen/. W1_packed measured 1205, 1267, 2417, 2965 cycles (N 128 k 32, N 128 k 64, N 256 k 32, N 256 k 64) to the cycle in all five sections and the canaries were 32.001 cycles per op and 3778 to 3780 us in every section, so the five sections are one session and the kernels are compared through the shared control. make_card.py takes one adapter per card, so the card's cells are the W1x_vimnmx_eager batch and the other four kernels' numbers are in the findings and in approaches/W1/CODEGEN_EXPERIMENT.md. A second lease on gb200-nvl4-ts2-99 (aarch64 build) re-ran W1_level, W1x_vimnmx_eager and W1x_cub_eager against W1_packed (state/results/exp-W1codegen/gb200/), those numbers appear in the findings only as the cross-host delta and are never compared with B200 numbers in the cells. Adapter sources at worktree cccl-topk-swarm-W1x commit babb055d8a, shared harness 0.4, on-node CCCL clone 548ca2a30 (B200). The card schema restricts approach_id to the approach letters and digits, so the card carries approach W1 and variant codegen under the file name W1x_codegen_b200_20261025_1.json that the experiment brief asked for."
+ },
+ "cells": [
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1017,
+   "control_name": "W1_packed",
+   "control_value": 1205,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 40,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 632,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 358.3633429,
+   "control_name": "W1_packed",
+   "control_value": 282.3234426,
+   "canary_start": 3779.903889,
+   "canary_end": 3778.399944,
+   "resources": {
+    "registers": 27,
+    "smem_bytes": 2064,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 336,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 912,
+   "control_name": "W1_packed",
+   "control_value": 1267,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 41,
+    "smem_bytes": 528,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 752,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 302.6187351,
+   "control_name": "W1_packed",
+   "control_value": 249.0691426,
+   "canary_start": 3780.191898,
+   "canary_end": 3781.280041,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 4112,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 400,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1718,
+   "control_name": "W1_packed",
+   "control_value": 2417,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 54,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1152,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 367.5715097,
+   "control_name": "W1_packed",
+   "control_value": 284.708091,
+   "canary_start": 3779.360056,
+   "canary_end": 3778.527975,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 2064,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 608,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1322,
+   "control_name": "W1_packed",
+   "control_value": 2965,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 56,
+    "smem_bytes": 528,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1408,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 248.654896,
+   "control_name": "W1_packed",
+   "control_value": 229.8762767,
+   "canary_start": 3779.488087,
+   "canary_end": 3781.631947,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 4112,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 800,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+  }
+ ],
+ "findings": {
+  "low_level": [
+   "Exchange codegen on the packed bf16 u32 word (latency kernel, two network copies, N 128 k 32): keep_max ? max(k, other) : min(k, other) gives 632 SASS instructions with 306 VIMNMX.U32 (a predicated max and a predicated min per shuffle stage), 24 ISETP and 7 SEL, in both the eager (W1x_vimnmx_eager) and the level (W1_level) order, whose histograms are identical in every cell. The CUB comparator form written on the same recursion (W1x_cub_eager) gives 792 instructions with 281 ISETP, 157 SEL, 80 LOP3 and 6 VIMNMX, cub::detail::WarpBitonicTopK itself (W1_packed) 736 with 255 ISETP, 20 PLOP3, 157 SEL, 34 LOP3, opt-W1b's one-compare form (W1_eager_same) 728 with 230 ISETP, 40 PLOP3, 162 SEL. SHFL 150 in all six, BSSY 0, BRA 5 (harness), STL and LDL 0, no IMNMX, FSETP or FSEL anywhere. N 128 k 64: 752 (376 VIMNMX) against 928 (295 ISETP, 187 SEL) and 832 for the CUB primitive. N 256 k 32: 1152 (634 VIMNMX) against 1488 and 1384. N 256 k 64: 1408 (800 VIMNMX) against 1800 and 1616.",
+   "Critical path per shuffle stage: SHFL (about 30 cycles, T1) then one 6-cycle VIMNMX (T7) in the min max form, against ISETP, a second ISETP with the first as predicate input, then SEL in the compare and select forms. The measured stage cost difference, about 36 against 44 cycles, grows with the number of dependent stages: 1.15x at N 128 k 32 (30 dependent stages in the eager loop) and 1.59x at N 256 k 64 (39 stage slots, where the in-register exchange also drops from compare and two selects to one min and one max).",
+   "Registers: latency kernel W1x_vimnmx_eager 40, 41, 54, 56 and W1_level 40, 41, 56, 56 at N 128 k 32, N 128 k 64, N 256 k 32, N 256 k 64, W1x_cub_eager 41, 38, 54, 50, W1x_cub_level 41, 39, 57, 51, W1_packed 27, 31, 36, 39, W1_eager_same 28, 31, 35, 43 (the recursion family keeps more words live in the harness's doubly inlined latency kernel). Throughput kernels 27 to 32 registers for every kernel, occupancy 8 blocks of 256 per SM everywhere, no spills, no stack frame (T36 checked: stack 0, STL 0, LDL 0 in both kernels of every TU).",
+   "Cross-host (T20, same build commands on gb200-nvl4-ts2-99, aarch64 host): W1x_vimnmx_eager, W1_level and W1x_cub_eager compile to the same SASS (same instruction totals and histograms) and measure the same cycles to the cycle in every cell as on B200 (1017, 912, 1718, 1322 and 883, 916, 1115, 1419 and 1173, 1127, 2121, 2104). The CUB primitive W1_packed does not: 1521, 1598, 2840, 3539 cycles on the aarch64 build against 1205, 1267, 2417, 2965 on x86 (1.26x, 1.26x, 1.17x, 1.19x slower), 792 against 736 instructions at N 128 k 32 (ISETP 345 against 255, PLOP3 5 against 20), BRA 5 on both. The aarch64 cicc lengthens the predicate chain of the CUB comparator path without branches, a 1.17x to 1.26x effect here against the 3 to 4 percent T20 measured on the fp32 pairs reference. Explicitly written exchanges are host independent.",
+   "The code structure alone (W1_packed against W1x_cub_eager, same algorithm, same exchange expressions, CUB header against template recursion with compile-time indices and lane-function direction bits) is worth 1.03x, 1.12x, 1.14x, 1.41x in latency on B200 although the recursion has more instructions (792 against 736 at N 128 k 32), so this factor is the ptxas schedule and not the count (T28)."
+  ],
+  "algorithmic": [
+   "Attribution of opt-W1's W1_level against CUB's W1_packed gap on the same bf16 word, B200, one session, latency: exchange 1.15x, 1.24x, 1.23x, 1.59x (W1x_cub_eager over W1x_vimnmx_eager, eager order held) and 1.15x, 1.17x, 1.37x, 1.27x (W1x_cub_level over W1_level, level order held). Tile order 1.15x, 1.05x, 1.39x, 1.17x with the CUB exchange and 1.15x, 1.00x, 1.54x, 0.93x with the min max exchange. Code structure 1.03x, 1.12x, 1.14x, 1.41x. All three together (W1_packed over W1_level) 1.36x, 1.38x, 2.17x, 2.09x, and the factors multiply within a few percent (1.03 x 1.15 x 1.15 = 1.36 at N 128 k 32, 1.14 x 1.39 x 1.37 = 2.17 at N 256 k 32). Cells in the order N 128 k 32, N 128 k 64, N 256 k 32, N 256 k 64.",
+   "Throughput attribution (Gelem per s): W1_packed 282, 249, 285, 230, W1x_cub_eager 308, 264, 296, 227, W1x_cub_level 317, 266, 306, 223, W1x_vimnmx_eager 358, 303, 368, 249, W1_level 344, 303, 370, 251, W1_eager_same 268, 236, 263, 223. The exchange is 1.10x to 1.24x, the tile order 0.96x to 1.01x, the code structure 0.99x to 1.09x: in the throughput regime the kernel is ALU-issue bound and only the instruction count per stage matters (T33).",
+   "The tile order pays only with one word per tile. With M 1 (k 32) the level order gains 1.15x at four tiles and 1.54x at eight tiles over the eager order with identical opcode histograms, close to the dependency-depth model of idea N2 (30 against 25 dependent stages at N 128, 50 against 30 at N 256). With M 2 (k 64) it is 1.00x at two tiles (the same DAG) and 0.93x at four tiles (a T28 schedule loss, the chain is 33 against 39 stage slots and the level form is still slower). opt-W1b's same reorder (W1_level_same against W1_eager_same) measured 0.95x to 1.08x, so the R12 verdict that the level order gains nothing was a property of that implementation (phase 1 written tile by tile through pointer offset loops), not of the order.",
+   "Resolution of the W1 contradiction: both instances were right about what they held fixed. opt-W1's 1.5x to 2.55x over CUB on GB200 is the min max exchange (1.15x to 1.6x) times the recursion's code structure (1.03x to 1.4x on B200) times the level order (1.15x to 1.54x only at M 1), times a 1.17x to 1.26x penalty of the aarch64 build on the CUB header path that does not touch the explicitly written networks. opt-W1b changed the order alone inside an implementation that did not expose the overlap and saw none of the three. The PRIORITIES.md prediction (exchange and code structure, not the level order) holds exactly in throughput and in latency at M 2, and misses the M 1 latency order gain.",
+   "W1x_vimnmx_eager against the CUB primitive, the one-code-path candidate for bf16: 1.18x, 1.39x, 1.41x, 2.24x latency and 1.27x, 1.22x, 1.29x, 1.08x throughput on B200, same registers as W1_level, no power-of-two tile count requirement. W1_level stays ahead of it only at M 1 in latency (883 against 1017 at N 128 k 32, 1115 against 1718 at N 256 k 32) and is behind at k 64 (916 against 912, 1419 against 1322)."
+  ],
+  "negative": [
+   "The level order with two words per tile and four tiles (N 256 k 64) loses 7 percent against the eager order with the same exchange and the same opcode histogram (1419 against 1322), and the level order never pays in throughput (0.96x to 1.01x). R12 stays rejected as a general code path, the case for it is M 1 latency cells with N at least 4 MaxK only.",
+   "Writing the CUB exchange on the recursion (W1x_cub_eager) produces more instructions than the CUB header (792 against 736, 928 against 832, 1488 against 1384, 1800 against 1616) because the written-out lane-function direction bits cost LOP3 (80 against 34). The instruction count went up and the cycles went down, so an instruction count comparison between the two families predicts the wrong sign (T28).",
+   "W1_eager_same (opt-W1b's one compare and select exchange, unrolled loops) is not faster than the CUB primitive in any cell of this session (1211, 1338, 2371, 2800 against 1205, 1267, 2417, 2965, throughput 268, 236, 263, 223 against 282, 249, 285, 230): removing one ISETP per stage without removing the SEL chain is not the lever."
+  ],
+  "surprises": [
+   "The aarch64 build penalty on cub::detail::WarpBitonicTopK is 1.17x to 1.26x on this word, far above the 3 to 4 percent of T20 on the fp32 pairs reference, and it comes without any BRA: the aarch64 cicc emits a longer ISETP chain (345 against 255 at N 128 k 32) that ptxas does not shorten. The same comparator expressions written in the recursion compile identically on both hosts, so the instability is in the CUB header's code shape (bool comparator called twice, unsigned group_reverse built per stage), not in the expressions.",
+   "W1x_vimnmx_eager and W1_level have byte-identical opcode histograms in every cell and still differ by up to 1.54x in latency (and by 0.93x the other way at N 256 k 64): the source order of independent tile sorts decides what the ptxas list scheduler overlaps, and the effect flips sign between M 1 and M 2.",
+   "W1_packed measured to the cycle (1205, 1267, 2417, 2965) in five consecutive lock sections and the recursion kernels to the cycle across two hosts, so the T28 fragility is not run-to-run noise, it is a property of a given SASS."
+  ],
+  "open_questions": [
+   "Why the level order loses at M 2 with four tiles when its dependent chain is shorter (a schedule dump comparison or a source-order perturbation of the in-register stages, T28).",
+   "Whether interleaving phase 1 stage by stage in opt-W1b's level loop (their sort_all is tile by tile) recovers the M 1 order gain in that implementation, which decides whether R12's evidence was implementation or order.",
+   "The fp32 u64 word: no VIMNMX exists for it, so the exchange factor is zero and opt-W1's 2.1x to 2.65x fp32 gap on GB200 must be code structure, order and the aarch64 control. Same adapters with keys fp32 after a cub_ops<uint64_t> check, one hour.",
+   "What a min max customization point next to the comparator in cub::detail::WarpBitonicTopK would look like (the comparator form cannot express the VIMNMX exchange), and whether the header's static_for lambdas can be rewritten so that the x86 and aarch64 builds agree."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T17",
+  "T20",
+  "T28",
+  "T34",
+  "T35",
+  "T36"
+ ],
+ "techniques_contributed": [
+  "T42"
+ ],
+ "report_path": "approaches/W1/CODEGEN_EXPERIMENT.md",
+ "source_paths": [
+  "harness/adapters/W1x_vimnmx_eager.cuh",
+  "harness/adapters/W1x_cub_eager.cuh",
+  "harness/adapters/W1x_cub_level.cuh",
+  "harness/adapters/W1_level.cuh",
+  "harness/adapters/W1_packed.cuh",
+  "harness/adapters/W1_eager_same.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh",
+  "approaches/W1/w1_adapters.cuh",
+  "approaches/W1/w1x_sass_b200.txt",
+  "approaches/W1/w1x_sass_gb200.txt",
+  "harness/topk_harness.cuh"
+ ],
+ "clone_commit": "548ca2a30b22",
+ "_controls": [
+  "W1_packed"
+ ],
+ "_batches": [
+  "state/results/exp-W1codegen/W1x_vimnmx_eager_vs_W1_packed_focus_codegen_20261025_144735.json"
+ ],
+ "_canary": [
+  {
+   "start": {
+    "timestamp": "2026-10-25T14:47:39Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3779.520035
+   },
+   "end": {
+    "timestamp": "2026-10-25T14:47:53Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3779.295921
+   }
+  }
+ ]
+}

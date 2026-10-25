@@ -52,6 +52,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5_hier_b200_20261025_2.json | B5 | hier | block | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-W2 | 104 | pass | no |
 | W1_reference_b200_20261025_1.json | W1 | reference | warp | b200 | umbriel-b200-068 | 13.4.92 | 2026-10-25 | eval-engineer | 76 | pass | no |
 | W1_reference_gb200_20261025_1.json | W1 | reference | warp | gb200 | gb200-nvl4-ts2-100 | 13.4.92 | 2026-10-25 | eval-engineer | 76 | pass | no |
+| W1x_codegen_b200_20261025_1.json | W1 | codegen | warp | b200 | umbriel-b200-047 | 13.4.92 | 2026-10-25 | exp-W1codegen | 8 | pass | no |
 | W2_packed_sw_b200_20261025_1.json | W2 | packed_sw | subwarp | b200 | umbriel-b200-091 | 13.4.92 | 2026-10-25 | opt-W2 | 92 | pass | no |
 | W2_packed_sw_v2_b200_20261025_1.json | W2 | packed_sw_v2 | subwarp | b200 | umbriel-b200-047 | 13.4.92 | 2026-10-25 | opt-W2 | 92 | pass | no |
 
@@ -3539,8 +3540,12 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | W1 | reference | gb200 | warp | bf16 | 128 | 4 | not_guaranteed | random | 2267 | W1_reference | 2267 | 1.00x | 36 | 0 | W1_reference_gb200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 128 | 16 | not_guaranteed | random | 2267 | W1_reference | 2267 | 1.00x | 36 | 0 | W1_reference_b200_20261025_1.json |
 | W1 | reference | gb200 | warp | bf16 | 128 | 16 | not_guaranteed | random | 2267 | W1_reference | 2267 | 1.00x | 36 | 0 | W1_reference_gb200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 128 | 32 | not_guaranteed | random | 1017 | W1_packed | 1205 | 1.18x | 40 | 0 | W1x_codegen_b200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 128 | 64 | not_guaranteed | random | 912 | W1_packed | 1267 | 1.39x | 41 | 0 | W1x_codegen_b200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 128 | 64 | not_guaranteed | random | 2562 | W1_reference | 2562 | 1.00x | 34 | 0 | W1_reference_b200_20261025_1.json |
 | W1 | reference | gb200 | warp | bf16 | 128 | 64 | not_guaranteed | random | 2562 | W1_reference | 2562 | 1.00x | 34 | 0 | W1_reference_gb200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 256 | 32 | not_guaranteed | random | 1718 | W1_packed | 2417 | 1.41x | 54 | 0 | W1x_codegen_b200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 256 | 64 | not_guaranteed | random | 1322 | W1_packed | 2965 | 2.24x | 56 | 0 | W1x_codegen_b200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 512 | 4 | not_guaranteed | random | 12606 | W1_reference | 12606 | 1.00x | 63 | 0 | W1_reference_b200_20261025_1.json |
 | W1 | reference | gb200 | warp | bf16 | 512 | 4 | not_guaranteed | random | 12586 | W1_reference | 12586 | 1.00x | 63 | 0 | W1_reference_gb200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 512 | 16 | not_guaranteed | random | 12606 | W1_reference | 12606 | 1.00x | 63 | 0 | W1_reference_b200_20261025_1.json |
@@ -4060,8 +4065,12 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | W1 | reference | gb200 | warp | bf16 | 128 | 4 | not_guaranteed | random | 113.5 | W1_reference | 113.6 | 1.00x | 32 | 0 | W1_reference_gb200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 128 | 16 | not_guaranteed | random | 105.8 | W1_reference | 105.8 | 1.00x | 32 | 0 | W1_reference_b200_20261025_1.json |
 | W1 | reference | gb200 | warp | bf16 | 128 | 16 | not_guaranteed | random | 113.6 | W1_reference | 113.6 | 1.00x | 32 | 0 | W1_reference_gb200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 128 | 32 | not_guaranteed | random | 358.4 | W1_packed | 282.3 | 1.27x | 27 | 0 | W1x_codegen_b200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 128 | 64 | not_guaranteed | random | 302.6 | W1_packed | 249.1 | 1.21x | 32 | 0 | W1x_codegen_b200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 128 | 64 | not_guaranteed | random | 88.17 | W1_reference | 88.17 | 1.00x | 32 | 0 | W1_reference_b200_20261025_1.json |
 | W1 | reference | gb200 | warp | bf16 | 128 | 64 | not_guaranteed | random | 94.62 | W1_reference | 94.62 | 1.00x | 32 | 0 | W1_reference_gb200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 256 | 32 | not_guaranteed | random | 367.6 | W1_packed | 284.7 | 1.29x | 32 | 0 | W1x_codegen_b200_20261025_1.json |
+| W1 | codegen | b200 | warp | bf16 | 256 | 64 | not_guaranteed | random | 248.7 | W1_packed | 229.9 | 1.08x | 32 | 0 | W1x_codegen_b200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 512 | 4 | not_guaranteed | random | 98.03 | W1_reference | 97.53 | 1.01x | 40 | 0 | W1_reference_b200_20261025_1.json |
 | W1 | reference | gb200 | warp | bf16 | 512 | 4 | not_guaranteed | random | 104.5 | W1_reference | 104.8 | 1.00x | 40 | 0 | W1_reference_gb200_20261025_1.json |
 | W1 | reference | b200 | warp | bf16 | 512 | 16 | not_guaranteed | random | 97.34 | W1_reference | 97.18 | 1.00x | 40 | 0 | W1_reference_b200_20261025_1.json |
