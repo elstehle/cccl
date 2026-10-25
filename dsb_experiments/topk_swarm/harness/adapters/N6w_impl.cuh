@@ -409,7 +409,7 @@ __device__ __forceinline__ void bracket_pass(const float (&v)[IPT], range& st, i
   scale       = (scale > 0.0f && scale < FLT_MAX) ? scale : FLT_MIN; // 32 / inf is +0, not caught by width > 0
   const bucket_masks<5> bm(lane);
 
-  bins5<IPT> bins;
+  bin_store<IPT> bins;
   int cnt = 0;
 #pragma unroll
   for (int c0 = 0; c0 < IPT; c0 += CH)
@@ -935,6 +935,103 @@ __device__ __forceinline__ void w2_finish(
   scatter_flags<IPT, true>(in, tw, idx, val_packed<KeyT, IdxBits>{st.tmin}, words, lt);
   w2_rounds<FIPT, IdxBits>(words, st.n, st.r, above, out_idx, lane);
 }
+
+// ------------------------------------------------------------------------------------------------
+// Trimmed finish (v3): the flags are recomputed from the images instead of stored, both ranks
+// come from one loop whose ballots are consumed at once, the stores run in a second loop, and the
+// rounds are unrolled by four under a uniform guard. Same output as w2_finish.
+// ------------------------------------------------------------------------------------------------
+template <int FIPT, int IdxBits>
+__device__ __forceinline__ void w2_rounds_u4(const uint32_t* words, int n, int r, int above, int* out_idx, int lane)
+{
+  __syncwarp();
+  uint32_t list[FIPT];
+#pragma unroll
+  for (int j = 0; j < FIPT; ++j)
+  {
+    const int q = lane + 32 * j;
+    list[j]     = (q < n) ? words[q] : 0u;
+  }
+  sort_words_desc<FIPT>(list);
+#pragma unroll 1
+  for (int j = 0; j < r; j += 4)
+  {
+#pragma unroll
+    for (int q = 0; q < 4; ++q)
+    {
+      if (j + q < r)
+      {
+        const uint32_t m = __reduce_max_sync(FULL, list[0]);
+        const bool win   = (list[0] == m);
+        if (lane == ((j + q) & 31))
+        {
+          out_idx[above + j + q] = unpack_index<IdxBits>(m);
+        }
+#pragma unroll
+        for (int e = 0; e < FIPT - 1; ++e)
+        {
+          list[e] = win ? list[e + 1] : list[e];
+        }
+        list[FIPT - 1] = win ? 0u : list[FIPT - 1];
+      }
+    }
+  }
+}
+
+template <typename KeyT, int IPT, int FIPT, int IdxBits>
+__device__ __forceinline__ void w2_finish_fused(
+  const uint32_t (&tw)[IPT], const range& st, int above, uint32_t* words, int* out_idx, int lane, int idx_base, uint32_t lt)
+{
+  const uint32_t tmin = st.tmin, tmax = st.tmax;
+  int Ru = 0, Ri = 0;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    const uint32_t t = tw[i];
+    const bool up    = t > tmax;
+    const bool in    = (t >= tmin) & (t <= tmax);
+    Ru += __popc(__ballot_sync(FULL, up) & lt);
+    Ri += __popc(__ballot_sync(FULL, in) & lt);
+  }
+  const val_packed<KeyT, IdxBits> pack{tmin};
+  int ou = 0, oi = 0;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    const uint32_t t = tw[i];
+    const bool up    = t > tmax;
+    const bool in    = (t >= tmin) & (t <= tmax);
+    if (up)
+    {
+      out_idx[Ru + ou] = idx_base + i;
+    }
+    if (in)
+    {
+      words[Ri + oi] = pack(t, idx_base + i);
+    }
+    ou += up ? 1 : 0;
+    oi += in ? 1 : 0;
+  }
+  w2_rounds_u4<FIPT, IdxBits>(words, st.n, st.r, above, out_idx, lane);
+}
+
+// per-item bin store: plain registers up to 32 items per lane, 5-bit fields above
+template <int IPT, bool PACKED = (IPT > 32)>
+struct bin_store
+{
+  uint32_t u[IPT];
+  __device__ __forceinline__ void set(int i, uint32_t x)
+  {
+    u[i] = x & 31u;
+  }
+  __device__ __forceinline__ uint32_t get(int i) const
+  {
+    return u[i];
+  }
+};
+template <int IPT>
+struct bin_store<IPT, true> : bins5<IPT>
+{};
 
 // Compile-time support predicate shared by the adapters: warp scope, bf16 or fp32, N a multiple
 // of 32 up to 32768 (the scan packs two 16-bit counts into one word), k in [1, N/2]

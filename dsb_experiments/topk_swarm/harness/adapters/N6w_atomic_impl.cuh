@@ -81,9 +81,11 @@ __device__ __forceinline__ void bracket_pass_atomic(const float (&v)[IPT], range
   __syncwarp();
 
   static_assert(BINS <= 256, "bin index packed into 8 bits");
-  uint32_t ub[(IPT + 3) / 4]; // 8-bit bin per item, four per word
+  constexpr bool PACK = IPT > 32;
+  constexpr int UW    = PACK ? (IPT + 3) / 4 : IPT;
+  uint32_t ub[UW]; // 8-bit bin per item, four per word when packed, else one per word
 #pragma unroll
-  for (int j = 0; j < (IPT + 3) / 4; ++j)
+  for (int j = 0; j < UW; ++j)
   {
     ub[j] = 0u;
   }
@@ -99,7 +101,14 @@ __device__ __forceinline__ void bracket_pass_atomic(const float (&v)[IPT], range
       const bool c     = (t >= st.tmin) & (t <= st.tmax);
       addr             = c ? addr : dummy + lane;
     }
-    ub[i / 4] |= b << (8 * (i % 4));
+    if constexpr (PACK)
+    {
+      ub[i / 4] |= b << (8 * (i % 4));
+    }
+    else
+    {
+      ub[i] = b;
+    }
     atomicAdd(addr, 1u);
   }
   __syncwarp();
@@ -112,7 +121,7 @@ __device__ __forceinline__ void bracket_pass_atomic(const float (&v)[IPT], range
   for (int i = 0; i < IPT; ++i)
   {
     const uint32_t t = tw_of<KeyT>(v[i]);
-    bool c           = ((ub[i / 4] >> (8 * (i % 4))) & 0xffu) == pb;
+    bool c           = (PACK ? ((ub[i / 4] >> (8 * (i % 4))) & 0xffu) : ub[i]) == pb;
     if constexpr (!ALL)
     {
       c = c & (t >= st.tmin) & (t <= st.tmax);
@@ -127,7 +136,7 @@ __device__ __forceinline__ void bracket_pass_atomic(const float (&v)[IPT], range
   __syncwarp(); // the next pass zeroes the histogram
 }
 
-template <typename KeyT, int N, int K, int BINS>
+template <typename KeyT, int N, int K, int BINS, bool FUSED = false>
 struct atomic_primitive
 {
   static constexpr int IPT     = N / 32;
@@ -173,7 +182,14 @@ struct atomic_primitive
       {
         uint32_t tw[IPT];
         to_images<KeyT, IPT>(v, tw);
-        w2_finish<KeyT, IPT, FIPT, IdxBits>(tw, st, K - st.r, ts.words, out_idx, lane, idx_base, lt);
+        if constexpr (FUSED)
+        {
+          w2_finish_fused<KeyT, IPT, FIPT, IdxBits>(tw, st, K - st.r, ts.words, out_idx, lane, idx_base, lt);
+        }
+        else
+        {
+          w2_finish<KeyT, IPT, FIPT, IdxBits>(tw, st, K - st.r, ts.words, out_idx, lane, idx_base, lt);
+        }
         return;
       }
       if (level == MAXLEV)
