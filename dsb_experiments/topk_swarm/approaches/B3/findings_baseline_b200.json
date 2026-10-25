@@ -1,0 +1,67 @@
+{
+ "author": "opt-B3",
+ "approach_id": "B3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 4176,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+  "k_range": "[1, N) at run time, k == N unsupported",
+  "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+  "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+  "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+  "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "variant": "baseline",
+ "commit": "5149a6456a",
+ "report_path": "approaches/B3/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B3_baseline.cuh",
+  "approaches/B3/block_topk_compact.cuh",
+  "approaches/B3/model.py",
+  "harness/cells_b3.json"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T11",
+  "T17"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Host model approaches/B3/model.py reproduces the primitive's pass, compaction and rank logic and passes 1584 oracle runs (three first-digit widths, eleven patterns, both key types, both requirements, all three code paths). On the GPU every cell passed the full battery (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) for both requirements. Control is B1_reference at not_guaranteed for every cell (--control-req), since the reference does not support prefer_smaller_index.",
+ "findings": {
+  "low_level": [
+   "Registers of the latency kernel at IPT 4, 8, 16, 32, 64, 128 (fp32): 44, 47, 64, 127, 223, 255 against B1 44, 48, 64, 128, 169, 255. B3 holds only the twiddled keys (no index array, no memoized key copy) and still needs more registers than B1 at IPT 64: the guarded per-item stores of the compaction and emission loops compiled to branch regions (1146 BSSY and 1189 BRA in the fp32 N 16384 K 64 latency kernel, 49330 SASS lines for the warm-up and chain copies), which is the knowledge base 2.2 pitfall and blocks the scheduler. 0 STL and 0 LDL up to IPT 64, 688 spill bytes at IPT 128 fp32 (B1 1024), 24 bytes at IPT 16 fp32 latency (B1 0). Occupancy equals B1 everywhere except N 8192 throughput bf16 (127 registers, 2 blocks per SM, B1 64 registers and 4).",
+   "Shared memory is 3280 to 84048 bytes against B1's 4256 to 147488 (the candidate buffer holds N/4 words of 4 bytes for bf16 and 8 bytes for fp32, B1's exchange buffer holds N words).",
+   "Static BAR.SYNC per latency kernel 35 (bf16) and 59 (fp32) against B1 25 and 37: three code paths (early exit, compaction, fallback) are all present, the compaction path executes 1 init plus 3 per pass plus 2 for the compaction plus 1 for the final scan.",
+   "The compacted candidates are loaded in a blocked layout with a stride of N/1024 words per thread (uint2 for fp32): at N 32768 that is 32 loads per thread with 32-way bank conflicts issued by all 256 threads (unconditional clamped loads), the gap between the compaction path and the fallback path at N 32768 bf16 (28.0k against 21.3k cycles) is of that size. Fixed in the padded variant.",
+   "fp32 -0.0 normalization compiles to one FADD R, RZ, R per key (196 FADD in the N 16384 kernel for 64 items times two copies plus the harness), the twiddle to one shift, one add and one LOP3 as knowledge base 2.1 describes."
+  ],
+  "algorithmic": [
+   "An 8-bit first digit on float keys is the sign plus seven of the eight exponent bits, so one bucket pairs two binades: on normal data the pivot bucket holds 29 percent of N when k/N is between 1/16 and 1/8 (host model, 16 inputs per cell) and 2.3 percent of N at k/N below 1/64. With a capacity of N/4 the cells N 1024 k 64, N 4096 k 256, N 8192 k 1024, N 16384 k 1024 and N 32768 k 2048 take the fallback path (no compaction), the small-k cells and N 2048 k 1024 (pivot bucket 1.4 percent) take the compaction path. A 9-bit first digit caps the pivot bucket at 14 percent (one binade), 10 bits at 10 percent.",
+   "Compaction path against B1 (latency, B200): 0.84, 0.86, 0.95, 0.98, 0.80, 0.82 at N 1024 to 32768 for bf16 and 0.84, 0.88, 0.95, 0.98, 0.82, 0.99 for fp32. The card's cost model charged B1's later passes 85 cycles per item per pass as if they were atomic sweeps, but B1's passes 2 and later are predicated ALU sweeps (the atomics are predicated off for 97 percent of the items), about 5 instructions per item, cheaper than the compaction sweep (two classes, two counts, two predicated stores, about 12 instructions per item) plus one block scan of about 300 cycles and the candidate loads. At N 2048 k 1024 (k/N = 1/2, pivot bucket 1.4 percent) the compaction path wins 1.18x (bf16) and 1.22x (fp32) because B1's epilogue grows with k.",
+   "Fallback path (AIR passes over the register tile plus the scan-based index-only emission) against B1: bf16 0.98, 1.31, 1.70, 1.53, 1.64 and fp32 0.98, 1.12, 1.42, 1.27, 1.37 at N 1024, 4096, 8192, 16384, 32768 with k = N/16. The gain is the epilogue: B1 scatters k plus tie keys and values by shared atomic tickets with return (serialized, see T9) and gathers twice, the scan emission costs one block scan and one predicated store per selected item independent of k. This is the index-only epilogue the B1 card lists as its first open question, and it is worth 5k to 13k cycles at k 1024 to 2048, not the 100 cycles estimated there.",
+   "prefer_smaller_index costs nothing: it is the same code (positions from block scans in blocked order, the ties at the k-th key ranked in index order), measured within 0.5 percent of not_guaranteed in every cell. prefer_larger_index is supported by reversing the rank, not measured (outside the focus set).",
+   "Kill experiment of the card (N 8192 k 64, random, same session, threshold 1.3x): B3 is 0.975x (bf16) and 0.978x (fp32) of B1 in latency and 0.83x and 0.95x in throughput. The idea as stated is retired at N 8192, see the padded variant for the same cells with the bank conflicts removed.",
+   "Throughput follows latency: the compaction path loses 3 to 17 percent, the fallback path wins 1.2x to 1.7x at k = N/16 (B1's epilogue costs more under occupancy as well)."
+  ],
+  "negative": [
+   "Compaction after the first pass does not pay at k/N <= 1/64 at any N from 1024 to 32768 in this form (0.80 to 0.99x of B1), with the bank-conflicted candidate load and the branchy loops as the implementation reasons and B1's cheap predicated later passes as the algorithmic reason.",
+   "The unconditional clamped candidate load (meant to avoid a predicate per slot) costs 32-way bank conflicts at the large N where the compaction should pay most."
+  ],
+  "surprises": [
+   "The fallback path beats B1 by up to 1.7x although it sweeps the whole tile in every pass exactly as B1 does: the k-dependent pair epilogue, not the histogram sweep, is B1's largest cost above k = N/16.",
+   "A primitive that keeps one 32-bit word per item needs more registers than B1 at IPT 64 (223 against 169) because ptxas turned the guarded stores into branch regions.",
+   "The 8-bit digit pairs binades: a radix select on floats with 8-bit digits has a pivot bucket of 29 percent of N on normal data in the k/N band of the chunk merges, the N6 and B4 cards should take note."
+  ],
+  "open_questions": [
+   "How much of the compaction loss is the bank-conflicted load (padded layout, next batch) and how much the branch regions (straight-line loop bodies after that)?",
+   "With a 9-bit first digit the k = N/16 cells compact 14 percent of N instead of falling back: does compaction then beat the fallback there?",
+   "Does a striped candidate layout with a block-uniform slot count (ceil(c1/256) slots instead of N/1024 per thread) remove the remaining per-slot overhead of the later passes at N 16384 and 32768?"
+  ]
+ }
+}

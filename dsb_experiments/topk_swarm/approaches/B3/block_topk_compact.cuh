@@ -127,6 +127,147 @@ struct cand_traits<32>
   }
 };
 
+
+// Guarded shared memory operations emitted as predicated PTX. nvcc lowers `if (c) store` to a
+// branch in PTX and ptxas keeps the branch (BSSY, BRA, BSYNC per item) once the tile is large,
+// for the reference primitive as much as for this one. A compare and a predicated instruction
+// inside one asm statement cannot become a branch. The address and value are computed outside.
+namespace detail
+{
+using u32 = ::cuda::std::uint32_t;
+
+__device__ __forceinline__ u32 smem_addr(const void* p)
+{
+  return static_cast<u32>(__cvta_generic_to_shared(p));
+}
+
+// if (a == b && (AlwaysValid || va < vb)) *addr += 1, fire and forget
+template <bool AlwaysValid>
+__device__ __forceinline__ void red_inc_if_eq(u32 addr, u32 a, u32 b, u32 va, u32 vb)
+{
+  const u32 one = 1u;
+  if constexpr (AlwaysValid)
+  {
+    asm volatile("{\n\t.reg .pred p;\n\t"
+                 "setp.eq.u32 p, %1, %2;\n\t"
+                 "@p red.shared.add.u32 [%0], %3;\n\t}" ::"r"(addr),
+                 "r"(a),
+                 "r"(b),
+                 "r"(one));
+  }
+  else
+  {
+    asm volatile("{\n\t.reg .pred p;\n\t"
+                 "setp.lt.u32 p, %4, %5;\n\t"
+                 "setp.eq.and.u32 p, %1, %2, p;\n\t"
+                 "@p red.shared.add.u32 [%0], %3;\n\t}" ::"r"(addr),
+                 "r"(a),
+                 "r"(b),
+                 "r"(one),
+                 "r"(va),
+                 "r"(vb));
+  }
+}
+
+// if (x < lo && (AlwaysValid || va < vb)) *addr = v
+template <bool AlwaysValid>
+__device__ __forceinline__ void sts_if_lt(u32 addr, u32 v, u32 x, u32 lo, u32 va, u32 vb)
+{
+  if constexpr (AlwaysValid)
+  {
+    asm volatile("{\n\t.reg .pred p;\n\t"
+                 "setp.lt.u32 p, %2, %3;\n\t"
+                 "@p st.shared.b32 [%0], %1;\n\t}" ::"r"(addr),
+                 "r"(v),
+                 "r"(x),
+                 "r"(lo));
+  }
+  else
+  {
+    asm volatile("{\n\t.reg .pred p;\n\t"
+                 "setp.lt.u32 p, %4, %5;\n\t"
+                 "setp.lt.and.u32 p, %2, %3, p;\n\t"
+                 "@p st.shared.b32 [%0], %1;\n\t}" ::"r"(addr),
+                 "r"(v),
+                 "r"(x),
+                 "r"(lo),
+                 "r"(va),
+                 "r"(vb));
+  }
+}
+
+// if (lo <= x <= hi && ra < rb && (AlwaysValid || va < vb)) *addr = v
+template <bool AlwaysValid>
+__device__ __forceinline__ void
+sts_if_in(u32 addr, u32 v, u32 x, u32 lo, u32 hi, u32 ra, u32 rb, u32 va, u32 vb)
+{
+  if constexpr (AlwaysValid)
+  {
+    asm volatile("{\n\t.reg .pred p;\n\t"
+                 "setp.ge.u32 p, %2, %3;\n\t"
+                 "setp.le.and.u32 p, %2, %4, p;\n\t"
+                 "setp.lt.and.u32 p, %5, %6, p;\n\t"
+                 "@p st.shared.b32 [%0], %1;\n\t}" ::"r"(addr),
+                 "r"(v),
+                 "r"(x),
+                 "r"(lo),
+                 "r"(hi),
+                 "r"(ra),
+                 "r"(rb));
+  }
+  else
+  {
+    asm volatile("{\n\t.reg .pred p;\n\t"
+                 "setp.ge.u32 p, %2, %3;\n\t"
+                 "setp.le.and.u32 p, %2, %4, p;\n\t"
+                 "setp.lt.and.u32 p, %5, %6, p;\n\t"
+                 "setp.lt.and.u32 p, %7, %8, p;\n\t"
+                 "@p st.shared.b32 [%0], %1;\n\t}" ::"r"(addr),
+                 "r"(v),
+                 "r"(x),
+                 "r"(lo),
+                 "r"(hi),
+                 "r"(ra),
+                 "r"(rb),
+                 "r"(va),
+                 "r"(vb));
+  }
+}
+
+// if (lo <= x <= hi) *(uint2*) addr = {v0, v1}, and the 32-bit form for packed candidates
+__device__ __forceinline__ void sts64_if_in(u32 addr, u32 v0, u32 v1, u32 x, u32 lo, u32 hi)
+{
+  asm volatile("{\n\t.reg .pred p;\n\t"
+               "setp.ge.u32 p, %3, %4;\n\t"
+               "setp.le.and.u32 p, %3, %5, p;\n\t"
+               "@p st.shared.v2.b32 [%0], {%1, %2};\n\t}" ::"r"(addr),
+               "r"(v0),
+               "r"(v1),
+               "r"(x),
+               "r"(lo),
+               "r"(hi));
+}
+__device__ __forceinline__ void sts32_if_in(u32 addr, u32 v, u32 x, u32 lo, u32 hi)
+{
+  asm volatile("{\n\t.reg .pred p;\n\t"
+               "setp.ge.u32 p, %2, %3;\n\t"
+               "setp.le.and.u32 p, %2, %4, p;\n\t"
+               "@p st.shared.b32 [%0], %1;\n\t}" ::"r"(addr),
+               "r"(v),
+               "r"(x),
+               "r"(lo),
+               "r"(hi));
+}
+} // namespace detail
+
+// How guarded per-item memory operations are written: `branchy` leaves them to the compiler
+// (if statements), `predicated` uses the asm helpers above.
+enum class store_mode
+{
+  branchy,
+  predicated
+};
+
 // Candidate buffer layout. Thread t holds compacted items [t * cpt, (t + 1) * cpt) in both.
 //   plain : item q at word q, the loads of a warp stride cpt words and conflict on the banks
 //   padded: item q at word q + q / cpt (one pad word per thread), odd stride, conflict free
@@ -141,11 +282,13 @@ template <typename KeyT,
           int ItemsPerThread,
           int CapDivisor           = 4,
           int FirstDigitBits       = 8,
-          cand_layout Layout       = cand_layout::plain>
+          cand_layout Layout       = cand_layout::plain,
+          store_mode Stores        = store_mode::branchy>
 class block_topk_compact
 {
 public:
   using u32 = ::cuda::std::uint32_t;
+  static constexpr bool predicated = (Stores == store_mode::predicated);
 
   static constexpr int threads     = Threads;
   static constexpr int ipt         = ItemsPerThread;
@@ -221,9 +364,7 @@ public:
     const auto tile_idx = [base](int i) {
       return base + i;
     };
-    const auto always = [](int) {
-      return true;
-    };
+    const always_valid always{};
 
     // Pass over the whole tile on the most significant digit
     const int c1 = run_pass<ipt>(ck, always, 0, k_rem, prefix, mask);
@@ -258,10 +399,8 @@ public:
         cck[j] = cand::ck(w);
         cidx[j] = cand::idx(w);
       }
-      const int cbase   = tid * cpt;
-      const auto cvalid = [cbase, c1](int j) {
-        return cbase + j < c1;
-      };
+      const int cbase = tid * cpt;
+      const range_valid cvalid{static_cast<u32>(cbase), static_cast<u32>(c1)};
       const auto cidx_of = [&cidx](int j) {
         return cidx[j];
       };
@@ -277,6 +416,43 @@ public:
 private:
   TempStorage& storage;
   int tid;
+
+  // Validity of slot j of a register-resident set: every slot (the tile) or slot j valid when
+  // lhs(j) < rhs (the compacted set, lhs = thread base + j, rhs = candidate count)
+  struct always_valid
+  {
+    static constexpr bool always = true;
+    __device__ __forceinline__ bool operator()(int) const
+    {
+      return true;
+    }
+    __device__ __forceinline__ u32 lhs(int) const
+    {
+      return 0u;
+    }
+    __device__ __forceinline__ u32 rhs() const
+    {
+      return 1u;
+    }
+  };
+  struct range_valid
+  {
+    static constexpr bool always = false;
+    u32 base;
+    u32 count;
+    __device__ __forceinline__ bool operator()(int j) const
+    {
+      return base + static_cast<u32>(j) < count;
+    }
+    __device__ __forceinline__ u32 lhs(int j) const
+    {
+      return base + static_cast<u32>(j);
+    }
+    __device__ __forceinline__ u32 rhs() const
+    {
+      return count;
+    }
+  };
 
   // Largest ck that still matches the prefix under the mask (the tie class is [prefix, tie_hi])
   __device__ __forceinline__ static u32 tie_hi(u32 prefix, u32 mask)
@@ -329,12 +505,25 @@ private:
     const int shift         = pass_shift(pass);
     const u32 digit_mask    = (1u << pass_bits(pass)) - 1u;
     u32(&hist)[num_buckets] = storage.histogram[pass & 1];
-#pragma unroll
-    for (int j = 0; j < M; ++j)
+    if constexpr (predicated)
     {
-      if (valid(j) && (ck[j] & mask) == prefix)
+      const u32 hist_addr = detail::smem_addr(hist);
+#pragma unroll
+      for (int j = 0; j < M; ++j)
       {
-        atomicAdd_block(&hist[(ck[j] >> shift) & digit_mask], 1u);
+        const u32 bin = (ck[j] >> shift) & digit_mask;
+        detail::red_inc_if_eq<ValidF::always>(hist_addr + bin * 4u, ck[j] & mask, prefix, valid.lhs(j), valid.rhs());
+      }
+    }
+    else
+    {
+#pragma unroll
+      for (int j = 0; j < M; ++j)
+      {
+        if (valid(j) && (ck[j] & mask) == prefix)
+        {
+          atomicAdd_block(&hist[(ck[j] >> shift) & digit_mask], 1u);
+        }
       }
     }
     if (pass + 1 < num_passes)
@@ -391,20 +580,47 @@ private:
     u32 pos_above  = excl >> 16;
     u32 pos_eq     = excl & 0xFFFFu;
     const int base = tid * ipt;
-#pragma unroll
-    for (int i = 0; i < ipt; ++i)
+    if constexpr (predicated)
     {
-      const bool above = ck[i] < lo;
-      const bool eq    = !above && (ck[i] <= hi_incl);
-      if (above)
+      const u32 out_addr  = detail::smem_addr(out);
+      const u32 cand_addr = detail::smem_addr(storage.cands);
+#pragma unroll
+      for (int i = 0; i < ipt; ++i)
       {
-        out[pos_above++] = base + i;
+        const u32 idxv  = static_cast<u32>(base + i);
+        const bool above = ck[i] < lo;
+        const bool eq    = !above && (ck[i] <= hi_incl);
+        const u32 word  = padded ? pos_eq + pos_eq / static_cast<u32>(cpt) : pos_eq;
+        detail::sts_if_lt<true>(out_addr + pos_above * 4u, idxv, ck[i], lo, 0u, 1u);
+        if constexpr (sizeof(cand_word_t) == 8)
+        {
+          detail::sts64_if_in(cand_addr + word * 8u, ck[i], idxv, ck[i], lo, hi_incl);
+        }
+        else
+        {
+          detail::sts32_if_in(cand_addr + word * 4u, cand::make(ck[i], base + i), ck[i], lo, hi_incl);
+        }
+        pos_above += above ? 1u : 0u;
+        pos_eq += eq ? 1u : 0u;
       }
-      if (eq)
+    }
+    else
+    {
+#pragma unroll
+      for (int i = 0; i < ipt; ++i)
       {
-        const u32 word = padded ? pos_eq + pos_eq / static_cast<u32>(cpt) : pos_eq;
-        storage.cands[word] = cand::make(ck[i], base + i);
-        ++pos_eq;
+        const bool above = ck[i] < lo;
+        const bool eq    = !above && (ck[i] <= hi_incl);
+        if (above)
+        {
+          out[pos_above++] = base + i;
+        }
+        if (eq)
+        {
+          const u32 word = padded ? pos_eq + pos_eq / static_cast<u32>(cpt) : pos_eq;
+          storage.cands[word] = cand::make(ck[i], base + i);
+          ++pos_eq;
+        }
       }
     }
   }
@@ -440,24 +656,54 @@ private:
     const int sel_total = k_set - need_ties;
     int* out_above      = out + out_base;
     int* out_tie        = out + out_base + sel_total;
-#pragma unroll
-    for (int j = 0; j < M; ++j)
+    if constexpr (predicated)
     {
-      const bool v     = valid(j);
-      const bool above = v && (ck[j] < lo);
-      const bool tie   = v && !above && (ck[j] <= hi_incl);
-      if (above)
+      const u32 above_addr = detail::smem_addr(out_above);
+      const u32 tie_addr   = detail::smem_addr(out_tie);
+#pragma unroll
+      for (int j = 0; j < M; ++j)
       {
-        out_above[pos_above++] = idx_of(j);
+        const bool v     = valid(j);
+        const bool above = v && (ck[j] < lo);
+        const bool tie   = v && !above && (ck[j] <= hi_incl);
+        const int rank   = (TB == tie_break::larger_index) ? (total_ties - 1 - pos_tie) : pos_tie;
+        const u32 idxv   = static_cast<u32>(idx_of(j));
+        detail::sts_if_lt<ValidF::always>(above_addr + static_cast<u32>(pos_above) * 4u, idxv, ck[j], lo, valid.lhs(j), valid.rhs());
+        detail::sts_if_in<ValidF::always>(
+          tie_addr + static_cast<u32>(rank) * 4u,
+          idxv,
+          ck[j],
+          lo,
+          hi_incl,
+          static_cast<u32>(rank),
+          static_cast<u32>(need_ties),
+          valid.lhs(j),
+          valid.rhs());
+        pos_above += above ? 1 : 0;
+        pos_tie += tie ? 1 : 0;
       }
-      if (tie)
+    }
+    else
+    {
+#pragma unroll
+      for (int j = 0; j < M; ++j)
       {
-        const int rank = (TB == tie_break::larger_index) ? (total_ties - 1 - pos_tie) : pos_tie;
-        if (rank < need_ties)
+        const bool v     = valid(j);
+        const bool above = v && (ck[j] < lo);
+        const bool tie   = v && !above && (ck[j] <= hi_incl);
+        if (above)
         {
-          out_tie[rank] = idx_of(j);
+          out_above[pos_above++] = idx_of(j);
         }
-        ++pos_tie;
+        if (tie)
+        {
+          const int rank = (TB == tie_break::larger_index) ? (total_ties - 1 - pos_tie) : pos_tie;
+          if (rank < need_ties)
+          {
+            out_tie[rank] = idx_of(j);
+          }
+          ++pos_tie;
+        }
       }
     }
   }
