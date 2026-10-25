@@ -4513,5 +4513,11 @@
     "thr_us": 3640.799999
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N6w",
+  "date": "2026-10-25",
+  "notes": "verify-N6w rerun 2026-10-25 on umbriel-b200-028 (B200 sm_100, x86 docker, nvcc 13.4.92), rebuilt from exp/topk-swarm/N6w commit 58626e3f07 with the harness of that commit (0.4, SOURCE_COMMIT written before the tar), built and measured under one lease, cells: the headline cells plus two seeded random cells (seed 20261025), both requirements, random pattern, latency and throughput. Batch state/results/verify-N6w/N6w_v2_vs_W2_packed_v3_vn6wv2w2_vv2_20261025_171232.json (32 cells, oracle passed on all, the four N2048 k1024 cells dropped from the v1 card are present and pass here as in the card). bf16 N512 k64 2429.2 vs card 2429.2 against W2_packed_v3 2704.0 vs 2704.0 (1.11x), bf16 N2048 k128 16635.3 vs 16636.3 against 21324 vs 21324 (1.28x), bf16 N2048 k1024 24858.4 vs 24864.9 against 152613 vs 152615 (6.14x), fp32 N2048 k1024 25020.2 vs 25122.3 against 151571 vs 151559 (6.06x vs 6.03x), fp32 N2048 k128 12869.8 vs 12840.7 against 21064.8 vs 21037.3 (1.64x). The N4096 k16 cells (local memory, 784 byte stack, 423 STL, 798 LDL as the card) are 3.2 to 3.4 percent faster on the B200 (bf16 59766 vs 61753 against 6536 vs 6536), the one place the archs differ, consistent with T16 (memory fills differ, SM cycles do not), ratio delta 3.3 to 4.0 percent there and at most 0.4 percent elsewhere. Throughput 6 percent lower on the B200 on both sides, ratios within 2.2 percent. Canary 32.00098 both ends, self-test true, 13 of 13 oracle cases per cell, control named and in the same lock section, not A/A, SASS counts identical to the card (6160, 24264, 23808, 52200). Harness 0.8 oracle-only rerun of the same shapes with the a3238891 adapters (22 cases per cell with the five signed_zero seeds, signed_zero_boundary and pivot_tie_zero) passes on all 16 cells, batch state/results/verify-N6w/N6w_v2_vs_N6w_v2_vn6wv2w2_o08v2_20261025_172214.json."
+ }
 }

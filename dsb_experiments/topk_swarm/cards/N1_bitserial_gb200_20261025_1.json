@@ -1253,5 +1253,11 @@
     "thr_us": 3644.06395
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N6w",
+  "date": "2026-10-25",
+  "notes": "verify-N6w rerun 2026-10-25 on umbriel-b200-028 (B200 sm_100, x86 docker, nvcc 13.4.92), rebuilt from exp/topk-swarm/N6w commit 58626e3f07 with the harness of that commit (0.4, SOURCE_COMMIT written before the tar), built and measured under one lease, cells: the headline cells plus two seeded random cells (seed 20261025), both requirements, random pattern, latency and throughput. Batch state/results/verify-N6w/N1_bitserial_vs_W2_packed_v3_vn1bitserialw2_vn1_20261025_171852.json (24 cells). Every latency cell reproduces to the cycle: bf16 N128 k64 1732.0 vs card 1732.0 against W2_packed_v3 1775.0 vs 1775.0 (tie, 1.02x), bf16 N256 k128 2369.4 vs 2369.4 against 5388.0 vs 5388.0 (2.27x), bf16 N128 k16 2082.3 vs 2082.3 against 468.0 vs 468.0 (4.4x slower), fp32 N128 k16 2153.5 against 533.0, fp32 N128 k64 1739.0 against 1797.0 (1.03x), fp32 N256 k128 2329.1 against 5063.0 (2.17x). Throughput 6 percent lower on the B200 on both sides, ratios within 0.1 percent. Canary 32.00098 both ends, self-test true, 13 of 13 oracle cases per cell, control named and in the same lock section, not A/A, SASS counts identical (592, 1112, 576, 1072), 35 and 49 registers with no local memory as the card. Harness 0.8 oracle-only rerun passes on all 12 cells of these shapes, batch state/results/verify-N6w/N1_bitserial_vs_N1_bitserial_vn1bitserialw2_o08n1_20261025_172201.json."
+ }
 }

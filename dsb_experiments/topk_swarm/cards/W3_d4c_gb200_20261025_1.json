@@ -3349,5 +3349,11 @@
     "thr_us": 3642.368078
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N6w",
+  "date": "2026-10-25",
+  "notes": "verify-N6w rerun 2026-10-25 on umbriel-b200-028 (B200 sm_100, x86 docker, nvcc 13.4.92), rebuilt from exp/topk-swarm/N6w commit 58626e3f07 with the harness of that commit (0.4, SOURCE_COMMIT written before the tar), built and measured under one lease, cells: the headline cells plus two seeded random cells (seed 20261025), both requirements, random pattern, latency and throughput. Batch state/results/verify-N6w/W3_d4c_vs_N6w_v2_vw3d4c_vw3d4c_20261025_171727.json (56 cells). Latency to the cycle below N 4096: bf16 N512 k64 5125.6 vs card 5125.6 against N6w_v2 2429.2 vs 2429.2 (W3 2.1x slower), bf16 N1024 k64 9791.1 vs 9790.9 against 5493.2 vs 5492.7 (1.8x slower), bf16 N2048 k256 20341.8 vs 20341.4 against 18480.8 vs 18480.8 (1.10x slower, kill criterion 2 of N6 not met at this cell as the card says), bf16 N2048 k1024 16092 vs 16083 against 24833 vs 24861 (W3 1.54x vs 1.55x ahead), fp32 N2048 k1024 15650 vs 15628 against 25041 vs 25198 (1.60x vs 1.61x), random picks bf16 N2048 k64 19265.7 vs 19262.2 against 14280.6 vs 14280.5 and bf16 N512 k256 3986.2 vs 3986.2 against 3115.6 vs 3115.6. bf16 N4096 k64 56316 vs 58430 against 71461 vs 74077 (1.27x both, both sides 3.5 percent faster on the B200, local memory in both). Worst ratio delta 0.8 percent. Throughput 6 percent lower on the B200 on both sides, ratios within 2.8 percent. Canary 32.00098 both ends, self-test true, 13 of 13 oracle cases per cell, control named and in the same lock section, not A/A, SASS counts identical to the card, registers 72, 128, 255 and the 32 byte stack with 11 to 12 STL and LDL at N 4096 as the card. Harness 0.8 oracle-only rerun passes on all 28 cells of these shapes, batch state/results/verify-N6w/W3_d4c_vs_W3_d4c_vw3d4c_o08w3d4c_20261025_172112.json. Note that the card's N6w_atom32 against W3_d4c comparison (15982 against 20341) chains two sessions through the N6w_v2 control and is a derived number, labeled as such in the findings."
+ }
 }

@@ -4979,5 +4979,11 @@
     "thr_us": 3638.015985
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N6w",
+  "date": "2026-10-25",
+  "notes": "verify-N6w rerun 2026-10-25 on umbriel-b200-028 (B200 sm_100, x86 docker, nvcc 13.4.92), rebuilt from exp/topk-swarm/N6w commit 58626e3f07 with the harness of that commit (0.4, SOURCE_COMMIT written before the tar), built and measured under one lease, cells: the headline cells plus two seeded random cells (seed 20261025), both requirements, random pattern, latency and throughput. Batch state/results/verify-N6w/N6w_atom32_vs_N6w_v2_vn6watom32_vatom32_20261025_171325.json (56 cells), and a direct GB200 rerun on the card's node gb200-nvl4-ts2-105, batch state/results/verify-N6w/N6w_atom32_vs_N6w_v2_vn6watom32_gatom32_20261025_173136.json (56 cells). Latency identical to the cycle on both archs (worst delta 0.1 percent B200, 0.0 percent GB200): bf16 N256 k16 1095.6 vs card 1095.6 against N6w_v2 1410.2 vs 1410.2 (1.29x), bf16 N512 k64 1879.5 against 2429.2 (1.29x), bf16 N1024 k16 3001.5 B200 and 2999.5 GB200 vs 2999.5 against 4631 (1.54x), bf16 N1024 k128 4009.9 against 6108 (1.52x), fp32 N512 k256 2814.1 against 4815.6 (1.71x), fp32 N2048 k64 12557 B200 and 12528 GB200 vs 12528 against 12022 and 11992 vs 11992 (0.96x, the register-bound reversal), fp32 N2048 k128 14898 vs 14866 against 12871 vs 12840 (0.86x). The T59 gain of 1.18x to 1.54x at N 256 to 1024 is confirmed on both archs. Throughput 6 percent lower on the B200 on both sides, GB200 within 1.2 percent, ratios within 4.8 percent (bf16 N2048 k128 1.10 vs 1.05, where the control moved). Canary 32.00098 both ends on both nodes, self-test true, 13 of 13 oracle cases per cell, control N6w_v2 named and in the same lock section, not A/A, SASS counts identical (2752, 5096, 9784, 20592, 21024), 255 registers with an 8 byte stack and 12 spill bytes at N 2048 as the card. Note on the record: the card's measurement batch records source_commit a42466aa (a later harness ship) while its binaries came from the build batch at 58626e3f (161303.build.json, measure-only reuse), the card's commit 58626e3f is the one that reproduces the binaries exactly."
+ }
 }

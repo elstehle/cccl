@@ -4285,5 +4285,11 @@
     "thr_us": 3638.592005
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N6w",
+  "date": "2026-10-25",
+  "notes": "verify-N6w rerun 2026-10-25 on umbriel-b200-028 (B200 sm_100, x86 docker, nvcc 13.4.92), rebuilt from exp/topk-swarm/N6w commit aaadae54f5 with the harness of that commit (0.4, SOURCE_COMMIT written before the tar), built and measured under one lease, cells: the headline cells plus two seeded random cells (seed 20261025), both requirements, random pattern, latency and throughput. Batch state/results/verify-N6w/N6w_ballot_vs_W2_packed_v3_vn6wballotw2_vballot_20261025_171150.json (24 cells with numbers). Latency identical to the cycle on the other arch: bf16 N512 k64 2412.0 vs card 2412.0 against W2_packed_v3 2704.0 vs 2704.0 (1.12x, the 2080 kill bar is missed as the card says), fp32 N512 k64 2478.5 vs 2478.5 against 4710.6 vs 4710.6 (1.90x), bf16 N1024 k16 4463.5 vs 4463.3 against 1485.0 vs 1485.0 (W2 3.0x ahead), bf16 N1024 k256 6908.1 vs 6906.9 against 22624 vs 22624 (3.28x), fp32 N1024 k256 6696.8 vs 6696.5 against 23166 (3.46x). Worst latency delta 0.02 percent in value and ratio. Throughput 6 percent lower on the B200 for variant and control alike (bf16 N512 k64 331.6 vs 352.8 against 159.2 vs 169.3 Gelem/s), ratios within 1.2 percent. The four N2048 k1024 cells (bf16 and fp32, both requirements) fail the inf_denorm oracle on the B200 with the card's exact failure texts (bf16: duplicate index 1014, fp32: selected key multiset differs at rank 1022), so the T60 defect at this commit and the card's dropped cells are confirmed. Canary 32.00098 cycles per op at both ends, oracle self-test true, 13 of 13 oracle cases on every numbered cell for variant and control, control W2_packed_v3 named and in the same lock section, not A/A, slope_raw well above the generate-only slope with R squared at least 0.998. SASS instruction counts identical to the card (5992 at bf16 N512 k64, 11752 at bf16 N1024 k256), registers 96 and 168 as the card, no local memory in the measured cells. Arch comparison: GB200 (card) and B200 (rerun) agree to the cycle, as T16 predicts for ballot, redux, shuffle and min max code, no T20 gap (identical instruction counts)."
+ }
 }

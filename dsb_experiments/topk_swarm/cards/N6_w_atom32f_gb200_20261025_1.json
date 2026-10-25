@@ -4979,5 +4979,11 @@
     "thr_us": 3639.839888
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-N6w",
+  "date": "2026-10-25",
+  "notes": "verify-N6w rerun 2026-10-25 on umbriel-b200-028 (B200 sm_100, x86 docker, nvcc 13.4.92), rebuilt from exp/topk-swarm/N6w commit a323889163 with the harness of that commit (0.4, SOURCE_COMMIT written before the tar), built and measured under one lease, cells: the headline cells plus two seeded random cells (seed 20261025), both requirements, random pattern, latency and throughput. Batch state/results/verify-N6w/N6w_atom32f_vs_N6w_atom32_vn6watom32f_vatom32f_20261025_171429.json (40 cells). The no-op to small loss at IPT 8 to 32 and the fp32 IPT 64 gain reproduce to the cycle: bf16 N512 k64 1913.6 vs card 1913.6 against N6w_atom32 1879.5 vs 1879.5 (0.98x), bf16 N1024 k128 4048.1 vs 4050.7 against 4011.5 vs 4009.9 (0.99x), fp32 N512 k64 1967.8 vs 1967.8 against 1914.7 (0.97x), fp32 N1024 k16 2855.6 vs 2855.6 against 2795.0 (0.98x), bf16 N2048 k64 12667.8 vs 12668.0 against 11854.3 vs 11854.5 (0.94x), fp32 N2048 k64 8860 vs 8831 against 12558 vs 12527 (1.42x), fp32 N4096 k128 19853 vs 19839 against 59920 vs 62282 (3.02x vs 3.14x, the control's local-memory cell is 3.8 percent faster on the B200). Throughput 6 percent lower on the B200 on both sides, ratios within 3.5 percent. Canary 32.00098 both ends, self-test true, 13 of 13 oracle cases per cell, control named and in the same lock section, not A/A, SASS counts identical to the card, resources as the card (255 registers, 8 byte stack and 16 spill bytes at N 2048, 600 byte stack and 3624 spill bytes at fp32 N 4096). Harness 0.8 oracle-only rerun passes on all 20 cells of these shapes, batch state/results/verify-N6w/N6w_atom32f_vs_N6w_atom32f_vn6watom32f_o08atom32f_20261025_172036.json. Finding gap, not a refutation: the findings stop at N 2048 for the fp32 gain, but the card's own data has atom32f 2.8x to 3.1x faster than atom32 at fp32 N 4096 (k16 18057 vs 50424, k64 19137 vs 57775, k128 19839 vs 62282, k256 21602 vs 62552 cycles, 36024 SASS instructions against 42688, 3624 spill bytes against 4236) and 2.1x in throughput (314 vs 147 Gelem/s at k 128), which would put N6w under W2_packed_v3 at fp32 N 4096 k 128 (48554 in the card of record) where the card of record says nothing of the family wins at N 4096. The atom32f against W2 batch was built and never measured, so this is an open lead that needs a same-lock-section measurement."
+ }
 }
