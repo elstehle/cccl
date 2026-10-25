@@ -67,7 +67,8 @@ chunk_supported(topk::key_type kt, int threads, int n, int k, topk::requirement 
   return tree_valid(threads, m, run_len, k);
 }
 
-W4_HD inline constexpr bool wmerge_supported(topk::key_type kt, int threads, int n, int k, topk::requirement req)
+W4_HD inline constexpr bool
+wmerge_supported(topk::key_type kt, int threads, int n, int k, topk::requirement req, int halves = 1)
 {
   if (!key_ok(kt, n) || threads != 32 || req == topk::requirement::prefer_larger_index)
   {
@@ -78,11 +79,11 @@ W4_HD inline constexpr bool wmerge_supported(topk::key_type kt, int threads, int
     return false;
   }
   const int ipt = n / 32;
-  if (!is_pow2(ipt) || ipt < 2 || ipt > 64)
+  if (!is_pow2(ipt) || ipt < 2 * halves || ipt > 64)
   {
     return false;
   }
-  return tree_valid(32, 32, ipt, k);
+  return tree_valid(32, 32 * halves, ipt / halves, k);
 }
 
 template <typename KeyT, int Threads, int N, int K, int M>
@@ -121,10 +122,10 @@ struct chunk_adapter
   }
 };
 
-template <typename KeyT, int N, int K>
+template <typename KeyT, int N, int K, int Halves = 1>
 struct wmerge_adapter
 {
-  using core               = wmerge_core<KeyT, N, K>;
+  using core               = wmerge_core<KeyT, N, K, Halves>;
   using tree               = typename core::tree;
   using TempStorage        = typename core::TempStorage;
   static constexpr int IPT = core::IPT;

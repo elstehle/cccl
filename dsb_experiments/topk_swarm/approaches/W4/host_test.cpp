@@ -206,10 +206,10 @@ void test_block(const char* pattern, unsigned seed)
 }
 
 // ---- warp truncated merge sort emulation
-template <typename KeyT, int N, int K>
+template <typename KeyT, int N, int K, int Halves = 1>
 void test_warp(const char* pattern, unsigned seed)
 {
-  using core = w4::wmerge_core<KeyT, N, K>;
+  using core = w4::wmerge_core<KeyT, N, K, Halves>;
   using tree = typename core::tree;
   static_assert(tree::valid(), "shape");
   auto keys = make_keys<KeyT>(pattern, N, seed);
@@ -227,8 +227,8 @@ void test_warp(const char* pattern, unsigned seed)
   }
   run_level<0, tree>(32, *ts, out);
   char what[128];
-  snprintf(what, sizeof(what), "warp  %s N %d K %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, pattern,
-           seed);
+  snprintf(what, sizeof(what), "warp  %s N %d K %d H %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, Halves,
+           pattern, seed);
   if (check(what, keys, out, K))
   {
     printf("ok   %s\n", what);
@@ -241,10 +241,10 @@ void print_ts_block()
   using core = w4::chunk_core<KeyT, 256, N, K, M>;
   printf("ts block %s N %d K %d M %d: %zu bytes\n", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, M, sizeof(typename core::TempStorage));
 }
-template <typename KeyT, int N, int K>
+template <typename KeyT, int N, int K, int Halves = 1>
 void print_ts_warp()
 {
-  using core = w4::wmerge_core<KeyT, N, K>;
+  using core = w4::wmerge_core<KeyT, N, K, Halves>;
   printf("ts warp %s N %d K %d: %zu bytes (x8 warps %zu, plus out %d)\n", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K,
          sizeof(typename core::TempStorage), 8 * sizeof(typename core::TempStorage), 2 * 8 * K * 4);
 }
@@ -261,6 +261,8 @@ int main()
   print_ts_warp<float, 2048, 64>();
   print_ts_warp<uint16_t, 2048, 64>();
   print_ts_warp<float, 1024, 256>();
+  print_ts_warp<float, 2048, 1024, 2>();
+  print_ts_warp<uint16_t, 2048, 1024, 2>();
   const char* patterns[] = {"random", "tie_heavy", "all_equal", "signed_zero", "sorted_asc", "relu"};
   for (const char* p : patterns)
   {
@@ -279,6 +281,12 @@ int main()
       test_warp<float, 1024, 256>(p, s);
       test_warp<uint16_t, 2048, 32>(p, s);
       test_warp<float, 512, 64>(p, s);
+      test_warp<float, 2048, 1024, 2>(p, s);
+      test_warp<uint16_t, 2048, 1024, 2>(p, s);
+      test_warp<float, 2048, 64, 2>(p, s);
+      test_warp<uint16_t, 1024, 64, 2>(p, s);
+      test_warp<float, 1024, 256, 2>(p, s);
+      test_warp<uint16_t, 2048, 32, 2>(p, s);
     }
   }
   printf("%s: %d failures\n", failures ? "FAILED" : "PASSED", failures);

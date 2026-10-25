@@ -36,10 +36,12 @@
 #  define W4_FN __device__ __forceinline__
 #  define W4_HD __host__ __device__
 #  define W4_UNROLL _Pragma("unroll")
+#  define W4_NOUNROLL _Pragma("unroll 1")
 #else
 #  define W4_FN inline
 #  define W4_HD
 #  define W4_UNROLL
+#  define W4_NOUNROLL
 #endif
 
 namespace w4
@@ -284,18 +286,39 @@ W4_FN int merge_path(const IO& A, int a_base, const IO& B, int b_base, int len_a
 // Chunked register merge. a[] and b[] hold up to C items each of two descending runs (absent
 // items are 0). o[] receives the C largest, descending. Returns how many came from a[].
 // ------------------------------------------------------------------------------------------------
+// Sum of C flags as a balanced tree (the serial form is a C-deep dependent chain on the path to
+// the next chunk's addresses).
+template <int C>
+W4_FN int tree_sum(const int (&f)[C])
+{
+  if constexpr (C == 1)
+  {
+    return f[0];
+  }
+  else
+  {
+    int h[C / 2];
+    W4_UNROLL
+    for (int i = 0; i < C / 2; ++i)
+    {
+      h[i] = f[2 * i] + f[2 * i + 1];
+    }
+    return tree_sum<C / 2>(h);
+  }
+}
+
 template <int C, typename W>
 W4_FN int top_chunk(const W (&a)[C], const W (&b)[C], W (&o)[C])
 {
-  int wins = 0;
+  int aw[C];
   W4_UNROLL
   for (int i = 0; i < C; ++i)
   {
-    const W x     = a[i];
-    const W y     = b[C - 1 - i];
-    const bool aw = x > y;
-    o[i]          = aw ? x : y;
-    wins += aw ? 1 : 0;
+    const W x  = a[i];
+    const W y  = b[C - 1 - i];
+    const bool g = x > y;
+    o[i]       = g ? x : y;
+    aw[i]      = g ? 1 : 0;
   }
   W4_UNROLL
   for (int s = C / 2; s >= 1; s >>= 1)
@@ -309,53 +332,73 @@ W4_FN int top_chunk(const W (&a)[C], const W (&b)[C], W (&o)[C])
       }
     }
   }
-  return wins;
+  return tree_sum<C>(aw);
+}
+
+// One chunk: load up to C items from each run head, keep the C largest, store, advance the heads.
+template <int C, bool ToIndices, typename IO, typename OutIO>
+W4_FN void merge_chunk(const IO& in, int a_base, int a_idx0, int b_base, int b_idx0, int& a_head, int& b_head,
+                       int a_end, int b_end, const OutIO& out, int out_at, int* out_idx, int idx_at)
+{
+  using W = decltype(in.word_at(0, 0));
+  W a[C], b[C], o[C];
+  W4_UNROLL
+  for (int i = 0; i < C; ++i)
+  {
+    a[i] = 0;
+    b[i] = 0;
+    if (a_head + i < a_end)
+    {
+      a[i] = in.word_at(a_base + a_head + i, a_idx0 + a_head + i);
+    }
+    if (b_head + i < b_end)
+    {
+      b[i] = in.word_at(b_base + b_head + i, b_idx0 + b_head + i);
+    }
+  }
+  const int wins = top_chunk<C>(a, b, o);
+  W4_UNROLL
+  for (int i = 0; i < C; ++i)
+  {
+    if constexpr (ToIndices)
+    {
+      out_idx[idx_at + i] = word_ops<W>::index(o[i]);
+    }
+    else
+    {
+      out.store(out_at + i, o[i]);
+    }
+  }
+  a_head += wins;
+  b_head += C - wins;
 }
 
 // Merge exactly [a_beg, a_end) of A with [b_beg, b_end) of B, OPT = (a_end - a_beg) +
 // (b_end - b_beg) outputs in chunks of C. a_idx0 and b_idx0 are the first item indices of the
 // runs (used by the implicit-index policy only). ToIndices: write source indices to out_idx at
-// out_pos, else words to the output buffer at absolute position out_base + out_pos.
+// out_pos, else words to the output buffer at absolute position out_base + out_pos. The chunk
+// loop is rolled when there are several chunks: the chunks are a dependent chain anyway (the
+// next chunk's addresses need this chunk's win count) and one body keeps the code inside the
+// instruction cache (T48), every register index inside the body is static.
 template <int C, int OPT, bool ToIndices, typename IO, typename OutIO>
 W4_FN void merge_top(const IO& in, int a_base, int a_idx0, int b_base, int b_idx0, int a_beg, int a_end, int b_beg,
                      int b_end, const OutIO& out, int out_base, int out_pos, int* out_idx)
 {
-  using W    = decltype(in.word_at(0, 0));
   int a_head = a_beg;
   int b_head = b_beg;
-  W4_UNROLL
-  for (int c = 0; c < OPT / C; ++c)
+  if constexpr (OPT == C)
   {
-    W a[C], b[C], o[C];
-    W4_UNROLL
-    for (int i = 0; i < C; ++i)
+    merge_chunk<C, ToIndices>(in, a_base, a_idx0, b_base, b_idx0, a_head, b_head, a_end, b_end, out,
+                              out_base + out_pos, out_idx, out_pos);
+  }
+  else
+  {
+    W4_NOUNROLL
+    for (int c = 0; c < OPT / C; ++c)
     {
-      a[i] = 0;
-      b[i] = 0;
-      if (a_head + i < a_end)
-      {
-        a[i] = in.word_at(a_base + a_head + i, a_idx0 + a_head + i);
-      }
-      if (b_head + i < b_end)
-      {
-        b[i] = in.word_at(b_base + b_head + i, b_idx0 + b_head + i);
-      }
+      merge_chunk<C, ToIndices>(in, a_base, a_idx0, b_base, b_idx0, a_head, b_head, a_end, b_end, out,
+                                out_base + out_pos + c * C, out_idx, out_pos + c * C);
     }
-    const int wins = top_chunk<C>(a, b, o);
-    W4_UNROLL
-    for (int i = 0; i < C; ++i)
-    {
-      if constexpr (ToIndices)
-      {
-        out_idx[out_pos + c * C + i] = word_ops<W>::index(o[i]);
-      }
-      else
-      {
-        out.store(out_base + out_pos + c * C + i, o[i]);
-      }
-    }
-    a_head += wins;
-    b_head += C - wins;
   }
 }
 
@@ -518,13 +561,21 @@ struct merge_tree
       }
     }
 
-    // phase 1: the split of this thread's end diagonal
+    // phase 1: the split of this thread's end diagonal (trivial when one thread owns a whole
+    // untruncated pair: its end diagonal is the end of both runs)
     W4_FN static int split_end(int t, TempStorage& ts)
     {
-      const int p   = t / TPP;
-      const int j   = t % TPP;
-      const in_io A = input(ts);
-      return merge_path<Steps>(A, (2 * p) * S, A, (2 * p + 1) * S, IN, IN, (j + 1) * OPT);
+      if constexpr (TPP == 1 && OUT == 2 * IN)
+      {
+        return IN;
+      }
+      else
+      {
+        const int p   = t / TPP;
+        const int j   = t % TPP;
+        const in_io A = input(ts);
+        return merge_path<Steps>(A, (2 * p) * S, A, (2 * p + 1) * S, IN, IN, (j + 1) * OPT);
+      }
     }
 
     // phase 2: merge with the start split a_beg (the predecessor's end split, 0 for j == 0)
@@ -606,38 +657,46 @@ struct chunk_core
 };
 
 // Warp truncated merge sort: lane l holds items [l x IPT, (l + 1) x IPT) (blocked), sorts them
-// in registers and writes its run to the level 0 buffer, then 5 merge levels truncated at k.
-template <typename KeyT, int N, int K>
+// in registers and writes its run to the level 0 buffer, then the merge levels truncated at k.
+// Halves 1: one sorted run of IPT per lane, 5 levels. Halves 2: the lane sorts its two halves
+// one after the other (half the words live during the network) and writes two runs of IPT / 2,
+// the first level then merges the lane's own two runs (no search, the split is trivial), 6 levels.
+template <typename KeyT, int N, int K, int Halves = 1>
 struct wmerge_core
 {
   using kw                 = key_word<KeyT>;
   using W                  = typename kw::W;
   static constexpr int IPT = N / 32;
-  using tree               = merge_tree<W, kw::split, false, 32, 32, IPT, K>;
+  static constexpr int RL  = IPT / Halves;
+  using tree               = merge_tree<W, kw::split, false, 32, 32 * Halves, RL, K>;
   using TempStorage        = typename tree::TempStorage;
 
   W4_FN static void prepare(const KeyT (&keys)[IPT], int lane, TempStorage& ts)
   {
     constexpr int S0 = tree::stride(0);
-    W w[IPT];
     W4_UNROLL
-    for (int i = 0; i < IPT; ++i)
+    for (int h = 0; h < Halves; ++h)
     {
-      w[i] = word_ops<W>::make(kw::tw(keys[i]), lane * IPT + i);
-    }
-    sort_desc<IPT>(w);
-    const int base = lane * S0;
-    W4_UNROLL
-    for (int i = 0; i < IPT; ++i)
-    {
-      if constexpr (kw::split)
+      W w[RL];
+      W4_UNROLL
+      for (int i = 0; i < RL; ++i)
       {
-        ts.k0[sw(base + i)] = word_ops<W>::hi(w[i]);
-        ts.l0[sw(base + i)] = word_ops<W>::lo(w[i]);
+        w[i] = word_ops<W>::make(kw::tw(keys[h * RL + i]), lane * IPT + h * RL + i);
       }
-      else
+      sort_desc<RL>(w);
+      const int base = (lane * Halves + h) * S0;
+      W4_UNROLL
+      for (int i = 0; i < RL; ++i)
       {
-        reinterpret_cast<W*>(ts.k0)[sw(base + i)] = w[i];
+        if constexpr (kw::split)
+        {
+          ts.k0[sw(base + i)] = word_ops<W>::hi(w[i]);
+          ts.l0[sw(base + i)] = word_ops<W>::lo(w[i]);
+        }
+        else
+        {
+          reinterpret_cast<W*>(ts.k0)[sw(base + i)] = w[i];
+        }
       }
     }
   }
