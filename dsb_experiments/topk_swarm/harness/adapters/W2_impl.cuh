@@ -131,20 +131,100 @@ __device__ __forceinline__ void cswap_asc(uint32_t& a, uint32_t& b)
 // Variant policies. v1 is the baseline: bitonic sort blocks and a counting tie pass. v2 adds the
 // next-word tie check (one redux after the rounds instead of a count over every item). v3 adds
 // Batcher odd-even merge sort blocks (19 comparators at 8 and 63 at 16 against 24 and 80).
+// subgroup_fullwarp: at sub-warp scope reduce every logical warp with a full-warp redux in which
+// the other groups contribute the identity (G independent CREDUX per round, pipelined), instead of
+// a redux.sync on the member mask, which the compiler lowers to a WARPSYNC loop over the distinct
+// masks (one serialized pass per group).
 struct policy_v1
 {
-  static constexpr bool next_word_check = false;
-  static constexpr bool oddeven_sort    = false;
+  static constexpr bool next_word_check   = false;
+  static constexpr bool oddeven_sort      = false;
+  static constexpr bool subgroup_fullwarp = false;
 };
 struct policy_v2
 {
-  static constexpr bool next_word_check = true;
-  static constexpr bool oddeven_sort    = false;
+  static constexpr bool next_word_check   = true;
+  static constexpr bool oddeven_sort      = false;
+  static constexpr bool subgroup_fullwarp = false;
 };
 struct policy_v3
 {
-  static constexpr bool next_word_check = true;
-  static constexpr bool oddeven_sort    = true;
+  static constexpr bool next_word_check   = true;
+  static constexpr bool oddeven_sort      = true;
+  static constexpr bool subgroup_fullwarp = false;
+};
+struct policy_sw_v2
+{
+  static constexpr bool next_word_check   = false;
+  static constexpr bool oddeven_sort      = false;
+  static constexpr bool subgroup_fullwarp = true;
+};
+struct policy_sw_v3
+{
+  static constexpr bool next_word_check   = true;
+  static constexpr bool oddeven_sort      = true;
+  static constexpr bool subgroup_fullwarp = true;
+};
+
+// Group reductions. masked_reducer is redux.sync on the member mask (one CREDUX at T == 32).
+// fullwarp_group_reducer issues one full-warp redux per logical warp with the identity in the
+// lanes of the other groups and picks the result of the caller's group.
+template <int T>
+struct masked_reducer
+{
+  unsigned mask;
+  __device__ __forceinline__ uint32_t max(uint32_t v) const
+  {
+    return __reduce_max_sync(mask, v);
+  }
+  __device__ __forceinline__ uint32_t min(uint32_t v) const
+  {
+    return __reduce_min_sync(mask, v);
+  }
+  __device__ __forceinline__ uint32_t add(uint32_t v) const
+  {
+    return __reduce_add_sync(mask, v);
+  }
+};
+
+template <int T>
+struct fullwarp_group_reducer
+{
+  static constexpr int G = 32 / T;
+  int group;
+  __device__ __forceinline__ uint32_t max(uint32_t v) const
+  {
+    uint32_t m = 0u;
+#pragma unroll
+    for (int g = 0; g < G; ++g)
+    {
+      const uint32_t r = __reduce_max_sync(0xffffffffu, (group == g) ? v : 0u);
+      m                = (group == g) ? r : m;
+    }
+    return m;
+  }
+  __device__ __forceinline__ uint32_t min(uint32_t v) const
+  {
+    uint32_t m = 0xffffffffu;
+#pragma unroll
+    for (int g = 0; g < G; ++g)
+    {
+      const uint32_t r = __reduce_min_sync(0xffffffffu, (group == g) ? v : 0xffffffffu);
+      m                = (group == g) ? r : m;
+    }
+    return m;
+  }
+  __device__ __forceinline__ uint32_t add(uint32_t v) const
+  {
+    uint32_t m = 0u;
+#pragma unroll
+    for (int g = 0; g < G; ++g)
+    {
+      const uint32_t r = __reduce_add_sync(0xffffffffu, (group == g) ? v : 0u);
+      m                = (group == g) ? r : m;
+    }
+    return m;
+  }
 };
 
 // Batcher odd-even merge sort of a[LO, HI] (inclusive bounds) into descending order
@@ -293,10 +373,10 @@ __device__ __forceinline__ void select_top(uint32_t (&a)[P], uint32_t (&list)[L]
 // ------------------------------------------------------------------------------------------------
 // One round: group max of the heads, the unique winner shifts its list, lane r mod T emits.
 // Emit is a functor (word, round) so the warp phase of B5 can store words instead of indices.
-template <int T, int L, class Emit>
-__device__ __forceinline__ uint32_t one_round(uint32_t (&list)[L], int r, int lane, unsigned mask, Emit emit)
+template <int T, int L, class Red, class Emit>
+__device__ __forceinline__ uint32_t one_round(uint32_t (&list)[L], int r, int lane, const Red& red, Emit emit)
 {
-  const uint32_t m = __reduce_max_sync(mask, list[0]);
+  const uint32_t m = red.max(list[0]);
   const bool win   = (list[0] == m);
   if (lane == (r & (T - 1)))
   {
@@ -312,8 +392,8 @@ __device__ __forceinline__ uint32_t one_round(uint32_t (&list)[L], int r, int la
 }
 
 // K rounds, returns the word extracted in the last round (group uniform)
-template <int T, int K, int L, class Emit>
-__device__ __forceinline__ uint32_t extract_rounds(uint32_t (&list)[L], int lane, unsigned mask, Emit emit)
+template <int T, int K, int L, class Red, class Emit>
+__device__ __forceinline__ uint32_t extract_rounds(uint32_t (&list)[L], int lane, const Red& red, Emit emit)
 {
   uint32_t m = 0;
   if constexpr (K <= 64)
@@ -321,7 +401,7 @@ __device__ __forceinline__ uint32_t extract_rounds(uint32_t (&list)[L], int lane
 #pragma unroll
     for (int r = 0; r < K; ++r)
     {
-      m = one_round<T, L>(list, r, lane, mask, emit);
+      m = one_round<T, L>(list, r, lane, red, emit);
     }
   }
   else
@@ -329,7 +409,7 @@ __device__ __forceinline__ uint32_t extract_rounds(uint32_t (&list)[L], int lane
 #pragma unroll 4
     for (int r = 0; r < K; ++r)
     {
-      m = one_round<T, L>(list, r, lane, mask, emit);
+      m = one_round<T, L>(list, r, lane, red, emit);
     }
   }
   return m;
@@ -366,9 +446,9 @@ struct emit_word
 // ------------------------------------------------------------------------------------------------
 // Slow path: e = emitted class members (those with word >= m_last, in the last e output slots),
 // replaced by the top e class members under (full key descending, index ascending).
-template <int T, int IdxBits, int K, int IPT>
+template <int T, int IdxBits, int K, int IPT, class Red>
 __device__ __forceinline__ void
-n4_slow_path(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, unsigned mask, int idx_base)
+n4_slow_path(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, const Red& red, int idx_base)
 {
   constexpr uint32_t idx_mask = (1u << IdxBits) - 1u;
   uint32_t tw[IPT];
@@ -382,7 +462,7 @@ n4_slow_path(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, 
     mem[i]           = ((w ^ m_last) <= idx_mask);
     cnt += (mem[i] && w >= m_last) ? 1u : 0u;
   }
-  const int e = static_cast<int>(__reduce_add_sync(mask, cnt));
+  const int e = static_cast<int>(red.add(cnt));
 #pragma unroll 1
   for (int j = 0; j < e; ++j)
   {
@@ -392,14 +472,14 @@ n4_slow_path(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, 
     {
       cand = mem[i] ? ::max(cand, tw[i]) : cand;
     }
-    const uint32_t m = __reduce_max_sync(mask, cand);
+    const uint32_t m = red.max(cand);
     uint32_t myidx   = 0xffffffffu;
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
       myidx = (mem[i] && tw[i] == m) ? ::min(myidx, static_cast<uint32_t>(idx_base + i)) : myidx;
     }
-    const uint32_t widx = __reduce_min_sync(mask, myidx);
+    const uint32_t widx = red.min(myidx);
     if (lane == (j & (T - 1)))
     {
       out_idx[K - e + j] = static_cast<int>(widx);
@@ -413,9 +493,9 @@ n4_slow_path(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, 
 }
 
 // v1 check: count class members and emitted members over every item, one redux.add
-template <int T, int IdxBits, int K, int IPT>
+template <int T, int IdxBits, int K, int IPT, class Red>
 __device__ __forceinline__ void
-n4_tie_pass(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, unsigned mask, int idx_base)
+n4_tie_pass(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, const Red& red, int idx_base)
 {
   constexpr uint32_t idx_mask = (1u << IdxBits) - 1u;
   uint32_t cnt                = 0; // low half: class members, high half: members already emitted
@@ -426,17 +506,17 @@ n4_tie_pass(const float (&keys)[IPT], uint32_t m_last, int* out_idx, int lane, u
     const bool member = ((w ^ m_last) <= idx_mask);
     cnt += member ? (w >= m_last ? 0x10001u : 1u) : 0u;
   }
-  const uint32_t tot = __reduce_add_sync(mask, cnt);
+  const uint32_t tot = red.add(cnt);
   if ((tot & 0xffffu) == (tot >> 16))
   {
     return;
   }
-  n4_slow_path<T, IdxBits, K, IPT>(keys, m_last, out_idx, lane, mask, idx_base);
+  n4_slow_path<T, IdxBits, K, IPT>(keys, m_last, out_idx, lane, red, idx_base);
 }
 
 // v2 check: the largest word not emitted is the group max over max(head, spare), one redux. A tie
 // member was left out exactly when that word has the truncated key of the k-th word.
-template <int T, int IdxBits, int K, int IPT, int L>
+template <int T, int IdxBits, int K, int IPT, int L, class Red>
 __device__ __forceinline__ void n4_tie_pass_next(
   const float (&keys)[IPT],
   const uint32_t (&list)[L],
@@ -444,16 +524,16 @@ __device__ __forceinline__ void n4_tie_pass_next(
   uint32_t m_last,
   int* out_idx,
   int lane,
-  unsigned mask,
+  const Red& red,
   int idx_base)
 {
   constexpr uint32_t idx_mask = (1u << IdxBits) - 1u;
-  const uint32_t m_next       = __reduce_max_sync(mask, ::max(list[0], spare));
+  const uint32_t m_next       = red.max(::max(list[0], spare));
   if ((m_next ^ m_last) > idx_mask)
   {
     return;
   }
-  n4_slow_path<T, IdxBits, K, IPT>(keys, m_last, out_idx, lane, mask, idx_base);
+  n4_slow_path<T, IdxBits, K, IPT>(keys, m_last, out_idx, lane, red, idx_base);
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -470,9 +550,11 @@ struct primitive
 
   __device__ __forceinline__ static void run(const KeyT (&keys)[IPT], int* out_idx)
   {
-    const int lane      = topk::group_lane<T>();
-    const unsigned mask = topk::member_mask<T>();
-    const int idx_base  = lane * IPT;
+    const int lane     = topk::group_lane<T>();
+    const int idx_base = lane * IPT;
+    using red_t =
+      std::conditional_t<(T < 32) && Policy::subgroup_fullwarp, fullwarp_group_reducer<T>, masked_reducer<T>>;
+    const red_t red = make_reducer<red_t>();
     uint32_t w[P];
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
@@ -488,17 +570,30 @@ struct primitive
     uint32_t list[L];
     uint32_t spare;
     select_top<L, P, Policy::oddeven_sort, track_spare>(w, list, spare);
-    const uint32_t m_last = extract_rounds<T, K, L>(list, lane, mask, emit_index<IdxBits>{out_idx});
+    const uint32_t m_last = extract_rounds<T, K, L>(list, lane, red, emit_index<IdxBits>{out_idx});
     if constexpr (std::is_same_v<KeyT, float>)
     {
       if constexpr (Policy::next_word_check)
       {
-        n4_tie_pass_next<T, IdxBits, K, IPT, L>(keys, list, spare, m_last, out_idx, lane, mask, idx_base);
+        n4_tie_pass_next<T, IdxBits, K, IPT, L>(keys, list, spare, m_last, out_idx, lane, red, idx_base);
       }
       else
       {
-        n4_tie_pass<T, IdxBits, K, IPT>(keys, m_last, out_idx, lane, mask, idx_base);
+        n4_tie_pass<T, IdxBits, K, IPT>(keys, m_last, out_idx, lane, red, idx_base);
       }
+    }
+  }
+
+  template <class R>
+  __device__ __forceinline__ static R make_reducer()
+  {
+    if constexpr (std::is_same_v<R, fullwarp_group_reducer<T>>)
+    {
+      return R{topk::group_in_block<T>()};
+    }
+    else
+    {
+      return R{topk::member_mask<T>()};
     }
   }
 };

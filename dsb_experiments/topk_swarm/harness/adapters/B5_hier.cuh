@@ -83,7 +83,7 @@ struct B5_hier
       }
       uint32_t list[L1];
       w2::select_top<L1, P1>(w, list);
-      w2::extract_rounds<32, K, L1>(list, lane, 0xffffffffu, w2::emit_word{ts.cand + warp * K});
+      w2::extract_rounds<32, K, L1>(list, lane, w2::masked_reducer<32>{0xffffffffu}, w2::emit_word{ts.cand + warp * K});
     }
     __syncthreads();
 
@@ -105,7 +105,7 @@ struct B5_hier
       uint32_t list[L2];
       w2::select_top<L2, P2>(w, list);
       const uint32_t m_last =
-        w2::extract_rounds<32, K, L2>(list, lane, 0xffffffffu, w2::emit_index<IdxBits>{out_idx});
+        w2::extract_rounds<32, K, L2>(list, lane, w2::masked_reducer<32>{0xffffffffu}, w2::emit_index<IdxBits>{out_idx});
       if constexpr (is_f32)
       {
         if (lane == 0)
