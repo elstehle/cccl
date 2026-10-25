@@ -60,7 +60,7 @@
     ],
     "surprises": [
       "The k 4 cells flip to 512 threads at N 8192 (1.15x bf16, 1.21x fp32): with 4 rounds the prologue is most of the call, and sort16 on 16 warps beats sort32 on 8, although each of the 4 rounds costs 60 cycles more.",
-      "The bf16 N 32768 k 16 kernel at 512 threads spills 68 bytes at 107 registers while the k 4 and k 64 kernels of the same shape do not (64 and 107 registers, 0 spill): ptxas chose a different register target for the mid-size kernel (T28's fragility, here of the register allocation rather than the schedule)."
+      "The bf16 N 32768 k 16 kernel at 512 threads spills 68 bytes at 64 registers (8 STL, 7 LDL, 24 bytes of stack) while the k 4 kernel of the same shape holds 64 registers with 0 spill and the k 64 kernel 107 registers with 0 spill: ptxas kept the mid-size kernel at the 64-register tier (2 blocks per SM) and paid 68 bytes for it, while the k 64 kernel was allowed 107 registers (T28's fragility, here of the register target rather than the schedule). Verified identical on umbriel-b200-068."
     ],
     "open_questions": [
       "The per-warp term of the round model beyond 8 warps: the 16-warp round is 45 to 60 cycles above the 48 + 4 W + IPT fit, the hardware researcher's aggregated-round micro at 64 to 512 threads (asked) would separate the 44-cycle barrier from the 16 serialized posts.",
