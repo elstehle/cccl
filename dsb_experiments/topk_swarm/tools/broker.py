@@ -487,11 +487,13 @@ def successor_pass(wait_s):
         now = utcnow()
         cap = reg.data.get("cap", 6)
         for n in list(reg.data["nodes"]):
-            if not n.get("dedicated_to") or n.get("status") not in ("ready", "expiring"):
+            if not n.get("dedicated_to") or n.get("status") not in ("ready", "expiring", "lost"):
                 continue
             if n.get("no_successor"):
                 continue
-            rem = remaining_seconds(n, now)
+            # a dedicated node that expired or vanished (lost, not released by hand) also gets one
+            # replacement, so an outage across its lease end does not strand the holder
+            rem = 0 if n.get("status") == "lost" else remaining_seconds(n, now)
             if rem is None or rem >= SUCCESSOR_S:
                 continue
             key = tuple(sorted(n["dedicated_to"]))
@@ -510,7 +512,14 @@ def successor_pass(wait_s):
                          dedicated_to=n["dedicated_to"])
             if jid:
                 jids.append(jid)
-                print("successor of dedicated %s requested: job %s" % (node_label(n), jid))
+                if n.get("status") == "lost":
+                    n["no_successor"] = True  # the replacement for a lost node is requested once
+                # one round only: a successor does not get a successor of its own unless re-armed by hand
+                for o in reg.data["nodes"]:
+                    if str(o.get("job_id")) == str(jid):
+                        o["no_successor"] = True
+                        o["successor_of"] = node_label(n)
+                print("successor of dedicated %s requested: job %s (one round, no successor of its own)" % (node_label(n), jid))
         if jids:
             reg.save()
     if jids and wait_s > 0:
