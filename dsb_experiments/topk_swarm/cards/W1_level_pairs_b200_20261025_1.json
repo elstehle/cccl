@@ -588,5 +588,11 @@
     "thr_us": 3776.160002
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W1b",
+  "date": "2026-10-25",
+  "notes": "Rerun by verify-W1b on umbriel-b200-020 (B200 sm_100, CUDA 13.4.92, 2026-10-25, adapters from cccl-topk-swarm-W1b at b1c088ec46, clone b6bfae9a37), all 20 cells, file state/results/verify-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_142424.json. Every latency value reproduced to the cycle: kill cell bf16 N64 k32 1420 vs 1369 (card 1420 vs 1369), fp32 753 vs 720 (card 753 vs 720), bf16 N128 k32 2673 vs 3219 (card 2673 vs 3219), fp32 N256 k32 3739 vs 4545 (card 3739 vs 4545). Throughput within 0.1 percent (fp32 N128 k32 169.8 vs 182.8, card 169.8 vs 182.8). Canaries steady at 32.001 cycles and 3776 us. Oracle 13 cases passed on every cell, variant and control. Control W1_minmax_pairs in the same lock section, identical network code, not A/A. r2 1.0000 everywhere, chain minima monotone, no STL or LDL, no spills. SASS: fp32 N128 k32 level pairs 1168 instructions against 1136 for the eager pairs, 300 SHFL, 306 FMNMX, 156 FSETP, 152 SEL in both, as the findings state. The kill verdict at N64 (0.96x) and the 1.09x to 1.22x latency gain with 12 to 34 more registers and lower throughput at N128 to N256 hold."
+ }
 }

@@ -3891,5 +3891,11 @@
     "thr_us": 3777.024031
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W1b",
+  "date": "2026-10-25",
+  "notes": "Rerun by verify-W1b on umbriel-b200-020 (B200 sm_100, CUDA 13.4.92, 2026-10-25, adapters from cccl-topk-swarm-W1b at b1c088ec46, clone b6bfae9a37), both batches in full (104 plus 26 cells), files state/results/verify-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_142441.json and W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_142835.json. Every latency value reproduced to the cycle: bf16 N32 k8 574 vs 779 (card 574 vs 779), N64 k32 761 vs 1164 (card 761 vs 1164), N128 k16 1211 vs 2267 (card 1211 vs 2267), N256 k32 2371 vs 5640 (card 2371 vs 5640), N256 k8 2371 vs 5950, fp32 N32 601 vs 583, fp32 N256 k32 3826 vs 4606 (card 3826 vs 4606), psi fp32 N64 k32 934 vs 720 (card 934 vs 720), psi N128 k64 2216 vs 1217, psi N256 k32 3826 vs 4545. Throughput within 0.4 percent (bf16 N32 254.0 vs 125.5, N256 k32 263.1 vs 104.2, card 254.0 vs 125.5 and 263.1 vs 104.2). Canaries steady. Oracle 13 cases passed on every cell including every prefer_smaller_index cell (exact result). prefer_smaller_index free confirmed: all 52 psi cells measure the same cycles as their not_guaranteed twins in the rerun as in the card, and the adapter body does not use Req. Controls correct: W1_reference under not_guaranteed via --control-req in the same lock section, W1_minmax_pairs under not_guaranteed for the second batch, not A/A. r2 1.0000 everywhere, chain minima monotone, no STL or LDL, no spills. SASS rebuilt: bf16 N128 k32 728 instructions with 150 SHFL against the reference 1656 with 300 SHFL, 424 HSETP2, 176 PLOP3, 169 LOP3, 69 PRMT, fp32 1176 with 390 ISETP and 322 SEL against 1152 with 306 FSETP and 314 SEL plus FSEL, exactly as the findings state. The bf16 index-in-key gains hold and are understated if anything (largest latency ratio 2.51x at N256 k8 and k16, throughput up to 2.72x at N256 k64)."
+ }
 }

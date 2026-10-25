@@ -591,5 +591,11 @@
     "thr_us": 3775.360107
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W1b",
+  "date": "2026-10-25",
+  "notes": "Rerun by verify-W1b on umbriel-b200-020 (B200 sm_100, CUDA 13.4.92, 2026-10-25, adapters rebuilt from worktree cccl-topk-swarm-W1b at b1c088ec46, on-node CCCL clone b6bfae9a37), all 20 cells, same run.py flags and lock protocol, file state/results/verify-W1b/W1_level_same_vs_W1_eager_same_focus_kill_same_20261025_142408.json. Every latency value reproduced to the cycle (variant and control): kill cell bf16 N64 k32 793 vs 761 (card 793 vs 761), fp32 931 vs 934 (card 931 vs 934), bf16 N128 k32 1125 vs 1211 (card 1125 vs 1211), fp32 N128 k32 2020 vs 1917 (card 2020 vs 1917), fp32 N256 k64 4361 vs 4650 (card 4361 vs 4650). Throughput within 0.1 percent (bf16 N128 k32 286.1 vs 267.9, card 286.1 vs 267.9). Canaries 32.001 cycles per op and 3776 us at start and end in both sessions. Oracle 13 cases passed on every cell for variant and control. Controls correct (identical network code, same lock section, not A/A). Anti-DCE: slope_raw 841 against no-op 48 at the kill cell, chain minima monotone, r2 1.0000 in every cell, no STL or LDL, 0 spill bytes. SASS rebuilt and counted: fp32 N128 k32 level 1184 instructions against eager 1176, bf16 720 against 728, 300 and 150 SHFL respectively, as the findings state. The N2 kill verdict (0.95x to 1.08x at warp scope) holds. One inaccuracy in the findings: the throughput claim of within 3 percent in every cell is wrong for two cells, bf16 N128 k32 is 1.068x and fp32 N128 k32 1.044x (the report says 3 to 8 percent, which is right). Verdict unaffected."
+ }
 }

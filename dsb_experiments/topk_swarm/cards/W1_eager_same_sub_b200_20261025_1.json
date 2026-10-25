@@ -7694,5 +7694,11 @@
     "thr_us": 3776.288033
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W1b",
+  "date": "2026-10-25",
+  "notes": "Rerun by verify-W1b on umbriel-b200-020 (B200 sm_100, CUDA 13.4.92, 2026-10-25, adapters from cccl-topk-swarm-W1b at b1c088ec46, clone b6bfae9a37), all 304 cells, file state/results/verify-W1b/W1_eager_same_sub_vs_W1_baseline_sub_focus_sub_same_20261025_143035.json. Every latency value reproduced to the cycle: bf16 LW4 N128 k64 7938 vs 16417 (card 7938 vs 16417), bf16 LW16 N128 k64 4182 vs 3704 (the one loss, card identical), bf16 LW4 N32 k4 893 vs 1199, fp32 LW4 N128 k64 15406 vs 13160 (card identical). Throughput within 0.8 percent: the 735 Gelem/s cell (bf16 LW4 N16 k4) measures 734.5 vs 410.9 (card 734.6 vs 410.9), bf16 LW8 N128 k64 281.9 vs 102.5 (card 281.9 vs 101.6), fp32 LW4 N128 k64 146.8 vs 174.1 (card 146.1 vs 174.4). Canaries steady. Oracle 13 cases passed on all 152 configurations under both requirements. prefer_smaller_index free confirmed (all 76 psi configurations identical in cycles to their twins). Control W1_baseline_sub under not_guaranteed via --control-req in the same lock section, not A/A. r2 1.0000, chain minima monotone, no STL or LDL, no spills. Caveats for the reader, not refutations: the bf16 LW4 k4 throughput cells run at 39 to 57 percent of the harness no-op ceiling (the 735 cell at 45 percent of 1630 Gelem/s, LW4 N64 k4 at 57 percent), so part of the absolute number there is harness load and store work, the ratio against the control in the same harness stands. The fp32 LW4 N128 k64 throughput cell (128 registers, occupancy 2) spreads 6 to 25 percent across its 5 timings in both sessions, best of 5 reproduced within 0.5 percent. The sub-warp harness kernels carry BSSY and BSYNC regions in variant and control alike (43 BSSY in the LW4 N16 k4 latency kernel, 1543 in LW4 N128 k64), warp-scope kernels have none, a harness property that does not bias the comparison."
+ }
 }

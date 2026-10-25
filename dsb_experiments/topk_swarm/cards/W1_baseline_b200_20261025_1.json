@@ -1387,5 +1387,11 @@
     "thr_us": 3776.096106
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W1b",
+  "date": "2026-10-25",
+  "notes": "Rerun by verify-W1b on umbriel-b200-020 (B200 sm_100, CUDA 13.4.92, 2026-10-25, adapters from cccl-topk-swarm-W1b at b1c088ec46, clone b6bfae9a37), all 52 cells, file state/results/verify-W1b/W1_baseline_vs_W1_reference_focus_base_cub_psi_20261025_142653.json. Every latency value reproduced to the cycle: fp32 N128 k32 12899 vs 2041 (card 12899 vs 2041), N256 k32 26895 vs 4606 (card 26895 vs 4606), N128 k64 15745 vs 2152, bf16 N32 k8 1396 vs 779 (card 1396 vs 779). Throughput within 0.5 percent (fp32 N128 k32 57.0 vs 179.5, card 57.0 vs 179.5). Canaries steady. Oracle 13 cases passed on every prefer_smaller_index cell (exact result). Control W1_reference under not_guaranteed via --control-req in the same lock section, not A/A. r2 1.0000, chain minima monotone, no STL or LDL, no spills. SASS rebuilt: fp32 N128 k32 3448 instructions with 300 BSSY, 300 BSYNC, 305 BRA, 612 FSETP, 449 PLOP3, bf16 2672 with 455 PLOP3 and 58 P2R and no BSSY, as the findings and T35 state. The stated ratio range 1.8x to 6.4x understates the k 64 cells (fp32 N128 k64 7.3x, N256 k64 6.6x, bf16 N256 k64 3.1x), the verdict is unchanged."
+ }
 }

@@ -3892,5 +3892,11 @@
     "thr_us": 3775.712013
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W1b",
+  "date": "2026-10-25",
+  "notes": "Rerun by verify-W1b on umbriel-b200-020 (B200 sm_100, CUDA 13.4.92, 2026-10-25, adapters from cccl-topk-swarm-W1b at b1c088ec46, clone b6bfae9a37), all 152 cells, file state/results/verify-W1b/W1_minmax_pairs_sub_vs_W1_baseline_sub_focus_sub_pairs_20261025_143520.json. Every latency value reproduced to the cycle: fp32 LW4 N16 k4 318 vs 713 (card 318 vs 713), LW4 N128 k16 4241 vs 8580 (card 4241 vs 8580), LW4 N128 k64 10748 vs 13160, LW16 N128 k16 3562 vs 3289 and LW8 N128 k16 6155 vs 5535 (the losses, card identical), bf16 LW4 N128 k64 14396 vs 16417. Throughput within 1.4 percent (fp32 LW4 N16 k4 545.3 vs 545.2, card 545.4 vs 545.1). Canaries steady. Oracle 13 cases passed on all 76 configurations. Control W1_baseline_sub in the same lock section, not A/A. r2 1.0000, chain minima monotone. Correction to the findings: the low_level claim of no spills is false for two latency cells, which the card's own resources record and the rebuilt SASS confirms: fp32 LW4 N128 k64 spills 352 bytes (51 STL, 35 LDL, 104 byte stack) and bf16 LW4 N128 k64 48 bytes (6 STL, 4 LDL, 16 byte stack), both at 168 registers, the control's fp32 throughput kernel at that cell spills 16 bytes (2 STL, 2 LDL). The REPORT_W1b.md sentence no stack, no spills in any cell is wrong for the same two cells. The numbers of those cells include the spill cost and stand as measured, every other cell has no STL or LDL. The verdicts (min max pairs the fp32 route at LW4 and LW8, the CUB pairs at LW16, bf16 pairs dropped) hold."
+ }
 }
