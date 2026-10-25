@@ -1,0 +1,21 @@
+{
+  "author": "eval-engineer",
+  "approach_id": "W1",
+  "variant": "reference",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 1,
+    "sync_assumed": "none beyond warp convergence of the 32 lanes",
+    "sync_performed": "shuffles only, no barrier",
+    "k_range": "[1, MaxK] with MaxK = round_up(k, 32) <= N at compile time, k = 4 and k = 16 pay the k = 32 network",
+    "n_range": "N = 32 x IPT, IPT >= 1, measured 32 to 4096",
+    "type_constraints": "any trivially copyable key with a strict weak order, fp32 compared natively and bf16 through __hgt, int32 indices",
+    "nan_behavior": "comparisons with NaN are false, a NaN key lands at an unspecified position, never produced by focus-set inputs. -0.0 and +0.0 compare equal",
+    "tie_break_support": "not supported in the reference: deterministic network but ties are not index resolved (not_guaranteed only). Index-in-key or (key, index) comparison would add it, see the W1 idea card",
+    "sorted_output_support": "inherent: the first k striped positions are sorted descending"
+  }
+}

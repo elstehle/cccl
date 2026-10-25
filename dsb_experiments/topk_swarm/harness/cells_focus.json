@@ -1,0 +1,17 @@
+{
+  "name": "focus",
+  "description": "Focus set of BRIEF.md section 3 on the coarse logarithmic grid of PLAN.md section 8 tier 2: bf16 and fp32 keys, int32 indices, index-only output, both unsorted requirements, random input, both regimes. N per scope from PLAN.md section 3, k from 4 up to N/2 in powers of four. A cell is the product of one entry of each list below, filtered by k <= n/2 and n >= threads.",
+  "key_types": ["bf16", "fp32"],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": ["not_guaranteed", "prefer_smaller_index"],
+  "input_patterns": ["random"],
+  "regimes": ["latency", "throughput"],
+  "k_values": [4, 16, 64, 256, 1024, 4096],
+  "k_max_fraction": 0.5,
+  "scopes": {
+    "subwarp": {"threads": [4, 8, 16], "n": [8, 32, 128]},
+    "warp": {"threads": [32], "n": [32, 128, 512, 2048, 4096]},
+    "block": {"threads": [256], "n": [1024, 4096, 16384, 32768]}
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "author": "eval-engineer",
+  "approach_id": "B1",
+  "variant": "reference",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 4128,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init plus 3 in the pairs exchange epilogue",
+    "k_range": "[1, N) at run time, k == N returns the input unchanged",
+    "n_range": "N = 256 x IPT, IPT >= 1, measured 1024 to 32768 (the exchange buffer of N x 4 bytes is dynamic shared memory)",
+    "type_constraints": "fp32 and bf16 through the radix traits (fp16, fp64, fp8 have traits but are outside the focus set), int32 indices",
+    "nan_behavior": "NaN twiddles to the largest radix key and is selected first, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking and returned as the original key",
+    "tie_break_support": "not supported: ties at the k-th key are resolved by shared-memory atomic ticket order (not_guaranteed only). Knowledge base 4.5 describes the warp-redundant rank for prefer_smaller_index at about plus 1 percent",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  }
+}

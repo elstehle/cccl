@@ -86,6 +86,9 @@ def validate(card, schema):
 
 
 def arch_of(batch):
+    explicit = (batch.get("node", {}).get("arch") or "").lower()
+    if explicit in ("b200", "gb200"):
+        return explicit
     dev = batch.get("node", {}).get("device", {}) or {}
     name = (dev.get("name") or "").upper()
     host = (batch.get("node", {}).get("hostname") or "").lower()
