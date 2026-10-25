@@ -75,7 +75,10 @@ no NaN). The input tile is not modified.
 `W4_chunk<M>`: block of 256 threads, blocked input whose M runs of N / M consecutive items arrive
 sorted (not checked, an unsorted run gives a wrong result), N / M a power of two and a multiple of
 IPT, k a power of two with 2k <= N such that every level splits evenly (`w4::tree_valid`), N at
-most 32768 (fp32) or 65536 (bf16). Temp storage two word buffers plus 256 ints: 66960 bytes for fp32 N 8192 M 4 (50464 bf16), 75264 for fp32 N 8192 M 8, 38400 for fp32 N 4096 M 8.
+most 32768 (fp32) or 65536 (bf16), and the temp storage plus the harness's double-buffered k output
+slots inside the 227 KB opt-in limit (`w4::chunk_temp_bytes`, so fp32 M 8 at k = N / 4 from N 16384
+and bf16 M 8 at N 32768 k 8192 are reported as unsupported, phase 3 found them as failed launches
+at 263680 and 329216 bytes before this check). Temp storage two word buffers plus 256 ints: 66960 bytes for fp32 N 8192 M 4 (50464 bf16), 75264 for fp32 N 8192 M 8, 38400 for fp32 N 4096 M 8.
 Sync: 2 log2(M) + 1 `__syncthreads` per call, the caller separates consecutive calls by a block
 barrier (the harness does).
 

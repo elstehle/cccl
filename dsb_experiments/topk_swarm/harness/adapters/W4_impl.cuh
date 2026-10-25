@@ -43,6 +43,8 @@ struct key_word<__nv_bfloat16>
   }
 };
 
+inline constexpr int smem_limit_bytes = 227 * 1024;
+
 W4_HD inline constexpr bool key_ok(topk::key_type kt, int n)
 {
   return (kt == topk::key_type::fp32) || (kt == topk::key_type::bf16 && n <= 65536);
@@ -65,7 +67,15 @@ chunk_supported(topk::key_type kt, int threads, int n, int k, topk::requirement 
   {
     return false;
   }
-  return tree_valid(threads, m, run_len, k);
+  if (!tree_valid(threads, m, run_len, k))
+  {
+    return false;
+  }
+  // the block's dynamic shared memory: the temp storage plus the harness's double-buffered k
+  // output slots must fit the 227 KB opt-in limit of sm_100 (fp32 8 runs at k = N / 4 with N at
+  // least 16384 do not)
+  const bool split = (kt == topk::key_type::fp32);
+  return chunk_temp_bytes(threads, m, run_len, k, split, split) + 2 * k * 4 <= smem_limit_bytes;
 }
 
 W4_HD inline constexpr bool
