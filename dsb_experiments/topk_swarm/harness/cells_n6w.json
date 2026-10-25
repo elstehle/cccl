@@ -1,0 +1,44 @@
+{
+  "name": "n6w",
+  "description": "N6w, W3 and N1 iteration grid: the focus set at warp scope extended with N 256 and 1024 and k 128 (the focus cells of the N6, W3 and N1 idea cards).",
+  "key_types": [
+    "bf16",
+    "fp32"
+  ],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": [
+    "not_guaranteed",
+    "prefer_smaller_index"
+  ],
+  "input_patterns": [
+    "random"
+  ],
+  "regimes": [
+    "latency",
+    "throughput"
+  ],
+  "k_values": [
+    16,
+    64,
+    128,
+    256,
+    1024
+  ],
+  "k_max_fraction": 0.5,
+  "scopes": {
+    "warp": {
+      "threads": [
+        32
+      ],
+      "n": [
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096
+      ]
+    }
+  }
+}
