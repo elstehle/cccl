@@ -48,11 +48,18 @@ struct B2_spec
   static constexpr uint32_t index_mask                 = static_cast<uint32_t>(N - 1);
   static constexpr bool unroll_rounds                  = (K * IPT <= 4096);
   static constexpr uint32_t full_mask                  = 0xffffffffu;
-  using TempStorage                                    = typename base::TempStorage;
+
+  struct TempStorage
+  {
+    uint32_t slot[K];
+    uint32_t cnt;
+    uint32_t dummy[32];
+  };
 
   struct round_state
   {
     uint32_t wmax, wsec;
+    uint32_t dummy;
     bool post, wprev;
   };
 
@@ -64,12 +71,20 @@ struct B2_spec
     st.wprev = w;
   }
 
+  // Fire-and-forget shared max with a per-lane address. ptxas aggregates a warp's atomicMax on a
+  // uniform address into a redux plus one elected atomic (UFLO, CREDUX), which puts the redux back
+  // on the dependent chain, and it turns a predicated red into a branch with a reconvergence region.
+  // Sending the lanes that do not post to a private dummy word (one per lane, distinct banks) keeps
+  // the instruction unpredicated and the address divergent, so neither rewrite applies.
+  __device__ __forceinline__ static void post_max(uint32_t slot_addr, uint32_t dummy_addr, uint32_t v, bool pred)
+  {
+    const uint32_t addr = pred ? slot_addr : dummy_addr;
+    asm volatile("red.shared.max.u32 [%0], %1;" : : "r"(addr), "r"(v) : "memory");
+  }
+
   __device__ __forceinline__ static uint32_t round(uint32_t* slot, uint32_t (&p)[IPT], round_state& st)
   {
-    if (st.post)
-    {
-      atomicMax(slot, p[0]);
-    }
+    post_max(static_cast<uint32_t>(__cvta_generic_to_shared(slot)), st.dummy, p[0], st.post);
     __syncthreads();
     const uint32_t M = *slot;
     // deferred tail of the previous round's shift, independent of M
@@ -154,6 +169,7 @@ struct B2_spec
 
     round_state st;
     refresh(p[0], st, false);
+    st.dummy = static_cast<uint32_t>(__cvta_generic_to_shared(&ts.dummy[tid & 31]));
     __syncthreads();
 
     uint32_t M = 0;
@@ -202,7 +218,8 @@ struct B2_spec
       const uint32_t c = ts.cnt;
       if ((c & 0xfffffu) != (c >> 20))
       {
-        base::finish(tw, tk, invbase, K - static_cast<int>(c >> 20), ts, out_idx);
+        base::finish(tw, tk, invbase, K - static_cast<int>(c >> 20),
+                     reinterpret_cast<typename base::TempStorage&>(ts), out_idx);
       }
     }
   }
