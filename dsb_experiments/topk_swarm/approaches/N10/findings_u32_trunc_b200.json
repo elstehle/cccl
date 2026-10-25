@@ -11,12 +11,12 @@
   "temp_storage_bytes": 0,
   "sync_assumed": "all lanes of the hardware warp call the primitive together (the logical warps of a sub-warp instantiation run in lockstep)",
   "sync_performed": "shuffles, ballots and one redux on the full warp mask, no barrier",
-  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to power of two k (other k take the full merge), k 4 to 64 measured",
-  "n_range": "N = LW x IPT with MaxK dividing N, measured 32 to 256 at LW 32",
-  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word, the index is never carried through the network and is recovered from the item's position by ballot rank",
-  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 is mapped to +0.0 before the twiddle so the two zeros are one word",
-  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost",
-  "sorted_output_support": "not provided: the final merge stops at stride k, the output is the selected set in class and index order"
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to a power of two k (other k take the complete merge and a shuffle), k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N and N / MaxK a power of two, measured 32 to 256 at LW 32 and 8 to 128 at LW 4, 8, 16",
+  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word (sign flip, -0.0 mapped to +0.0), the index is never carried through the network and is recovered from the item's position (slot i of lane l is source index i x LW + l) by ballot rank",
+  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 and +0.0 are one word",
+  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost (within 0.04 percent in every measured pair of cells)",
+  "sorted_output_support": "not provided: the output is the selected set in class and index order (the complete-merge form N10_u32 has the sorted keys in position but places indices by rank, not by position)"
  },
  "report_path": "approaches/N10/REPORT.md",
  "source_paths": [
@@ -25,14 +25,48 @@
   "approaches/W1/warp_level_topk.cuh",
   "approaches/W1/w1_common.cuh"
  ],
- "techniques_adopted": ["T1", "T4", "T7", "T17", "T28", "T36", "T37", "T40", "T42"],
- "techniques_contributed": [],
- "correctness_notes": "FILL",
+ "techniques_adopted": [
+  "T1",
+  "T4",
+  "T7",
+  "T17",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42"
+ ],
+ "techniques_contributed": [
+  "T51",
+  "T52"
+ ],
+ "correctness_notes": "Batch 1 (umbriel-b200-020, one lease, six consecutive run.py lock sections, canaries 32.001 cycles per op and 3776 us in every section). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Controls in the same lock section: W1_eager_same (both requirements, section s1), W1_minmax_pairs under not_guaranteed (section s3, prefer_smaller_index cells only), N10_ctrl_u64rec (section s4, prefer_smaller_index cells only). The same-session network-only reference W1x_vimnmx_eager on bf16 (section s5) is quoted in the findings, not a control.",
  "findings": {
-  "low_level": ["FILL"],
-  "algorithmic": ["FILL"],
-  "negative": ["FILL"],
-  "surprises": ["FILL"],
-  "open_questions": ["FILL"]
+  "low_level": [
+   "The network is opt-W1's template recursion with the min and max exchange (T42) on the fp32 key twiddled to u32: 290 VIMNMX, 142 SHFL, 2 CREDUX.MIN, 16 VOTE, 30 POPC, 8 predicated STS in the N 128 k 16 latency kernel (two network copies), no BSSY, no BRA beyond the harness's five, 0 stack, 0 STL, 0 LDL in every warp cell (T36 check). Registers 30 to 64 in the latency kernel (W1_eager_same 24 to 59), 23 to 32 in the throughput kernel (40 at N 256 k 64), occupancy 8 blocks per SM (6 at N 256 k 64, same as the control). The truncated final merge removes the stages with stride below k: 142 SHFL against 150 for the complete merge at N 128 k 16 (four stages per copy), the k-th word comes out of one redux.sync.min over positions [0, k) (identity 0xffffffff in the other lanes) as a uniform register, no broadcast shuffle.",
+   "Two-class recovery SASS per slot: two ISETP, two VOTE.ANY, two LOP3 (lane mask), four POPC, four IADD, one ISETP, one IMAD (address) and one predicated STS, about 19 instructions. ptxas interleaves the second ballot of each slot with the popc and add chains of earlier slots, so the pass costs about 48 cycles per slot from IPT 4 on, not the 6 per further ballot of T17.",
+   "Per skipped shuffle stage the truncation saves 30 to 35 cycles (N 32 k 16: 570 against 442 for four stages, N 64 k 32: 815 against 661 for five, N 128 k 64: 1110 against 933 for six of which one in registers), the redux costs what the position shuffle cost."
+  ],
+  "algorithmic": [
+   "Against the fp32 u64 index-in-key word of opt-W1b (W1_eager_same, the card's must-beat), prefer_smaller_index, latency: N 32 k 4 504 against 601 (0.84x), N 32 k 16 442 (0.74x), N 64 k 4 751 against 934 (0.80x), N 64 k 32 661 (0.71x, the first must-beat cell: at most 840 asked), N 128 k 4 1166 against 1918 (0.61x), N 128 k 16 1106 (0.58x, the second must-beat cell: at most 1720 asked), N 128 k 32 1071 against 1917 (0.56x), N 128 k 64 933 against 2216 (0.42x), N 256 k 4 to 32 2022 to 1931 against 3826 (0.53x to 0.50x), N 256 k 64 1566 against 4650 (0.34x). Throughput 259 to 304 against 165 to 185 Gelem per s (1.40x to 1.82x), N 128 k 64 232 against 140, N 256 k 64 222 against 131.",
+   "Against the best not_guaranteed fp32 route (W1_minmax_pairs, pairs through fmaxf and fminf, control under not_guaranteed): N 32 k 4 504 against 533 (0.95x), N 32 k 16 442 against 533 (0.83x), N 64 k 4 751 against 756 (0.99x), N 64 k 32 661 against 720 (0.92x), N 128 k 16 1106 against 1649 (0.67x), N 128 k 32 1071 against 2004 (0.53x), N 128 k 64 933 against 1217 (0.77x), N 256 k 16 1966 against 4301 (0.46x), N 256 k 64 1566 against 4547 (0.34x), throughput 1.28x to 1.67x. The price of prefer_smaller_index on fp32 in the W1 family is therefore negative: the exact route is faster than the fastest not_guaranteed route in every measured cell.",
+   "Against the u64 word in the same recursion (N10_ctrl_u64rec, isolating the keys-only network plus recovery from the code structure): N 32 k 16 442 against 576, N 64 k 32 661 against 1194, N 128 k 16 1106 against 1736, N 256 k 16 1966 against 3621, N 256 k 64 1566 against 4249, so 0.77x to 0.37x of the u64 word with the code structure held fixed. The u64 recursion itself is faster than W1_eager_same at N 128 and 256 (1736 against 1918, 3621 against 3826) and slower at N 64 (1190 against 934), a schedule effect of the T28 kind.",
+   "Where the cycles go at N 128 k 16: 1017 for the identical u32 network on bf16 words in the same session (W1x_vimnmx_eager), about 220 for twiddle, shuffle and two-class recovery after a complete merge, minus 132 for the truncated merge."
+  ],
+  "negative": [
+   "The one-shuffle broadcast of position k - 1 after a complete merge (N10_u32) is dominated by the truncated merge in every cell, by 66 to 177 cycles, see card N10_u32.",
+   "At N 256 (eight tiles) the eager order leaves 27 percent on the table against the level order (N10_u32_ltrunc 1422 against 1966 at k 16), the eager form is the right one only up to two tiles.",
+   "N 32 k 4 gains only 16 percent over the u64 word (504 against 601): at one tile and IPT 1 the network is 15 stages for both and the recovery pass (about 58 cycles) eats most of the two skipped stages."
+  ],
+  "surprises": [
+   "The two-class recovery costs 58, 120, 221, 387 cycles at IPT 1, 2, 4, 8 (N10_u32 against the bf16 network-only kernel), about twice the pipelined-ballot model from IPT 4 on, the schedule interleaves dependent popc and add chains between the ballots instead of issuing all ballots first.",
+   "The u64 word in the template recursion (N10_ctrl_u64rec) is 27 percent slower than the same word in opt-W1b's unrolled loops at N 64 (1190 against 934) and 9 percent faster at N 128, the code structure factor of the W1x experiment does not transfer to 64-bit words at two tiles."
+  ],
+  "open_questions": [
+   "Whether the recovery pass can be brought to the pipelined-ballot cost by forcing all ballots before any popc (an asm barrier between the ballot block and the prefix block), which would save about 100 cycles at IPT 4 and 200 at IPT 8 on this form.",
+   "The sm_100f redux.sync.min.f32 (T2) would let the native float min and max network skip the twiddle (three ALU per item, off the critical path here), not measured.",
+   "Whether sorted output can be had cheaply by writing the recovered indices to the network positions (one shuffle per selected item) for the sorted-output pass where the W1 family is the chosen primitive."
+  ]
  }
 }

@@ -1,0 +1,65 @@
+{
+ "author": "opt-N10",
+ "approach_id": "N10",
+ "variant": "ge1_trunc",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "all lanes of the hardware warp call the primitive together (the logical warps of a sub-warp instantiation run in lockstep)",
+  "sync_performed": "shuffles, ballots and one redux on the full warp mask, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to a power of two k (other k take the complete merge and a shuffle), k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N and N / MaxK a power of two, measured 32 to 256 at LW 32 and 8 to 128 at LW 4, 8, 16",
+  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word (sign flip, -0.0 mapped to +0.0), the index is never carried through the network and is recovered from the item's position (slot i of lane l is source index i x LW + l) by ballot rank",
+  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 and +0.0 are one word",
+  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost (within 0.04 percent in every measured pair of cells)",
+  "sorted_output_support": "not provided: the output is the selected set in class and index order (the complete-merge form N10_u32 has the sorted keys in position but places indices by rank, not by position)"
+ },
+ "report_path": "approaches/N10/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N10_ge1_trunc.cuh",
+  "approaches/N10/n10_detail.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh"
+ ],
+ "techniques_adopted": [
+  "T1",
+  "T4",
+  "T7",
+  "T17",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42"
+ ],
+ "techniques_contributed": [
+  "T52"
+ ],
+ "correctness_notes": "Batch 2 (umbriel-b200-020, one lease, seven consecutive run.py lock sections). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Controls in the same lock section: N10_u32_trunc (sections s1 random and s2 tie patterns, prefer_smaller_index cells), W1_eager_same (section s4, both requirements). The all_equal pattern cells of the tie section are dropped from the card because the card schema's input_pattern enum has no all_equal value, their numbers (identical to pivot_tie within 2 cycles) are quoted in the findings and stay in the batch JSON.",
+ "findings": {
+  "low_level": [
+   "The network is opt-W1's template recursion with the min and max exchange (T42) on the fp32 key twiddled to u32: 290 VIMNMX, 142 SHFL, 2 CREDUX.MIN, 16 VOTE on the fast path plus 16 on the tie path, 32 STS of which half on each path in the N 128 k 16 latency kernel (two network copies), no BSSY, no BRA beyond the harness's five, 0 stack, 0 STL, 0 LDL in every warp cell (T36 check). Registers 30 to 64 in the latency kernel (W1_eager_same 24 to 59), 23 to 32 in the throughput kernel (40 at N 256 k 64), occupancy 8 blocks per SM (6 at N 256 k 64, same as the control). One-ballot recovery: one VOTE.ANY per slot (8 back to back at IPT 8), the popc sum compared with k, then a BSSY, predicated BRA region with the fast path (one POPC, one LOP3, one IADD, one ISETP, one IMAD, one predicated STS per slot) and the two-class pass with IPT more VOTE on the other side, BSYNC. The region spans the whole call (BSSY at the kernel entry of the call), 2 BSSY and 2 BSYNC per latency kernel. Registers 32 to 72 in the latency kernel (54 at N 128, 72 at N 256), throughput kernel occupancy 8 blocks per SM up to N 128 and 6 at N 256 (the two-class form keeps 8 there)."
+  ],
+  "algorithmic": [
+   "Against the two-class recovery on the same network (N10_u32_trunc, same lock section), prefer_smaller_index latency, random input: N 32 k 4 569 against 504 and k 16 507 against 442 (plus 65), N 64 809, 747, 712 against 751, 696, 661 (plus 51 to 58), N 128 k 4, 16, 32 1085, 1053, 1018 against 1166, 1106, 1071 (minus 53 to 81), N 128 k 64 944 against 933, N 256 k 4, 16, 32 1893, 1862, 1829 against 2022, 1966, 1931 (minus 102 to 129), N 256 k 64 1453 against 1566. Throughput plus 1 to 11 percent up to N 128 (261 to 324 against 259 to 305), minus 5 percent at N 256 k 4 to 32 (272 to 276 against 286 to 291), plus 18 percent at N 256 k 64 (263 against 222).",
+   "Against the u64 word (W1_eager_same, section s4, both requirements): N 32 k 4 569 against 601 (0.95x), N 32 k 16 507 (0.84x), N 64 k 32 712 against 934 (0.76x), N 128 k 16 1053 against 1918 (0.55x), N 128 k 64 944 against 2216 (0.43x), N 256 k 16 1862 against 3826 (0.49x), N 256 k 64 1453 against 4650 (0.31x), throughput 1.41x to 2.0x.",
+   "Price of excess ties at rank k (section s2, patterns pivot_tie and all_equal, every item or nearly every item equal to the k-th word, against the branch-free two-class form measured on the same patterns): N 64 k 16 781 against 692, k 32 746 against 657, N 128 k 16 1149 against 1104, k 32 1108 against 1069, N 256 k 16 2126 against 1960, k 32 2092 against 1924. Relative to its own fast path on random input the tie path costs 34, 96 and 264 cycles at N 64, 128, 256 (5 to 14 percent). Random fp32 input never takes it (ties at rank k 1.0 in every measured cell)."
+  ],
+  "negative": [
+   "At IPT 1 and 2 the branch costs more than the ballots it saves: plus 51 to 65 cycles against the two-class form at N 32 and N 64. The one-ballot form belongs to IPT 4 and above (the combined adapter N10_auto switches there).",
+   "Throughput at N 256 k 4 to 32 drops 5 percent against the two-class form through the occupancy step from 8 to 6 blocks per SM (the tie path keeps IPT more ballot words live)."
+  ],
+  "surprises": [
+   "The reconvergence region does not hurt the network: ptxas keeps the fast path's eight ballots back to back and the measured gain at IPT 4 and 8 matches the saved ballots and popcs, while the T35 experience (a region per exchange) had suggested any BSSY in the call would cost more."
+  ],
+  "open_questions": [
+   "Whether a branch-free one-ballot form exists: the fast path's rank is valid whenever the group holds exactly k words at least t, the tie case needs the above ballots, and no formulation was found that avoids either the second ballot set or the branch.",
+   "Whether the tie path can reuse the fast path's stores (write the fast-path slots speculatively, then fix only the tied items), which would make the tie cost the above ballots alone."
+  ]
+ }
+}

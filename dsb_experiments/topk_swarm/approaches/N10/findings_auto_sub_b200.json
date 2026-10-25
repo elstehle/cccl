@@ -1,0 +1,69 @@
+{
+ "author": "opt-N10",
+ "approach_id": "N10",
+ "variant": "auto_sub",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "all lanes of the hardware warp call the primitive together (the logical warps of a sub-warp instantiation run in lockstep)",
+  "sync_performed": "shuffles, ballots and one redux on the full warp mask, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N and N / MaxK a power of two, the truncated merge applies to a power of two k (other k take the complete merge and a shuffle), k 4 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N and N / MaxK a power of two, measured 32 to 256 at LW 32 and 8 to 128 at LW 4, 8, 16",
+  "type_constraints": "fp32 keys only, twiddled to an order-preserving u32 word (sign flip, -0.0 mapped to +0.0), the index is never carried through the network and is recovered from the item's position (slot i of lane l is source index i x LW + l) by ballot rank",
+  "nan_behavior": "a NaN twiddles above +inf (positive sign) or below -inf (negative sign) and is selected or dropped deterministically by its sign bit, never produced by focus-set inputs. -0.0 and +0.0 are one word",
+  "tie_break_support": "prefer_smaller_index exact by construction (items above the k-th word in index order, then the tied items in index order until k), the same code serves not_guaranteed at the same cost (within 0.04 percent in every measured pair of cells)",
+  "sorted_output_support": "not provided: the output is the selected set in class and index order (the complete-merge form N10_u32 has the sorted keys in position but places indices by rank, not by position)"
+ },
+ "report_path": "approaches/N10/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N10_auto_sub.cuh",
+  "approaches/N10/n10_detail.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh"
+ ],
+ "techniques_adopted": [
+  "T1",
+  "T4",
+  "T7",
+  "T17",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42"
+ ],
+ "techniques_contributed": [
+  "T51",
+  "T52"
+ ],
+ "correctness_notes": "Batch 3 (umbriel-b200-028, one lease, five consecutive run.py lock sections, canaries 32.001 cycles per op in every section). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Controls in the same lock section: W1_eager_same_sub (section s3, both requirements), W1_minmax_pairs_sub under not_guaranteed (section s4, prefer_smaller_index cells).",
+ "findings": {
+  "low_level": [
+   "The combined form: fp32 key twiddled to u32, opt-W1's template recursion with the min and max exchange (T42), the final merge truncated at stride k with the k-th word by redux.sync.min (identity in the other lanes), the level tile order from four tiles on and the eager order below (same dependency graph at one or two tiles), the two-class recovery (two ballots per slot) up to two items per lane and the one-ballot recovery with the two-class pass behind a warp-uniform branch from four items per lane on. Every choice is a compile-time function of N, k and the logical warp size. Sub-warp form of the combined adapter: logical warps of 4, 8 and 16 lanes inside one hardware warp, shuffles with the full warp mask (the xor partner stays inside the segment), ballots on the full warp masked to the segment, the redux.min as one full-warp redux per logical warp with the identity in the other lanes (T37, T40) and the tie branch made uniform over the hardware warp with one any-vote. No BSSY from partial-mask collectives (the W1 sub-warp controls carry them). Registers in the latency kernel 43 to 48 at N 8, 57 to 72 at N 32, 79 (LW 16), 113 to 118 (LW 8) and 168 (LW 4, 32 items per lane) at N 128, throughput occupancy 8 blocks per SM at N 8 and N 32 (6 at LW 8 N 32, 4 at LW 4 N 32), 4, 2 and 1 at N 128 for LW 16, 8, 4. One 32 byte stack frame with 11 STL at LW 4 N 128 k 4 (latency kernel), 0 stack, 0 STL, 0 LDL in every other cell."
+  ],
+  "algorithmic": [
+   "Against the u64 word at sub-warp scope (W1_eager_same_sub, both requirements), prefer_smaller_index latency: LW 16 N 32 k 4, 8, 16 549, 519, 500 against 842, 843, 835 (0.65x to 0.60x), LW 16 N 128 k 4 to 16 1160, 1158, 1133 against 3339, 3339, 3469 (0.35x to 0.33x), k 64 1262 against 5335 (0.24x), LW 8 N 32 714, 684, 707 against 1041, 1084, 1151 (0.69x to 0.61x), LW 8 N 128 k 4 1413 against 5017 (0.28x), k 8 (the gpt-oss and Qwen3 router shape, focus cell 4) 1409 against 5299 (0.27x), k 16 1582 against 6495 (0.24x), k 64 1847 against 10150 (0.18x), LW 4 N 32 k 4 734 against 848 (0.87x), k 8 784 against 1543 (0.51x), k 16 832 against 1480 (0.56x), LW 4 N 128 k 4 1796 against 4052 (0.44x), k 8 2111 against 8289 (0.25x), k 16 2448 against 10669 (0.23x), k 64 3321 against 14748 (0.23x). Throughput: LW 8 N 128 k 8 500 against 356 Gelem per s, LW 16 N 128 k 16 400 against 222, LW 4 N 32 k 8 463 against 355, 1.1x to 2.2x in every cell from N 32 on.",
+   "Against the sub-warp pairs route (W1_minmax_pairs_sub under not_guaranteed, the wave 1 fp32 sub-warp winner at LW 4 and 8): LW 16 N 32 0.82x to 0.75x, LW 16 N 128 0.32x to 0.27x, LW 8 N 32 0.73x to 0.66x, LW 8 N 128 k 8 1409 against 4189 (0.34x), k 64 1847 against 7323 (0.25x), LW 4 N 32 k 4 734 against 610 (1.20x, a loss), k 8 784 against 612 (1.28x, a loss, focus cell 5), k 16 832 against 908 (0.92x), LW 4 N 128 k 4 1796 against 2476 (0.73x), k 8 2111 against 5294 (0.40x), k 16 2448 against 3963 (0.62x), k 64 3321 against 9420 (0.35x). Throughput 1.0x to 2.0x.",
+   "N 8 (one tile of MaxK 8, three shuffle stages, two-class recovery): LW 8 260 against 245 (u64) and 205 (pairs), LW 4 270 against 219 and 176. The redux with four or eight full-warp passes plus the ballots cost more than the two network routes' whole call. N10 pays from N 32 on at LW 8 and 16 and from N 128 on at LW 4 (k 16 at N 32 is a 0.92x tie against the pairs)."
+  ],
+  "negative": [
+   "LW 4 N 32 k 4 and 8 (eight items per lane, eight logical warps): 1.20x and 1.28x slower than the pairs network. The group min is eight pipelined full-warp redux (about 88 cycles, T40) and every ballot carries a segment LOP3, while the LW 4 pairs network is mostly in-register exchanges that need no collective at all. The route for LW 4 N at most 32 stays the min max pairs when the requirement allows it, and N10 when it does not (0.51x to 0.87x of the u64 word there).",
+   "LW 4 N 128 (32 items per lane) runs at 168 registers and one block per SM in the throughput regime, and k 4 has a 32 byte stack frame with 11 STL in the latency kernel. The u64 word of wave 1 was at 167 registers in the same cell, both are register tier problems for a batched router kernel.",
+   "N 8 loses to both routes at every logical warp size (1.06x to 1.53x)."
+  ],
+  "surprises": [
+   "LW 16 N 32 (two tiles, IPT 2) gains 20 percent against the one-ballot form of batch 2 (549 against 659 at k 4) from the switch to the two-class recovery, more than the 51 to 65 cycles the same switch is worth at warp scope: the any-vote and the eight-way branch region cost more at sub-warp scope.",
+   "The level order at LW 8 and 16 N 128 is worth 28 to 37 percent (batch 2, N10_ge1_ltrunc_sub against N10_ge1_trunc_sub), more than at warp scope, and the combined form keeps it (1409 at LW 8 N 128 k 8)."
+  ],
+  "open_questions": [
+   "Whether a two-step shuffle-xor min inside the segment (about 72 cycles) beats the eight pipelined full-warp redux at LW 4, and whether packing two slots into one ballot word at LW 4 and 8 (16 and 8 lanes free per vote) halves the ballot count there.",
+   "Whether the LW 4 N 128 register footprint can be cut by recomputing the twiddled originals from the harness keys after the network instead of keeping both copies live, or by running the recovery slot by slot without the ballot arrays.",
+   "Register and occupancy of the batched router kernel (two or four routers per warp) are not inferred from the harness, the device kernel has to be measured."
+  ]
+ }
+}
