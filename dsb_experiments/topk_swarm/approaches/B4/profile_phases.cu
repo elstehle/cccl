@@ -1,7 +1,16 @@
 // Phase profile of block_topk_bound on one block: clock64 stamps per phase, random normal input
 // rounded to the key type, striped tile. Build: nvcc -std=c++17 -O3 -arch=sm_100 -DB4_PROFILE
 // -I<cccl>/cub -I<cccl>/libcudacxx/include -I<cccl>/thrust profile_phases.cu
-#include "block_topk_bound.cuh"
+#if defined(B4_V3)
+#  include "block_topk_bound_v3.cuh"
+namespace b4p = b4v3;
+#elif defined(B4_V2)
+#  include "block_topk_bound_v2.cuh"
+namespace b4p = b4v2;
+#else
+#  include "block_topk_bound.cuh"
+namespace b4p = b4;
+#endif
 
 #include <cuda_bf16.h>
 
@@ -15,8 +24,8 @@ __global__ void __launch_bounds__(256) prof_kernel(const KeyT* in, int* out, lon
 {
   constexpr int T   = 256;
   constexpr int IPT = N / T;
-  using topk_t = b4::block_topk_bound<KeyT, T, IPT, (K <= 256) ? 4096 : (K <= 1024) ? 8192 : 16384,
-                                      (K + 2 * T - 1) / (2 * T) < 1 ? 1 : (K + 2 * T - 1) / (2 * T), b4::tie_break::any>;
+  using topk_t = b4p::block_topk_bound<KeyT, T, IPT, (K <= 256) ? 4096 : (K <= 1024) ? 8192 : 16384,
+                                      (K + 2 * T - 1) / (2 * T) < 1 ? 1 : (K + 2 * T - 1) / (2 * T), b4p::tie_break::any>;
   __shared__ typename topk_t::TempStorage ts;
   __shared__ int out_idx[K];
   for (int rep = 0; rep < reps; ++rep)
@@ -33,8 +42,8 @@ __global__ void __launch_bounds__(256) prof_kernel(const KeyT* in, int* out, lon
     {
       for (int i = 0; i < 16; ++i)
       {
-        stamps[rep * 16 + i] = b4::g_stamps[i];
-        b4::g_stamps[i]      = 0;
+        stamps[rep * 16 + i] = b4p::g_stamps[i];
+        b4p::g_stamps[i]     = 0;
       }
       out[rep] = out_idx[0];
     }
