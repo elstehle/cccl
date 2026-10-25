@@ -1,0 +1,62 @@
+{
+ "author": "opt-W1",
+ "approach_id": "W1",
+ "variant": "packed",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 1,
+  "sync_assumed": "none beyond warp convergence of the logical warp's lanes",
+  "sync_performed": "shuffles only, no barrier",
+  "type_constraints": "bf16 keys packed into one 32-bit word (key bits high, inverted 16-bit index low, N at most 65536), fp32 keys packed into one 64-bit word (key bits high, inverted 32-bit index low), int32 source indices derived from the striped position",
+  "nan_behavior": "a NaN key orders by its sign bit (positive NaN above every finite key, negative NaN below), deterministic, never produced by focus-set inputs. -0.0 is mapped to +0.0 before packing so the two zeros compare equal",
+  "tie_break_support": "inherent in the word order: among equal keys the smaller index gives the larger word, prefer_smaller_index costs nothing (psi cells equal the ng cells to the cycle, same code)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted by (key descending, index ascending)",
+  "k_range": "[1, MaxK] with MaxK = round_up(k, 32) <= N at compile time, k 4 to 16 pay the k 32 network",
+  "n_range": "N = 32 x IPT, IPT >= 1, measured 32, 64 and 128 (bf16 N at most 65536)"
+ },
+ "report_path": "approaches/W1/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W1_packed.cuh",
+  "approaches/W1/w1_adapters.cuh",
+  "approaches/W1/w1_common.cuh",
+  "harness/topk_harness.cuh",
+  "cub/cub/warp/warp_bitonic_topk.cuh"
+ ],
+ "techniques_adopted": [
+  "T3",
+  "T20"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Oracle battery (random seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) passed in every cell for both requirements, including the exact prefer_smaller_index check with signed zeros. The prefer_smaller_index cells have an A/A control (W1_reference does not support the requirement) measured in a second lock section of the same lease right after the not_guaranteed section, see the batch files. Two W1 optimizer instances shared one agent id on 2026-10-25. This card is Instance A (opt-W1, worktree cccl-topk-swarm-W1, branch exp/topk-swarm/W1): W1_packed, W1_level, the sub-warp adapters and the N2 verdict from W1_level against W1_packed. Instance B (opt-W1b) owns the same-code eager against level comparison and the fp32 native min max pairs variant, report approaches/W1/REPORT_W1b.md.",
+ "findings": {
+  "low_level": [
+   "Instruction mix per network from the SASS of the latency kernel (two inlined copies per kernel, counts per copy): bf16 u32 index-in-key at N 32 is 15 SHFL, 19 ISETP, 17 SEL, 20 LOP3, 10 PLOP3 against the pairs reference's 30 SHFL, 14 ISETP, 31 SEL, 41 LOP3, 20 PLOP3, 6 PRMT: one shuffle per stage instead of two and no bf16 pack and unpack. ptxas does not turn CUB's bool comparator into VIMNMX for the u32 words: the exchange stays ISETP, ISETP, PLOP3, SEL (2 VIMNMX in the whole kernel), so the observation of issue #12160 that integral keys already get IMNMX does not hold for the WarpBitonicSortNetwork merge_stage form with its two compares and the reverse test.",
+   "fp32 as a u64 word: 2 SHFL per stage like the pairs reference (the CUDA 13.4 header splits the 64-bit shuffle into two 32-bit ones, no asm), the compare is a dependent ISETP plus ISETP.EX pair per direction (4 ISETP and 2 SEL per stage, 34 ISETP and 31 SEL per network at N 32) against the reference's 2 FSETP, 1 FSEL, 1 SEL. Registers 24 at N 32, 32 at N 64, 41 to 42 at N 128 against the reference's 22, 26 and 32 to 33. No spills, no stack frame, 0 BAR.SYNC, no shared memory beyond the harness output buffer. BRA count equals the no-op kernel's (5), no branch inside the network (T20 check).",
+   "bf16 registers 20 at N 32, 23 at N 64, 27 at N 128 against 26 and 36 for the reference, occupancy 8 blocks of 256 threads per SM in every throughput cell for both. The packing (canonicalize -0.0, sign flip, shift, or with the inverted index) is about 7 instructions per item, independent across items, and is inside the measured number.",
+   "The generate-only control slope is 48 cycles for every warp cell, R squared 1.0000 on every fit, canaries 32.001 cycles per shuffle op at start and end of each section, throughput canary 3609 to 3611 us."
+  ],
+  "algorithmic": [
+   "bf16: the index in the key word turns the pairs network into a keys-only network with one 32-bit shuffle per stage: 1.24x at N 32 (626 against 778 cycles), 1.03x at N 64 for k 4 to 16 (1150 against 1187) and 1.29x at k 32 (905 against 1164), 1.54x to 1.66x at N 128 (1367 against 2267 at k 4 to 16, 1521 against 2340 at k 32, 1598 against 2562 at k 64). Throughput 1.81x at N 32 (244 against 135 Gelem/s), 2.24x at N 64 (271 against 121), 2.31x at N 128 (264 against 114) and 2.45x at N 128 k 64 (233 against 95). The gain grows with N because the reference shuffles the 16-bit keys and the 32-bit indices separately and converts per stage.",
+   "prefer_smaller_index is free: the psi cells equal the not_guaranteed cells to the cycle (bf16 626, 1150, 905, 1367, 1521, 1598, fp32 597, 990, 2408, 2583) because the same code runs and the word order carries the tie-break. This is the first warp primitive in the study with the exact requirement at zero cost.",
+   "fp32 in a 64-bit word costs 15 to 19 percent against the pairs reference at N 64 and 128 (990 against 846, 2408 against 2038, 2583 against 2255 cycles, throughput 166 against 204, 156 against 192, 136 against 165 Gelem/s) and ties at N 32 (597 against 605, 201 against 204 Gelem/s). That is the price of the exact tie-break for fp32 in the eager structure, there is no 32-bit word for a 32-bit key plus index.",
+   "MaxK rounds k up to 32, so k 4, 8 and 16 share one number per N as in the reference. The eager loop's cost per added 32-item tile is 740 cycles for bf16 (1150 at N 64 to 1367 at N 128 is less because the control's N 64 k 16 cell is the anomalous one, see surprises) and 710 for fp32 (990 to 2408 for two added tiles)."
+  ],
+  "negative": [
+   "The u64 word is not the way to carry fp32 with prefer_smaller_index when latency matters at N at least 64: 0.85x against the pairs reference. The comparison to make is a pairs network with a (key, index) comparator or the native min max pairs form (Instance B's slice).",
+   "At fp32 N 32 the packing gives nothing over pairs (597 against 605 cycles, 201 against 204 Gelem/s)."
+  ],
+  "surprises": [
+   "The CUB eager latency depends on k at fixed MaxK and identical network: bf16 N 64 is 1150 cycles for k 4 to 16 and 905 for k 32, N 128 is 1367 for k 4 to 16 and 1521 for k 32, fp32 N 64 and 128 do not move. Only the output store count differs (456 against 440 SASS instructions in the latency kernel at N 64). Throughput is identical (271 against 272 Gelem/s). The same effect appears in the level network at sub-warp LW 16 N 128 fp32 (2320 for k 8, 3431 for k 16). It looks like a ptxas schedule effect on the latency chain and is not understood.",
+   "ptxas does not emit min max for the u32 bool comparator network, so the integer word alone does not buy the 2-instruction exchange of issue #12160, the exchange has to be written as keep_max ? max : min (the W1_level network does and gets two predicated VIMNMX per stage)."
+  ],
+  "open_questions": [
+   "Why does the latency chain of one network shift by up to 25 percent with the number of output stores, in both directions? A SASS diff of the N 64 k 16 against k 32 kernels or a harness option that stores all MaxK outputs would separate a chain artifact from a real schedule effect.",
+   "Does the halved SASS count of the bf16 path carry into the batched segmented kernels, where both forms already reach 8 blocks per SM?",
+   "Would a min max operator path in WarpBitonicSort (issue #12160) give the eager CUB code the VIMNMX exchange for integer words without a custom network? The W1_level numbers bound the gain at two tiles (bf16 N 64 k 32: 905 to 695 cycles, which also contains the restructuring)."
+  ]
+ }
+}

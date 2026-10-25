@@ -128,7 +128,7 @@ level_supported(topk::key_type kt, int threads, int n, int k, topk::requirement 
       && is_pow2(n / topk::round_up(k, threads));
 }
 
-template <typename KeyT, int Threads, int N, int K, topk::requirement Req>
+template <typename KeyT, int Threads, int N, int K, topk::requirement Req, typename Shfl = shfl_split32>
 struct level_packed_adapter
 {
   static constexpr int items_per_thread                = N / Threads;
@@ -140,7 +140,7 @@ struct level_packed_adapter
   using key_storage                                    = KeyT[items_per_thread];
   using P                                              = packer<KeyT>;
   using W                                              = typename P::word_t;
-  using net                                            = level_topk<W, Threads, M, T>;
+  using net                                            = level_topk<W, Threads, M, T, Shfl>;
   struct TempStorage
   {};
 

@@ -85,14 +85,14 @@ struct word_ops<uint32_t>
   {
     k = keep_max ? ::max(k, other) : ::min(k, other);
   }
-  // two words of one lane: a gets the smaller one unless Desc
-  template <bool Desc>
-  __device__ __forceinline__ static void exchange_regs(uint32_t& a, uint32_t& b)
+  // two words of one lane: a gets the smaller one unless desc (a compile-time constant after
+  // unrolling)
+  __device__ __forceinline__ static void exchange_regs(uint32_t& a, uint32_t& b, bool desc)
   {
     const uint32_t lo = ::min(a, b);
     const uint32_t hi = ::max(a, b);
-    a                 = Desc ? hi : lo;
-    b                 = Desc ? lo : hi;
+    a                 = desc ? hi : lo;
+    b                 = desc ? lo : hi;
   }
 };
 
@@ -108,10 +108,9 @@ struct word_ops<uint64_t>
     const bool gt = other > k;
     k             = (gt == keep_max) ? other : k;
   }
-  template <bool Desc>
-  __device__ __forceinline__ static void exchange_regs(uint64_t& a, uint64_t& b)
+  __device__ __forceinline__ static void exchange_regs(uint64_t& a, uint64_t& b, bool desc)
   {
-    const bool sw     = (a > b) != Desc;
+    const bool sw     = (a > b) != desc;
     const uint64_t na = sw ? b : a;
     const uint64_t nb = sw ? a : b;
     a                 = na;
@@ -119,11 +118,31 @@ struct word_ops<uint64_t>
   }
 };
 
-template <typename W>
-__device__ __forceinline__ W shfl_xor(W v, int stride, unsigned mask)
+// Shuffle policies. shfl_intrinsic hands the word to __shfl_xor_sync as is (for 64-bit words the
+// CUDA headers split it with asm volatile moves, which pins the order of all 64-bit shuffles in
+// the IR). shfl_split32 shuffles the two 32-bit halves of a 64-bit word itself, so independent
+// shuffles stay free to interleave. Both are the same instruction for 32-bit words.
+struct shfl_intrinsic
 {
-  return __shfl_xor_sync(mask, v, stride);
-}
+  template <typename W>
+  __device__ __forceinline__ static W xor_(W v, int stride, unsigned mask)
+  {
+    return __shfl_xor_sync(mask, v, stride);
+  }
+};
+struct shfl_split32
+{
+  __device__ __forceinline__ static uint32_t xor_(uint32_t v, int stride, unsigned mask)
+  {
+    return __shfl_xor_sync(mask, v, stride);
+  }
+  __device__ __forceinline__ static uint64_t xor_(uint64_t v, int stride, unsigned mask)
+  {
+    const uint32_t lo = __shfl_xor_sync(mask, static_cast<uint32_t>(v), stride);
+    const uint32_t hi = __shfl_xor_sync(mask, static_cast<uint32_t>(v >> 32), stride);
+    return (static_cast<uint64_t>(hi) << 32) | lo;
+  }
+};
 
 __host__ __device__ constexpr int log2_int(int x)
 {
