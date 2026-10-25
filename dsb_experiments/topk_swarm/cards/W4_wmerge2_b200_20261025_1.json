@@ -713,5 +713,11 @@
     "thr_us": 3813.215971
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W4",
+  "date": "2026-10-25",
+  "notes": "verify-W4 rerun 2026-10-25 on the card's node umbriel-b200-091 (B200, nvcc 13.4.92, sm_100, clone 40ccd445ae), adapters rebuilt from exp/topk-swarm/W4 commit 0ba868b00d (harness/SOURCE_COMMIT written from a checkout of that commit) under the shared harness 0.8 (the card's version, swarm commit 40ccd445ae, shipped the way opt-W4's node.sh does because the W4 worktree's own harness copy at that commit is 0.6 without --runs) with the controls from the same tree, build and measurement under one lease, named control in one lock section per batch (control_is_aa false), canaries first and last in every batch at 32.00098 cycles and 3811 to 3814 us, oracle 22 battery cases per cell for variant and control under both requirements (oracle_selftest true). Latency only as in the card, control W4_wmerge from the same commit. All 20 cells within 0.1 percent of the card, resources identical (80 to 165 registers, 3808 to 14392 SASS, no spill, no stack frame, no STL or LDL). Ratios (rerun | card): bf16 N 1024 k 64 5911.4 vs 5416.0 (0.92x) | 5909.9 vs 5413.5, N 2048 k 1024 20778.2 vs 19780.7 (0.95x) | 20778.9 vs 19780.5, fp32 N 2048 k 256 30117.7 vs 29580.3 (0.98x) | 30113.1 vs 29580.5, N 2048 k 1024 43326.2 vs 42596.3 (0.98x) | 43325.8 vs 42596.0, 0.91x to 0.98x in every cell as the card says. Batch state/results/verify-W4/W4_wmerge2_vs_W4_wmerge_w4_vW4_wmerge2_20261025_173521.json. Sorted output: the strict (key descending, index ascending) order check of the verification harness copy passes every battery case in all 20 cells (oracle-only batch W4_wmerge2_vs_W4_wmerge2_w4_sW4_wmerge2_20261025_173726) and harness 0.10 --check-sorted passes on the 8 N 2048 cells measured there (batch *_h10_wmerge2_20261025_175026, output_sorted_checked true): bf16 k 64 9750 vs 8903 (0.91x), k 1024 20702 vs 19769 (0.95x), fp32 k 64 19594 vs 19030 (0.97x), k 1024 43202 vs 42542 (0.98x). The negative conclusion holds under both versions. VERDICT verified = true."
+ }
 }

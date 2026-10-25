@@ -625,5 +625,11 @@
     "thr_us": 3812.992096
    }
   }
- ]
+ ],
+ "verification": {
+  "verified": true,
+  "verifier": "verify-W4",
+  "date": "2026-10-25",
+  "notes": "verify-W4 rerun 2026-10-25 on the card's node umbriel-b200-091 (B200, nvcc 13.4.92, sm_100, clone 40ccd445ae), adapters rebuilt from exp/topk-swarm/W4 commit 0ba868b00d (harness/SOURCE_COMMIT written from a checkout of that commit) under the shared harness 0.8 (the card's version, swarm commit 40ccd445ae, shipped the way opt-W4's node.sh does because the W4 worktree's own harness copy at that commit is 0.6 without --runs) with the controls from the same tree, build and measurement under one lease, named control in one lock section per batch (control_is_aa false), canaries first and last in every batch at 32.00098 cycles and 3811 to 3814 us, oracle 22 battery cases per cell for variant and control under both requirements (oracle_selftest true). --runs 4, controls W4_chunk4 (same commit) and B3_tuned in two lock sections as in the card. All 16 cells within 0.2 percent of the card, resources identical (118 and 121 registers, 3344 and 3848 SASS against 2928 and 3456 for W4_chunk4, 13 BAR.SYNC, no spill, no stack frame, no STL or LDL). Ratios (rerun | card, not_guaranteed latency): bf16 N 8192 k 2048 5039.4 vs W4_chunk4 4245.3 (0.84x) | 5035.4 vs 4249.7 (0.84x), fp32 7398.6 vs 6585.4 (0.89x) | 7387.2 vs 6580.8 (0.89x), against B3_tuned bf16 5029.8 vs 6496.9 (1.29x) | 5039.5 vs 6497.6, fp32 7401.8 vs 7111.5 (0.96x) | 7388.7 vs 7113.2, throughput 0.89x and 0.95x against W4_chunk4 as the card. Batches state/results/verify-W4/W4_chunk4q_vs_W4_chunk4_w4_vW4_chunk4q_c4_20261025_173603.json and W4_chunk4q_vs_B3_tuned_w4_vW4_chunk4q_b3_20261025_173611.json. Sorted-runs input checked as for W4_chunk4. Sorted output: the strict order check of the verification harness copy passes every battery case in all 4 cells (oracle-only batch W4_chunk4q_vs_W4_chunk4q_w4_sW4_chunk4q_20261025_173800) and harness 0.10 --check-sorted passes for variant and control (batch *_h10_chunk4q_c4_20261025_175044, output_sorted_checked true). Harness 0.10: bf16 4816 vs 4034 (0.84x), fp32 7408 vs 6495 (0.88x), against B3_tuned 4808 vs 6133 (1.28x) and 7400 vs 7153 (0.97x), the negative conclusion (the 4-ary search loses at block scope) holds under both versions. VERDICT verified = true."
+ }
 }
