@@ -128,7 +128,34 @@ level_supported(topk::key_type kt, int threads, int n, int k, topk::requirement 
       && is_pow2(n / topk::round_up(k, threads));
 }
 
-template <typename KeyT, int Threads, int N, int K, topk::requirement Req, typename Shfl = shfl_split32>
+// The eager tile loop on the same recursion (eager_topk) needs N a multiple of MaxK only.
+__host__ __device__ constexpr bool
+eager_rec_supported(topk::key_type kt, int threads, int n, int k, topk::requirement req, bool subwarp)
+{
+  return packed_supported(kt, threads, n, k, req, subwarp) && n % topk::round_up(k, threads) == 0;
+}
+
+template <bool Eager, typename W, int LW, int M, int T, typename Shfl, typename Ops>
+struct rec_net
+{
+  using type = level_topk<W, LW, M, T, Shfl, Ops>;
+};
+template <typename W, int LW, int M, int T, typename Shfl, typename Ops>
+struct rec_net<true, W, LW, M, T, Shfl, Ops>
+{
+  using type = eager_topk<W, LW, M, T, Shfl, Ops>;
+};
+
+// Ops selects the exchange form (word_ops: min and max, cub_ops: the compare and select forms of
+// cub::detail::WarpBitonicTopK), Eager selects the eager tile loop instead of the level loop.
+template <typename KeyT,
+          int Threads,
+          int N,
+          int K,
+          topk::requirement Req,
+          typename Shfl = shfl_split32,
+          typename Ops  = word_ops<typename packer<KeyT>::word_t>,
+          bool Eager    = false>
 struct level_packed_adapter
 {
   static constexpr int items_per_thread                = N / Threads;
@@ -140,7 +167,7 @@ struct level_packed_adapter
   using key_storage                                    = KeyT[items_per_thread];
   using P                                              = packer<KeyT>;
   using W                                              = typename P::word_t;
-  using net                                            = level_topk<W, Threads, M, T, Shfl>;
+  using net                                            = typename rec_net<Eager, W, Threads, M, T, Shfl, Ops>::type;
   struct TempStorage
   {};
 

@@ -118,6 +118,40 @@ struct word_ops<uint64_t>
   }
 };
 
+// The exchange forms of cub::detail::WarpBitonicTopK, written out on the word so that the same
+// recursion can run either exchange. exchange is WarpBitonicSortNetwork<KeyT, 1>::merge_stage (two
+// compares, the direction folded into the predicate, one select), exchange_regs is the register
+// Merge stage (one compare, a conditional swap), max is compare_and_replace (compare, select).
+// Used by the W1x codegen experiment, see approaches/W1/CODEGEN_EXPERIMENT.md.
+template <typename W>
+struct cub_ops
+{
+  __device__ __forceinline__ static W max(W a, W b)
+  {
+    return (b > a) ? b : a;
+  }
+  __device__ __forceinline__ static void exchange(W& k, W other, bool keep_max)
+  {
+    const bool key_precede_other = k > other;
+    const bool other_precede_key = other > k;
+    const bool reverse           = !keep_max;
+    if ((key_precede_other || other_precede_key) && reverse == key_precede_other)
+    {
+      k = other;
+    }
+  }
+  __device__ __forceinline__ static void exchange_regs(W& a, W& b, bool desc)
+  {
+    const bool should_swap = desc ? (b > a) : (a > b);
+    if (should_swap)
+    {
+      const W t = a;
+      a         = b;
+      b         = t;
+    }
+  }
+};
+
 // Shuffle policies. shfl_intrinsic hands the word to __shfl_xor_sync as is (for 64-bit words the
 // CUDA headers split it with asm volatile moves, which pins the order of all 64-bit shuffles in
 // the IR). shfl_split32 shuffles the two 32-bit halves of a 64-bit word itself, so independent
