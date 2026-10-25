@@ -39,6 +39,8 @@ Same session A/B. Every measurement of a variant runs together with its control 
 
 Correctness before numbers. A host oracle checks every cell before any number is recorded: set equality for `not_guaranteed`, exact result for `prefer_smaller_index`, special values (signed zero, infinities, denormals) where the type has them, partial inputs if the contract allows them. A failing oracle means no number.
 
+Build targets. The default build is `-arch=sm_100` and every card needs its numbers on that build. A family-specific `sm_100f` build unlocks instructions such as `redux.sync.max.f32` (catalogue entry T2) and runs unchanged on sm_100, sm_103 and the Rubin sm_107 targets. An optimizer may add an `sm_100f` variant, reported as a separate variant next to the sm_100 one, never as a replacement. The CUDA code must keep the sm_100 path compiling, with the family-specific path behind a feature guard.
+
 Resources. Registers, shared memory and spills from `cuobjdump -res-usage` or `-Xptxas -v`, SASS checked for `STL` and `LDL` (spills) and for `BAR.SYNC` count. Register-tier effects on batched kernels are measured on the device kernel, not inferred from the harness.
 
 Every number carries arch, CUDA version, node, date, commit and the file with the full table. No number without a control. No cross-arch comparison in a card.
