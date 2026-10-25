@@ -1,0 +1,60 @@
+bf16 N1024 k16: per-phase cycles (median over 32 reps), delta from the previous nonzero stamp
+  bracket   n= 32 median    318 min    276 max    663
+  cntscan   n= 32 median    534 min    533 max    534
+  compact   n= 32 median    179 min    179 max    179
+  loads     n= 32 median    270 min    269 max    273
+  pass1     n= 32 median    644 min    618 max    665
+  emitcnt   n= 32 median    524 min    505 max    576
+  emitscan  n= 32 median    438 min    413 max    470
+  emitst    n= 32 median    233 min    226 max    310
+  w2bar     n= 10 median     41 min     41 max     43
+  end       n= 32 median     77 min     68 max    398
+  total     median   3234 min   3174 max   3611
+bf16 N4096 k16: per-phase cycles (median over 32 reps), delta from the previous nonzero stamp
+  bracket   n= 32 median    420 min    398 max    813
+  cntscan   n= 32 median    669 min    646 max    671
+  compact   n= 32 median    470 min    470 max    526
+  loads     n= 32 median    717 min    717 max    721
+  pass1     n= 32 median    898 min    760 max    921
+  emitcnt   n= 32 median    936 min    634 max    994
+  emitscan  n= 32 median    436 min    405 max    472
+  emitst    n= 32 median    655 min    352 max    719
+  w2bar     n=  8 median     43 min     42 max     45
+  end       n= 32 median     88 min     72 max    364
+  total     median   5306 min   4565 max   5797
+fp32 N4096 k64: per-phase cycles (median over 32 reps), delta from the previous nonzero stamp
+  bracket   n= 32 median    374 min    360 max    768
+  cntscan   n= 32 median    665 min    655 max    685
+  compact   n= 32 median    395 min    360 max    475
+  loads     n= 32 median    679 min    651 max    688
+  pass1     n= 32 median    935 min    810 max    986
+  emitcnt   n= 32 median   1329 min    829 max   1366
+  emitscan  n= 32 median    436 min    406 max    454
+  emitst    n= 32 median    639 min    317 max    708
+  w2bar     n= 17 median     41 min     41 max     42
+  end       n= 32 median    349 min     66 max    580
+  total     median   5886 min   4597 max   6417
+fp32 N32768 k256: per-phase cycles (median over 16 reps), delta from the previous nonzero stamp
+  bracket   n= 16 median   1371 min   1348 max   1968
+  cntscan   n= 16 median   1747 min   1720 max   1760
+  compact   n= 16 median   3078 min   2974 max   3145
+  loads     n= 16 median    805 min    739 max    939
+  pass1     n= 16 median    950 min    920 max    970
+  emitcnt   n= 16 median   1515 min   1500 max   1563
+  emitscan  n= 16 median    426 min    422 max    434
+  emitst    n= 16 median    788 min    739 max    850
+  w2bar     n= 14 median     43 min     42 max     45
+  end       n= 16 median    418 min    114 max    794
+  total     median  11153 min  10760 max  11661
+bf16 N32768 k64: per-phase cycles (median over 16 reps), delta from the previous nonzero stamp
+  bracket   n= 16 median   1826 min   1826 max   2343
+  cntscan   n= 16 median   1487 min   1470 max   1490
+  compact   n= 16 median   3262 min   3237 max   3278
+  loads     n= 16 median    782 min    752 max    793
+  pass1     n= 16 median    945 min    925 max    972
+  emitcnt   n= 16 median   1181 min   1168 max   1208
+  emitscan  n= 16 median    430 min    425 max    433
+  emitst    n= 16 median    811 min    798 max    837
+  w2bar     n= 10 median     60 min     43 max     65
+  end       n= 16 median    312 min     97 max    451
+  total     median  11101 min  10835 max  11300
