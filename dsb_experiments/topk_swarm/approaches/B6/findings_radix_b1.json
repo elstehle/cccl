@@ -1,0 +1,48 @@
+{
+ "author": "opt-B6",
+ "approach_id": "B6",
+ "variant": "radix",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 9216,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside cub::BlockRadixSort, about 7 per 4-bit pass (ranking 2, BlockScan 2, exchange 2, between passes 1), 4 passes for bf16 and 8 for fp32, 26 BAR.SYNC in the latency kernel",
+  "k_range": "[1, N) at compile time, the sort is k independent",
+  "n_range": "N = Threads x IPT, IPT >= 1, N <= 32768, threads 128, 256 or 512 accepted, measured N 2048 at 256 threads in this card",
+  "type_constraints": "bf16 (32-bit word, twiddled key high, index low) and fp32 (64-bit word), int32 indices from the blocked position. Temp storage max(9216, (N + N/32) x word bytes): 9216 bf16 and 16896 fp32 at N 2048",
+  "nan_behavior": "twiddled bitwise, positive NaN above +inf, negative NaN below -inf, never in focus-set inputs. -0.0 folded onto +0.0 before twiddling",
+  "tie_break_support": "inherent through the stability of the LSD sort over the key bits with the input in index order, same binary for both requirements. The control B1_idx supports not_guaranteed only and was instantiated under not_guaranteed for the prefer_smaller_index cells (harness --control-req)",
+  "sorted_output_support": "inherent at zero extra cost, slot r holds rank r"
+ },
+ "report_path": "approaches/B6/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B6_radix.cuh",
+  "harness/cells_b6.json"
+ ],
+ "techniques_adopted": ["T11", "T21", "T29", "T34", "T36"],
+ "techniques_contributed": ["T54", "T55"],
+ "correctness_notes": "Kill cell against the block incumbent B1_idx (index-only AIR radix select, not_guaranteed only): N 2048 k 1024, bf16 and fp32, both regimes, the prefer_smaller_index cells of the variant against B1_idx under not_guaranteed in the same lock section (label kill_b1, umbriel-b200-020, source commit 971a398f42). Full oracle battery passed in every cell for both requirements.",
+ "findings": {
+  "low_level": [
+   "Same kernels as card B6_radix_b200_20261025_1 (bf16 56 registers, fp32 64, no spill, 26 BAR.SYNC, 1008 and 888 SASS instructions, shared memory 17472 and 25088 bytes with the harness's output buffers). B1_idx at the same cells: 2128 bytes of temp storage independent of N, 32 to 48 registers.",
+   "Throughput occupancy 4 blocks per SM for both B6 kernels at N 2048 (registers 62 to 64), canaries 32.00 cycles and 3776 us at both ends."
+  ],
+  "algorithmic": [
+   "B6_radix against B1_idx at N 2048 k 1024: bf16 5550 against 2933 cycles (1.89x slower), fp32 13499 against 2869 (4.71x), throughput bf16 159 against 342 Gelem per s (0.47x), fp32 59 against 337 (0.18x). B1_idx is the weaker of the two controls at this cell (B3_tuned 2550 and 2509, its k-flat scan emission against B1's ticket epilogue), so the better control decides the kill: 2.18x and 5.37x against the 1.2x threshold.",
+   "Under prefer_smaller_index B6_radix gives the exact index-ordered set at the not_guaranteed price (5550.8 against 5550.8), where B1_idx has no deterministic path (B1_det costs plus 19 to 51 percent in wave 1). A sorted, deterministic output is the one thing the sort has over the incumbent, and at 1.9x the price it is the sorted-output row only."
+  ],
+  "negative": [
+   "No cell of the kill batch is within the threshold against either control, the sort is not a selection primitive at k = N/2 (see card B6_radix_b200_20261025_1 for the N and k sweep against B3_tuned)."
+  ],
+  "surprises": [
+   "B1_idx's ticket epilogue at k 1024 costs it 15 percent against B3_tuned here (2933 against 2550) and still leaves it 1.9x ahead of the sort: the whole k dependence of the select is smaller than one radix sort pass."
+  ],
+  "open_questions": [
+   "None specific to this pairing. The final evaluation pairs B3_tuned with B1_idx at these cells (N8 report section 4 did it at N 16384 and 32768), the sort does not enter that pairing."
+  ]
+ }
+}

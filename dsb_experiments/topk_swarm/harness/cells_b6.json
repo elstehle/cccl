@@ -1,0 +1,21 @@
+{
+  "name": "b6",
+  "description": "B6 cells from ideas/queue/B6_sort_when_k_large.md: the kill cell (N 2048 k 1024) and the crossover band k from N over 8 to N over 2 at N 1024 to 8192, both key types, both unsorted requirements, random input, both regimes. k_by_n picks the k per N.",
+  "key_types": ["bf16", "fp32"],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": ["not_guaranteed", "prefer_smaller_index"],
+  "input_patterns": ["random"],
+  "regimes": ["latency", "throughput"],
+  "k_values": [128, 256, 512, 1024, 2048, 4096],
+  "k_max_fraction": 0.5,
+  "k_by_n": {
+    "1024": [128, 256, 512],
+    "2048": [256, 512, 1024],
+    "4096": [512, 1024, 2048],
+    "8192": [1024, 2048, 4096]
+  },
+  "scopes": {
+    "block": {"threads": [256, 512], "n": [1024, 2048, 4096, 8192]}
+  }
+}
