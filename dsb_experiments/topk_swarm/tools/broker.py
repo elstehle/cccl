@@ -7,6 +7,9 @@
                                                  excludes hosts that already carry an active entry
   broker.py bootstrap <node-or-job> [--image REF] run nodes/bootstrap_<cluster>.sh on the node, mark ready
   broker.py release <node-or-job> [--force]      remove the container, scancel, mark released
+  broker.py retire <node-or-job> --reason TEXT   no new leases on the node, current holder and queued
+                                                 pinned waiters finish, the tick releases it when idle,
+                                                 the host joins the permanent exclude list
   broker.py renew --target N | --per-arch b200=3,gb200=1 [--wait 0]
                                                  re-request when the pool would drop below the target
                                                  within 45 min, in total or per arch
@@ -55,6 +58,11 @@ CLUSTERS = {
         image="nvidia/cuda:13.4.2-devel-ubuntu24.04"),
 }
 ARCH_TO_CLUSTER = {c["arch"]: name for name, c in CLUSTERS.items()}
+# Hosts never requested again in this study (plus whatever `retire` adds to registry["exclude_hosts"]).
+# umbriel-b200-020: deterministic slow outlier for kernels above about 64 KB of SASS, 7 to 51 percent
+# slower than 047, 068 and 091 on the same binaries (lead's decision 2026-10-25 after verify-N8 and
+# hw-researcher probes). Not a final evaluation node, no further cards.
+EXCLUDE_HOSTS = {"computelab": ["umbriel-b200-020"], "dlcluster": []}
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"]
 
 
@@ -279,6 +287,8 @@ def print_table(reg, show_all=False):
         if n.get("status") in ("released", "lost") and not show_all:
             continue
         gpus = ", ".join("gpu%s=%s" % (g.get("index"), g.get("holder") or "free") for g in n.get("gpus", [])) or "-"
+        if n.get("retire"):
+            gpus += "  [retiring]"
         print(fmt % (node_label(n), n.get("cluster"), n.get("arch"), n.get("status"), n.get("job_id"),
                      fmt_remaining(remaining_seconds(n, now)), n.get("cuda") or "-", gpus))
     print("active=%d cap=%d good_for_45min=%d" % (count_active(reg), reg.get("cap", 6), len(good_nodes(reg, now))))
@@ -288,8 +298,10 @@ def submit(reg, cluster):
     """sbatch a hold on cluster and append a `requested` entry. Caller holds the registry lock.
     Hosts that already carry an active entry on this cluster are excluded (one job per host)."""
     c = CLUSTERS[cluster]
-    busy = sorted({n["ssh"] for n in reg["nodes"]
-                   if n.get("cluster") == cluster and n.get("status") in ACTIVE_STATES and n.get("ssh")})
+    busy = {n["ssh"] for n in reg["nodes"]
+            if n.get("cluster") == cluster and n.get("status") in ACTIVE_STATES and n.get("ssh")}
+    banned = set(EXCLUDE_HOSTS.get(cluster, [])) | set(reg.get("exclude_hosts", {}).get(cluster, []))
+    busy = sorted(busy | banned)
     exclude = (" --exclude=" + ",".join(busy)) if busy else ""
     r = ssh(c["login"], c["sbatch"].format(exclude=exclude), timeout=90)
     m = re.search(r"Submitted batch job (\d+)", r.out or "")
@@ -395,6 +407,28 @@ def release_node(key, force=False):
             reg.save()
     print("%s: container %s, scancel %s rc=%d, marked released" % (node_label(snapshot), cleaned, snapshot["job_id"], r.rc))
     return 0 if r.ok else 1
+
+
+def retire_node(key, reason):
+    """Mark a node retiring: lease.py gives no new leases (queued pinned waiters and the current holder
+    may finish), the tick releases it once idle, and the host joins registry["exclude_hosts"]."""
+    with Registry() as reg:
+        node = find_node(reg.data, key)
+        if node is None:
+            print("no such node or job: %s" % key)
+            return 1
+        node["retire"] = reason
+        node["retire_at"] = iso(utcnow())
+        ex = reg.data.setdefault("exclude_hosts", {})
+        lst = ex.setdefault(node["cluster"], [])
+        if node.get("ssh") and node["ssh"] not in lst:
+            lst.append(node["ssh"])
+        reg.save()
+        holders = [g["holder"] for g in node.get("gpus", []) if g.get("holder")]
+        queued = [w["holder"] for g in node.get("gpus", []) for w in (g.get("queue") or [])]
+        print("%s: retiring (%s). holders=%s queued=%s, excluded on %s from now on" % (
+            node_label(node), reason, ",".join(holders) or "none", ",".join(queued) or "none", node["cluster"]))
+    return 0
 
 
 def bootstrap_node(key, image=None, timeout=2400, force=False):
@@ -609,6 +643,10 @@ def cmd_release(args):
     return release_node(args.node, force=args.force)
 
 
+def cmd_retire(args):
+    return retire_node(args.node, args.reason)
+
+
 def target_args(args):
     per_arch = parse_per_arch(args.per_arch) if args.per_arch else None
     if per_arch is None and args.target is None:
@@ -636,7 +674,11 @@ def cmd_tick(args):
                 continue
             rem = remaining_seconds(n, now)
             held = any(g.get("holder") for g in n.get("gpus", []))
-            if rem is not None and rem < RELEASE_S and not held:
+            queued = any((g.get("queue") or []) for g in n.get("gpus", []))
+            if n.get("retire") and not held and not queued:
+                notes.append("%s: retired and idle, releasing" % node_label(n))
+                dying.append(n["job_id"])
+            elif rem is not None and rem < RELEASE_S and not held:
                 dying.append(n["job_id"])
             elif rem is not None and rem < RELEASE_S and held:
                 notes.append("%s: %s left and still held by %s, slurm will kill it" % (
@@ -738,6 +780,10 @@ def main(argv=None):
     rl.add_argument("node")
     rl.add_argument("--force", action="store_true", help="release even if a holder still has a lease")
     rl.set_defaults(func=cmd_release)
+    rt = sub.add_parser("retire")
+    rt.add_argument("node")
+    rt.add_argument("--reason", required=True)
+    rt.set_defaults(func=cmd_retire)
     rn = sub.add_parser("renew")
     rn.add_argument("--target", type=int, default=None, help="total nodes good for the next 45 min")
     rn.add_argument("--per-arch", default=None, help="per-arch target, e.g. b200=3,gb200=1 (overrides --target)")

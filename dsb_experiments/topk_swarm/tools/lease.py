@@ -102,6 +102,10 @@ def try_acquire(reg, holder, arch, min_remaining_s, want_node=None, wait_until=N
                 if dequeue(reg, holder):
                     reg.save()
                 return node, gpu  # already held, idempotent
+        if node.get("retire"):
+            queued_here = any(w.get("holder") == holder for g in node.get("gpus", []) for w in (g.get("queue") or []))
+            if not queued_here:
+                continue  # retiring node: only waiters already in its queue may still take it
         for gpu in node.get("gpus", []):
             q, pruned = prune_queue(gpu, now)
             changed = changed or pruned
@@ -189,6 +193,8 @@ def cmd_status(args):
         gpus = ", ".join("gpu%s=%s%s" % (g.get("index"), g.get("holder") or "free",
                                           (" (queue: %s)" % ",".join(w["holder"] for w in g["queue"])) if g.get("queue") else "")
                          for g in node.get("gpus", [])) or "-"
+        if node.get("retire"):
+            gpus += "  [retiring: %s]" % node["retire"][:40]
         print(fmt % (node.get("name"), node.get("cluster"), node.get("arch"), node.get("status"),
                      node.get("job_id"), fmt_remaining(remaining_seconds(node, now)), gpus))
     return 0
