@@ -1,0 +1,592 @@
+{
+ "approach_id": "W1",
+ "variant": "level_pairs",
+ "scope": "warp",
+ "arch": "b200",
+ "cuda_version": "13.4.92",
+ "node": "umbriel-b200-020",
+ "date": "2026-10-25",
+ "commit": "3fa70dd18f",
+ "author": "opt-W1b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 8 to 64 measured",
+  "n_range": "N = LW x IPT, N over MaxK a power of two for the level-parallel loop, bf16 N <= 65536 (16-bit index), measured 32 to 256 at LW 32",
+  "type_constraints": "fp32 keys compared with fmaxf and fminf, bf16 keys with __hmax and __hmin, int32 index carried as the value and moved when the key moved",
+  "nan_behavior": "fmaxf, fminf, __hmax and __hmin return the non-NaN operand, so a NaN key loses every exchange and is never selected, never produced by focus-set inputs. -0.0 and +0.0 compare equal and keep their index",
+  "tie_break_support": "not supported: equal keys keep their network position (not_guaranteed only), see W1_eager_same for the index-in-key route",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "correctness": {
+  "oracle_passed": true,
+  "cases": 130,
+  "notes": "Oracle battery passed on every cell for variant and control, not_guaranteed only (ties keep their network position). W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid."
+ },
+ "cells": [
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1420,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 1369,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 34,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 128.6476928,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 130.6016562,
+   "canary_start": 3774.912119,
+   "canary_end": 3777.087927,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 2080,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 2673,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 3219,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 67,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 28,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 124.1118181,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 123.5297302,
+   "canary_start": 3773.76008,
+   "canary_end": 3777.055979,
+   "resources": {
+    "registers": 40,
+    "smem_bytes": 2080,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 3501,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 3469,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 58,
+    "smem_bytes": 528,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 105.3372148,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 104.1980571,
+   "canary_start": 3774.719954,
+   "canary_end": 3777.695894,
+   "resources": {
+    "registers": 40,
+    "smem_bytes": 4128,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 5943,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 6531,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 76,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 24,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 119.4072838,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 125.0727306,
+   "canary_start": 3774.816036,
+   "canary_end": 3777.343988,
+   "resources": {
+    "registers": 48,
+    "smem_bytes": 2080,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 5,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 6596,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 7422,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 71,
+    "smem_bytes": 528,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 28,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 98.10758821,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 99.16807522,
+   "canary_start": 3774.847984,
+   "canary_end": 3777.055979,
+   "resources": {
+    "registers": 48,
+    "smem_bytes": 4128,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 5,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 753,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 720,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 34,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 199.3224203,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 199.3055299,
+   "canary_start": 3775.264025,
+   "canary_end": 3777.791977,
+   "resources": {
+    "registers": 31,
+    "smem_bytes": 2080,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1754,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 2004,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 51,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 169.7682655,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 182.7645145,
+   "canary_start": 3775.327921,
+   "canary_end": 3777.920008,
+   "resources": {
+    "registers": 40,
+    "smem_bytes": 2080,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1225,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 1217,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 46,
+    "smem_bytes": 528,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 157.0124797,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 156.0983664,
+   "canary_start": 3775.039911,
+   "canary_end": 3776.767969,
+   "resources": {
+    "registers": 38,
+    "smem_bytes": 4128,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 3739,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 4545,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 174.7788821,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 178.1808729,
+   "canary_start": 3775.295973,
+   "canary_end": 3777.60005,
+   "resources": {
+    "registers": 48,
+    "smem_bytes": 2080,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 5,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 4153,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 4547,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 58,
+    "smem_bytes": 528,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 64,
+   "threads": 32,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 140.8709091,
+   "control_name": "W1_minmax_pairs",
+   "control_value": 139.7910921,
+   "canary_start": 3774.175882,
+   "canary_end": 3777.375937,
+   "resources": {
+    "registers": 48,
+    "smem_bytes": 4128,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 5,
+    "bar_sync_count": 0
+   },
+   "raw_file": "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+  }
+ ],
+ "findings": {
+  "low_level": [
+   "Same instruction mix as the eager pairs loop: fp32 N 128 k 32 latency kernel 1168 SASS instructions against 1136, 300 SHFL (key and index per stage), 306 FMNMX, 156 FSETP, 152 SEL in both. The level-parallel form keeps every tile's key and index live through the interleaved sorts and costs registers: 67 against 35 (bf16 N 128), 76 against 42 (bf16 N 256), 51 against 39 (fp32 N 128), 64 against 48 (fp32 N 256), no spills.",
+   "The register growth costs occupancy in the throughput regime: 5 or 6 blocks per SM against 6 for the eager pairs loop, so the throughput is equal or lower (bf16 N 256 k 32 119.4 against 125.1 Gelem/s, fp32 N 128 k 32 169.8 against 182.8) while the latency is better."
+  ],
+  "algorithmic": [
+   "Kill cell N 64 k 32 (pairs): 1420 against 1369 cycles bf16 (0.96x), 753 against 720 fp32 (0.96x), the level-parallel form is slower where the two loops are the same DAG. From N 128 on the pairs network has twice the shuffle traffic of the packed one and the level structure starts to pay in latency: N 128 k 32 bf16 2673 against 3219 (1.20x), fp32 1754 against 2004 (1.14x), N 256 k 32 bf16 5943 against 6531 (1.10x), fp32 3739 against 4545 (1.22x), N 256 k 64 bf16 6596 against 7422 (1.13x), fp32 4153 against 4547 (1.09x), N 128 k 64 within 1 percent.",
+   "So the restructuring gains 10 to 22 percent in latency where the eager loop is shuffle-issue bound (two shuffles per stage, 4 or more tiles) and nothing where it is latency bound (one word per stage, or two tiles). It is a latency-only lever and it pays with registers, which the throughput regime takes back."
+  ],
+  "negative": [
+   "At the kill cell the verdict is the same as on packed words: no gain, 0.96x. The 1.3x threshold of the N2 card is not reached anywhere, the best cell is 1.22x (fp32 N 256 k 32) with 16 more registers and lower throughput."
+  ],
+  "surprises": [
+   "The eager pairs control itself is unstable across k at fixed MaxK: fp32 N 128 at k 8 and 16 measures 1649 cycles and at k 32 2004 cycles with the same network (1120 against 1136 SASS instructions, identical opcode histogram), the only source change being the predicate on the index store. The level-parallel form at k 32 (1754) is therefore partly a reschedule of the same work, see the W1_minmax_pairs card."
+  ],
+  "open_questions": [
+   "Whether a level-parallel loop that releases the consumed tiles earlier (pairing adjacent registers so the compiler can retire them) keeps the latency gain without the register growth."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_level_pairs.cuh",
+  "harness/adapters/W1_minmax_pairs.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "_controls": [
+  "W1_minmax_pairs"
+ ],
+ "_batches": [
+  "state/results/opt-W1b/W1_level_pairs_vs_W1_minmax_pairs_focus_kill_pairs_20261025_131124.json"
+ ],
+ "_canary": [
+  {
+   "start": {
+    "timestamp": "2026-10-25T13:11:31Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3775.680065
+   },
+   "end": {
+    "timestamp": "2026-10-25T13:11:41Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3776.160002
+   }
+  }
+ ]
+}
