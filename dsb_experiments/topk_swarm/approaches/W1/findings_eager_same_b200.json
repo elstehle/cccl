@@ -1,0 +1,62 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "eager_same",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 8 to 64 measured",
+  "n_range": "N = LW x IPT with MaxK dividing N, bf16 N <= 65536 (16-bit index), measured 32 to 256 at LW 32",
+  "type_constraints": "bf16 keys as one 32-bit word (twiddled key high, inverted index low), fp32 keys as one 64-bit word, int32 indices",
+  "nan_behavior": "a NaN is twiddled by its sign bit (positive NaN above +inf, negative NaN below -inf) and selected or dropped deterministically, never produced by focus-set inputs. -0.0 is canonicalized to +0.0 before packing",
+  "tie_break_support": "inherent: the word order is (key descending, index ascending), prefer_smaller_index costs nothing (same instantiation, same cycles)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_eager_same.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "techniques_adopted": [
+  "T3",
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [
+  "T28"
+ ],
+ "correctness_notes": "Oracle battery passed on every cell under both requirements (exact prefer_smaller_index result on tie_heavy, all_equal, pivot_tie and signed_zero). Controls: W1_reference under not_guaranteed in the same lock section for both requirements (harness 0.3 --control-req), and W1_minmax_pairs under not_guaranteed for the fp32 prefer_smaller_index cells of the second batch. W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "bf16 index-in-key (one 32-bit word per element): 150 SHFL per N 128 kernel against 300 for the reference pairs, one ISETP.GT.U32 (direction in the XOR predicate input) and one SEL per exchange, 728 SASS instructions against 1656 (the reference spends 424 HSETP2, 176 PLOP3, 169 LOP3 and 69 PRMT on __hgt and 16-bit shuffles). Registers 21 to 43 against 26 to 43 at N 32 to 256, no spills, no barriers, 8 blocks per SM in every cell.",
+   "fp32 index-in-key (one 64-bit word): 300 SHFL as the reference, 390 ISETP and 322 SEL against 306 FSETP and 314 SEL, 1176 instructions against 1152. Registers 24 to 59 against 19 to 59. The 64-bit compare is ISETP, ISETP.EX, SEL, one dependent step more than FSETP, SEL, which shows at IPT 1 (601 against 583 cycles at N 32, 40 against 39 cycles per stage) and is paid back from IPT 4 on where the eager chain is issue bound (3826 against 4606 at N 256).",
+   "Packing costs about 5 ALU per element once per call (canonicalize -0.0, sign-flip twiddle, shift, or with the inverted index) and unpacking one IADD per output, both outside the network's critical path."
+  ],
+  "algorithmic": [
+   "bf16 against the reference (latency, not_guaranteed and prefer_smaller_index identical): N 32 k 8 574 against 779 (1.36x), N 64 k 32 761 against 1164 (1.53x), N 128 k 16 1211 against 2267 (1.87x), N 128 k 64 1338 against 2562 (1.91x), N 256 k 32 2371 against 5640 (2.38x), N 256 k 64 2800 against 4658 (1.66x). Throughput 254 against 125 Gelem/s at N 32, 273 against 112 at N 64, 268 against 106 at N 128, 263 against 102 at N 256 (2.0x to 2.6x). The gain grows with N because the halved shuffle traffic matters more as the eager chain becomes issue bound.",
+   "fp32 against the reference (latency): N 32 601 against 583 (0.97x), N 64 934 against 925 (0.99x), N 128 k 16 1918 against 2041 (1.06x), N 128 k 64 2216 against 2152 (0.97x), N 256 k 32 3826 against 4606 (1.20x), N 256 k 64 4650 against 5104 (1.10x). Throughput 0.91x to 0.93x (163 against 177 Gelem/s at N 256). The 64-bit word trades one dependent ALU step per stage for a free exact tie-break, which is a wash at small N and a 10 to 20 percent latency gain at N 256.",
+   "prefer_smaller_index costs nothing in either key type: the packed cells under both requirements are the same instantiation and measure the same cycles (52 pairs of cells, identical to the cycle). This is the W1 answer to the requirement: index-in-key, not a composite comparator (W1_baseline card: 1.8x to 6.4x) and not a post pass.",
+   "Per stage at IPT 1 the packed u32 exchange is 38 cycles (574 over 15 stages), the shuffle latency floor of 30 plus ISETP and SEL. Fewer instructions per stage no longer help at IPT 1, only fewer dependent stages do, so the remaining lever at N <= 64 is algorithmic (a different network) and not the exchange form.",
+   "The price of prefer_smaller_index on fp32 against the best not_guaranteed route (W1_minmax_pairs, same lock section, second batch): switching to the 64-bit word for the requirement costs 13 percent at N 32 (601 against 531), 24 to 30 percent at N 64 (934 against 720 to 756), 16 percent at N 128 k <= 16 (1915 against 1649) and 82 percent at N 128 k 64 (2216 against 1217), gains 11 to 16 percent at N 256 k <= 32 (3826 against 4301 to 4545), and costs 9 to 10 percent throughput in every cell. For bf16 the question does not arise, the one-word route is the fastest not_guaranteed route and gives the requirement for free."
+  ],
+  "negative": [
+   "The 64-bit fp32 word is not a latency win below N 256 (0.97x to 1.06x) and a small throughput loss everywhere (0.91x to 0.93x), see the W1_minmax_pairs card for the route that wins fp32 not_guaranteed.",
+   "k below MaxK is still paid in full (k 8 and k 16 cost exactly the k 32 network), the packing does not change that."
+  ],
+  "surprises": [
+   "bf16 packed beats fp32 packed by 1.6x at the same N (1211 against 1917 at N 128) although both carry a 32-bit index: the whole gain is the one-word shuffle, which the u64 route cannot have.",
+   "The throughput of the bf16 packed network is flat at 254 to 275 Gelem/s from N 32 to N 256 while the reference falls from 125 to 102: with one word per element the eager loop stays issue bound on the shuffle pipe and the chain depth no longer shows."
+  ],
+  "open_questions": [
+   "A 48-bit fp32 route (truncated key plus 16-bit index in one 64-bit word is no gain, a 16-bit truncated key plus 16-bit index in one 32-bit word is N4's idea and changes the result) was not tried in this slice.",
+   "Whether the one-word bf16 network keeps its 2x throughput at N 512 to 2048 (IPT 16 to 64) where registers grow, outside the focus cells of this card."
+  ]
+ }
+}

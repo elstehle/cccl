@@ -1,0 +1,56 @@
+{
+ "author": "opt-W1b",
+ "approach_id": "W1",
+ "variant": "level_same",
+ "commit": "3fa70dd18f",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "striped",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "none beyond convergence of the logical warp",
+  "sync_performed": "shuffles only, no barrier",
+  "k_range": "[1, N] with MaxK = max(LW, next_pow2(k)) dividing N, k 8 to 64 measured",
+  "n_range": "N = LW x IPT, N over MaxK a power of two for the level-parallel loop, bf16 N <= 65536 (16-bit index), measured 32 to 256 at LW 32",
+  "type_constraints": "bf16 keys as one 32-bit word (twiddled key high, inverted index low), fp32 keys as one 64-bit word, int32 indices",
+  "nan_behavior": "a NaN is twiddled by its sign bit (positive NaN above +inf, negative NaN below -inf) and selected or dropped deterministically, never produced by focus-set inputs. -0.0 is canonicalized to +0.0 before packing",
+  "tie_break_support": "inherent: the word order is (key descending, index ascending), prefer_smaller_index costs nothing (same instantiation, same cycles)",
+  "sorted_output_support": "inherent: the first k striped positions are sorted"
+ },
+ "report_path": "approaches/W1/REPORT_W1b.md",
+ "source_paths": [
+  "harness/adapters/W1_level_same.cuh",
+  "harness/adapters/W1_eager_same.cuh",
+  "approaches/W1/w1b_detail.cuh"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T17"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Oracle battery (random x4, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) passed on every cell for variant and control. W1 was run by two optimizer instances after a duplicate launch: opt-W1 (worktree cccl-topk-swarm-W1, variants W1_packed, W1_level, W1_reference_sub) and opt-W1b (this card, worktree cccl-topk-swarm-W1b, variants W1_eager_same, W1_level_same, W1_minmax_pairs, W1_level_pairs, W1_baseline, W1_kvcmp and their _sub forms). opt-W1b owns the N2 kill experiment on identical network code, the fp32 native min max pairs route and the sub-warp grid.",
+ "findings": {
+  "low_level": [
+   "Same instruction mix as the eager loop it is measured against: fp32 (u64 words) N 128 k 32 latency kernel 1184 SASS instructions against 1176 for W1_eager_same, bf16 (u32 words) 720 against 728, 300 SHFL per kernel in both fp32 forms and 150 in both bf16 forms (one shuffle per word per stage, 75 exchanges per element). Registers 30 against 28 (bf16 N 128), 42 against 42 (fp32 N 128), 60 against 58 (fp32 N 256), no spills, no barriers, 0 bytes stack.",
+   "A packed-word compare-exchange is one ISETP.GT.U32 with the direction folded into its XOR predicate input and one SEL (bf16: 230 ISETP and 162 SEL for 150 exchanges plus the per-stage direction predicates), the 64-bit word adds the ISETP.EX step: 390 ISETP and 322 SEL for 150 exchanges. Per stage at IPT 1 this is shuffle latency plus two dependent ALU operations, 38 cycles per stage measured (574 cycles for 15 stages at N 32).",
+   "Throughput at 8 blocks of 8 warps per SM in both forms up to N 128, the fp32 word form drops to 6 blocks per SM at N 256 (58 to 60 registers)."
+  ],
+  "algorithmic": [
+   "Kill experiment of idea card N2, as the card states it (N 64 k 32, sort all tiles at once plus one level against two eager tiles, keys-only words, same session): level-parallel against eager on identical network code and identical policies measures 793 against 761 cycles for bf16 (0.96x) and 931 against 934 for fp32 (1.00x). The 1.3x threshold is missed by a wide margin, N2 is killed at this cell.",
+   "The reason is structural: at N = 2 MaxK both loops are the same dependency DAG (sort tile 0 forward, sort tile 1 in reverse, elementwise max, one merge), the eager loop's tile sorts are independent and ptxas already schedules them together. The restructuring can only differ from N = 4 MaxK on, where it replaces the eager chain of T - 1 dependent merges by log2 T levels. Measured there: N 128 k 32 bf16 1125 against 1211 (1.08x), fp32 2020 against 1917 (0.95x), N 256 k 32 bf16 2373 against 2371 (1.00x), fp32 3920 against 3826 (0.98x), N 128 k 64 bf16 1240 against 1338 (1.08x), fp32 2224 against 2216 (1.00x), N 256 k 64 bf16 2939 against 2800 (0.95x), fp32 4361 against 4650 (1.07x). Throughput within 3 percent in every cell (bf16 N 128 k 32 286 against 268 Gelem/s is the largest gain).",
+   "The shuffle count is identical by construction (T sorts of MaxK plus T - 1 merges of MaxK in both loops), so the level-parallel form can only win on dependency depth, and at k <= 32 at warp scope the eager chain of 5-stage merges is short enough that the scheduler hides most of it. The N2 cost model assumed s(IPT) < IPT x s(1) for the concurrent sorts, which holds, but it also holds for the eager loop's independent tile sorts, which the model counted as sequential."
+  ],
+  "negative": [
+   "Level-parallel restructuring of the bitonic top-k on packed words: no gain at N 64 to 256 and k 32 to 64 at warp scope, latency ratio 0.95x to 1.08x, throughput within 3 percent, 2 more registers. Not worth a code path of its own."
+  ],
+  "surprises": [
+   "The sign of the difference flips between the key types at the same cell (bf16 1.08x, fp32 0.95x at N 128 k 32) with the same source structure: the ptxas schedule, not the dependency structure, decides the last 10 percent of these long single-block shuffle kernels."
+  ],
+  "open_questions": [
+   "Whether the level-parallel form pays at N >= 512 at warp scope (T >= 16 tiles, where the eager chain has 15 dependent merges) was not measured in this slice, the sub-warp cells with T 8 to 16 tiles are in the W1_level_same_sub card.",
+   "A level-parallel loop that also pairs within a register (tile spanning two registers paired across the halves, N2 explore item 2) was not built, the register-to-register pairing used here is the natural one for MaxK = LW."
+  ]
+ }
+}
