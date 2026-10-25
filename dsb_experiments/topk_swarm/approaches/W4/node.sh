@@ -46,7 +46,9 @@ w4_ship() {
   w4_env
   (cd $W4WT && git rev-parse HEAD > $W4/harness/SOURCE_COMMIT)
   w4_ssh "mkdir -p $ROOT/work/$HOLDER $ROOT/results/$HOLDER"
-  tar czf - -C $W4 harness approaches/W4 approaches/B3 | w4_ssh "tar xzf - -C $ROOT/work/$HOLDER" || return 1
+  # shared harness (eval-engineer's, latest) first, then this worktree's W4 adapters and approach files on top
+  tar czf - -C $SWARM harness | w4_ssh "tar xzf - -C $ROOT/work/$HOLDER" || return 1
+  tar czf - -C $W4 harness/SOURCE_COMMIT harness/adapters/W4_core.cuh harness/adapters/W4_impl.cuh harness/adapters/W4_chunk4.cuh harness/adapters/W4_chunk8.cuh harness/adapters/W4_wmerge.cuh approaches/W4 approaches/B3 | w4_ssh "tar xzf - -C $ROOT/work/$HOLDER" || return 1
   echo shipped $(cat $W4/harness/SOURCE_COMMIT)
 }
 
@@ -65,3 +67,23 @@ w4_fetch() {
   w4_env
   w4_ssh "tar czf - -C $ROOT/results/$HOLDER ." | tar xzf - -C $SWARM/state/results/$HOLDER && ls -t $SWARM/state/results/$HOLDER | head -8
 }
+
+# Background run.py on the node (long builds): w4_bg <logname> <run.py args...>, then w4_tail <logname>.
+w4_bg() {
+  w4_env
+  local log=$1; shift
+  w4_ssh "cd $ROOT/work/$HOLDER/harness && export PATH=/usr/local/cuda/bin:\$PATH && nohup python3 run.py --repo $ROOT/cccl --root $ROOT --holder $HOLDER --gpu $GPU --node-name $NODE_NAME --arch-name $ARCH --cells ../approaches/W4/cells_w4.json $* > $ROOT/work/$HOLDER/$log.log 2>&1 < /dev/null & echo started \$!"
+}
+# Several run.py invocations in sequence in one background shell: w4_bgseq <logname> 'args1' 'args2' ...
+w4_bgseq() {
+  w4_env
+  local log=$1; shift
+  local script="cd $ROOT/work/$HOLDER/harness && export PATH=/usr/local/cuda/bin:\$PATH"
+  local a
+  for a in "$@"; do
+    script="$script && python3 run.py --repo $ROOT/cccl --root $ROOT --holder $HOLDER --gpu $GPU --node-name $NODE_NAME --arch-name $ARCH --cells ../approaches/W4/cells_w4.json $a"
+  done
+  w4_ssh "nohup bash -c $(printf %q "$script") > $ROOT/work/$HOLDER/$log.log 2>&1 < /dev/null & echo started \$!"
+}
+w4_tail() { w4_env; w4_ssh "tail -n ${2:-6} $ROOT/work/$HOLDER/$1.log | cut -c1-200"; }
+w4_grep() { w4_env; w4_ssh "grep -h $2 $ROOT/work/$HOLDER/$1.log | cut -c1-220 | tail -n ${3:-40}"; }

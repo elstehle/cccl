@@ -334,48 +334,48 @@ W4_HD inline constexpr bool tree_valid(int threads, int runs, int run_len, int k
 template <typename W, int Threads, int Runs, int RunLen, int K>
 struct merge_tree
 {
-  static constexpr int G      = word_ops<W>::group;
-  static constexpr int levels = log2_ceil(Runs);
+  W4_HD static constexpr int G      = word_ops<W>::group;
+  W4_HD static constexpr int levels = log2_ceil(Runs);
 
-  static constexpr int in_len(int l)
+  W4_HD static constexpr int in_len(int l)
   {
     return l == 0 ? RunLen : cmin(K, 2 * in_len(l - 1));
   }
-  static constexpr int out_len(int l)
+  W4_HD static constexpr int out_len(int l)
   {
     return cmin(K, 2 * in_len(l));
   }
-  static constexpr int runs_at(int l)
+  W4_HD static constexpr int runs_at(int l)
   {
     return Runs >> l;
   }
-  static constexpr int pairs_at(int l)
+  W4_HD static constexpr int pairs_at(int l)
   {
     return runs_at(l) / 2;
   }
   // threads per pair
-  static constexpr int tpp(int l)
+  W4_HD static constexpr int tpp(int l)
   {
     return Threads / pairs_at(l);
   }
-  static constexpr int opt(int l)
+  W4_HD static constexpr int opt(int l)
   {
     return out_len(l) / tpp(l);
   }
-  static constexpr int chunk(int l)
+  W4_HD static constexpr int chunk(int l)
   {
     return cmin(CHUNK, opt(l));
   }
   // run stride in words of level l's input buffer: whole swizzle groups plus one pad group
-  static constexpr int stride(int l)
+  W4_HD static constexpr int stride(int l)
   {
     return round_up(in_len(l), G) + G;
   }
-  static constexpr int in_words(int l)
+  W4_HD static constexpr int in_words(int l)
   {
     return runs_at(l) * stride(l);
   }
-  static constexpr int buf_words(int parity)
+  W4_HD static constexpr int buf_words(int parity)
   {
     int m = 1;
     for (int l = parity; l < levels; l += 2)
@@ -384,10 +384,10 @@ struct merge_tree
     }
     return m;
   }
-  static constexpr int words0 = buf_words(0);
-  static constexpr int words1 = buf_words(1);
+  W4_HD static constexpr int words0 = buf_words(0);
+  W4_HD static constexpr int words1 = buf_words(1);
 
-  static constexpr bool valid()
+  W4_HD static constexpr bool valid()
   {
     return tree_valid(Threads, Runs, RunLen, K);
   }
