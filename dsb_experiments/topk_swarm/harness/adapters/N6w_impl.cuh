@@ -384,6 +384,24 @@ struct bins5
   }
 };
 
+// per-item bin store: plain registers up to 32 items per lane, 5-bit fields above
+template <int IPT, bool PACKED = (IPT > 32)>
+struct bin_store
+{
+  uint32_t u[IPT];
+  __device__ __forceinline__ void set(int i, uint32_t x)
+  {
+    u[i] = x & 31u;
+  }
+  __device__ __forceinline__ uint32_t get(int i) const
+  {
+    return u[i];
+  }
+};
+template <int IPT>
+struct bin_store<IPT, true> : bins5<IPT>
+{};
+
 // ------------------------------------------------------------------------------------------------
 // Bracket pass (N6): 32 equal width bins over the value range of the current candidates
 // ------------------------------------------------------------------------------------------------
@@ -1014,24 +1032,6 @@ __device__ __forceinline__ void w2_finish_fused(
   }
   w2_rounds_u4<FIPT, IdxBits>(words, st.n, st.r, above, out_idx, lane);
 }
-
-// per-item bin store: plain registers up to 32 items per lane, 5-bit fields above
-template <int IPT, bool PACKED = (IPT > 32)>
-struct bin_store
-{
-  uint32_t u[IPT];
-  __device__ __forceinline__ void set(int i, uint32_t x)
-  {
-    u[i] = x & 31u;
-  }
-  __device__ __forceinline__ uint32_t get(int i) const
-  {
-    return u[i];
-  }
-};
-template <int IPT>
-struct bin_store<IPT, true> : bins5<IPT>
-{};
 
 // Compile-time support predicate shared by the adapters: warp scope, bf16 or fp32, N a multiple
 // of 32 up to 32768 (the scan packs two 16-bit counts into one word), k in [1, N/2]
