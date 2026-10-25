@@ -141,7 +141,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.7";
+inline constexpr const char* harness_version = "0.8";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -1209,8 +1209,41 @@ struct host_input
 
 // One call's input: `rows` independent rows of n keys of the pattern (row r uses seed + 1000003 r,
 // so row 0 of a multi-row input equals the single-row input of the same seed).
+// Sorted-runs post-transform (`--runs M`): after the key-type rounding, the row is split into M
+// consecutive runs of about n / M items and every run is stably sorted by (key descending, index
+// ascending), the order an exact per-chunk top-k emits. Applied to the cell pattern and to every
+// battery pattern alike, so a merge whose contract requires sorted runs is still tested on ties,
+// signed zeros and floods.
 template <class KeyT>
-host_input<KeyT> make_input(const std::string& pattern, int n, int k, unsigned seed, int rows = 1)
+void sort_runs(std::vector<float>& values, std::vector<typename key_traits<KeyT>::bits_t>& bits, int n, int runs)
+{
+  if (runs <= 1)
+  {
+    return;
+  }
+  const int run_len = (n + runs - 1) / runs;
+  for (int a = 0; a < n; a += run_len)
+  {
+    const int b = std::min(n, a + run_len);
+    std::vector<int> order(b - a);
+    std::iota(order.begin(), order.end(), a);
+    std::stable_sort(order.begin(), order.end(), [&](int x, int y) {
+      return values[x] > values[y];
+    });
+    std::vector<float> v2(b - a);
+    std::vector<typename key_traits<KeyT>::bits_t> b2(b - a);
+    for (int i = 0; i < b - a; ++i)
+    {
+      v2[i] = values[order[i]];
+      b2[i] = bits[order[i]];
+    }
+    std::copy(v2.begin(), v2.end(), values.begin() + a);
+    std::copy(b2.begin(), b2.end(), bits.begin() + a);
+  }
+}
+
+template <class KeyT>
+host_input<KeyT> make_input(const std::string& pattern, int n, int k, unsigned seed, int rows = 1, int runs = 0)
 {
   using traits = key_traits<KeyT>;
   host_input<KeyT> in;
@@ -1234,6 +1267,15 @@ host_input<KeyT> make_input(const std::string& pattern, int n, int k, unsigned s
         fprintf(stderr, "pattern %s produced NaN at %d\n", pattern.c_str(), j);
         exit(2);
       }
+    }
+    if (runs > 1)
+    {
+      std::vector<float> rv(in.values.begin() + static_cast<size_t>(r) * n, in.values.begin() + static_cast<size_t>(r + 1) * n);
+      std::vector<typename traits::bits_t> rb(in.bits.begin() + static_cast<size_t>(r) * n,
+                                               in.bits.begin() + static_cast<size_t>(r + 1) * n);
+      sort_runs<KeyT>(rv, rb, n, runs);
+      std::copy(rv.begin(), rv.end(), in.values.begin() + static_cast<size_t>(r) * n);
+      std::copy(rb.begin(), rb.end(), in.bits.begin() + static_cast<size_t>(r) * n);
     }
   }
   return in;
@@ -1658,6 +1700,7 @@ struct options
   int seeds              = 4;
   int reps               = default_reps;
   int calls              = 0; // 0: default_calls(N)
+  int runs               = 0; // 0 or 1: off, M: every input row is M sorted runs
   bool verbose           = false;
 };
 
@@ -1709,6 +1752,10 @@ inline options parse_options(int argc, char** argv)
     {
       o.calls = atoi(next("--calls").c_str());
     }
+    else if (a == "--runs")
+    {
+      o.runs = atoi(next("--runs").c_str());
+    }
     else if (a == "--verbose")
     {
       o.verbose = true;
@@ -1716,7 +1763,7 @@ inline options parse_options(int argc, char** argv)
     else if (a == "--help")
     {
       printf("usage: cell [--out f.json] [--pattern p] [--regimes latency,throughput] [--oracle-only] "
-             "[--no-battery] [--seeds n] [--reps n] [--calls n] [--verbose]\n");
+             "[--no-battery] [--seeds n] [--reps n] [--calls n] [--runs m] [--verbose]\n");
       exit(0);
     }
     else
@@ -1883,7 +1930,7 @@ struct cell_runner
     {
       for (int s = 0; s < it.seeds; ++s)
       {
-        auto in = make_input<KeyT>(it.pattern, N, K, static_cast<unsigned>(s), Cfg::rows);
+        auto in = make_input<KeyT>(it.pattern, N, K, static_cast<unsigned>(s), Cfg::rows, o.runs);
         std::string why;
         ++r.oracle_cases;
         if (!oracle_one(in, why))
@@ -2035,7 +2082,7 @@ struct cell_runner
     std::vector<bits_t> h(static_cast<size_t>(num_inputs) * Cfg::keys_per_call);
     for (int i = 0; i < num_inputs; ++i)
     {
-      auto in = make_input<KeyT>(o.pattern, N, K, 1000u + i, Cfg::rows);
+      auto in = make_input<KeyT>(o.pattern, N, K, 1000u + i, Cfg::rows, o.runs);
       std::copy(in.bits.begin(), in.bits.end(), h.begin() + static_cast<size_t>(i) * Cfg::keys_per_call);
       for (int row = 0; row < Cfg::rows; ++row)
       {
@@ -2153,6 +2200,7 @@ json make_cells(const adapter_result& v,
                 const adapter_result* c,
                 const std::string& control_name,
                 int rows,
+                int runs,
                 int threads,
                 int n,
                 int k,
@@ -2171,6 +2219,10 @@ json make_cells(const adapter_result& v,
     j.add("n", n);
     j.add("k", k);
     j.add("rows", rows);
+    if (runs > 1)
+    {
+      j.add("runs", runs);
+    }
     j.add("threads", threads);
     j.add("requirement", to_string(req));
     j.add("input_pattern", pattern);
@@ -2296,6 +2348,7 @@ int run_cell(int argc, char** argv)
   root.add("control_requirement", to_string(CReq));
   root.add("control_is_aa", same_ab);
   root.add("pattern", o.pattern);
+  root.add("runs", o.runs);
   root.add("variant_supported", v_ok);
   root.add("control_supported", c_ok);
   root.add("oracle_selftest", oracle_selftest(N, K));
@@ -2353,7 +2406,7 @@ int run_cell(int argc, char** argv)
     root.add("status",
              !selftest_ok ? "selftest_failed" : vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
     root.add("cells",
-             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, VCfg::rows, Threads, N, K, Req,
+             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, VCfg::rows, o.runs, Threads, N, K, Req,
                                              VA::output, o.pattern, can0, can1)
                           : json::array());
 

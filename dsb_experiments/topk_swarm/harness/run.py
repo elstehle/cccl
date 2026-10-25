@@ -123,10 +123,12 @@ def expand_named_cells(path, scope, args, default_threads):
     return cells, skipped
 
 
-def cell_name(variant, control, c, control_req=None):
+def cell_name(variant, control, c, control_req=None, runs=0):
     ctrl = control + ("@" + control_req if control_req and control_req != c["requirement"] else "")
     base = "%s__%s__%s_T%d_N%d_K%d_%s" % (variant, ctrl, c["key_type"], c["threads"], c["n"], c["k"],
                                          c["requirement"])
+    if runs and runs > 1:
+        base += "_runs%d" % runs
     return base + ("__" + c["workload_name"]) if c.get("workload_name") else base
 
 
@@ -318,6 +320,8 @@ def main():
     ap.add_argument("--patterns", default="random", help="comma list of input patterns to measure")
     ap.add_argument("--regimes", default="latency,throughput")
     ap.add_argument("--seeds", type=int, default=4, help="oracle seeds for the cell's pattern")
+    ap.add_argument("--runs", type=int, default=0, help="M: every input row is M consecutive runs sorted by (key "
+                    "descending, index ascending), applied to the cell pattern and the battery (sorted-runs merge inputs)")
     ap.add_argument("--no-battery", action="store_true", help="oracle on the cell pattern only")
     ap.add_argument("--oracle-only", action="store_true")
     ap.add_argument("--arch", default="sm_100")
@@ -379,7 +383,7 @@ def main():
                                                                        args.patterns, args.regimes))
     if args.dry_run:
         for c in cells:
-            log("  " + cell_name(variant, control, c, args.control_req))
+            log("  " + cell_name(variant, control, c, args.control_req, args.runs))
         return 0
 
     # ---- generate + compile (outside the lock)
@@ -390,7 +394,7 @@ def main():
     if not args.measure_only:
         jobs.append(("canary_main", os.path.join(harness_dir, "canary_main.cu"), canary_bin))
     for c in cells:
-        name = cell_name(variant, control, c, args.control_req)
+        name = cell_name(variant, control, c, args.control_req, args.runs)
         src = os.path.join(gen_dir, name + ".cu")
         binary = os.path.join(gen_dir, name)
         c["name"] = name
@@ -458,6 +462,7 @@ def main():
         "control": c_meta,
         "control_is_aa": control == variant and not args.control_req,
         "control_req": args.control_req,
+        "runs": args.runs,
         "build": builds,
     }
     if args.build_only:
@@ -493,6 +498,8 @@ def main():
                 if c.get("named_regime") and c["named_regime"] != "both":
                     regimes = ",".join(r for r in args.regimes.split(",") if r == c["named_regime"]) or regimes
                 extra = ["--out", out, "--pattern", pat, "--regimes", regimes, "--seeds", str(args.seeds)]
+                if args.runs and args.runs > 1:
+                    extra += ["--runs", str(args.runs)]
                 if args.no_battery:
                     extra.append("--no-battery")
                 if args.oracle_only:

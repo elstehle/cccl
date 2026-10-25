@@ -154,6 +154,14 @@ the cell unless `--allow-selftest-failure`. Harness 0.3 and earlier recorded a f
 k == N/2 (the self-test's own input had no non-zero key left for its "wrong" set, the oracle was
 intact), fixed in 0.4, cards built from such batches keep those cells with a note.
 
+Sorted runs (`--runs M`, harness 0.8, for chunk-merge primitives whose contract requires sorted
+input runs): after the key-type rounding every input row is split into M consecutive runs of
+about N / M items and each run is stably sorted by (key descending, index ascending), the order
+an exact per-chunk top-k emits. The transform applies to the cell pattern and to every battery
+pattern (ties, signed zeros and floods stay valid tests of a merge), the cell JSON and the card
+cell carry `runs`, `input_pattern` stays the generating pattern, and cell names get a `_runsM`
+suffix. The control adapter sees the same input.
+
 Every measured input also reports its tie structure at rank k (`input_tie_stats` per adapter,
 `ties_at_k_mean` and `ties_at_k_max` per cell: how many keys equal the k-th largest, over the 16
 measurement inputs). bf16 has 128 values per binade, so bf16 rows tie at the pivot routinely and
