@@ -261,11 +261,14 @@ __device__ __forceinline__ void sts32_if_in(u32 addr, u32 v, u32 x, u32 lo, u32 
 } // namespace detail
 
 // How guarded per-item memory operations are written: `branchy` leaves them to the compiler
-// (if statements), `predicated` uses the asm helpers above.
+// (if statements around store and position increment), `predicated` uses the asm helpers above,
+// `lean` keeps plain C++ but puts exactly one store inside each if and advances the positions
+// with selects, the shape ptxas predicates without a reconvergence region.
 enum class store_mode
 {
   branchy,
-  predicated
+  predicated,
+  lean
 };
 
 // Candidate buffer layout. Thread t holds compacted items [t * cpt, (t + 1) * cpt) in both.
@@ -289,6 +292,7 @@ class block_topk_compact
 public:
   using u32 = ::cuda::std::uint32_t;
   static constexpr bool predicated = (Stores == store_mode::predicated);
+  static constexpr bool lean       = (Stores == store_mode::lean);
 
   static constexpr int threads     = Threads;
   static constexpr int ipt         = ItemsPerThread;
@@ -604,6 +608,29 @@ private:
         pos_eq += eq ? 1u : 0u;
       }
     }
+    else if constexpr (lean)
+    {
+#pragma unroll
+      for (int i = 0; i < ipt; ++i)
+      {
+        const int idxv   = base + i;
+        const bool above = ck[i] < lo;
+        const bool eq    = !above && (ck[i] <= hi_incl);
+        const u32 word   = padded ? pos_eq + pos_eq / static_cast<u32>(cpt) : pos_eq;
+        int* dst_above   = out + pos_above;
+        cand_word_t* dst = storage.cands + word;
+        if (above)
+        {
+          *dst_above = idxv;
+        }
+        if (eq)
+        {
+          *dst = cand::make(ck[i], idxv);
+        }
+        pos_above += above ? 1u : 0u;
+        pos_eq += eq ? 1u : 0u;
+      }
+    }
     else
     {
 #pragma unroll
@@ -679,6 +706,30 @@ private:
           static_cast<u32>(need_ties),
           valid.lhs(j),
           valid.rhs());
+        pos_above += above ? 1 : 0;
+        pos_tie += tie ? 1 : 0;
+      }
+    }
+    else if constexpr (lean)
+    {
+#pragma unroll
+      for (int j = 0; j < M; ++j)
+      {
+        const bool v     = valid(j);
+        const bool above = v && (ck[j] < lo);
+        const bool tie   = v && !above && (ck[j] <= hi_incl);
+        const int rank   = (TB == tie_break::larger_index) ? (total_ties - 1 - pos_tie) : pos_tie;
+        const int idxv   = idx_of(j);
+        int* dst_above   = out_above + pos_above;
+        int* dst_tie     = out_tie + rank;
+        if (above)
+        {
+          *dst_above = idxv;
+        }
+        if (tie && rank < need_ties)
+        {
+          *dst_tie = idxv;
+        }
         pos_above += above ? 1 : 0;
         pos_tie += tie ? 1 : 0;
       }
