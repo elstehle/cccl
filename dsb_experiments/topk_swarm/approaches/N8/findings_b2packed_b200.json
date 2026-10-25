@@ -28,8 +28,23 @@
     "harness/cells_n8.json",
     "harness/topk_harness.cuh"
   ],
-  "techniques_adopted": ["T1", "T9", "T10", "T11", "T26", "T27", "T33", "T34", "T36", "T38", "T41"],
-  "techniques_contributed": [],
+  "techniques_adopted": [
+    "T1",
+    "T9",
+    "T10",
+    "T11",
+    "T26",
+    "T27",
+    "T33",
+    "T34",
+    "T36",
+    "T38",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T43",
+    "T44"
+  ],
   "correctness_notes": "Block-size sweep of B2_packed (inherited unchanged, the adapter only widens the support predicate to 64 threads and caps IPT at 64) at 64, 128 and 256 threads in one lock section on umbriel-b200-020, against B1_idx at the same block size (N8_b1idx, B1_idx inherited unchanged with 64 threads allowed) with --control-req not_guaranteed, so the prefer_smaller_index cells of the variant carry the control's not_guaranteed path. 120 shapes (bf16 and fp32, N 1024 k 4 to 64, N 2048 k 8 to 32, N 4096 k 16 and 64, both requirements, three block sizes), oracle 13 cases per shape for variant and control, all passed, no failed or unsupported cells. The 128 and 256-thread cells reproduce the cards B2_packed_b200_20261025_1 and _3 to the cycle except the two 128-thread N 4096 k 64 latency cells, which read 7831 and 8263 cycles here as in verify-B2's rerun on this node (the card's 6254 and 6219 are from umbriel-b200-047). The comparison across block sizes is across cells of one lock section and one process launch per cell, not a variant-control pair inside one process: the harness pairs variant and control at one (Threads, N, k).",
   "findings": {
     "low_level": [

@@ -1,0 +1,75 @@
+{
+  "author": "opt-N8",
+  "approach_id": "N8",
+  "variant": "b1idx",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 2128,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 2 per radix pass plus 1 init (B1_idx's code, inherited unchanged)",
+    "k_range": "[1, N) at run time",
+    "n_range": "N = Threads x IPT with Threads in {64, 128, 256, 512, 1024} and IPT >= 1; this batch 256, 512 and 1024 threads at N 4096, 8192, 16384 and 32768 (IPT 4 to 128)",
+    "type_constraints": "fp32 and bf16 through the radix traits (8-bit digits, 4 or 2 passes), int32 indices from the striped tile position",
+    "nan_behavior": "twiddled as the largest key and selected first, never produced by the focus set",
+    "tie_break_support": "not supported (not_guaranteed only, ties at the k-th key by atomic ticket order), B1_det is the prefer_smaller_index variant",
+    "sorted_output_support": "not supported (post-sort of k)"
+  },
+  "report_path": "approaches/N8/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N8_b1idx.cuh",
+    "harness/adapters/B1_idx.cuh",
+    "approaches/B1/block_topk_b1.cuh",
+    "harness/adapters/N8_b3tuned.cuh",
+    "harness/adapters/B3_tuned.cuh",
+    "approaches/B3/block_topk_compact.cuh",
+    "harness/cells_n8.json",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": [
+    "T11",
+    "T21",
+    "T29",
+    "T33",
+    "T36"
+  ],
+  "techniques_contributed": [
+    "T45"
+  ],
+  "correctness_notes": "Block-size sweep of B1_idx (inherited unchanged, the adapter only widens the support predicate to 64 and 1024 threads) at 256, 512 and 1024 threads in one lock section on umbriel-b200-020, against B3_tuned at the same block size (N8_b3tuned, B3_tuned inherited unchanged with 128, 512 and 1024 threads allowed), not_guaranteed only (B1_idx has no tie-break path). 72 shapes (bf16 and fp32, N 4096 and 8192 at k 16 and 64, N 16384 and 32768 at k 16, 64, 256, 1024, three block sizes), oracle 13 cases per shape for variant and control, all passed, no failed or unsupported cells. The 256 and 512-thread cells at N 16384 and 32768 reproduce the control column of card N8_b3tuned_b200_20261025_1 (same node, 13 minutes earlier) within 0.3 percent (bf16 N 32768 k 16: 13530 against 13507 at 512 threads, 16844 against 16847 at 256). The comparison across block sizes is across cells of one lock section, the harness pairs variant and control at one (Threads, N, k).",
+  "findings": {
+    "low_level": [
+      "Registers of B1_idx per block size and N (latency kernel, 0 spill unless noted): 256 threads 47 to 48 (N 4096, IPT 16), 64 (N 8192), 128 (N 16384), 248 to 250 (N 32768, IPT 128); 512 threads 40 (N 4096, IPT 8), 54 to 64 (N 8192), 64 (N 16384, fp32 40 bytes of spill with 6 STL and 4 LDL), 100 to 103 (N 32768, IPT 64); 1024 threads 32 (N 4096, IPT 4), 32 to 44 (N 8192), 56 to 58 (N 16384), 64 (N 32768, IPT 32, fp32 20 bytes of spill with 3 STL and 2 LDL). The 64-register cap of __launch_bounds__(1024) is met at IPT 32 with 20 bytes of spill, the 128-register cap of 512 threads is never reached (103 at IPT 64).",
+      "SASS size of the latency kernel at N 32768: 10296 (256 threads), 5592 (512), 3328 (1024) instructions bf16, 14056, 7696, 4768 fp32; at N 4096 1616, 1120, 1080 bf16. Below IPT 8 the kernel stops shrinking (the pass machinery, scan and epilogue are fixed), which is where 1024 threads stop paying.",
+      "Occupancy in the throughput regime (blocks per SM): 256 threads 5, 4, 2, 1 at N 4096, 8192, 16384, 32768; 512 threads 3, 3, 2, 1; 1024 threads 2, 2, 1, 1. Threads per SM are therefore 1280, 1024, 512, 256 at 256 threads against 1536, 1536, 1024, 512 at 512 threads and 2048, 2048, 1024, 1024 at 1024 threads.",
+      "B3_tuned (the control) at 1024 threads: 64 registers with 56 to 80 bytes of spill at bf16 N 32768 and 432 to 808 at fp32, 104 bytes at fp32 N 16384, 0 below; 128 registers at 512 threads with 64 and 844 bytes at N 32768 (card N8_b3tuned_b200_20261025_1). B3 is slower at 1024 than at 512 threads everywhere (bf16 N 32768 20497 against 17036 cycles) and slower than at 256 threads at N 16384 and below.",
+      "Latency fit quality: r2 at least 0.9992 at every block size, the generate-only control is 3909 (bf16) and 3612 (fp32) cycles at N 32768 and 256 threads, 2550 and 2060 at 512, 1700 and 1420 at 1024."
+    ],
+    "algorithmic": [
+      "B1_idx latency per block size (cycles, ratio over the 256-thread form): N 32768 bf16 k 16, 64, 256, 1024 at 512 threads 13530, 13762, 14689, 17991 (1.24x, 1.24x, 1.27x, 1.36x), at 1024 threads 14334, 14540, 15222, 17764 (1.18x, 1.18x, 1.23x, 1.38x), against 16844, 17088, 18657, 24514 at 256; fp32 N 32768 at 512 threads 11797, 14154, 15867, 19695 (1.32x, 1.35x, 1.37x, 1.45x), at 1024 threads 13424, 15911, 17370, 20491 (1.16x, 1.20x, 1.26x, 1.39x), against 15520, 19070, 21803, 28497. N 16384: 512 threads 1.19x to 1.34x (bf16 7567, 7902, 8897, 10604 against 9042, 9385, 11022, 14180), 1024 threads 0.99x to 1.27x (9148 to 11188). N 8192: 512 threads 1.13x and 1.17x bf16 (4627 and 4938 against 5235 and 5768), 1.05x and 1.10x fp32, 1024 threads 0.69x to 0.82x. N 4096: 512 threads 0.98x and 1.04x bf16, 1.02x and 1.08x fp32 (a tie), 1024 threads 0.57x to 0.64x.",
+      "B1_idx throughput per block size (Gelem per s, ratio over 256 threads): N 32768 bf16 584.5, 579.8, 548.3, 458.9 at 512 threads (1.27x, 1.27x, 1.30x, 1.37x) and 563, 557, 537, 469 at 1024 (1.23x, 1.22x, 1.27x, 1.40x) against 459, 455, 423, 334.5; fp32 N 32768 664, 578, 526, 439 at 512 (1.45x, 1.46x, 1.40x, 1.44x), 610, 528, 489, 427 at 1024, against 459, 396, 377, 304. N 16384: 512 threads 1.02x to 1.15x, 1024 threads 0.63x to 0.80x. N 8192: 512 threads 0.70x to 0.84x, 1024 threads 0.41x to 0.48x. N 4096: 512 threads 0.63x to 0.69x, 1024 threads 0.28x to 0.33x (a 1024-thread block of IPT 4 runs its scan on a quarter of its threads and its 32-warp barriers five times per call).",
+      "The block size that wins for B1_idx, both regimes: 512 threads from N 8192 in latency and from N 16384 in throughput (N 8192 throughput still prefers 256 at 0.70x to 0.84x for 512), 256 threads at N 4096 and below in both regimes except the one-wave throughput at N 1024 and 2048, where card N8_b2packed_b200_20261025_1 measured 64 threads ahead (601 against 409 Gelem per s at bf16 N 1024 k 16). 1024 threads are never the best shape: at N 32768 they are 2 to 7 percent behind 512 in latency and 2 to 8 percent in throughput with a 64-register kernel, at smaller N the fixed per-pass work (scan, barriers, epilogue) on 32 warps dominates.",
+      "Why 512 wins and 1024 does not add: per pass the dependent histogram sweep is IPT predicated atomics per thread (halved at 512, quartered at 1024), the scan over 256 bins costs one BlockScan over the block (8, 16 or 32 warps, with half and three quarters of the threads holding no bin at 512 and 1024), and the barrier costs 28, 44 and more cycles (T11). From 512 to 1024 threads at N 32768 the sweep saves 32 atomics per thread per pass (about 1000 cycles over three passes at the MIO rate) and the scan and barriers cost about as much back, the measured net is minus 800 cycles bf16 and minus 1600 fp32 for 1024 against 512. The gain also grows with k at every block size (1.24x at k 16 to 1.36x at k 1024 bf16 N 32768 at 512 threads): the index-only ticket epilogue issues one shared atomic with return per selected item per thread, serialized per warp, and more warps shorten that chain.",
+      "Against B3_tuned at the same block size (the control, latency ratio B3 over B1_idx): at 512 threads B1_idx wins every cell up to k 256 (1.07x to 1.39x) and B3 wins k 1024 by 1.03x to 1.10x at N 16384 and 32768 (fp32 N 32768 k 1024 17927 against 19695); at 1024 threads B1_idx wins every cell including k 1024 (1.06x to 1.51x) because B3 at 1024 threads spills and loses its emission advantage. In throughput B1_idx wins every cell at every block size (1.06x to 2.26x), the one exception being bf16 N 16384 k 1024 at 256 threads (0.98x). For the final evaluation the index-only radix incumbent at 512 threads is the number to beat at N 16384 and 32768 for k up to 256 (13.5k bf16 and 11.8k fp32 cycles at N 32768 k 16, 585 and 664 Gelem per s), and B3_tuned at 512 threads keeps a latency-only edge of 3 to 10 percent at k 1024 plus the free prefer_smaller_index."
+    ],
+    "negative": [
+      "1024-thread blocks never win: 0.93x to 0.99x of the 512-thread form at N 32768 bf16 k 16 to 256, 0.88x to 0.93x fp32, 0.57x to 0.82x of the 256-thread form at N 4096 and 8192 in latency, and 0.28x to 0.80x in throughput below N 32768 (the 1024-thread block fills the SM with one block whose scan and epilogue run on a fraction of its warps).",
+      "512 threads do not pay at N 4096 (0.98x to 1.08x latency, 0.63x to 0.69x throughput): with 8 items per thread the sweep is already short and the 512-thread kernel runs 3 blocks per SM where the 256-thread kernel runs 5, both occupancy limited by registers (40 x 512 against 42 x 256).",
+      "The B3_tuned control loses ground at every larger block size: 512 threads give it 1.12x to 1.15x in latency against B1_idx's 1.24x to 1.45x, and 1024 threads push it below its 256-thread form."
+    ],
+    "surprises": [
+      "The incumbent's best shape at N 32768 was two warps per scheduler short: a one-line change of the block size (and nothing in the primitive) gains 1.24x to 1.45x in latency and 1.27x to 1.46x in throughput, more than any wave 1 B1 variant gained over its baseline, and the 512-thread kernel holds 64 items per thread in 100 to 103 registers with no spill.",
+      "The 1024-thread kernel at N 32768 (32 items per thread, 64 registers, 20 bytes of spill) is within 7 percent of the 512-thread kernel in latency and within 8 percent in throughput, so the radix passes tolerate 32 warps per block; it is the fixed per-pass work that stops the trend, not the barrier alone.",
+      "The gain of a larger block grows with k at fixed N (1.24x at k 16 to 1.36x at k 1024 bf16 N 32768 at 512 threads), which points at the epilogue's per-warp serialized tickets rather than at the passes."
+    ],
+    "open_questions": [
+      "Whether 384 or 768 threads (three or six warps per scheduler) sit between 256 and 512 at N 4096 to 8192 where 512 ties or loses; the harness takes any multiple of 32 that divides N.",
+      "Whether the 512-thread gain carries into the batched device kernel with one 16-warp block per SM against one 8-warp block per SM at the same elements per block (the one-wave throughput regime says yes at N 32768, 1.27x to 1.46x, and says 256 threads at N 8192 and below).",
+      "B1_det (the prefer_smaller_index variant) was not swept; its tie table is per warp and tile slot, so 512 threads double its table and halve its slots.",
+      "A single node (umbriel-b200-020) measured this card; wave 1's B1 cards reproduced within 0.3 to 2 percent across nodes, so node variance is not expected for radix kernels, but the 512 and 1024-thread forms have not been run elsewhere."
+    ]
+  }
+}
