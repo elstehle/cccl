@@ -294,7 +294,7 @@ run, not built.
 - No GB200 card. No sm_100f variant.
 - The chunk cards were built from the v2 batches (commit 6f4b9c2190), the block code of v4 is the
   same algorithm (the rolled loop does not apply at one chunk per level, the exact-count path and
-  the swizzle are unchanged); W4_chunk4q is its own card.
+  the swizzle are unchanged), W4_chunk4q is its own card.
 
 ## 9. Pointers
 
@@ -309,6 +309,6 @@ run, not built.
   `phase_probe.cu`, `celltab.py`, `cells_w4.json`, `node.sh`, `findings_*.json`,
   `techniques/t_rolled_chunk_loop.md` (T62).
 - Catalogue: adopted T7, T28, T29, T34, T36, T42, T48, T49, T54, T55, contributed T62.
-- Reference: `reference/WARP_MERGE_SORT_RESULTS.md` (static merge path, section 4; k-ary search,
+- Reference: `reference/WARP_MERGE_SORT_RESULTS.md` (static merge path, section 4, k-ary search,
   section 14.1), `approaches/B6/REPORT.md` section 6 (the sorted-output premium), card
   `ideas/queue/W4_merge_topk.md`.
