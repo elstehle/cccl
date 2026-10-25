@@ -1,0 +1,55 @@
+{
+ "author": "opt-W4",
+ "approach_id": "W4",
+ "variant": "chunk4q",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked, the tile is 4 consecutive runs of N / 4 items each sorted by (key descending, index ascending), the harness sorted-runs option (--runs 4) provides such input",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 66960,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage or the output buffer by a block barrier (the harness does), the input runs are not checked",
+  "sync_performed": "5 __syncthreads per call (after the staging of the runs, then per level one after the split exchange and one at the level boundary, none after the last level), 13 BAR.SYNC in the latency kernel (two inlined calls plus the harness), no atomics, no shuffles",
+  "k_range": "powers of two with k <= N/2 and every merge level splitting evenly over the 256 threads (w4::tree_valid), measured 2048 at N 8192",
+  "n_range": "N = 256 x IPT with N / 4 a power of two and a multiple of IPT, N <= 32768 (fp32) or 65536 (bf16), measured 8192",
+  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index), int32 indices from the blocked position, runs sorted on entry. Temp storage 66960 bytes for fp32 N 8192 (keys of 4 runs of 2048 plus key and index halves of 2 merged runs, 32-word swizzle groups, one pad group per buffer, 256 ints of split exchange), 50464 bytes for bf16",
+  "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
+  "tie_break_support": "inherent: word order (key descending, index ascending), the merge path takes the earlier run on ties (its indices are smaller), the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
+  "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
+ },
+ "findings": {
+  "low_level": [
+   "Same session as W4_chunk4 (v4 build, commit 0ba868b00d): 118 (bf16) and 121 (fp32) registers, 3344 and 3848 SASS instructions for two calls against 2928 and 3456 for the binary search, no spill, no stack, same shared memory (66848 and 83344 bytes with the harness buffers), occupancy 2."
+  ],
+  "algorithmic": [
+   "4-ary merge path (6 steps of three probes per side against 12 steps of one) against W4_chunk4 in one section at N 8192 k 2048: bf16 5035 against 4250 (0.84x), fp32 7387 against 6581 (0.89x), throughput 467 against 525 and 304 against 319. Against B3_tuned in a second section: bf16 5039 against 6498 (1.29x), fp32 7389 against 7113 (0.96x). Halving the dependent steps does not pay at 256 threads: 36 probe loads per thread instead of 24 through one shared memory pipe shared by 8 warps, and the select cascade and three address computations per step."
+  ],
+  "negative": [
+   "The k-ary search is a loss at block scope at a range of 2048, as it was at warp scope at ranges up to 4 x IPT in the July merge sort study (WARP_MERGE_SORT_RESULTS.md section 14.1): the probes are bandwidth, not latency, when 8 warps search at once."
+  ],
+  "surprises": [
+   "The search phase at block scope is bandwidth bound even though each thread's probe chain is a dependent latency chain: 256 threads x 2 loads per step keep the shared memory pipe busy enough that more probes per step cost more than they save."
+  ],
+  "open_questions": [
+   "Fewer probes per thread (a shuffle-shared split among the lanes of a warp, which search neighbouring diagonals) rather than more is the direction for the block search."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T29",
+  "T36",
+  "T42",
+  "T54",
+  "T55"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W4/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W4_chunk4q.cuh",
+  "harness/adapters/W4_impl.cuh",
+  "harness/adapters/W4_core.cuh"
+ ],
+ "correctness_notes": "All 8 cells passed the oracle battery under both requirements on run-sorted input (harness 0.8 --runs 4), two batches (labels v4_quad against W4_chunk4 and v4_quad_b3 against B3_tuned) on umbriel-b200-091, source commit 0ba868b00d.",
+ "commit": "0ba868b00d32effd1ece55ce9cbc5d93554cc524"
+}

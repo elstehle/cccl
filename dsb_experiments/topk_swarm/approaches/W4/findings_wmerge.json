@@ -8,22 +8,45 @@
   "output_location": "smem",
   "output_form": "indices",
   "output_sorted": true,
-  "temp_storage_bytes": 38912,
+  "temp_storage_bytes": 39936,
   "sync_assumed": "warp convergence of the 32 lanes, the caller separates consecutive calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
-  "sync_performed": "6 __syncwarp per call (after the per-lane run store and after each of the first four merge levels), one __shfl_up_sync per level for the predecessor's split, no barriers",
+  "sync_performed": "6 __syncwarp per call (after the per-lane run store and after each of the first four merge levels), no shuffles, no barriers, no atomics",
   "k_range": "powers of two in [32, N/2] (every merge level must split evenly over the 32 lanes), measured 64, 256 and 1024",
-  "n_range": "N = 32 x IPT with IPT a power of two in [2, 64] (the per-lane Batcher network stays under the local-memory threshold of T34 at 64), measured 512 to 2048",
-  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index, N at most 65536), int32 indices from the blocked position",
+  "n_range": "N = 32 x IPT with IPT a power of two in [2, 64] (the per-lane Batcher network stays under the local-memory threshold of T34 at 64, N 4096 would need an in-lane merge level first), measured 512 to 2048",
+  "type_constraints": "fp32 as a 64-bit word in registers (twiddled key high, inverted index low) stored as a key half and an index half in two 32-bit shared arrays, bf16 as one 32-bit word (16 twiddled key bits above the inverted 16-bit index, N at most 65536), int32 indices from the blocked position. Temp storage: two run buffers in a skewed linear layout (run stride = run length + 16 pad words + 1), 39936 bytes for fp32 N 2048 k 1024, 31744 for fp32 N 2048 k 64, 20064 for bf16 N 2048 k 1024, 9824 for bf16 N 512 k 256; at 8 warps per block the fp32 N 2048 cells exceed the 227 KB block limit in the harness throughput regime (latency only there)",
   "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
   "tie_break_support": "inherent: the word order is (key descending, index ascending), the merge path takes the first run on ties and the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
   "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
  },
  "findings": {
-  "low_level": [],
-  "algorithmic": [],
-  "negative": [],
-  "surprises": [],
-  "open_questions": []
+  "low_level": [
+   "Final build (v4, commit 0ba868b00d, umbriel-b200-091, nvcc 13.4.92): latency kernel 64 to 168 registers (bf16 N 512 k 256 64, N 2048 k 1024 128, fp32 N 2048 k 1024 167, fp32 N 2048 k 64 243), no spill, no stack frame, no STL or LDL in any cell, 3192 to 16104 SASS instructions for the two inlined calls, 0 BAR.SYNC, 6 __syncwarp per call. Dynamic shared memory 9824 to 48128 bytes per warp in the latency kernel, occupancy 4 to 21 blocks per SM.",
+   "Phase profile of v4 (approaches/W4/phase_probe.cu, one warp, 256 calls on 16 random inputs, clock64 stamps with a __syncwarp after each phase): bf16 N 2048 k 1024 prepare (words, Batcher sort of 64, run store with pad) 6439, levels 0 to 4 search 451, 556, 660, 809, 1122 and merge 1864, 2389, 2932, 3581, 1178 (total 21986, harness 19786 net of the control); fp32 prepare 15697, merges 4657, 5424, 6513, 8791, 2446 (47067, harness 42598); bf16 N 2048 k 64 prepare 6404 then merges 1140, 529, 310, 213, 65 (10914); fp32 N 2048 k 64 prepare 14429 then 2530, 1264, 616, 314, 104 (21471). The merge of 64 outputs per lane grows from level 0 to level 3 (1864 to 3581 bf16, 4657 to 8791 fp32) with the same work: the skewed layout spreads runs over the banks, not the lanes of one pair, and at level 3 the 16 lanes of a pair read one run at positions 32 words apart (16-way conflicts), at level 0 only 2 lanes share a run.",
+   "Three builds in one session on the same cells. v2 (xor swizzle on the absolute position, loads predicated by the exact consumed count from the successor's split, fully unrolled chunk loop): bf16 N 2048 k 1024 59199, fp32 112403, with 21080 and 39048 SASS instructions and a 200-byte stack frame (53 STL) on the bf16 kernel. v3 (chunk loop rolled, tree win count, T62): 21783 and 71573, 10216 and 19320 instructions, no stack. v4 (linear skewed layout, unconditional loads into a 16-word zero pad per run, no end split, no shuffle): 19786 and 42598, 7296 and 16104 instructions, registers 255 to 128 and 167. The fp32 k 1024 kernel lost 2.6x of its cycles from v2 to v4 with the same algorithm.",
+   "The per-lane Batcher sort of 64 fp32 words (543 exchanges of 64-bit words, 3258 instructions) costs 14.4k to 15.7k cycles in the probe, 4.4 to 4.8 cycles per instruction at one warp, against 6.4k for the same network on 32-bit words; it is 33 percent of the fp32 N 2048 k 1024 call and 67 percent of the fp32 N 2048 k 64 call. The word array is 128 registers and the kernel sits at 167 to 243 registers, the network's independent exchanges are not scheduled in parallel.",
+   "W4_wmerge2 (two sorted halves of 32 per lane, one more merge level with a trivial split) against W4_wmerge in one section: 0.91x to 0.98x in every cell (bf16 N 2048 k 1024 20779 against 19780, fp32 42596 against 43326), so the smaller network does not pay for the extra level at any of the 10 cells."
+  ],
+  "algorithmic": [
+   "Sorted output at N 2048 k 1024 against W2_packed (the v1 form, sorted by construction, same lock section): bf16 19786 against 150078 (7.59x), fp32 42598 against 154821 (3.63x), both requirements identical to the cycle. The card's bar (2x or better) is passed on both key types. Throughput bf16 103 against 16 Gelem per s, fp32 latency only (8 warps x 48 KB of temp storage exceed the harness block's 227 KB).",
+   "k 256: bf16 N 512 4875 against 12361 (2.54x), N 1024 8408 against 21859 (2.60x), N 2048 13538 against 40422 (2.99x); fp32 9327 against 12616 (1.35x), 17190 against 21315 (1.24x), 29581 against 42915 (1.45x). Throughput 2.7x to 3.1x (bf16) and 1.2x (fp32) where it runs.",
+   "k 64 against W5_v4 (sorted by its finish word, same section): bf16 N 1024 5416 against 2926 (0.54x), N 2048 9036 against 4177 (0.46x), fp32 N 1024 11342 against 4773 (0.42x), N 2048 19146 against 5532 (0.29x), as the card expected: the per-lane sort of the whole tile (6.4k bf16, 14.4k fp32 cycles) is paid before the first truncation, while W5 filters first.",
+   "Cost model that held: per level, one static search of log2(in + 1) steps (450 to 1100 cycles, 10 percent of the call) plus OPT / 16 chunks of a 48-exchange network with 32 or 64 loads and 16 or 32 stores each, instruction bound at one warp at 2 to 3 cycles per instruction (a bf16 chunk 470 to 900 cycles, an fp32 chunk 1160 to 2200), plus the per-lane sort. The sorted-output crossover at warp scope sits between k 64 (W5_v4) and k 256 (W4_wmerge) at N 1024 and 2048."
+  ],
+  "negative": [
+   "The exact-count machinery of v2 and v3 (end split from the successor, predicated loads) cost more at one warp than the traffic it saved: one ISETP per load, a dependent predicate chain and 2 to 3 address instructions per swizzled access, and the register pressure that came with them (255 registers, spills at bf16 k 1024).",
+   "Two sorted halves per lane (W4_wmerge2) do not pay: 0.91x to 0.98x of the single 64-word sort plus merge tree.",
+   "W4 loses at k 64 to W5_v4 by 1.9x to 3.4x and is not a candidate below k 256 at warp scope. Its throughput regime is limited by 10 to 48 KB of temp storage per warp."
+  ],
+  "surprises": [
+   "At one warp the layout math, not the bank conflicts, was the cost of the swizzle: dropping the per-access xor for a skewed run stride (one bank between consecutive runs, immediate offsets per access) took 31 percent off bf16 N 512 k 256 (7095 to 4875) and 34 percent off fp32 (14074 to 9327), while the conflicts it leaves at the deeper levels (16 lanes of a pair 32 words apart) show as a 2x growth of the merge phase from level 0 to level 3.",
+   "The fully unrolled chunk loop doubled the SASS and cost 1.6x to 2.7x with the same instruction mix (T62)."
+  ],
+  "open_questions": [
+   "A hybrid layout (skewed stride across runs, xor permutation inside a run only where more than 4 lanes share a run, that is the deeper levels) would take the level 3 merge from 3581 to about 1900 cycles (bf16) and 8791 to about 4700 (fp32), predicted 15 to 20 percent of the k 1024 call.",
+   "The fp32 per-lane sort of 64 words at 128 registers (15k cycles): four pieces of 16 merged by two lane-local levels, a key-only network with a stable tie rule, or an sm_100f FMNMX form.",
+   "N 4096 (IPT 128) needs an in-lane merge level before the cross-lane levels (T34 bounds the per-lane network at 64).",
+   "The throughput regime for fp32 N 2048 at k 256 and above needs a 16-bit index half or fewer warps per block than the harness launches."
+  ]
  },
  "techniques_adopted": [
   "T7",
@@ -31,16 +54,23 @@
   "T34",
   "T36",
   "T42",
+  "T48",
+  "T49",
   "T54"
  ],
- "techniques_contributed": [],
+ "techniques_contributed": [
+  "T62"
+ ],
  "report_path": "approaches/W4/REPORT.md",
  "source_paths": [
   "harness/adapters/W4_wmerge.cuh",
+  "harness/adapters/W4_wmerge2.cuh",
   "harness/adapters/W4_impl.cuh",
   "harness/adapters/W4_core.cuh",
   "approaches/W4/host_test.cpp",
+  "approaches/W4/phase_probe.cu",
   "approaches/W4/cells_w4.json"
  ],
- "correctness_notes": ""
+ "correctness_notes": "Every cell passed the full oracle battery under both requirements (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized, 22 cases per cell), exact index set under prefer_smaller_index. Six batches of the v4 build merged (labels v4_wsort_bf16, v4_wsort_f32, v4_wsort_f32lat, v4_wk64_bf16, v4_wk64_f32, v4_wk64_f32lat), all on umbriel-b200-091 in one lease, source commit 0ba868b00d; the fp32 N 2048 cells are latency only because 8 warps x 42 to 48 KB of temp storage exceed the harness throughput block's shared memory. Host emulation (approaches/W4/host_test.cpp) passes 396 cases against std::sort.",
+ "commit": "0ba868b00d32effd1ece55ce9cbc5d93554cc524"
 }

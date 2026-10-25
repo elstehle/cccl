@@ -1,0 +1,57 @@
+{
+ "author": "opt-W4",
+ "approach_id": "W4",
+ "variant": "wmerge2",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 54656,
+  "sync_assumed": "warp convergence of the 32 lanes, the caller separates consecutive calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+  "sync_performed": "7 __syncwarp per call (one more merge level, whose split is trivial), no shuffles, no barriers",
+  "k_range": "powers of two in [32, N/2] (every merge level must split evenly over the 32 lanes), measured 64, 256 and 1024",
+  "n_range": "N = 32 x IPT with IPT a power of two in [4, 64], measured 1024 and 2048",
+  "type_constraints": "fp32 as a 64-bit word in registers (twiddled key high, inverted index low) stored as a key half and an index half in two 32-bit shared arrays, bf16 as one 32-bit word (16 twiddled key bits above the inverted 16-bit index, N at most 65536), int32 indices from the blocked position. Temp storage 54656 bytes for fp32 N 2048 k 1024 (64 runs of 32 at level 0), 31520 for bf16",
+  "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
+  "tie_break_support": "inherent: the word order is (key descending, index ascending), the merge path takes the first run on ties and the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
+  "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
+ },
+ "findings": {
+  "low_level": [
+   "Same session and lock section as the control W4_wmerge (v4): 80 to 165 registers, no spill, no stack, 3808 to 14392 SASS instructions for two calls (the control 3672 to 16104), temp storage 15648 to 54656 bytes (the control 12384 to 48128)."
+  ],
+  "algorithmic": [
+   "Against W4_wmerge in one section (latency, both requirements identical): bf16 N 1024 k 64 5910 against 5413, k 256 9020 against 8408, N 2048 k 64 9945 against 9036, k 256 14531 against 13540, k 1024 20779 against 19780; fp32 N 1024 k 64 12164 against 11342, k 256 17984 against 17191, N 2048 k 64 19535 against 19146, k 256 30113 against 29580, k 1024 43326 against 42596. 0.91x to 0.98x everywhere: two sorts of 32 (382 exchanges) plus a merge level of 64 outputs per lane cost more than one sort of 64 (543 exchanges)."
+  ],
+  "negative": [
+   "The idea that the 64-word fp32 sort is slow because of the 128 live registers does not survive this test: halving the live words did not recover the sort's cost at any cell, so the per-exchange cost of the 64-bit word (two ISETP, four SEL) and the one-warp issue rate are what the sort pays."
+  ],
+  "surprises": [
+   "In the v3 build (xor layout, exact counts) the same variant had won 1.31x at fp32 N 2048 k 256 and 1.06x at k 1024, a register-pressure effect of that build (255 registers), gone in v4 at 128 to 168 registers."
+  ],
+  "open_questions": [
+   "Whether four pieces of 16 with two lane-local merge levels behave differently is untested, the trend here says no."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T28",
+  "T34",
+  "T36",
+  "T42",
+  "T48",
+  "T49",
+  "T54"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W4/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W4_wmerge2.cuh",
+  "harness/adapters/W4_impl.cuh",
+  "harness/adapters/W4_core.cuh"
+ ],
+ "correctness_notes": "All 20 cells passed the oracle battery under both requirements, one latency-only batch (label v4_halves) on umbriel-b200-091, source commit 0ba868b00d.",
+ "commit": "0ba868b00d32effd1ece55ce9cbc5d93554cc524"
+}
