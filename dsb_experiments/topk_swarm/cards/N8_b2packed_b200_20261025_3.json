@@ -5813,7 +5813,7 @@
    "Nothing in the clock trace distinguishes the nodes: 1965 MHz SM and 3996 MHz memory on every busy sample of both sections."
   ],
   "open_questions": [
-   "The mechanism (hw-researcher's probe found no fetch cost for straight-line code up to 128 KB on -047 and -091 and an L2 hit latency map of 279 to 308 cycles; its -020 run is pending). The code-size threshold between 64 KB (4120 instructions) and 78 KB (5008 instructions) at 128 threads has not been bisected.",
+   "The mechanism. The hardware researcher's T58 characterizes it as a stable per-GPU property of umbriel-b200-020 (reproduced at 7831.5 under another holder with lazy and eager module loading, verify-N8 confirmed the cards there to 0.1 percent): it affects one-warp-per-scheduler kernels above about 50 KB of SASS only, the 256-thread siblings stay within 11 percent and the throughput regime within 3 percent, and no synthetic reproduces it (straight-line code to 128 KB, 80 to 83 KB round bodies with and without a reconvergence region, L1, L2 and local memory maps identical on all 148 SMs of both nodes). T50 (this card) and T58 describe the same effect; the curator should fold T50 into T58. The code-size threshold between 64 KB (4120 instructions, unaffected here) and 78 KB (5008 instructions, affected) at 128 threads has not been bisected.",
    "Whether the same node penalizes the 64-thread k 64 kernels of card N8_b2packed_b200_20261025_1 (7736 and 11320 instructions at N 4096, measured on -020 only) and the 512-thread k 64 kernels of card 2 (7736 instructions at N 32768 bf16, 11568 fp32, also -020 only).",
    "Whether rolling the round loop by 8 above k 32 (B2b report section 5, unroll policy) removes the node dependence together with the instruction-cache pressure, at the cost of the T38 pruning."
   ]
@@ -5824,7 +5824,8 @@
   "T34",
   "T36",
   "T38",
-  "T43"
+  "T43",
+  "T58"
  ],
  "techniques_contributed": [
   "T50"
