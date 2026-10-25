@@ -2,20 +2,20 @@
 // approaches/B3/block_topk_compact.cuh, configuration chosen by tile size) with the block size
 // opened as a tuning dimension. The primitive is B3_tuned's, unchanged and inherited, so the
 // 256-thread instantiation compiles to the same code as B3_tuned. The only change is the support
-// predicate: 128 and 512 threads are accepted (B3_tuned declares 256 only, the primitive itself
-// is generic in the thread count, B3 report section 6 item 7).
+// predicate: 128, 512 and 1024 threads are accepted (B3_tuned declares 256 only, the primitive
+// itself is generic in the thread count, B3 report section 6 item 7).
 //
 // What the block size changes in this primitive: the tile sweeps are IPT = N / Threads items per
 // thread, the compacted candidate set is N / 4 / Threads words per thread (16 instead of 32 at
-// N 32768 with 512 threads), the first-digit scan is 512 / Threads bins per thread, the barrier
-// costs 20, 28 or 44 cycles at 4, 8 or 16 warps (T11), and __launch_bounds__(512) caps the
-// registers at 128 per thread. The compaction threshold stays per items per thread (16 for 32-bit
-// keys, 32 for 16-bit keys), so at 512 threads and N 16384 the bf16 tile (IPT 32) still compacts
-// and at N 8192 it would not.
+// N 32768 with 512 threads, 8 at 1024), the first-digit scan is 512 / Threads bins per thread,
+// the barrier costs 20, 28 or 44 cycles at 4, 8 or 16 warps (T11), and __launch_bounds__ caps
+// the registers at 128 per thread for 512 threads and at 64 for 1024. The compaction threshold
+// stays per items per thread (16 for 32-bit keys, 32 for 16-bit keys), so at 512 threads and
+// N 16384 the bf16 tile (IPT 32) still compacts and at 1024 threads it does not.
 //
 // Contract: as B3_tuned (block scope, blocked input in registers, N = Threads x IPT with IPT >= 1
 // and N <= 32768, k in [1, N), keys fp32 or bf16, all three requirements at the same cost, k
-// indices unsorted to smem), with Threads in {128, 256, 512}.
+// indices unsorted to smem), with Threads in {128, 256, 512, 1024}.
 #pragma once
 
 #include "../topk_harness.cuh"
@@ -33,7 +33,7 @@ struct N8_b3tuned_info
   static constexpr bool supported(topk::key_type kt, int threads, int n, int k, topk::requirement)
   {
     const bool key_ok    = (kt == topk::key_type::fp32) || (kt == topk::key_type::bf16);
-    const bool thread_ok = (threads == 128) || (threads == 256) || (threads == 512);
+    const bool thread_ok = (threads == 128) || (threads == 256) || (threads == 512) || (threads == 1024);
     const bool shape_ok  = (n % threads == 0) && (n / threads >= 1) && (n <= 32768) && (k >= 1) && (k < n);
     return key_ok && thread_ok && shape_ok;
   }

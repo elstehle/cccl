@@ -2,18 +2,20 @@
 // epilogue, approaches/B1/block_topk_b1.cuh) with the block size opened as a tuning dimension.
 // The primitive is B1_idx's, unchanged and inherited, so the 128, 256 and 512 thread
 // instantiations compile to the same code as B1_idx at those sizes. The only change is the
-// support predicate: 64-thread blocks are accepted, so that the block incumbent is available as
-// the same-shape control of the 64-thread B2 cells (the N8 study measures B2 at 64, 128 and 256
-// threads in one lock section against this adapter at the same block size).
+// support predicate: 64-thread and 1024-thread blocks are accepted, so that the block incumbent
+// is available as the same-shape control of the 64-thread B2 cells (the N8 study measures B2 at
+// 64, 128 and 256 threads in one lock section against this adapter at the same block size) and
+// so that its own block size can be swept up to the hardware limit at N 16384 and 32768.
 //
 // What the block size changes in this primitive: the histogram sweep per pass is IPT = N / Threads
 // items per thread (the dependent part of the pass), the scan over 256 bins is 256 / Threads bins
-// per thread (4 at 64 threads, striped bin slots), the barrier costs 16, 20, 28 or 44 cycles at
-// 2, 4, 8 or 16 warps (T11), and __launch_bounds__(512) caps the registers at 128 per thread.
+// per thread (4 at 64 threads, striped bin slots, one bin on a quarter of the threads at 1024),
+// the barrier costs 16, 20, 28 or 44 cycles at 2, 4, 8 or 16 warps (T11), and __launch_bounds__
+// caps the registers at 128 per thread for 512 threads and at 64 for 1024.
 //
 // Contract: as B1_idx (block scope, striped input in registers, N = Threads x IPT with IPT >= 1,
 // k in [1, N), keys fp32 or bf16, not_guaranteed only, k indices unsorted to smem, keys
-// clobbered, NaN twiddled as the largest key), with Threads in {64, 128, 256, 512}.
+// clobbered, NaN twiddled as the largest key), with Threads in {64, 128, 256, 512, 1024}.
 #pragma once
 
 #include "../topk_harness.cuh"
@@ -31,9 +33,10 @@ struct N8_b1idx_info
   static constexpr bool supported(topk::key_type kt, int threads, int n, int k, topk::requirement req)
   {
     const bool key_ok    = (kt == topk::key_type::fp32) || (kt == topk::key_type::bf16);
-    const bool thread_ok = (threads == 64) || (threads == 128) || (threads == 256) || (threads == 512);
-    const bool shape_ok  = (n % threads == 0) && (n / threads >= 1) && (k >= 1) && (k < n);
-    const bool req_ok    = (req == topk::requirement::not_guaranteed);
+    const bool thread_ok =
+      (threads == 64) || (threads == 128) || (threads == 256) || (threads == 512) || (threads == 1024);
+    const bool shape_ok = (n % threads == 0) && (n / threads >= 1) && (k >= 1) && (k < n);
+    const bool req_ok   = (req == topk::requirement::not_guaranteed);
     return key_ok && thread_ok && shape_ok && req_ok;
   }
 };

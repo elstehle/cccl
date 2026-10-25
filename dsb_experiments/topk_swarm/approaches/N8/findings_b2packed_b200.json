@@ -1,0 +1,68 @@
+{
+  "author": "opt-N8",
+  "approach_id": "N8",
+  "variant": "b2packed",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 68,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and the finish barriers on the rare tie path (B2_packed's code, inherited unchanged)",
+    "k_range": "[1, min(N/2, 256)] at compile time",
+    "n_range": "N = Threads x IPT with Threads in {64, 128, 256, 512} and IPT a power of two at most 64 for both key types (B2_packed's bf16 IPT 128 goes to local memory, T34); this batch 64, 128 and 256 threads at N 1024, 2048 and 4096",
+    "type_constraints": "bf16 packed with the inverted 16-bit index, fp32 as the N4 truncated word (top 32 - log2 N key bits plus the index) with the exact tie finish, int32 indices",
+    "nan_behavior": "twiddled bitwise: a positive NaN ranks above +inf, a negative NaN below -inf, never in focus-set inputs; -0.0 is normalized to +0.0 so the two zeros tie by index",
+    "tie_break_support": "inherent (index in the low half of the word), prefer_smaller_index and not_guaranteed run the same binary, measured within 1.0 percent in this batch",
+    "sorted_output_support": "inherent, the k slots are sorted by key descending then index ascending"
+  },
+  "report_path": "approaches/N8/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N8_b2packed.cuh",
+    "harness/adapters/B2_packed.cuh",
+    "harness/adapters/N8_b1idx.cuh",
+    "harness/adapters/B1_idx.cuh",
+    "approaches/B1/block_topk_b1.cuh",
+    "harness/cells_n8.json",
+    "harness/topk_harness.cuh"
+  ],
+  "techniques_adopted": ["T1", "T9", "T10", "T11", "T26", "T27", "T33", "T34", "T36", "T38", "T41"],
+  "techniques_contributed": [],
+  "correctness_notes": "Block-size sweep of B2_packed (inherited unchanged, the adapter only widens the support predicate to 64 threads and caps IPT at 64) at 64, 128 and 256 threads in one lock section on umbriel-b200-020, against B1_idx at the same block size (N8_b1idx, B1_idx inherited unchanged with 64 threads allowed) with --control-req not_guaranteed, so the prefer_smaller_index cells of the variant carry the control's not_guaranteed path. 120 shapes (bf16 and fp32, N 1024 k 4 to 64, N 2048 k 8 to 32, N 4096 k 16 and 64, both requirements, three block sizes), oracle 13 cases per shape for variant and control, all passed, no failed or unsupported cells. The 128 and 256-thread cells reproduce the cards B2_packed_b200_20261025_1 and _3 to the cycle except the two 128-thread N 4096 k 64 latency cells, which read 7831 and 8263 cycles here as in verify-B2's rerun on this node (the card's 6254 and 6219 are from umbriel-b200-047). The comparison across block sizes is across cells of one lock section and one process launch per cell, not a variant-control pair inside one process: the harness pairs variant and control at one (Threads, N, k).",
+  "findings": {
+    "low_level": [
+      "Round slope per block size (cycles per round from consecutive k, latency regime, bf16 N 1024, IPT = N / Threads): 64 threads (2 warps, IPT 16) 88, 77, 73, 67 for k 4 to 8, 8 to 16, 16 to 32, 32 to 64; 128 threads (4 warps, IPT 8) 68.5, 70.0, 68.6, 69.5; 256 threads (8 warps, IPT 4) 84.1, 83.0, 85.0, 83.0. fp32 N 1024: 74, 70, 67, 82 at 64 threads, 78.5, 71, 67, 70 at 128, 81, 88, 87, 85 at 256. N 2048 bf16 (k 8 to 16, 16 to 32): 79.5 and 80.6 at 64 threads (IPT 32), 79.6 and 75.4 at 128 (IPT 16), 92.4 and 89.7 at 256 (IPT 8). N 4096 (k 16 to 64, the deep-list slope): 179 at 64 threads (IPT 64), 123 at 128 (IPT 32), 109 at 256 (IPT 16).",
+      "Fixed cost (value at the smallest k minus k rounds, the prologue sort plus init and output): bf16 N 1024 102 cycles at 64 threads (sort16, 63 compare-exchanges), 74 at 128 (sort8, 19), 43 at 256 (sort4, 5); N 2048 585 (sort32, 191 pairs), 200 (sort16), 92 (sort8); fp32 N 1024 570, 298, 327 (two words per item plus the tie count pass), N 2048 1257, 624, 439.",
+      "Registers of the latency kernel at 64 threads: bf16 32 (N 1024), 40 to 48 (N 2048), 72 to 80 (N 4096); fp32 64 to 72 (N 1024), 128 (N 2048, 8 blocks per SM), 254 (N 4096, 4 blocks per SM). At 128 threads 29 to 30, 32, 40 to 48 and 40, 72, 128; at 256 threads 21, 29 to 30, 32 and 30 to 32, 40, 64. Spill bytes, stack bytes, STL and LDL counts are 0 in every kernel of the batch (T36 check), the IPT 64 sort of 543 pairs stays unrolled in registers (T34 boundary).",
+      "SASS size of the bf16 N 1024 k 4 latency kernel 504, 312 and 224 instructions at 64, 128 and 256 threads with 15 BAR.SYNC in all three (1 init plus 4 rounds, two inlined calls plus the harness barriers): the round structure is the same, the list shift and the sorting network grow with IPT. The k 64 kernels at N 4096 are 7736 (64 threads), 5008 (128) and 3064 (256) instructions bf16 and 11320, 6552 and 3728 fp32.",
+      "Occupancy in the throughput regime: 32 blocks per SM at 64 threads for bf16 N 1024 and fp32 k 64 (register tier 32), 24 and 20 at bf16 N 2048, 14 to 16 at bf16 N 4096 and fp32 N 1024, 8 at fp32 N 2048, 4 at fp32 N 4096; 16, 12, 10 to 12, 7, 4 at 128 threads; 8 at 256 threads except fp32 N 2048 and 4096 (6 and 4). Threads per SM are the same 2048 at 32 x 64, 16 x 128 and 8 x 256.",
+      "The control B1_idx at 64 threads compiles to 64 registers (bf16 N 1024, IPT 16), 96 (N 2048, IPT 32) and 165 (N 4096, IPT 64) with 0 spill, its scan runs 4 bins per thread in striped slots; at 128 threads 46, 64, 96; at 256 threads 32, 40, 47 to 48 (the B1_idx card's figures)."
+    ],
+    "algorithmic": [
+      "Kill cell bf16 N 1024 k 16 latency: 1422 cycles at 64 threads against 1182 at 128 and 1380 at 256 (fp32 1724, 1494, 1680). The 64-thread block is 0.83x of the 128-thread block and 0.97x of the 256-thread block, the threshold of ideas/PRIORITIES.md (1.15x under 128 threads, at most 1030) is missed by 38 percent, the idea card's 1060 prediction assumed a 58-cycle round and the measured round is 77. The 64-thread form of B2 is retired for the latency regime.",
+      "Why the 2-warp round is not cheaper: the measured rounds 83.5 (8 warps, IPT 4), 69.5 (4 warps, IPT 8) and 77 (2 warps, IPT 16) fit about 48 + 4 W + IPT cycles with W warps per block for IPT up to 16 (also 91 at (8, 8) and 78 at (4, 16) from the N 2048 cells). Halving the warps saves 4 cycles per warp (barrier plus one aggregated post per warp, T11 and T26) and doubling IPT costs one cycle per list word, because the IPT - 1 predicated selects of the shift are issued in program order before the next round's post (an in-order warp). With N = 32 W IPT the sum is smallest near W = sqrt(N / 128): 2 to 4 warps at N 1024 (tie in the round, 128 wins by the prologue), 4 at N 2048, 4 to 8 at N 4096, never 2 warps where the prologue sort is 32 or 64 words.",
+      "Best block size per (N, k) in the latency regime (ratio of the best over the 256-thread form, bf16 then fp32): N 1024 k 4 128 threads (1.09x, 1.06x), k 8 128 (1.15x, 1.05x), k 16 128 (1.17x, 1.12x), k 32 128 (1.20x, 1.19x), k 64 128 (1.20x, 1.20x); N 2048 k 8 tie 128 and 256 (0.99x, 0.97x), k 16 128 (1.07x, 1.06x), k 32 128 (1.12x, 1.14x); N 4096 k 16 128 (1.08x, 1.11x), k 64 256 (0.93x, 0.93x on this node, verify-B2 found the 128-thread k 64 kernel node dependent, 6254 on umbriel-b200-047 against 7831 here). 64 threads is never the best latency shape.",
+      "Throughput regime (one occupancy wave, Gelem per s, ratio of 64 over 256 threads): bf16 N 1024 1759 against 1289 (1.36x), 1325 against 843 (1.57x), 820 against 495 (1.66x), 443 against 273 (1.63x), 234 against 144 (1.62x) at k 4, 8, 16, 32, 64; N 2048 1315 against 1119 (1.18x), 949 against 652 (1.46x), 536 against 357 (1.50x) at k 8, 16, 32; N 4096 962 against 806 (1.19x) at k 16, 286 against 229 (1.25x) at k 64. fp32 N 1024 1.20x, 1.40x, 1.48x, 1.52x, 1.56x; N 2048 0.83x, 1.12x, 1.30x (128 registers, 8 blocks per SM); N 4096 1.06x and 0.73x (254 registers, 4 blocks per SM). 128 threads sits between (bf16 N 1024 1.29x to 1.35x over 256). The regime flips the verdict: the block size that loses 3 to 17 percent in latency wins 18 to 66 percent in throughput wherever the register tier allows 16 or more blocks per SM.",
+      "Against the incumbent at its best shape (B1_idx at 256 threads, same lock section): 64-thread B2 wins throughput up to k 32 at bf16 N 1024 (443 against 388 at k 32, 820 against 409 at k 16), up to k 16 at N 2048 (949 against 559) and N 4096 (962 against 692), and k at most 16 for fp32 N 1024 (604 against 412); the 256-thread B2 wins only up to k 16 at N 1024 (495 against 409) and ties or loses at k 32 (273 against 388). In latency the picture is the 128-thread card's: B2 at 128 threads beats B1_idx at 256 threads up to k 16 at N 1024 to 4096 (1182 against 1767, 1474 against 2310, 1907 against 3371 bf16) and loses from k 32 at N 1024 (2280 against 1851) and k 64 elsewhere.",
+      "B1_idx itself wants 256 threads in latency at every N (bf16 N 1024 k 16 1767 against 2251 at 128 and 3256 at 64, N 4096 3371 against 4981 and 9927: the per-thread histogram sweep doubles per halving) and 64 threads in throughput at N 1024 and 2048 (bf16 N 1024 k 16 601 against 492 and 409 Gelem per s, N 2048 657 against 612 and 559), 256 at N 4096 (692 against 616 and 566, 165 registers at 64 threads). The same regime flip as B2, smaller (1.17x to 1.6x)."
+    ],
+    "negative": [
+      "64-thread B2 in the latency regime loses to 128 threads at every one of the 27 (type, N, k) points: 0.83x to 0.97x at N 1024 (bf16 454, 806, 1422, 2589, 4720 against 348, 622, 1182, 2280, 4504), 0.68x to 0.96x at N 2048 (the sort32 prologue costs 585 cycles against 200 for sort16), 0.64x to 0.82x at N 4096 (sort64 of 543 pairs and a 179-cycle deep-list round at IPT 64: 2723 and 11318 against 1907 and 7831 bf16).",
+      "fp32 at 64 threads holds two words per item: 128 registers at N 2048 and 254 at N 4096, so the throughput edge disappears there (0.83x at N 2048 k 8, 0.73x at N 4096 k 64) and the latency prologue is 1257 cycles at N 2048.",
+      "64 threads do not move the crossover with B1_idx in latency: at N 1024 bf16 B2 at 64 threads loses to B1_idx at 64 threads from k 64 (4720 against 3962) and to B1_idx at 256 threads from k 32 (2589 against 1851), the same k as the 128-thread form (2280 against 1851)."
+    ],
+    "surprises": [
+      "The throughput flip at identical threads per SM: 32 two-warp blocks, 16 four-warp blocks and 8 eight-warp blocks all fill the SM with 2048 threads, and the two-warp form processes up to 1.66x the elements per second. The per-SM work is the same, so the gain is in how the schedulers fill the barrier waits: a two-warp block's round waits for one other warp, an eight-warp block's round idles 8 warps until its slowest arrives, and 32 independent blocks interleave their rounds.",
+      "B1_idx shows the same flip (601 against 409 Gelem per s at bf16 N 1024 k 16, 64 against 256 threads) although its latency at 64 threads is 1.8x worse, so the effect is not specific to the atomics round.",
+      "The 2-warp round costs more than the 4-warp round at N 1024 (77 against 69.5 cycles) although the barrier is cheaper: the doubled list shift sits in program order between the read back and the next post."
+    ],
+    "open_questions": [
+      "Whether the 64-thread throughput edge survives in a batched device kernel that loads each block's tile from global memory once (the harness reloads from L1 or L2 per call and the loads are part of the measured time at every block size); a device-agent measurement with 64, 128 and 256-thread blocks on the segmented_topk benchmark would settle it.",
+      "The barrier cost at 64 threads is not in the catalogue (T11 has 128, 256 and 512); asked of the hardware researcher together with an IPT-free aggregated round at 2, 4, 8 and 16 warps, to split the 48 + 4 W + IPT model into barrier, post and shift.",
+      "Whether a two-level list (sorted head of 4, T38 pruning kept) at 64 threads recovers the latency: the shift would drop from 15 to 3 selects per round, but B2_twolevel measured a slower round at IPT 16 at 256 threads (divergent refill, B2b report 3.3), so the expected gain is at most the 8 cycles of the shift and the shape would still trail 128 threads.",
+      "Node dependence of the large unrolled kernels: the 128-thread N 4096 k 64 cells differ by 25 to 33 percent between umbriel-b200-020 and -047 (verify-B2), and the 64-thread N 4096 k 64 kernels (7736 and 11320 instructions) were measured on -020 only."
+    ]
+  }
+}
