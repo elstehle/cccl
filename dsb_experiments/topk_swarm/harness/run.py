@@ -18,6 +18,7 @@ import argparse
 import concurrent.futures
 import datetime
 import fcntl
+import glob
 import itertools
 import json
 import os
@@ -348,6 +349,9 @@ def main():
     ap.add_argument("--build-only", action="store_true")
     ap.add_argument("--skip-existing", action="store_true",
                     help="do not recompile a cell whose binary already exists (harness and adapters pinned)")
+    ap.add_argument("--skip-if-done", action="store_true",
+                    help="measure phase: skip when a batch JSON with the same label, adapter, control, cells file and "
+                    "cell set already exists in --out with every run ok (resume after an interruption)")
     ap.add_argument("--measure-only", action="store_true", help="reuse binaries from a previous build")
     ap.add_argument("--dry-run", action="store_true", help="list the cells and exit")
     ap.add_argument("--label", default="batch")
@@ -500,6 +504,22 @@ def main():
         json.dump(meta, open(path, "w"), indent=1)
         log("build-only, wrote %s" % path)
         return 0
+
+    if args.skip_if_done:
+        want = {c["name"] for c in cells}
+        for prev in sorted(glob.glob(os.path.join(args.out, "%s_vs_%s_%s_%s_*.json" % (
+                variant, control, spec.get("name", "cells"), args.label)))):
+            if prev.endswith(".build.json"):
+                continue
+            try:
+                pd = json.load(open(prev))
+            except Exception:
+                continue
+            names = {r["cell"]["name"] for r in pd.get("runs", []) if r.get("status") == "ok"}
+            if names >= want and pd.get("harness", {}).get("patterns") == args.patterns and \
+                    pd.get("harness", {}).get("regimes") == args.regimes:
+                log("already measured in %s, skipping (--skip-if-done)" % os.path.basename(prev))
+                return 0
 
     # ---- measure (inside the lock): canary, every cell x pattern, canary
     env = dict(os.environ)

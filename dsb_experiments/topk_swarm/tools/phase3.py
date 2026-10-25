@@ -212,7 +212,7 @@ def main():
         tag = "%s_%s_%s%s" % (label, label_of(a), req, ("_vs_" + ctrl) if ctrl else "")
         cmd = runpy + " --gpu %d --node-name %s --arch-name %s " % (args.gpu, args.node, args.arch) + \
               " ".join(shlex.quote(x) for x in runpy_args(a, m["scopes"][scope], cells_arg, req, args, control=ctrl)) + \
-              " --measure-only --label %s > %s/work/%s/%s.log 2>&1; grep -h 'cells with\\|FAILED\\|WARNING' %s/work/%s/%s.log | cut -c1-160" % (
+              " --measure-only --skip-if-done --label %s > %s/work/%s/%s.log 2>&1; grep -h 'cells with\\|FAILED\\|WARNING\\|already measured' %s/work/%s/%s.log | cut -c1-160" % (
                   label, args.root, args.holder, tag, args.root, args.holder, tag)
         if args.wait_for_build and label_of(a) != last_label:
             lines.append("until %s; do sleep 30; done" % inside("test -f %s/%s_%s.ok" % (marker_dir, label, label_of(a))))
