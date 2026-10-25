@@ -6,7 +6,8 @@
  "cuda_version": "13.4.92",
  "node": "umbriel-b200-068",
  "date": "2026-10-25",
- "commit": "b6bfae9a37bb",
+ "commit": "02fdf9dbdc",
+ "clone_commit": "b6bfae9a37bb",
  "author": "opt-B1",
  "contract": {
   "input_location": "registers",
@@ -742,13 +743,14 @@
    "The rank is index order for free on striped tiles (slot-major then thread order is item order), which the blocked arrangement does not give, and the taken ties need no atomic because their position is total_selected plus rank."
   ],
   "negative": [
-   "A constant counter address in a per-item ticket loop is a liability on sm_100 with nvcc 13.4: the automatic warp aggregation it triggers costs more than the atomics it saves when the sites are on the critical path. Use a data-dependent or opaque counter index."
+   "A constant counter address in a per-item ticket loop is a liability on sm_100 with nvcc 13.4: the automatic warp aggregation it triggers costs more than the atomics it saves when the sites are on the critical path. Use a data-dependent or opaque counter index.",
+   "The committed fix for the aggregation, int sel_class = 0 passed through an empty asm volatile statement as the counter index (02fdf9dbdc), is a SASS and timing no-op: verify-B1 built the committed source and a copy with only that hunk reverted in consecutive lock sections of one session, both latency kernels have byte-identical opcode profiles (1304 instructions, 16 VOTE, 8 FLO, 8 S2R SR_LTMASK, 5 S2R SR_LANEID, 64 POPC at fp32 N 1024 k 16) and measure 2137.4 against 2138.0 cycles (control B1_idx 1794.0 in both), batches state/results/verify-B1/B1_det_vs_B1_idx_focus_v_det1_20261025_135053.json and B1_det_vs_B1_idx_focus_v_det1_asmeasured_20261025_135250.json. An empty inline asm is pasted into the PTX as nothing, ptxas still sees the constant and re-derives the uniform address. The how-to-use of T23 that recommends this spelling is unsupported, see T39 in TECHNIQUES.md."
   ],
   "surprises": [
    "The compiler's automatic warp-aggregated atomic is the whole story of the 19 percent at fp32: 4 x (S2R SR_LTMASK plus S2R SR_LANEID) on a dependent path cost about as much as the two 8-bit radix passes' scan phases together."
   ],
   "open_questions": [
-   "The fix (an opaque counter index through an empty asm statement, now in approaches/B1/block_topk_b1.cuh) is implemented and not yet measured, the batch budget of this session was spent. Expected: the structural 344 cycles vanish and prefer_smaller_index costs the tie phase alone, about 70 cycles at IPT 4 on bf16 rows with ties and 0 on fp32 rows without.",
+   "The committed opaque counter index (approaches/B1/block_topk_b1.cuh at 02fdf9dbdc) is a measured no-op (see negative), so the 344-cycle structural cost at fp32 N 1024 k 16 rests on the SASS reading alone and no gain is expected from that spelling. Open: a same-kernel A/B of the ticket spelling, the constant-address atomicAdd against an index ptxas cannot constant-fold (a value read from shared memory or a kernel argument) or against an inline PTX atom.shared.add.u32 on a register address, one batch against B1_idx under not_guaranteed. If neither removes the S2R pair, the diagnosis (aggregation at the selected-class ticket) is wrong and the 344 cycles sit elsewhere in the det epilogue.",
    "IPT above 64 needs a wider tie mask (two 64-bit words, or a per-slot taken bit recomputed in the epilogue from the rank) to cover N 32768 at 256 threads."
   ]
  },
