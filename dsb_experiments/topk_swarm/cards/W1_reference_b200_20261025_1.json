@@ -6,7 +6,7 @@
  "cuda_version": "13.4.92",
  "node": "umbriel-b200-068",
  "date": "2026-10-25",
- "commit": "fc5de9f42987",
+ "commit": "bb116b9775",
  "author": "eval-engineer",
  "contract": {
   "input_location": "registers",
@@ -1993,5 +1993,6 @@
     "thr_us": 3779.488087
    }
   }
- ]
+ ],
+ "clone_commit": "fc5de9f42987"
 }

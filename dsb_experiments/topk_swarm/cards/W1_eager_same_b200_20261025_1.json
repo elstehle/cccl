@@ -51,7 +51,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -76,7 +80,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 128
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -101,7 +109,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -126,7 +138,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 128
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -151,7 +167,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -176,7 +196,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 128
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -201,7 +225,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 248
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -226,7 +254,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 128
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -251,7 +283,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -276,7 +312,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -301,7 +341,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -326,7 +370,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -351,7 +399,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -376,7 +428,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -401,7 +457,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -426,7 +486,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -451,7 +515,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -476,7 +544,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -501,7 +573,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -526,7 +602,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -551,7 +631,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 728
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -576,7 +660,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -601,7 +689,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 728
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -626,7 +718,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -651,7 +747,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 728
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -676,7 +776,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -701,7 +805,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 728
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -726,7 +834,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -751,7 +863,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 728
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -776,7 +892,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -801,7 +921,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 728
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -826,7 +950,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -851,7 +979,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 848
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -876,7 +1008,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 448
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -901,7 +1037,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 848
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -926,7 +1066,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 448
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -951,7 +1095,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1360
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -976,7 +1124,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 744
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1001,7 +1153,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1360
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1026,7 +1182,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 744
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1051,7 +1211,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1360
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1076,7 +1240,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 744
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1101,7 +1269,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1360
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1126,7 +1298,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 744
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1151,7 +1327,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1360
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1176,7 +1356,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1201,7 +1385,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1360
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1226,7 +1414,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1251,7 +1443,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1632
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1276,7 +1472,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 864
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1301,7 +1501,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1632
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1326,7 +1530,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 864
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1351,7 +1559,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1376,7 +1588,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1401,7 +1617,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1426,7 +1646,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1451,7 +1675,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1476,7 +1704,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1501,7 +1733,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1526,7 +1762,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1551,7 +1791,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1576,7 +1820,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1601,7 +1849,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1626,7 +1878,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1651,7 +1907,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1676,7 +1936,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1701,7 +1965,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1726,7 +1994,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1751,7 +2023,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1776,7 +2052,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1801,7 +2081,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1826,7 +2110,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1851,7 +2139,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1184
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1876,7 +2168,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1901,7 +2197,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1184
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1926,7 +2226,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1951,7 +2255,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1184
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -1976,7 +2284,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2001,7 +2313,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1184
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2026,7 +2342,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2051,7 +2371,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2076,7 +2400,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2101,7 +2429,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2126,7 +2458,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2151,7 +2487,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1408
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2176,7 +2516,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2201,7 +2545,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1408
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2226,7 +2574,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2251,7 +2603,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2276,7 +2632,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2301,7 +2661,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2326,7 +2690,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2351,7 +2719,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2376,7 +2748,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2401,7 +2777,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2426,7 +2806,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2451,7 +2835,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2476,7 +2864,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2501,7 +2893,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2526,7 +2922,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2551,7 +2951,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2856
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2576,7 +2980,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1488
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2601,7 +3009,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2856
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2626,7 +3038,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1488
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_reference_focus_base_same_20261025_131144.json"
   },
@@ -2651,7 +3067,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2676,7 +3096,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2701,7 +3125,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 328
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2726,7 +3154,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2751,7 +3183,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2776,7 +3212,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2801,7 +3241,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2826,7 +3270,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2851,7 +3299,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 616
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2876,7 +3328,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2901,7 +3357,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1184
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2926,7 +3386,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2951,7 +3415,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1184
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -2976,7 +3444,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3001,7 +3473,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1176
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3026,7 +3502,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 624
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3051,7 +3531,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1408
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3076,7 +3560,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 736
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3101,7 +3589,11 @@
     "smem_bytes": 80,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3126,7 +3618,11 @@
     "smem_bytes": 544,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3151,7 +3647,11 @@
     "smem_bytes": 144,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3176,7 +3676,11 @@
     "smem_bytes": 1056,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3201,7 +3705,11 @@
     "smem_bytes": 272,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2320
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3226,7 +3734,11 @@
     "smem_bytes": 2080,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1216
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3251,7 +3763,11 @@
     "smem_bytes": 528,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 32,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 2856
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   },
@@ -3276,7 +3792,11 @@
     "smem_bytes": 4128,
     "spill_bytes": 0,
     "occupancy_blocks_per_sm": 8,
-    "bar_sync_count": 0
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1488
    },
    "raw_file": "state/results/opt-W1b/W1_eager_same_vs_W1_minmax_pairs_focus_psi_vs_pairs_20261025_133814.json"
   }
@@ -3320,6 +3840,7 @@
   "harness/adapters/W1_eager_same.cuh",
   "approaches/W1/w1b_detail.cuh"
  ],
+ "clone_commit": "b6bfae9a37bb",
  "_controls": [
   "W1_minmax_pairs@not_guaranteed",
   "W1_reference",

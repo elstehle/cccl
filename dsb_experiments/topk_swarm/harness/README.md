@@ -223,6 +223,7 @@ omitted) measure the same adapter twice in one process and are marked `control_i
 On a node (see `nodes/README.md` for the lease):
 
 ```
+git rev-parse HEAD > $SWARM/harness/SOURCE_COMMIT      # in the optimizer's worktree, records the adapter source commit
 tar czf - -C $SWARM harness | ssh <node> '<exec_prefix> tar xzf - -C <root>/work/<holder>'
 ssh <node> '<exec_prefix> bash -c "cd <root>/work/<holder>/harness && export PATH=/usr/local/cuda/bin:\$PATH && \
   python3 run.py --repo <root>/cccl --root <root> --holder <holder> --gpu <i> --node-name <node> --arch-name <arch> \
@@ -243,7 +244,13 @@ split the phases, `--dry-run` lists the cells. A cell binary that exits with an 
 CUDA error 46, device busy, before the oracle) is retried once after 5 seconds (`--retries`), the
 batch records `retries` per run. Compiles never run under the lock.
 
-Card: `python3 $SWARM/tools/make_card.py --batch <batch.json> --findings <findings.json> --out $SWARM/cards/<approach>_<variant>_<arch>_<yyyymmdd>_<n>.json`,
+Source commit: a card's `commit` is the commit of the adapter source the kernels were built from
+(the optimizer's worktree HEAD), never the node's CCCL clone commit (that one goes to the card's
+optional `clone_commit`). Write it before shipping the harness, `git rev-parse HEAD > harness/SOURCE_COMMIT`
+in the worktree, run.py records it in the batch as `source_commit`, or pass `--source-commit` to
+run.py or to make_card.py. make_card.py refuses to build a card without one.
+
+Card: `python3 $SWARM/tools/make_card.py --batch <batch.json> --findings <findings.json> --source-commit <adapter HEAD> --out $SWARM/cards/<approach>_<variant>_<arch>_<yyyymmdd>_<n>.json`,
 then `python3 $SWARM/tools/board.py`.
 
 ## 8. Known limits of the references
