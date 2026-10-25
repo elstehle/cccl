@@ -1,9 +1,10 @@
 // Adapter B3_tuned: the B3 configuration chosen by tile size, on top of B3_digit9's code with
 // the scans and zeroing limited to the live bins of each pass (256 bins after the 9-bit first
-// digit instead of 512). Items per thread 32 and above: 9-bit first digit, compaction into a
-// buffer of N / 4 candidates, padded layout, predicated stores. Below 32: 8-bit digits and no
-// compaction (tile sweeps plus the scan-based index emission), where compaction measured as a
-// loss. Contract as B3_baseline.
+// digit instead of 512). From 16 items per thread for 32-bit keys and from 32 for 16-bit keys:
+// 9-bit first digit, compaction into a buffer of N / 4 candidates, padded layout, predicated
+// stores. Below that: 8-bit digits and no compaction (tile sweeps plus the scan-based index
+// emission), where compaction measured as a loss (fp32 has two more passes to save than bf16,
+// so it pays one tile size earlier). Contract as B3_baseline.
 #pragma once
 
 #include "../../approaches/B3/block_topk_compact.cuh"
@@ -15,7 +16,7 @@ struct B3_tuned_info
   static constexpr topk::scope scope    = topk::scope::block;
   static constexpr bool data_dependent  = true;
   static constexpr const char* contract =
-    "compacting radix select, compaction and 9-bit first digit from 32 items per thread, indices to smem out";
+    "compacting radix select, compaction and 9-bit first digit from 16 (fp32) or 32 (bf16) items per thread";
 
   static constexpr bool supported(topk::key_type kt, int threads, int n, int k, topk::requirement)
   {
@@ -34,7 +35,8 @@ struct B3_tuned
   static constexpr topk::output_form output            = topk::output_form::indices;
   using key_storage                                    = KeyT[items_per_thread];
 
-  static constexpr bool big          = items_per_thread >= 32;
+  static constexpr int compact_from  = (sizeof(KeyT) >= 4) ? 16 : 32;
+  static constexpr bool big          = items_per_thread >= compact_from;
   static constexpr int cap_divisor   = big ? 4 : 0;
   static constexpr int first_digit   = big ? 9 : 8;
   using topk_t = b3::block_topk_compact<KeyT,
