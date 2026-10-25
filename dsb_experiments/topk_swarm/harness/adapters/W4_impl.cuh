@@ -19,8 +19,9 @@
 //
 // Warp truncated merge sort (W4_wmerge): one warp, blocked input of N = 32 x IPT keys with IPT a
 // power of two in [2, 64], k a power of two in [32, N / 2]. Per-lane Batcher sort of IPT words,
-// then 5 merge-path levels through shared memory truncated at k. Temp storage two run buffers,
-// 6 __syncwarp per call, one __shfl_up per level, no barriers.
+// then 5 merge-path levels through shared memory truncated at k, every lane searching its own
+// start diagonal and reading into the runs' zero pads. Temp storage two run buffers in a skewed
+// linear layout, 6 __syncwarp per call, no shuffles, no barriers.
 #pragma once
 
 #include <cuda_bf16.h>
@@ -86,10 +87,10 @@ wmerge_supported(topk::key_type kt, int threads, int n, int k, topk::requirement
   return tree_valid(32, 32 * halves, ipt / halves, k);
 }
 
-template <typename KeyT, int Threads, int N, int K, int M>
+template <typename KeyT, int Threads, int N, int K, int M, bool Quad = false>
 struct chunk_adapter
 {
-  using core               = chunk_core<KeyT, Threads, N, K, M>;
+  using core               = chunk_core<KeyT, Threads, N, K, M, Quad>;
   using tree               = typename core::tree;
   using TempStorage        = typename core::TempStorage;
   static constexpr int IPT = core::IPT;
@@ -136,10 +137,8 @@ struct wmerge_adapter
     if constexpr (Lv < tree::levels)
     {
       using lv        = typename tree::template level<Lv>;
-      const int a_end = lv::split_end(lane, ts);
-      const int up    = __shfl_up_sync(0xffffffffu, a_end, 1);
-      const int a_beg = (lane % lv::TPP == 0) ? 0 : up;
-      lv::merge(lane, ts, out_idx, a_beg, a_end);
+      const int a_beg = lv::split_begin(lane, ts);
+      lv::merge(lane, ts, out_idx, a_beg, 0);
       if constexpr (Lv + 1 < tree::levels)
       {
         __syncwarp();

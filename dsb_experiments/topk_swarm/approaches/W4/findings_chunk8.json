@@ -8,22 +8,38 @@
   "output_location": "smem",
   "output_form": "indices",
   "output_sorted": true,
-  "temp_storage_bytes": 100352,
+  "temp_storage_bytes": 75264,
   "sync_assumed": "caller separates consecutive calls that reuse the temp storage or the output buffer by a block barrier (the harness does), the input runs are not checked",
-  "sync_performed": "6 __syncthreads per call (one after the staging of the runs, two per merge level: split exchange and level boundary, none after the last level), no atomics, no shuffles",
+  "sync_performed": "7 __syncthreads per call (staging, then two per level over three levels, none after the last), 17 BAR.SYNC in the latency kernel, no atomics, no shuffles",
   "k_range": "powers of two with k <= N/2 and every merge level splitting evenly over the 256 threads (w4::tree_valid), measured 1024 at N 8192 and 512 at N 4096",
   "n_range": "N = 256 x IPT with N / 8 a power of two and a multiple of IPT, N <= 32768 (fp32) or 65536 (bf16), measured 4096 and 8192",
-  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index), int32 indices from the blocked position, runs sorted on entry",
+  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index), int32 indices from the blocked position, runs sorted on entry. Temp storage 75264 bytes for fp32 N 8192 k 1024 (8 runs of 1024 keys, key and index halves of 4 and 2 merged runs), 38400 for fp32 N 4096 k 512, 58656 and 29984 including the harness output buffers for bf16",
   "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
   "tie_break_support": "inherent: word order (key descending, index ascending), the merge path takes the earlier run on ties (its indices are smaller), the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
   "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
  },
  "findings": {
-  "low_level": [],
-  "algorithmic": [],
-  "negative": [],
-  "surprises": [],
-  "open_questions": []
+  "low_level": [
+   "Resources (umbriel-b200-091, nvcc 13.4.92, commit 6f4b9c2190): N 8192 k 1024 121 (bf16) and 123 (fp32) registers, 3488 and 4152 SASS instructions for two calls, 17 BAR.SYNC, occupancy 2; N 4096 k 512 64 registers, 2304 and 2576 instructions, occupancy 4. No spill, no stack, no STL or LDL in any cell (the v1 build of fp32 N 4096 k 512 had a 16-byte stack frame with 3 STL and 3 LDL, gone with the v2 restructuring).",
+   "Phase profile of fp32 N 8192 k 1024 M 8 (phase_probe.cu, same node): stage 2625, level 0 split plus exchange 1022 and merge 2763, level 1 954 and 1509, level 2 995 and 824 (10695 with probe syncs). The three searches with their barriers are about 3000 cycles, flat per level, which is what the M 8 tree pays over M 4.",
+   "Per level the fixed part (static 11 to 12 step search, two barriers, exchange) is about 1000 cycles at 256 threads and the merge part shrinks with the outputs per thread (16, 8, 4): the third level costs about 1800 cycles for 1024 outputs."
+  ],
+  "algorithmic": [
+   "Against B3_tuned in the same lock section: N 8192 k 1024 (8 sorted runs of 1024, the DSA V4 Pro merge shape) bf16 5194 against 6318 (1.22x), fp32 8151 against 6714 (0.82x); N 4096 k 512 (8 runs of 512, DSA V4 Flash) bf16 3869 against 3790 (0.98x), fp32 5230 against 4310 (0.82x). Throughput 1.00x and 0.72x (bf16), 0.78x and 0.70x (fp32). Both requirements identical.",
+   "The merge of M 8 runs is the cheapest sorted route for these cells by a wide margin (select plus post-sort would be B3_tuned plus 4279 or 5550 bf16 and 9767 or 13487 fp32 for the k words from the B6 numbers, a full B6 sort 13.5k and 32.5k at N 8192) but it beats the unsorted selection only for bf16 at k 1024. The third level's fixed cost (search, two barriers, exchange) is the difference to the M 4 result.",
+   "k over N shrinks from 1/4 (M 4) to 1/8 (M 8) and B3_tuned's cost is k-flat while the tree's fixed cost grows with log2(M): the crossover against the radix select at block scope is at M 4 for fp32 and between M 8 and M 16 for bf16."
+  ],
+  "negative": [
+   "fp32 loses to B3_tuned at both M 8 shapes (0.82x) and bf16 only ties at N 4096 k 512: three levels of 64-bit exchanges and three searches over runs of 1024 and 512 cost more than B3_tuned's 2 to 4 sweeps over 4096 to 8192 keys.",
+   "Throughput 0.70x to 1.00x of B3_tuned: 30 to 83 KB of shared memory, occupancy 2 to 4."
+  ],
+  "surprises": [
+   "The v1 fp32 N 4096 k 512 kernel carried a 16-byte stack frame with 3 STL and 3 LDL at 64 registers and 0 spill bytes reported, the T36 pattern on a small array; the v2 restructuring (split key and index halves, policy objects instead of raw pointers) removed it without targeting it."
+  ],
+  "open_questions": [
+   "A 4-ary search and a shuffle-based split exchange (one barrier per level instead of two) would take the per-level fixed cost from about 1000 to about 500 cycles and flip the fp32 M 8 cells.",
+   "A 4-way merge at level 0 (merge path over two pairs materialized together) would halve the level count for M 8 at the price of a harder split, unmeasured."
+  ]
  },
  "techniques_adopted": [
   "T7",
@@ -42,5 +58,6 @@
   "approaches/W4/host_test.cpp",
   "approaches/W4/cells_w4.json"
  ],
- "correctness_notes": ""
+ "correctness_notes": "Every cell passed the full oracle battery under both requirements on run-sorted input (harness 0.8 --runs 8, 22 cases per cell), exact index set under prefer_smaller_index. One batch against B3_tuned (label v2_chunk8) on umbriel-b200-091, source commit 6f4b9c2190.",
+ "commit": "6f4b9c2190dd4c2375e21ad37c5f3e26745141b2"
 }

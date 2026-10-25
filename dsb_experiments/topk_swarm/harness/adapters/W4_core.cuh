@@ -169,48 +169,74 @@ W4_FN void cas(W& hi, W& lo)
 //   run_split<Imp>:  fp32, key array plus index-half array, Imp: the index half is implicit from
 //                    the item position (level 0 of the chunk merge, whose runs are in index order)
 // ------------------------------------------------------------------------------------------------
-template <typename W>
+// Layout: Skew false is the xor swizzle on the absolute position (block form: the lanes of one
+// warp stride through one run), Skew true is linear addressing with an odd run stride (warp
+// form: the lanes read different runs at the same relative position, the stride spreads the runs
+// over the banks and every access is one instruction with an immediate offset).
+template <bool Skew>
+W4_FN int at(int p)
+{
+  if constexpr (Skew)
+  {
+    return p;
+  }
+  else
+  {
+    return sw(p);
+  }
+}
+
+template <typename W, bool Skew>
 struct run_words
 {
   W* w;
   W4_FN W key_at(int p) const
   {
-    return w[sw(p)];
+    return w[at<Skew>(p)];
   }
   W4_FN W word_at(int p, int) const
   {
-    return w[sw(p)];
+    return w[at<Skew>(p)];
   }
   W4_FN void store(int p, W x) const
   {
-    w[sw(p)] = x;
+    w[at<Skew>(p)] = x;
+  }
+  W4_FN void store_pad(int p) const
+  {
+    w[at<Skew>(p)] = 0;
   }
 };
 
-template <bool Implicit>
+template <bool Implicit, bool Skew>
 struct run_split
 {
   uint32_t* key;
   uint32_t* lo;
   W4_FN uint32_t key_at(int p) const
   {
-    return key[sw(p)];
+    return key[at<Skew>(p)];
   }
   W4_FN uint64_t word_at(int p, int idx) const
   {
     if constexpr (Implicit)
     {
-      return word_ops<uint64_t>::from_parts(key[sw(p)], static_cast<uint32_t>(~idx));
+      return word_ops<uint64_t>::from_parts(key[at<Skew>(p)], static_cast<uint32_t>(~idx));
     }
     else
     {
-      return word_ops<uint64_t>::from_parts(key[sw(p)], lo[sw(p)]);
+      return word_ops<uint64_t>::from_parts(key[at<Skew>(p)], lo[at<Skew>(p)]);
     }
   }
   W4_FN void store(int p, uint64_t x) const
   {
-    key[sw(p)] = word_ops<uint64_t>::hi(x);
-    lo[sw(p)]  = word_ops<uint64_t>::lo(x);
+    key[at<Skew>(p)] = word_ops<uint64_t>::hi(x);
+    lo[at<Skew>(p)]  = word_ops<uint64_t>::lo(x);
+  }
+  // a pad word: key zero is below every real key, the index half does not matter
+  W4_FN void store_pad(int p) const
+  {
+    key[at<Skew>(p)] = 0;
   }
 };
 
@@ -282,6 +308,39 @@ W4_FN int merge_path(const IO& A, int a_base, const IO& B, int b_base, int len_a
   return lo;
 }
 
+// 4-ary form: three probes per step at the quarter points, six independent loads in flight per
+// step, the range shrinks by four, Steps is a bound on ceil(log4(range + 1)). Same result.
+template <int Steps, typename IO>
+W4_FN int merge_path4(const IO& A, int a_base, const IO& B, int b_base, int len_a, int len_b, int d)
+{
+  int lo = cmax(d - len_b, 0);
+  int hi = cmin(d, len_a);
+  W4_UNROLL
+  for (int s = 0; s < Steps; ++s)
+  {
+    const int r   = hi - lo;
+    const int m1  = lo + (r >> 2);
+    const int m2  = lo + (r >> 1);
+    const int m3  = lo + ((3 * r) >> 2);
+    const bool go = lo < hi;
+    const auto a1 = A.key_at(a_base + m1);
+    const auto b1 = B.key_at(b_base + cmax(d - 1 - m1, 0));
+    const auto a2 = A.key_at(a_base + m2);
+    const auto b2 = B.key_at(b_base + cmax(d - 1 - m2, 0));
+    const auto a3 = A.key_at(a_base + m3);
+    const auto b3 = B.key_at(b_base + cmax(d - 1 - m3, 0));
+    const bool p1 = b1 > a1;
+    const bool p2 = b2 > a2;
+    const bool p3 = b3 > a3;
+    // first true among p1, p2, p3 bounds the range from above, the last false from below
+    const int nhi = p1 ? m1 : (p2 ? m2 : (p3 ? m3 : hi));
+    const int nlo = p1 ? lo : (p2 ? m1 + 1 : (p3 ? m2 + 1 : m3 + 1));
+    hi            = go ? nhi : hi;
+    lo            = go ? nlo : lo;
+  }
+  return lo;
+}
+
 // ------------------------------------------------------------------------------------------------
 // Chunked register merge. a[] and b[] hold up to C items each of two descending runs (absent
 // items are 0). o[] receives the C largest, descending. Returns how many came from a[].
@@ -335,8 +394,10 @@ W4_FN int top_chunk(const W (&a)[C], const W (&b)[C], W (&o)[C])
   return tree_sum<C>(aw);
 }
 
-// One chunk: load up to C items from each run head, keep the C largest, store, advance the heads.
-template <int C, bool ToIndices, typename IO, typename OutIO>
+// One chunk: load C items from each run head, keep the C largest, store, advance the heads.
+// Exact: loads beyond the consumed count are predicated off (the register preset to the filler),
+// else the loads are unconditional and read the run's zero pad beyond its end.
+template <int C, bool ToIndices, bool Exact, typename IO, typename OutIO>
 W4_FN void merge_chunk(const IO& in, int a_base, int a_idx0, int b_base, int b_idx0, int& a_head, int& b_head,
                        int a_end, int b_end, const OutIO& out, int out_at, int* out_idx, int idx_at)
 {
@@ -345,14 +406,22 @@ W4_FN void merge_chunk(const IO& in, int a_base, int a_idx0, int b_base, int b_i
   W4_UNROLL
   for (int i = 0; i < C; ++i)
   {
-    a[i] = 0;
-    b[i] = 0;
-    if (a_head + i < a_end)
+    if constexpr (Exact)
+    {
+      a[i] = 0;
+      b[i] = 0;
+      if (a_head + i < a_end)
+      {
+        a[i] = in.word_at(a_base + a_head + i, a_idx0 + a_head + i);
+      }
+      if (b_head + i < b_end)
+      {
+        b[i] = in.word_at(b_base + b_head + i, b_idx0 + b_head + i);
+      }
+    }
+    else
     {
       a[i] = in.word_at(a_base + a_head + i, a_idx0 + a_head + i);
-    }
-    if (b_head + i < b_end)
-    {
       b[i] = in.word_at(b_base + b_head + i, b_idx0 + b_head + i);
     }
   }
@@ -380,7 +449,7 @@ W4_FN void merge_chunk(const IO& in, int a_base, int a_idx0, int b_base, int b_i
 // loop is rolled when there are several chunks: the chunks are a dependent chain anyway (the
 // next chunk's addresses need this chunk's win count) and one body keeps the code inside the
 // instruction cache (T48), every register index inside the body is static.
-template <int C, int OPT, bool ToIndices, typename IO, typename OutIO>
+template <int C, int OPT, bool ToIndices, bool Exact, typename IO, typename OutIO>
 W4_FN void merge_top(const IO& in, int a_base, int a_idx0, int b_base, int b_idx0, int a_beg, int a_end, int b_beg,
                      int b_end, const OutIO& out, int out_base, int out_pos, int* out_idx)
 {
@@ -388,16 +457,16 @@ W4_FN void merge_top(const IO& in, int a_base, int a_idx0, int b_base, int b_idx
   int b_head = b_beg;
   if constexpr (OPT == C)
   {
-    merge_chunk<C, ToIndices>(in, a_base, a_idx0, b_base, b_idx0, a_head, b_head, a_end, b_end, out,
-                              out_base + out_pos, out_idx, out_pos);
+    merge_chunk<C, ToIndices, Exact>(in, a_base, a_idx0, b_base, b_idx0, a_head, b_head, a_end, b_end, out,
+                                     out_base + out_pos, out_idx, out_pos);
   }
   else
   {
     W4_NOUNROLL
     for (int c = 0; c < OPT / C; ++c)
     {
-      merge_chunk<C, ToIndices>(in, a_base, a_idx0, b_base, b_idx0, a_head, b_head, a_end, b_end, out,
-                                out_base + out_pos + c * C, out_idx, out_pos + c * C);
+      merge_chunk<C, ToIndices, Exact>(in, a_base, a_idx0, b_base, b_idx0, a_head, b_head, a_end, b_end, out,
+                                       out_base + out_pos + c * C, out_idx, out_pos + c * C);
     }
   }
 }
@@ -447,10 +516,15 @@ W4_HD inline constexpr bool tree_valid(int threads, int runs, int run_len, int k
 // indices). Split: fp32 key and index halves in separate arrays. Implicit0: the level 0 runs are
 // in index order and carry no index array (the chunk merge).
 // ------------------------------------------------------------------------------------------------
-template <typename W, bool Split, bool Implicit0, int Threads, int Runs, int RunLen, int K>
+// Exact: every thread learns its end split from its successor's search (one exchange) and
+// predicates its loads, no pads (block form). Not exact: every thread searches its own start
+// diagonal only, loads unconditionally and the runs carry a zero pad of CHUNK words (warp form).
+template <typename W, bool Split, bool Implicit0, int Threads, int Runs, int RunLen, int K, bool Quad = false,
+          bool Exact = true, bool Skew = false>
 struct merge_tree
 {
   static constexpr int levels = log2_ceil(Runs);
+  static constexpr int PAD    = Exact ? 0 : CHUNK;
 
   W4_HD static constexpr int in_len(int l)
   {
@@ -480,12 +554,14 @@ struct merge_tree
   {
     return cmin(CHUNK, opt(l));
   }
-  // run stride in words of level l's input buffer: whole swizzle groups
+  // run stride in words of level l's input buffer: the run plus its pad, in whole groups of 32
+  // for the swizzled layout, one word more than the run and its pad for the skewed one (odd
+  // stride, consecutive runs one bank apart)
   W4_HD static constexpr int stride(int l)
   {
-    return round_up(in_len(l), G);
+    return Skew ? in_len(l) + PAD + 1 : round_up(in_len(l) + PAD, G);
   }
-  // words of level l's input buffer, one trailing pad group for the finished-search probe
+  // words of level l's input buffer, one trailing group for the finished-search probe
   W4_HD static constexpr int in_words(int l)
   {
     return runs_at(l) * stride(l) + G;
@@ -531,12 +607,12 @@ struct merge_tree
     static constexpr int C     = chunk(Lv);
     static constexpr int S     = stride(Lv);
     static constexpr int OS    = stride(Lv + 1 < levels ? Lv + 1 : Lv);
-    static constexpr int Steps = log2_ceil(IN + 1);
+    static constexpr int Steps = Quad ? (log2_ceil(IN + 1) + 1) / 2 : log2_ceil(IN + 1);
     static constexpr bool last = (Lv + 1 == levels);
     static constexpr bool imp  = Implicit0 && (Lv == 0);
 
-    using in_io  = std::conditional_t<Split, run_split<imp>, run_words<W>>;
-    using out_io = std::conditional_t<Split, run_split<false>, run_words<W>>;
+    using in_io  = std::conditional_t<Split, run_split<imp, Skew>, run_words<W, Skew>>;
+    using out_io = std::conditional_t<Split, run_split<false, Skew>, run_words<W, Skew>>;
 
     W4_FN static in_io input(TempStorage& ts)
     {
@@ -561,8 +637,21 @@ struct merge_tree
       }
     }
 
-    // phase 1: the split of this thread's end diagonal (trivial when one thread owns a whole
-    // untruncated pair: its end diagonal is the end of both runs)
+    // the merge-path split of one of this thread's diagonals: its end (Exact) or its start
+    W4_FN static int split(int t, TempStorage& ts, int diag)
+    {
+      const int p   = t / TPP;
+      const in_io A = input(ts);
+      if constexpr (Quad)
+      {
+        return merge_path4<Steps>(A, (2 * p) * S, A, (2 * p + 1) * S, IN, IN, diag);
+      }
+      else
+      {
+        return merge_path<Steps>(A, (2 * p) * S, A, (2 * p + 1) * S, IN, IN, diag);
+      }
+    }
+    // Exact phase 1: the end split (trivial when one thread owns a whole untruncated pair)
     W4_FN static int split_end(int t, TempStorage& ts)
     {
       if constexpr (TPP == 1 && OUT == 2 * IN)
@@ -571,14 +660,25 @@ struct merge_tree
       }
       else
       {
-        const int p   = t / TPP;
-        const int j   = t % TPP;
-        const in_io A = input(ts);
-        return merge_path<Steps>(A, (2 * p) * S, A, (2 * p + 1) * S, IN, IN, (j + 1) * OPT);
+        return split(t, ts, (t % TPP + 1) * OPT);
+      }
+    }
+    // non-exact phase 1: the start split (zero for the first thread of a pair)
+    W4_FN static int split_begin(int t, TempStorage& ts)
+    {
+      if constexpr (TPP == 1)
+      {
+        return 0;
+      }
+      else
+      {
+        return split(t, ts, (t % TPP) * OPT);
       }
     }
 
-    // phase 2: merge with the start split a_beg (the predecessor's end split, 0 for j == 0)
+    // phase 2: merge from the start split a_beg (Exact: a_end is the successor's start split,
+    // else ignored and the pads bound the loads). The last thread of a pair writes the output
+    // run's pad.
     W4_FN static void merge(int t, TempStorage& ts, int* out_idx, int a_beg, int a_end)
     {
       const int p     = t / TPP;
@@ -586,8 +686,20 @@ struct merge_tree
       const int d     = j * OPT;
       const int b_beg = d - a_beg;
       const int b_end = d + OPT - a_end;
-      merge_top<C, OPT, last>(input(ts), (2 * p) * S, (2 * p) * RunLen, (2 * p + 1) * S, (2 * p + 1) * RunLen,
-                              a_beg, a_end, b_beg, b_end, output(ts), p * OS, d, out_idx);
+      const out_io o  = output(ts);
+      merge_top<C, OPT, last, Exact>(input(ts), (2 * p) * S, (2 * p) * RunLen, (2 * p + 1) * S, (2 * p + 1) * RunLen,
+                                     a_beg, a_end, b_beg, b_end, o, p * OS, d, out_idx);
+      if constexpr (!Exact && !last)
+      {
+        if (j == TPP - 1)
+        {
+          W4_UNROLL
+          for (int i = 0; i < PAD; ++i)
+          {
+            o.store_pad(p * OS + OUT + i);
+          }
+        }
+      }
     }
   };
 };
@@ -624,14 +736,14 @@ struct key_word<uint16_t>
 // Block chunk merge: the tile of N keys in blocked arrangement holds M sorted runs of N / M
 // consecutive items, thread t stages its IPT items into the level 0 buffer (fp32: keys only,
 // the index is the position).
-template <typename KeyT, int Threads, int N, int K, int M>
+template <typename KeyT, int Threads, int N, int K, int M, bool Quad = false>
 struct chunk_core
 {
   using kw                 = key_word<KeyT>;
   using W                  = typename kw::W;
   static constexpr int IPT = N / Threads;
   static constexpr int L   = N / M;
-  using tree               = merge_tree<W, kw::split, kw::split, Threads, M, L, K>;
+  using tree               = merge_tree<W, kw::split, kw::split, Threads, M, L, K, Quad, true, false>;
   using TempStorage        = typename tree::TempStorage;
 
   W4_FN static void stage(const KeyT (&keys)[IPT], int t, TempStorage& ts)
@@ -668,7 +780,7 @@ struct wmerge_core
   using W                  = typename kw::W;
   static constexpr int IPT = N / 32;
   static constexpr int RL  = IPT / Halves;
-  using tree               = merge_tree<W, kw::split, false, 32, 32 * Halves, RL, K>;
+  using tree               = merge_tree<W, kw::split, false, 32, 32 * Halves, RL, K, false, false, true>;
   using TempStorage        = typename tree::TempStorage;
 
   W4_FN static void prepare(const KeyT (&keys)[IPT], int lane, TempStorage& ts)
@@ -690,13 +802,18 @@ struct wmerge_core
       {
         if constexpr (kw::split)
         {
-          ts.k0[sw(base + i)] = word_ops<W>::hi(w[i]);
-          ts.l0[sw(base + i)] = word_ops<W>::lo(w[i]);
+          ts.k0[base + i] = word_ops<W>::hi(w[i]);
+          ts.l0[base + i] = word_ops<W>::lo(w[i]);
         }
         else
         {
-          reinterpret_cast<W*>(ts.k0)[sw(base + i)] = w[i];
+          reinterpret_cast<W*>(ts.k0)[base + i] = w[i];
         }
+      }
+      W4_UNROLL
+      for (int i = 0; i < tree::PAD; ++i)
+      {
+        ts.k0[base + RL + i] = 0;
       }
     }
   }

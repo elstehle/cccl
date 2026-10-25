@@ -57,12 +57,10 @@ __global__ void probe_warp(const KeyT* in, int* out, long long* acc, int calls)
     int s = 2;
     auto level = [&](auto lv_tag) {
       using lv        = decltype(lv_tag);
-      const int a_end = lv::split_end(lane, ts);
+      const int a_beg = lv::split_begin(lane, ts);
       __syncwarp();
       t[s++]          = clock64();
-      const int up    = __shfl_up_sync(0xffffffffu, a_end, 1);
-      const int a_beg = (lane % lv::TPP == 0) ? 0 : up;
-      lv::merge(lane, ts, out_idx, a_beg, a_end);
+      lv::merge(lane, ts, out_idx, a_beg, 0);
       __syncwarp();
       t[s++] = clock64();
     };

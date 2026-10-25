@@ -153,7 +153,7 @@ bool check(const char* what, const std::vector<KeyT>& keys, const std::vector<in
 
 
 // one level of the tree for all threads, barriers emulated by the two loops
-template <int Lv, typename Tree>
+template <int Lv, typename Tree, bool Exact>
 void run_level(int threads, typename Tree::TempStorage& ts, std::vector<int>& out)
 {
   if constexpr (Lv < Tree::levels)
@@ -162,23 +162,30 @@ void run_level(int threads, typename Tree::TempStorage& ts, std::vector<int>& ou
     std::vector<int> xs(threads);
     for (int t = 0; t < threads; ++t)
     {
-      xs[t] = L::split_end(t, ts);
+      xs[t] = Exact ? L::split_end(t, ts) : L::split_begin(t, ts);
     }
     for (int t = 0; t < threads; ++t)
     {
-      const int a_beg = (t % L::TPP == 0) ? 0 : xs[t - 1];
-      L::merge(t, ts, out.data(), a_beg, xs[t]);
+      if constexpr (Exact)
+      {
+        const int a_beg = (t % L::TPP == 0) ? 0 : xs[t - 1];
+        L::merge(t, ts, out.data(), a_beg, xs[t]);
+      }
+      else
+      {
+        L::merge(t, ts, out.data(), xs[t], 0);
+      }
     }
-    run_level<Lv + 1, Tree>(threads, ts, out);
+    run_level<Lv + 1, Tree, Exact>(threads, ts, out);
   }
 }
 
 // ---- block chunk merge emulation
-template <typename KeyT, int N, int K, int M>
+template <typename KeyT, int N, int K, int M, bool Quad = false>
 void test_block(const char* pattern, unsigned seed)
 {
   constexpr int Threads = 256;
-  using core            = w4::chunk_core<KeyT, Threads, N, K, M>;
+  using core            = w4::chunk_core<KeyT, Threads, N, K, M, Quad>;
   using tree            = typename core::tree;
   static_assert(tree::valid(), "shape");
   auto keys = make_keys<KeyT>(pattern, N, seed);
@@ -195,10 +202,10 @@ void test_block(const char* pattern, unsigned seed)
     }
     core::stage(mine, t, *ts);
   }
-  run_level<0, tree>(Threads, *ts, out);
+  run_level<0, tree, true>(Threads, *ts, out);
   char what[128];
-  snprintf(what, sizeof(what), "block %s N %d K %d M %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, M,
-           pattern, seed);
+  snprintf(what, sizeof(what), "block %s N %d K %d M %d Q %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, M,
+           Quad ? 1 : 0, pattern, seed);
   if (check(what, keys, out, K))
   {
     printf("ok   %s\n", what);
@@ -225,7 +232,7 @@ void test_warp(const char* pattern, unsigned seed)
     }
     core::prepare(mine, lane, *ts);
   }
-  run_level<0, tree>(32, *ts, out);
+  run_level<0, tree, false>(32, *ts, out);
   char what[128];
   snprintf(what, sizeof(what), "warp  %s N %d K %d H %d %s seed %u", sizeof(KeyT) == 4 ? "fp32" : "bf16", N, K, Halves,
            pattern, seed);
@@ -274,6 +281,10 @@ int main()
       test_block<uint16_t, 8192, 1024, 8>(p, s);
       test_block<float, 4096, 512, 8>(p, s);
       test_block<float, 8192, 256, 4>(p, s);
+      test_block<float, 8192, 2048, 4, true>(p, s);
+      test_block<uint16_t, 8192, 2048, 4, true>(p, s);
+      test_block<float, 8192, 1024, 8, true>(p, s);
+      test_block<uint16_t, 4096, 512, 8, true>(p, s);
       test_warp<float, 2048, 1024>(p, s);
       test_warp<uint16_t, 2048, 1024>(p, s);
       test_warp<float, 2048, 64>(p, s);

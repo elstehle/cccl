@@ -48,7 +48,7 @@ w4_ship() {
   w4_ssh "mkdir -p $ROOT/work/$HOLDER $ROOT/results/$HOLDER"
   # shared harness (eval-engineer's, latest) first, then this worktree's W4 adapters and approach files on top
   tar czf - -C $SWARM harness | w4_ssh "tar xzf - -C $ROOT/work/$HOLDER" || return 1
-  tar czf - -C $W4 harness/SOURCE_COMMIT harness/adapters/W4_core.cuh harness/adapters/W4_impl.cuh harness/adapters/W4_chunk4.cuh harness/adapters/W4_chunk8.cuh harness/adapters/W4_wmerge.cuh harness/adapters/W4_wmerge2.cuh approaches/W4 approaches/B3 | w4_ssh "tar xzf - -C $ROOT/work/$HOLDER" || return 1
+  tar czf - -C $W4 harness/SOURCE_COMMIT harness/adapters/W4_core.cuh harness/adapters/W4_impl.cuh harness/adapters/W4_chunk4.cuh harness/adapters/W4_chunk8.cuh harness/adapters/W4_chunk4q.cuh harness/adapters/W4_wmerge.cuh harness/adapters/W4_wmerge2.cuh approaches/W4 approaches/B3 | w4_ssh "tar xzf - -C $ROOT/work/$HOLDER" || return 1
   echo shipped $(cat $W4/harness/SOURCE_COMMIT)
 }
 
