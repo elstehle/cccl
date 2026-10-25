@@ -1,0 +1,59 @@
+{
+ "author": "opt-W2",
+ "approach_id": "W2",
+ "variant": "packed_v3",
+ "commit": "28239d1a4b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "warp convergence of the 32 lanes, the caller separates calls that reuse the output buffer by a __syncwarp (the harness does)",
+  "sync_performed": "one redux.sync per round plus one redux.max of the remaining heads (fp32 fast check), redux.add, redux.max and redux.min only on the fp32 slow path, no barriers",
+  "k_range": "[1, N/2], measured 4 to 1024, k above 64 runs the rounds as a rolled loop",
+  "n_range": "N = 32 x IPT, power of two, measured 256 to 2048",
+  "type_constraints": "bf16 (16 twiddled key bits above a 16-bit inverted index, exact) and fp32 (top 32 - log2 N twiddled key bits above the index, idea N4, exact after the tie pass), int32 indices derived from the position",
+  "nan_behavior": "a NaN with the sign bit clear twiddles above +inf and is selected first, a NaN with the sign bit set is never selected, the all-ones pattern may collide with the empty-list sentinel, focus-set inputs contain no NaN",
+  "tie_break_support": "inherent: the packed word orders by (key descending, index ascending), prefer_smaller_index runs the same code and measured identical to not_guaranteed in every cell (124 vs 124 at N 32 k 4 bf16 up to 150107 vs 150109 at N 2048 k 1024)",
+  "sorted_output_support": "inherent: slot r holds the r-th largest key, ties by smaller index (the fp32 tie pass may reorder the last slots of the tie class)"
+ },
+ "findings": {
+  "low_level": [
+   "Odd-even merge sort blocks replace the bitonic blocks of the selection network: 19 comparators at 8 items instead of 24, 63 at 16 instead of 80, 191 at 32 instead of 240 (verified by the 0-1 principle for 2 to 16 inputs, approaches/W2/oe_check in the report). VIMNMX in the throughput kernel at bf16 N 1024 k 16: 322 against 390 (two sort16 blocks and one top-16 merge), the rounds unchanged (16 CREDUX, 183 SEL).",
+   "Registers unchanged within 2 (24 to 80 for bf16, 45 to 168 for fp32), no new spills, the network stays in registers at every cell (0 STL, 0 LDL except the fp32 N 2048 latency cells inherited from v2). Canary 32.001 at start and end, R squared 1.0000.",
+   "The network is template recursion with compile-time bounds (oe_sort_desc, oe_merge), no constexpr table, so T34's unroll limit was not hit up to the 543 comparators of a 64-block (N 2048 k 64)."
+  ],
+  "algorithmic": [
+   "Gains over v2 scale with the prologue share: bf16 N 256 k 8 330 against 365 (10 percent), k 16 568 against 602 (6), N 512 k 16 820 against 889 (8), k 8 571 against 610 (6), N 1024 k 16 1485 against 1607 (8), k 32 2481 against 2674 (7), k 64 6628 against 6970 (5), N 2048 k 16 2377 against 2629 (10), k 32 3970 against 4812 (17), k 64 9237 against 9884 (7). fp32 N 512 k 16 1119 against 1177 (5), N 1024 k 16 1547 against 1684 (8), N 2048 k 16 4325 against 4594 (6). Cells with a list of 4 (k 4) gain 0 to 4 percent because a 4-block saves one comparator.",
+   "Throughput follows: bf16 N 1024 k 16 802 against 734 Gelem/s (9 percent), N 2048 k 32 585 against 532 (10), fp32 N 2048 k 32 516 against 364 (42 percent, the latency kernel schedule of v2 does not affect the throughput kernel and the odd-even blocks shorten the issue-bound prologue).",
+   "The cumulative state against the W1 reference (same cells from the grid batch, same node class, not the same lock section): bf16 N 512 k 16 820 against 12606, N 1024 k 16 1485 against about 32750, N 2048 k 16 2377 against 76075, the router focus cells N 256 k 8 330 and N 512 k 32 1468."
+  ],
+  "negative": [
+   "The comparator saving does not reach the round cost or the fp32 latency schedule, so the v2 anomalies at fp32 N 1024 k 8 and N 2048 k 16 and 32 remain (1815, 4325, 6449 against v1 1407, 3907, 5688)."
+  ],
+  "surprises": [
+   "A 21 percent comparator saving in the blocks yields 6 to 10 percent in the whole primitive at IPT 16 to 64 and 17 percent at bf16 N 2048 k 32, where ptxas also found a better schedule for the merge (VIMNMX3 fusions, T7)."
+  ],
+  "open_questions": [
+   "A cheaper top-L merge: the bitonic half-cleaner after the elementwise max costs (L/2) log L comparators, an odd-even merge of two sorted L-lists truncated to the top L is not smaller, but a merge that exploits that both inputs are sorted (a merge path on registers) could halve it.",
+   "The selection network is the whole cost above IPT 16, so N 2048 and 4096 belong to W2 only with a prefilter (one threshold compare per item against a bound from the lane maxima, W5 style) in front of the network."
+  ]
+ },
+ "techniques_adopted": [
+  "T1",
+  "T3",
+  "T7",
+  "T17",
+  "T19",
+  "T20"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W2/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W2_impl.cuh",
+  "harness/adapters/W2_packed_v3.cuh"
+ ],
+ "correctness_notes": "oracle battery passed on every cell of the batch, both variants."
+}

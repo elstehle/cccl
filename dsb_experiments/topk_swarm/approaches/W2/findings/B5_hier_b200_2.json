@@ -1,0 +1,63 @@
+{
+ "author": "opt-W2",
+ "approach_id": "B5",
+ "variant": "hier",
+ "commit": "28239d1a4b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 752,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier (the harness does)",
+  "sync_performed": "1 __syncthreads for bf16 (after the per-warp phase), 3 for fp32 on the fast path (plus 2 per slow tie round), redux.sync inside the warps",
+  "k_range": "[1, N/2] with Warps x k at most 2048, measured 4 to 64",
+  "n_range": "N = 256 x IPT, measured 1024 to 32768",
+  "type_constraints": "bf16 exact and fp32 through the N4 truncated-key word with a block-scope tie pass, int32 indices from the position",
+  "nan_behavior": "as W2_impl.cuh",
+  "tie_break_support": "inherent (packed word), same code for both requirements, measured identical under not_guaranteed and prefer_smaller_index in this batch (B2 supports both)",
+  "sorted_output_support": "inherent, the merge output is sorted"
+ },
+ "findings": {
+  "low_level": [
+   "Same B5_hier binary family as the first card (28 to 128 registers, 0 spills for bf16, one barrier per call, 7 BAR.SYNC in the latency kernel), the control is opt-B2's B2_packed adapter (atomicMax rounds on the same packed word, one barrier per round) copied into this harness for one lock section. Both requirements measured, identical cycles for both adapters (packed order).",
+   "At N 32768 (IPT 128) the B2 control runs its per-thread sort from local memory (T34) and takes 1009163 cycles at k 4, so the 460x ratios there measure B2's compile defect, not B5. The fp32 N 32768 cells have no control (B2 excludes fp32 above IPT 64) and B5 itself spills 1368 to 1640 bytes there (255 registers).",
+   "Canary 32.001 at start and end, R squared 1.0000 up to N 4096 bf16 and 0.998 to 1.0 where the load control exceeds 2500 cycles."
+  ],
+  "algorithmic": [
+   "The kill criterion of the B5 card is 1.15x over B2 at block N 1024 k 16 bf16. Measured in one lock section: 1194 against 1380 cycles, 1.157x, so the letter of the criterion holds by 0.7 percent. In throughput at the same cell B5 loses, 361 against 495 Gelem/s (0.73x), and at every other cell except two B2 is faster: bf16 N 1024 k 4 377 against 380 (tie), k 64 8277 against 5397 (0.65x), N 4096 k 4 851 against 718 (0.84x), k 16 2250 against 2057 (0.91x), N 16384 k 4 1452 against 1923 (1.32x, the one real win), k 16 4713 against 3874 (0.82x). fp32: N 1024 k 16 1578 against 1680 (1.06x), k 4 741 against 650 (0.88x), N 4096 k 16 2767 against 2295 (0.83x).",
+   "Why B5 does not beat B2 as the model said: the model priced B2's round at 74 cycles (T11) and B5's two warp phases at 2 x 26. B2_packed's measured round is about 80 (1380 at k 16 with a 100-cycle prologue) but B5's phase 2 merge list grows with k (8 k words over 32 lanes, 4 per lane at k 16, 16 at k 64) and its phase 1 at N 1024 runs 16 rounds over lists of 4 that drain after 4, so B5 pays 2 k rounds of 26 plus two prologues plus the exchange: 1194 against the modeled 1140, while B2 came in 260 below its model (1380 against 1640).",
+   "Against B1 (first card, same adapter) B5 still wins by 1.58x at the focus cell and 2x at N 16384 k 16, so the B5 composition beats radix select at small k but not the flat atomics extraction. The ordering at block N 1024 k 16 bf16 is B5 1194, B2 1380, B1 1882 in latency and B2 495, B5 361, B1 347 Gelem/s in throughput."
+  ],
+  "negative": [
+   "B5 does not earn a place next to B2: it wins the latency criterion by 0.7 percent at one cell, loses throughput there by 27 percent and loses latency from k 64 and from N 4096. Recommend closing the B5 card in favor of B2 at block scope and W2 at warp scope, unless the merge phase gets a fundamentally cheaper structure.",
+   "The phase 2 merge over 8 k candidates is the structural cost: at k 64 it is a list of 16 per lane and 64 rounds (about 2000 cycles) on top of a phase 1 of 64 rounds, where B2 does 64 rounds once."
+  ],
+  "surprises": [
+   "The same adapter looks 1.58x better than B1 and only 1.16x better than B2 at the focus cell, and B2 is nearly k-flat in registers (32) with occupancy 8, so the throughput comparison that the first card could not make reverses the picture.",
+   "B2's IPT 128 cells run 50x slower than at IPT 64 for a compiler reason (T34), which would make B5 look like the N 32768 winner on a board that does not read the stack frames."
+  ],
+  "open_questions": [
+   "Whether a B5 with phase 1 emitting k + 1 words per warp (needed for the fp32 next-word check) and odd-even blocks recovers 8 to 10 percent, which would put it at about 1.25x over B2 in latency at N 1024 k 16 and still behind in throughput.",
+   "A two-level merge (two warps merge 4 k each, then one warp merges 2 k) for k 32 and 64, where the single-warp merge of 8 k candidates is the loss."
+  ]
+ },
+ "techniques_adopted": [
+  "T1",
+  "T3",
+  "T11",
+  "T17",
+  "T19",
+  "T33",
+  "T34"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W2/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W2_impl.cuh",
+  "harness/adapters/B5_hier.cuh",
+  "harness/adapters/B2_packed.cuh (control, copied from opt-B2)"
+ ],
+ "correctness_notes": "oracle battery passed on every block cell for both key types and both requirements, 20 cells with k 1024 and 4096 are unsupported by B5 (Warps x k above 2048) and listed by the batch."
+}

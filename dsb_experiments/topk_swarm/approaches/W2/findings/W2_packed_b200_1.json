@@ -1,0 +1,73 @@
+{
+ "author": "opt-W2",
+ "approach_id": "W2",
+ "variant": "packed",
+ "commit": "dfeeab4138",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "warp convergence of the 32 lanes, the caller separates calls that reuse the output buffer by a __syncwarp (the harness does)",
+  "sync_performed": "one redux.sync per round plus one redux.add (fp32) over the full warp mask, no barriers, no shared memory",
+  "k_range": "[1, N/2], measured 4 to 1024, k above 64 runs the rounds as a rolled loop",
+  "n_range": "N = 32 x IPT, power of two, measured 32 to 2048 (N 4096 at k 4 to 64 built but not yet measured, its k 256 and 1024 translation units compile for over 20 minutes)",
+  "type_constraints": "bf16 (16 twiddled key bits above a 16-bit inverted index, exact) and fp32 (top 32 - log2 N twiddled key bits above the index, idea N4, exact after the tie pass), int32 indices derived from the position",
+  "nan_behavior": "a NaN with the sign bit clear twiddles above +inf and is selected first, a NaN with the sign bit set is never selected, the all-ones pattern may collide with the empty-list sentinel, focus-set inputs contain no NaN",
+  "tie_break_support": "inherent: the packed word orders by (key descending, index ascending), prefer_smaller_index runs the same code and measured identical to not_guaranteed in every cell (124 vs 124 at N 32 k 4 bf16 up to 150107 vs 150109 at N 2048 k 1024)",
+  "sorted_output_support": "inherent: slot r holds the r-th largest key, ties by smaller index (the fp32 tie pass may reorder the last slots of the tie class)"
+ },
+ "findings": {
+  "low_level": [
+   "The round is exactly one CREDUX.MAX plus one ISETP and the predicated shift: 8 CREDUX for 8 rounds at N 256 (SASS of the throughput kernel: 256 instructions in total, 48 VIMNMX for the bitonic sort8, 43 SEL, 8 STS). No VOTE, no FLO, no BAR.SYNC, 0 STL and 0 LDL in every warp cell up to N 1024 (fp32 N 1024 k 16 latency kernel has 56 bytes of spill at 168 registers, fp32 N 2048 reaches 255 registers with 32 to 56 bytes of spill).",
+   "The per-round shift is pruned by the compiler to the positions that can still reach the head: 28 SEL for 8 rounds on a list of 8 (7+6+...+0), 120 for 16 rounds on a list of 16. With k below the items per lane the list depth is k, so the round stays at the IPT 8 cost at any N: the slope over k at N 256 (IPT 8, list 8) is 24.9 cycles per round from k 16 to 32 and 29.6 from k 8 to 16, inside the full primitive with prologue and emission (T19 measured 25.8 in isolation).",
+   "Registers of the throughput kernel (256 threads, 8 warps): bf16 19 at N 32, 31 at N 128, 40 at N 512, 62 at N 1024 k 16, 100 at N 2048 k 16 (occupancy 8, 8, 6, 4, 2 blocks per SM). fp32 with the v1 tie pass: 23, 32, 96, 146, 255 (occupancy 8, 8, 2, 1, 1). The fp32 tie pass keeps the raw keys live through the rounds and materializes a twiddled copy plus a member flag per item in its slow path, which the register allocator provisions for even though the slow path never runs on random data.",
+   "The fp32 tie pass fast path costs about 11 instructions per item (repack, two compares, count) and one redux.add: fp32 minus bf16 at the same cell is 234 to 304 cycles at IPT 8 (N 256 k 8 to 32), 343 to 676 at IPT 32 (N 1024), 1319 at N 2048 k 16, against the 150 the N4 card modeled. The host simulation (approaches/W2/n4_tie_sim.py) puts the slow path rate at 0.0 to 0.3 percent at N 256 to 2048 with 24 to 21 key bits and 3 percent at N 4096 k 16 with 20 bits, so the fast path is what matters and is the first iteration target (variant v2).",
+   "The prologue dominates above IPT 8: at N 1024 k 16 the throughput kernel has 960 instructions of which 390 are VIMNMX of the two bitonic sort16 blocks and the top-16 merge against 16 CREDUX, and the latency cost splits into about 1000 cycles of prologue and emission and 16 rounds. At N 2048 k 16 (IPT 64, four sort16 blocks and three merges) the total is 2629 cycles.",
+   "The generate-only control subtracted by the harness is 92 to 159 cycles per call up to N 512 and 724 (bf16) to 956 (fp32) at N 2048 for the data-dependent chain (vectorized blocked loads of the fresh input), every fit has R squared 1.0000 and the cycles canary read 32.001 at the start and end of both batches."
+  ],
+  "algorithmic": [
+   "Cost is about 150 + k x 25 cycles for any N with IPT at most 8 and a per-lane prologue that grows with the items per lane beyond that: bf16 k 16 costs 450 (N 32), 476 (N 128), 889 (N 512), 1607 (N 1024), 2629 (N 2048). Against WarpBitonicTopK at the same cells that is 1.7x, 4.8x, 14x, 20x (N 1024 reference from the slope batch is not available, N 512 12606) and 29x (N 2048, 76075). W2 wins every bf16 cell of the warp grid up to k 256 (12362 vs 22889 at N 512 k 256) and still 1.25x at N 2048 k 1024 (150107 vs 187659).",
+   "The approach card's model held at the focus cells: N 256 k 8 bf16 measured 365 against 310 modeled, N 512 k 16 889 against 690, N 1024 k 16 1607 against 1520, N 512 k 32 2772 at k 64 scale (k 32 not in the grid) and N 1024 k 32 2674 against 2950. The prologue was underestimated by 100 to 200 cycles at IPT 16 and above, the round was modeled right.",
+   "Large k is where the structure loses: with k above the list depth every round shifts the whole list (no pruning), so the round costs about 50 cycles at a list of 16 (N 512 k 256: 12362 cycles, 50 per round) and 147 at a list of 64 (N 2048 k 1024: 150107). fp32 at N 2048 k 1024 is the one warp cell where the reference wins (154812 against 131668), and fp32 k 256 at N 512 ties in latency (12614 vs 13920) and loses in throughput (52.6 vs 98.2 Gelem/s).",
+   "Throughput follows latency and occupancy: bf16 1061 Gelem/s at N 128 k 4 (W1 105), 1381 at N 512 k 4 (97), 1513 at N 2048 k 4 (78), 789 at N 2048 k 16 (78). The harness ceiling (load-only) is 5243 to 8074 Gelem/s at those cells so the primitive, not the loads, sets the number. fp32 throughput is held back by occupancy 1 to 2 at N 512 and above (958 at N 512 k 4 with 89 registers, 941 at N 2048 k 4 with 255 registers against bf16's 1513).",
+   "prefer_smaller_index is free: identical code, identical cycles in all 28 bf16 and 28 fp32 cell pairs of the grid batch, measured against the reference's not_guaranteed path with --control-req."
+  ],
+  "negative": [
+   "The v1 fp32 tie pass that counts class members over every item does not pay: it costs more than the rounds at k 8 (fp32 N 256 k 8 is 599 against bf16 365) and more than the whole bf16 primitive at N 2048 k 16 (3948 against 2629), and it costs occupancy. Replaced in v2 by one redux of the largest word not emitted.",
+   "The N 4096 cells with k 256 and 1024 (IPT 128, per-lane list of 128) did not finish compiling within 20 minutes and were dropped from this round. They are boundary cells the approach does not target.",
+   "A rolled round loop (k above 64) loses the dead-position pruning and the k 256 and 1024 cells run at the full-list shift cost, which is the regime where W5 and N1 are predicted to win anyway."
+  ],
+  "surprises": [
+   "The round inside the primitive matches the isolated micro number (24.9 vs 25.8) with no emission penalty, because the predicated STS of lane r mod 32 and the index decode run on the uniform datapath off the critical path.",
+   "The compiler's dead-position pruning turns the list depth from a cost into a free parameter: N 1024 k 8 (IPT 32, list 8) costs 1061 cycles with the round still at about 27 and 41 registers, where the card expected the 89-cycle IPT 32 round of T19.",
+   "fp32 at N 256 k 8 to 32 has exactly 1.0 ties at rank k on every input and still pays 230 to 300 cycles for the tie machinery: the exactness check, not the ties, was the cost."
+  ],
+  "open_questions": [
+   "How much of the fp32 gap closes with the next-word check (v2) and whether the registers return to the bf16 level, since the keys must stay live for the slow path.",
+   "Whether odd-even merge sort blocks (63 comparators at 16 against 80) and a cheaper top-L merge move the IPT 16 to 64 prologue by the 20 percent the comparator count predicts (v3).",
+   "The N 4096 k 4 to 64 cells (built, not measured) and the two-level list of the approach card's explore item 2 for k above 32 at N 1024 and above.",
+   "A GB200 card for the same adapter, since the lease rotation put every batch of this round on B200 nodes (T16 says the SM costs transfer, T20 says the aarch64 compiler may not, the primitive uses min, max and selects only)."
+  ]
+ },
+ "techniques_adopted": [
+  "T1",
+  "T3",
+  "T7",
+  "T17",
+  "T19",
+  "T20"
+ ],
+ "techniques_contributed": [
+  "T41"
+ ],
+ "report_path": "approaches/W2/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W2_impl.cuh",
+  "harness/adapters/W2_packed.cuh",
+  "approaches/W2/n4_tie_sim.py"
+ ],
+ "correctness_notes": "oracle battery passed on every cell (random seeds plus tie_heavy, sorted, pivot_tie, all_equal, signed_zero, inf_denorm, quantized patterns), both requirements. The baseline binaries were built from the policy_v1 path of W2_impl.cuh before the v2 and v3 policies were added to the same header, the v1 code path is unchanged by that refactor."
+}

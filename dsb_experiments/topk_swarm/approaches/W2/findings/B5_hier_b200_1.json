@@ -1,0 +1,54 @@
+{
+  "author": "opt-W2",
+  "approach_id": "B5",
+  "variant": "hier",
+  "commit": "dfeeab4138",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": true,
+    "temp_storage_bytes": 752,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier (the harness does)",
+    "sync_performed": "1 __syncthreads for bf16 (after the per-warp phase), 3 for fp32 on the fast path (plus 2 per slow tie round), redux.sync inside the warps",
+    "k_range": "[1, N/2] with Warps x k at most 2048, measured 4 to 64",
+    "n_range": "N = 256 x IPT, measured 1024 to 16384 (temp storage 8 k words plus 4 counters, 752 bytes at k 16)",
+    "type_constraints": "bf16 exact and fp32 through the N4 truncated-key word with a block-scope tie pass, int32 indices from the position",
+    "nan_behavior": "as W2_impl.cuh",
+    "tie_break_support": "inherent (packed word), same code for both requirements, measured with not_guaranteed only in this batch since B1 supports only that",
+    "sorted_output_support": "inherent, the merge output is sorted"
+  },
+  "findings": {
+    "low_level": [
+      "bf16: 32 registers at N 1024 to 4096 (occupancy 8 blocks per SM, B1 is 32 to 64), 99 at N 16384 (occupancy 2), 0 spills, 7 BAR.SYNC in the latency kernel (1 per call plus the harness's) against 25 for B1's two bf16 radix passes. fp32: 48 registers at N 1024 k 16, 109 at N 4096, 255 with 0 to 608 bytes of spill at N 16384 (the v1 tie pass keeps keys and a twiddled copy live), 15 BAR.SYNC.",
+      "Phase 1 at N 1024 is IPT 4 per thread with a list of 4 (16 rounds drain it, the rounds then shift zeros), phase 2 is 128 candidate words striped over warp 0 (4 per lane): the measured 1194 cycles at k 16 bf16 against the card's model of 1140 (two warp phases of about 520 plus a 100-cycle exchange).",
+      "Two warps per scheduler run their redux chains concurrently in phase 1 and the per-round cost is unchanged from one warp: N 1024 bf16 goes 378, 651, 1194 at k 4, 8, 16 (about 68 per k, two phases of 26 plus the growing merge list), so the REDUX pipe is not saturated by 8 warps.",
+      "Fits have R squared 1.0000 up to N 4096 bf16 and 0.998 to 1.0 at N 16384 where the data-dependent load control is 2535 (bf16) to 4582 (fp32) cycles per call, canary 32.001 at start and end."
+    ],
+    "algorithmic": [
+      "B5 beats the block incumbent B1 (AIR radix select) at small k and loses at large k: bf16 N 1024 k 4 378 vs 1767 (4.7x), k 8 651 vs 1824 (2.8x), k 16 1194 vs 1882 (1.58x), k 32 2408 vs 1970 (0.82x), k 64 7584 vs 2018. N 4096 k 16 2250 vs 3830 (1.7x), k 32 4234 vs 4158 (tie). N 16384 k 16 4709 vs 9671 (2.05x), k 32 8573 vs 9871 (1.15x). The crossover with B1 is near k 27 at N 1024 as the card modeled, near k 32 at N 4096 and above k 32 at N 16384.",
+      "fp32 through N4 with the v1 counting tie pass: N 1024 k 16 1578 vs 1905 (1.21x), N 4096 k 16 2773 vs 3711 (1.34x), N 16384 k 16 6122 vs 10463 (1.71x). The tie pass costs 384 cycles at N 1024 k 16 (fp32 minus bf16), two barriers plus the per-item count, and the registers it needs push N 16384 to 255 with spills.",
+      "The kill criterion of the B5 card is 1.15x over B2 at N 1024 k 16 bf16. B2's adapter was not available in this session, so the measured control is B1 (1.58x). Against the B2 model of the card (1640 cycles) the margin would be 1.37x, to be confirmed against B2's measured adapter in one lock section before the card is closed.",
+      "Throughput wins are smaller than latency wins because B1 is k-flat and already at occupancy 8 for bf16: N 1024 k 4 989 vs 365 Gelem/s, k 16 359 vs 347 (tie), N 4096 k 16 566 vs 528, N 16384 k 16 670 vs 519. fp32 N 16384 k 16 432 vs 307 even at occupancy 1."
+    ],
+    "negative": [
+      "k 32 and above does not pay: both phases run k rounds and the merge list grows with k (8 k words over 32 lanes), so the cost is about 68 k + 100 against B1's flat 1900 to 2000 at N 1024. k 64 at N 1024 is 3.8x slower than B1.",
+      "The block-scope tie pass with two extra barriers and a per-item count costs 384 to 1413 cycles (N 1024 to 16384, k 16) and most of the fp32 registers, the same defect as the warp v1 tie pass."
+    ],
+    "surprises": [
+      "At N 16384 (IPT 64 per thread, list of 16 per lane in phase 1) B5 is 2x faster than B1 in latency and 1.3x in throughput at k 16, where the card expected B4 territory: the per-lane prologue of 64 items costs about 1100 cycles but B1's four histogram passes over 16384 items cost more.",
+      "One barrier per call against B1's 25 BAR.SYNC is visible in the small-k throughput (989 vs 365 Gelem/s at k 4)."
+    ],
+    "open_questions": [
+      "B5 against B2's measured adapter in one session (the card's kill criterion).",
+      "The fp32 next-word check at block scope needs each warp to emit k + 1 candidates so the (k+1)-th largest word is in the merge, then the block tie pass is one redux in warp 0 and one broadcast (v2).",
+      "A two-level merge (two warps merge 4 k each, then one warp 2 k, one more barrier) for k 32 and 64, and whether phase 1 should emit fewer than k candidates per warp when k exceeds the items per warp (a warp cannot win more than its item count)."
+    ]
+  },
+  "techniques_adopted": ["T1", "T3", "T11", "T17", "T19"],
+  "techniques_contributed": [],
+  "report_path": "approaches/W2/REPORT.md",
+  "source_paths": ["harness/adapters/W2_impl.cuh", "harness/adapters/B5_hier.cuh"],
+  "correctness_notes": "oracle battery passed on every block cell for both key types."
+}

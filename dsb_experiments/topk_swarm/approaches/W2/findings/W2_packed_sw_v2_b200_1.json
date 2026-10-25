@@ -1,0 +1,60 @@
+{
+ "author": "opt-W2",
+ "approach_id": "W2",
+ "variant": "packed_sw_v2",
+ "commit": "28239d1a4b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "the logical warps of one hardware warp stay converged, the caller separates calls that reuse the output buffer by a __syncwarp on the member mask (the harness does)",
+  "sync_performed": "per round one full-warp redux.sync per logical warp of the hardware warp (32 / T of them, the other groups contribute the identity), no barriers, no shared memory",
+  "k_range": "[1, N/2], measured 4 to 64",
+  "n_range": "N = T x IPT with T in {4, 8, 16}, measured N 8 to 128",
+  "type_constraints": "bf16 and fp32 as in W2_packed, int32 indices from the position",
+  "nan_behavior": "as W2_packed",
+  "tie_break_support": "inherent, same code for both requirements (measured at warp scope)",
+  "sorted_output_support": "inherent"
+ },
+ "findings": {
+  "low_level": [
+   "The masked redux is replaced by G = 32 / T full-warp CREDUX per round with a select of the own group's result: 32 CREDUX for 4 rounds at T 8 in the throughput kernel against 8 inside a WARPSYNC loop before, no BSSY, WARPSYNC or BRA around the collectives. Per-round slopes over k (bf16 N 32): 34 cycles at T 16 (G 2), 46 at T 8 (G 4), 88 at T 4 (G 8), against 174, 327 and 649 with the masked redux and 25 at warp scope. The model 22 + 6 (G - 1) plus 2 G selects (T17) fits within 10 cycles at every G.",
+   "Registers 31 to 57 for bf16 and 34 to 72 for fp32 up to N 32, fp32 N 128 at T 4 reaches 168 (8 groups per warp each holding 32 keys and their tie pass state) and 228 at k 64, no spills. Occupancy 8 at T 8 and 16, 4 at fp32 T 4 N 128. Canary 32.001 at start and end, R squared 1.0000."
+  ],
+  "algorithmic": [
+   "Whole-primitive gains over the masked-redux baseline in one lock section: bf16 T 16 N 32 k 4 196 against 768 (3.9x), T 8 N 32 k 4 295 against 1433 (4.9x), T 4 N 8 k 4 369 against 2636 (7.1x), T 8 N 128 k 8 (gpt-oss and Qwen3 router shape) 802 against 3152 (3.9x), fp32 T 8 N 128 k 8 1184 against 3883 (3.3x), T 16 N 128 k 64 2619 against 12245 (4.7x). Over 46 cells the gain is 2.2x to 7.1x in latency and 1.1x to 1.8x in throughput (T 4 N 8 k 4 bf16 239 against 139 Gelem/s).",
+   "The sub-warp cost is now about G x 6 cycles per round above the warp cost plus the identical prologue: T 16 N 32 k 16 606 cycles against 450 at warp scope N 32 k 16, T 8 N 32 k 16 783.",
+   "Against the grouped-routing shape (8 to 32 experts per group, k 2 to 8) the primitive costs 200 to 450 cycles per hardware warp for 2 to 8 rows at once, which is the regime where a per-row warp launch would waste 31 of 32 lanes."
+  ],
+  "negative": [
+   "At T 4 (8 groups) the eight CREDUX per round cost 88 cycles, no better than a two-step shuffle tree would (about 72 by T1), so the trick pays most at T 8 and 16.",
+   "fp32 at T 4 N 128 holds 8 x 32 keys per hardware warp live for the tie pass, 168 registers, the same register cost as the warp primitive at N 1024."
+  ],
+  "surprises": [
+   "A 4x to 7x gain from changing nothing but the mask of a collective. The serialization was invisible in every static count except the WARPSYNC opcode."
+  ],
+  "open_questions": [
+   "sw_v3 (next-word check and odd-even blocks on top of the full-warp reducer) is built but not measured, expected to add the warp-scope v2 and v3 gains (fp32 tie pass down to one redux, prologue minus 6 to 10 percent).",
+   "A shuffle-xor tree at T 4 against the eight pipelined redux, and whether the G selects can be replaced by one PRMT-style gather of the G uniform results."
+  ]
+ },
+ "techniques_adopted": [
+  "T1",
+  "T3",
+  "T17",
+  "T19",
+  "T33"
+ ],
+ "techniques_contributed": [
+  "T40"
+ ],
+ "report_path": "approaches/W2/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W2_impl.cuh",
+  "harness/adapters/W2_packed_sw_v2.cuh"
+ ],
+ "correctness_notes": "oracle battery passed on every sub-warp cell for both variants, all groups of the launch checked."
+}
