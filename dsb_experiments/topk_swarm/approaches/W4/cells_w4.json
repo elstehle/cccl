@@ -1,0 +1,18 @@
+{
+  "name": "w4",
+  "description": "W4 cells: the chunk merge at block N 8192 (M 4 runs of 2048 at k 2048, M 8 runs of 1024 at k 1024, plus N 4096 k 512 for M 8) and the warp sorted-output crossover (N 1024 and 2048 at k 64 and 1024, N 512 k 256 boundary). bf16 and fp32, both requirements, random input, both regimes.",
+  "key_types": ["bf16", "fp32"],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": ["not_guaranteed", "prefer_smaller_index"],
+  "input_patterns": ["random"],
+  "regimes": ["latency", "throughput"],
+  "k_values": [64, 256, 512, 1024, 2048],
+  "k_max_fraction": 0.5,
+  "k_by_n": {"4096": [512], "8192": [1024, 2048], "512": [256], "1024": [64, 256], "2048": [64, 256, 1024]},
+  "scopes": {
+    "subwarp": {"threads": [4, 8, 16], "n": [8, 32, 128]},
+    "warp": {"threads": [32], "n": [512, 1024, 2048]},
+    "block": {"threads": [256], "n": [4096, 8192]}
+  }
+}
