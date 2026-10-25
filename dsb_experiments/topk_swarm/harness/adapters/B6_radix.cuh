@@ -78,26 +78,32 @@ struct word<float>
 };
 
 // Store the top K ranks of a striped tile of sorted words: item i of thread t is rank
-// i x Threads + t. Items whose whole slice lies beyond K are dropped at compile time.
+// i x Threads + t. Items whose whole slice lies beyond K are dropped at compile time, the one
+// item whose slice straddles K keeps a per-thread predicate, the rest store unconditionally.
+template <int I, int Threads, int IPT, int K, typename WordT>
+__device__ __forceinline__ void store_top_k_item(const WordT (&w)[IPT], WordT index_mask, int* out_idx, int t)
+{
+  if constexpr (I < IPT)
+  {
+    if constexpr ((I + 1) * Threads <= K)
+    {
+      out_idx[I * Threads + t] = static_cast<int>(w[I] & index_mask);
+    }
+    else if constexpr (I * Threads < K)
+    {
+      if (I * Threads + t < K)
+      {
+        out_idx[I * Threads + t] = static_cast<int>(w[I] & index_mask);
+      }
+    }
+    store_top_k_item<I + 1, Threads, IPT, K>(w, index_mask, out_idx, t);
+  }
+}
+
 template <int Threads, int IPT, int K, typename WordT>
 __device__ __forceinline__ void store_top_k_striped(const WordT (&w)[IPT], WordT index_mask, int* out_idx)
 {
-  const int t = static_cast<int>(threadIdx.x);
-#pragma unroll
-  for (int i = 0; i < IPT; ++i)
-  {
-    if constexpr ((i + 1) * Threads <= K)
-    {
-      out_idx[i * Threads + t] = static_cast<int>(w[i] & index_mask);
-    }
-    else if constexpr (i * Threads < K)
-    {
-      if (i * Threads + t < K)
-      {
-        out_idx[i * Threads + t] = static_cast<int>(w[i] & index_mask);
-      }
-    }
-  }
+  store_top_k_item<0, Threads, IPT, K>(w, index_mask, out_idx, static_cast<int>(threadIdx.x));
 }
 
 } // namespace b6

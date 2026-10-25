@@ -89,21 +89,6 @@ struct B6_pairs
       v[i]  = idx[i];
     }
     sort_t(ts).SortDescendingBlockedToStriped(sk, v);
-    const int t = static_cast<int>(threadIdx.x);
-#pragma unroll
-    for (int i = 0; i < IPT; ++i)
-    {
-      if constexpr ((i + 1) * Threads <= K)
-      {
-        out_idx[i * Threads + t] = v[i];
-      }
-      else if constexpr (i * Threads < K)
-      {
-        if (i * Threads + t < K)
-        {
-          out_idx[i * Threads + t] = v[i];
-        }
-      }
-    }
+    b6::store_top_k_striped<Threads, IPT, K>(v, ~0, out_idx);
   }
 };
