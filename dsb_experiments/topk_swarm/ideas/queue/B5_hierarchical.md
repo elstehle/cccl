@@ -1,27 +1,5 @@
 # B5: Hierarchical warp then block composition
-status: queued (revived 2026-10-25 by the measured redux cost, to be built by W2's optimizer in wave 1 right after the W2 round is confirmed)
+status: rejected (2026-10-25, closed in wave 1 by opt-W2's measurement against B2's adapter, see `ideas/rejected/R13_B5_hierarchical.md`)
 scope: block
-origin: `hier_extract` and `bitonic_hier` in `reference/BLOCK_TOPK_RESULTS.md` (lost at k 16, N 1024, fp32: 5024 and 5112 against 2331, with value-only warp rounds of 82 cycles that needed ballot and elect)
-hypothesis: each of the 8 warps runs packed W2 on its 1 over 8 of the row, writes its k words to shared memory, one barrier, and warp 0 runs packed W2 once more over the 8 k candidates. The July composition lost because a value-only warp round (redux, ballot, elect, 82 cycles) cost the same as a block atomic round (81). With a packed unique word the warp round is the redux plus a compare and a select, measured at 25.8 cycles up to 8 items per lane with the list shifts hidden behind the redux (`TECHNIQUES.md` T19, T2, T4, T17), while the block round stays at 74 (T9), so two warp phases of k rounds (about 52 k) undercut one block phase (74 k) and B5 beats B2 wherever the per-lane list stays at or below 8 items. Index-only output and prefer_smaller_index are inherent in the packed word, fp32 goes through N4.
-cells it should win: block N 1024 to 4096, k 4 to 32, bf16 packed and fp32 with N4, latency and throughput (one barrier per call against k in B2 and about 9 in B1)
 
-cost model (measured 2026-10-25: the packed W2 list round in `TECHNIQUES.md` T19 is 25.8 cycles at IPT 4 and 8, 37.2 at IPT 16, 89.4 at IPT 32 with predicated shifts, the block atomic round 74.4 in T9, July placeholders for prologue and the exchange):
-- Warp phase: items per lane IPT_w = N over 256 (the same as the block primitive's items per thread), packed W2 about 100 + k round(IPT_w) with round 26 for IPT_w at most 8, 37 at 16, 89 at 32.
-- Exchange: 8 k words to smem (one STS per selected lane), one barrier 28, warp 0 reads 8 k words (8 k over 32 per lane), about 100 for k 16.
-- Merge: packed W2 by warp 0 over 8 k words at IPT 8 k over 32, about 100 + k round(k over 4): k 8 gives IPT 2, 310. k 16 gives IPT 4, 520. k 32 gives IPT 8, 930. k 64 gives IPT 16, 2470.
-- Totals: N 1024 k 16 about 520 + 100 + 520 = 1140 against B2 1640, B1 1700, N6 1500. N 1024 k 8 about 310 + 100 + 310 = 720 against B2 940. N 1024 k 32 about 930 + 100 + 930 = 1960 against B1 1700 and B2 3000. N 4096 k 16 about 690 + 100 + 520 = 1310 against B2 2000. N 8192 k 16 about 1520 + 100 + 520 = 2140 against B2 2600 and B4 about 2600.
-- Crossover with B1 at N 1024 near k 27 on the model (300 + 52 k against 1700). Against B2 the ratio is 52 k against 74 k plus the exchange, so B5 wins from k 8 upward while IPT_w stays at or below 8, and still at IPT_w 16 to 32 because the block round does not shrink either.
-- Alternative merges: N2 over 8 sorted runs of k (3 levels of 1 + log2 k stages) when the warp phase emits sorted runs, which W2 does for free, so for k 32 the merge is about 3 (1 + 5) stages at IPT 8, 4, 2, about 1600, no better than W2's 1060.
-
-focus cells: 1. block N 1024 k 16 bf16 (the July cell, now the predicted flip), 2. block N 1024 k 8 bf16, 3. block N 4096 k 16 fp32 with N4 (Quest at 64K with a 256 budget), 4. block N 2048 k 32 bf16, 5. block N 1024 k 16 bf16 throughput.
-boundary cells: block N 1024 k 64 (B1 expected), block N 16384 k 16 (IPT_w 64, warp round about 142, B4 expected).
-
-explore first: (1) build from W2's confirmed packed round: W2 per warp plus exchange plus W2 merge at N 1024 k 16 bf16 against B2 and B1 in one session, latency and throughput. (2) the merge by warp 0 against a second level where 2 warps merge 4 k each then one warp merges 2 k (one more barrier, half the merge IPT). (3) fp32 through N4 with the tie pass once after the merge. (4) register and smem footprint against B2 (B2 is 19 registers and 192 bytes), since throughput at 8 blocks per SM decides the batched case.
-
-determinism and ordering: packed form inherent (deterministic set, prefer_smaller_index by the inverted index) and the merge output is sorted. Value-only fp32 would need the election per round, use N4 instead.
-
-main risk: the round is measured in isolation (T19), not inside a primitive with prologue, exchange and emission, and the T19 pitfall (the compiler drops the shifts unless the whole list is consumed) can make a prototype look right and be wrong. Second risk: the merge over 8 k words puts 8 k over 32 items per lane in one warp, so at k 64 and above the merge alone (2470) costs more than B1 in total. Third: 45 registers per lane at IPT 8 for the warp phase, against 19 for B2, matters in the throughput regime.
-
-cheapest kill experiment: explore item 1, one build, three kernels, one lock section, as soon as W2's slope exists. If B5 is not at least 1.15x faster than B2 at N 1024 k 16 bf16, close the card with the number.
-
-references: `reference/BLOCK_TOPK_RESULTS.md` sections 1, 2, 4, `TECHNIQUES.md` T2, T4, T9, T17, T19, `ideas/queue/W2_redux_extraction.md`, `ideas/queue/B2_atomics_extraction.md`, `ideas/queue/N4_truncated_key_packing.md`
+Two packed W2 phases and one exchange cost 1194 cycles at N 1024 k 16 bf16 against B2_packed's 1380 (1.16x, the card's threshold by one percent) with 0.73x the throughput, and B2 wins or ties every other cell (cards B5_hier_b200_20261025_1 and _2). B2 owns block extraction at small k, the packed W2 round owns the warp.
