@@ -15,3 +15,7 @@ echo "v3: $(tail -2 ../build_v3.log | head -1)"
 echo "sw_v2: $(tail -2 ../build_sw_v2.log | head -1)"
 grep -h "compile_error\|compile_timeout" ../build_v2.log ../build_v3.log ../build_sw_v2.log | head -5
 echo ALLDONE
+# B5 against B2_packed (opt-B2's adapter copied unchanged into harness/adapters)
+python3 run.py $COMMON --adapter B5_hier --control B2_packed --keys bf16,fp32 --req not_guaranteed,prefer_smaller_index --n 1024,4096,16384 --k 4,8,16,32,64 --label b5_vs_b2 --build-only > ../build_b5_vs_b2.log 2>&1
+echo "b5_vs_b2: $(tail -2 ../build_b5_vs_b2.log | head -1)"
+echo ALLDONE2

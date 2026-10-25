@@ -1,0 +1,61 @@
+{
+ "author": "opt-W2",
+ "approach_id": "W2",
+ "variant": "packed_sw_v2",
+ "commit": "28239d1a4b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 4,
+  "sync_assumed": "the logical warps of one hardware warp stay converged, the caller separates calls that reuse the output buffer by a __syncwarp on the member mask (the harness does)",
+  "sync_performed": "32 / T full-warp redux.sync per round (one per logical warp, the other groups feed the identity), no barriers, no shared memory",
+  "k_range": "[1, N/2], measured 4 to 64",
+  "n_range": "N = T x IPT with T in {4, 8, 16}, measured N 8 to 128",
+  "type_constraints": "bf16 and fp32 as in W2_packed, int32 indices from the position",
+  "nan_behavior": "as W2_packed",
+  "tie_break_support": "inherent, same code for both requirements (measured at warp scope)",
+  "sorted_output_support": "inherent"
+ },
+ "findings": {
+  "low_level": [
+   "The masked redux of the baseline compiled to 8 CREDUX inside 5 BSSY, WARPSYNC, BRA, BSYNC regions (one loop per round over the distinct mask values of the warp) in the T 8 N 32 k 4 throughput kernel. The full-warp form has 32 CREDUX (4 per round, one per logical warp with the identity in the other 24 lanes), 17 plain WARPSYNC and 2 BSSY, no loop, 26 registers against 28. At T 4 the kernel has 64 CREDUX for 4 rounds and 20 against 31 registers.",
+   "Round cost from the slope over k, bf16 N 32: T 16 (2 groups) 35 cycles against 174, T 8 (4 groups) 34.5 against 327, T 4 (8 groups) 88 against 649. The pipelined redux model of T17 (22 + 6 per extra redux) plus 2 selects per group predicts 34, 46 and 82.",
+   "Registers rise by 2 to 10 at k 64 (the G identity selects per round), occupancy drops from 8 to 6 at T 8 N 32 k 16 and from 6 to 4 at T 8 N 128 k 64, fp32 T 4 N 128 k 16 and 64 stay at 168 to 228 registers (IPT 32 fp32 with the v1 tie pass) at occupancy 1. No spills except the 76 bytes both forms have at fp32 T 4 N 128 k 16. Canary 32.001 at start and end, R squared 1.0000, node umbriel-b200-047."
+  ],
+  "algorithmic": [
+   "Latency gains of 2.2x to 7.1x over the masked baseline in every cell: bf16 T 8 N 32 k 4 295 against 1433 (4.9x), T 8 N 128 k 8 (gpt-oss and Qwen3 routers) 802 against 3152 (3.9x), T 16 N 128 k 16 782 against 3162 (4.0x), T 4 N 8 k 4 369 against 2636 (7.1x), fp32 T 8 N 32 k 4 512 against 1965 (3.8x). The sub-warp primitive now costs about the warp primitive at the same N and k plus 6 cycles per extra group per round: T 16 N 32 k 4 196 against 124 at warp scope.",
+   "Throughput gains are 1.1x to 1.7x (bf16 T 8 N 8 k 4 239 against 139 Gelem/s, T 8 N 128 k 8 775 against 670) because the masked form's serialized passes already overlapped across the 8 warps of a block, fp32 T 4 N 128 k 16 and 64 gain 2.1 to 2.3x where the baseline was at occupancy 1 with a long serialized chain.",
+   "Rows per hardware warp trade latency for throughput as the card expected: at N 128 k 8 bf16, T 16 (2 rows) 474 cycles and 717 Gelem/s, T 8 (4 rows) 802 and 775, T 4 (8 rows) 1647 and 760."
+  ],
+  "negative": [
+   "At 8 groups per warp (T 4) the round costs 88 cycles, 3.5x the warp round, so T 4 is only for N 8 rows (the Mixtral and DBRX shapes) where the prologue is one sort of 2 items.",
+   "The identity selects cost registers at k 64 (T 8 N 128 k 64: 79 against 72) and one occupancy step in two cells."
+  ],
+  "surprises": [
+   "The compiler emits WARPSYNC before full-mask collectives inside the logical-warp code (17 of them) even though the warp is converged, at no measurable cost, while the masked form's WARPSYNC loop costs 60 to 80 cycles per group per round."
+  ],
+  "open_questions": [
+   "A 2-step shuffle tree at T 4 (about 60 cycles) against the 8-redux form (88), and whether match-free ballot tricks (one full-warp ballot of head equality after the group max) could emit the winner without the per-group select.",
+   "The fp32 cells here still run the v1 counting tie pass (policy_sw_v2 keeps it), sw_v3 with the next-word check and odd-even blocks is built and not measured."
+  ]
+ },
+ "techniques_adopted": [
+  "T1",
+  "T3",
+  "T17",
+  "T19"
+ ],
+ "techniques_contributed": [
+  "T37",
+  "T38"
+ ],
+ "report_path": "approaches/W2/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W2_impl.cuh",
+  "harness/adapters/W2_packed_sw_v2.cuh"
+ ],
+ "correctness_notes": "oracle battery passed on all 46 sub-warp cells, all groups of the launch checked. This batch ran twice on the node 38 seconds apart (..._140035.json and ..._140113.json, same holder), the card uses the second, the two agree within 0.7 percent."
+}

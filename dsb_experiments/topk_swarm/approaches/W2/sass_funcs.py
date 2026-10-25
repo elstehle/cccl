@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 OPS = ["CREDUX", "SEL", "VIMNMX", "LOP3", "ISETP", "IMAD", "STS", "LDS", "STL", "LDL", "BAR", "BRA", "VOTE", "SHFL",
-       "PRMT", "SHF", "IADD3", "LDG", "FSETP"]
+       "PRMT", "SHF", "IADD3", "LDG", "FSETP", "WARPSYNC", "BSSY"]
 
 
 def demangle(name):
