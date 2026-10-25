@@ -234,20 +234,19 @@ struct level_net : common_net<LW, M, T, MinStride, Shfl, Ops>
 // ------------------------------------------------------------------------------------------------
 // Index recovery. w0 are the lane's original words (slot i of lane l is source index i x LW + l),
 // t the k-th largest word of the group, seg the group's lane mask, lt the group's lanes below the
-// caller. Two full-warp ballots per slot, popc prefixes, one predicated store per item.
+// caller. Full-warp ballots, popc prefixes, one predicated store per item.
+//
+// two_class: one "above t" and one "equal to t" ballot per slot, exact in one pass.
+// fast_path: one "at least t" ballot per slot. When the group holds exactly k words at least t
+//   (no excess ties at rank k, the random fp32 case) the prefix rank over those words is the output
+//   slot. Otherwise a warp-uniform branch runs the two-class pass with the "above" ballots added
+//   (the "equal" ballots are then the difference). At sub-warp scope the branch condition is made
+//   uniform over the hardware warp with one any-vote, so the collectives inside stay full-warp.
 // ------------------------------------------------------------------------------------------------
 template <int IPT, int LW, int K>
 __device__ __forceinline__ void
-recover(const uint32_t (&w0)[IPT], uint32_t t, unsigned seg, unsigned lt, int lane, int* out_idx)
+emit_two_class(const uint32_t (&w0)[IPT], uint32_t t, const uint32_t (&bgt)[IPT], const uint32_t (&beq)[IPT], unsigned lt, int lane, int* out_idx)
 {
-  uint32_t bgt[IPT];
-  uint32_t beq[IPT];
-#pragma unroll
-  for (int i = 0; i < IPT; ++i)
-  {
-    bgt[i] = __ballot_sync(0xffffffffu, w0[i] > t) & seg;
-    beq[i] = __ballot_sync(0xffffffffu, w0[i] == t) & seg;
-  }
   uint32_t above = 0;
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
@@ -274,9 +273,74 @@ recover(const uint32_t (&w0)[IPT], uint32_t t, unsigned seg, unsigned lt, int la
   }
 }
 
+template <int IPT, int LW, int K>
+__device__ __forceinline__ void
+recover_two_class(const uint32_t (&w0)[IPT], uint32_t t, unsigned seg, unsigned lt, int lane, int* out_idx)
+{
+  uint32_t bgt[IPT];
+  uint32_t beq[IPT];
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    bgt[i] = __ballot_sync(0xffffffffu, w0[i] > t) & seg;
+    beq[i] = __ballot_sync(0xffffffffu, w0[i] == t) & seg;
+  }
+  emit_two_class<IPT, LW, K>(w0, t, bgt, beq, lt, lane, out_idx);
+}
+
+template <int IPT, int LW, int K>
+__device__ __forceinline__ void
+recover_fast_path(const uint32_t (&w0)[IPT], uint32_t t, unsigned seg, unsigned lt, int lane, int* out_idx)
+{
+  uint32_t bge[IPT];
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    bge[i] = __ballot_sync(0xffffffffu, w0[i] >= t) & seg;
+  }
+  uint32_t total = 0;
+#pragma unroll
+  for (int i = 0; i < IPT; ++i)
+  {
+    total += static_cast<uint32_t>(__popc(bge[i]));
+  }
+  bool excess = total > static_cast<uint32_t>(K);
+  if constexpr (LW < 32)
+  {
+    excess = __any_sync(0xffffffffu, excess);
+  }
+  if (!excess)
+  {
+    uint32_t p = 0;
+#pragma unroll
+    for (int i = 0; i < IPT; ++i)
+    {
+      const int slot = static_cast<int>(p + static_cast<uint32_t>(__popc(bge[i] & lt)));
+      if (w0[i] >= t)
+      {
+        out_idx[slot] = i * LW + lane;
+      }
+      p += static_cast<uint32_t>(__popc(bge[i]));
+    }
+  }
+  else
+  {
+    uint32_t bgt[IPT];
+    uint32_t beq[IPT];
+#pragma unroll
+    for (int i = 0; i < IPT; ++i)
+    {
+      bgt[i] = __ballot_sync(0xffffffffu, w0[i] > t) & seg;
+      beq[i] = bge[i] & ~bgt[i];
+    }
+    emit_two_class<IPT, LW, K>(w0, t, bgt, beq, lt, lane, out_idx);
+  }
+}
+
 // ------------------------------------------------------------------------------------------------
 // Adapter body. Trunc selects the truncated final merge plus redux threshold (power of two k only,
-// other k fall back to the full merge), Level the level tile order instead of the eager one.
+// other k fall back to the full merge), Level the level tile order instead of the eager one,
+// FastPath the one-ballot recovery with the two-class pass behind a uniform branch.
 // ------------------------------------------------------------------------------------------------
 __host__ __device__ inline constexpr bool
 supported(topk::key_type kt, int threads, int n, int k, topk::requirement req, bool subwarp)
@@ -289,7 +353,7 @@ supported(topk::key_type kt, int threads, int n, int k, topk::requirement req, b
   return key_ok && thread_ok && shape_ok && req_ok;
 }
 
-template <typename KeyT, int Threads, int N, int K, topk::requirement Req, bool Trunc, bool Level>
+template <typename KeyT, int Threads, int N, int K, topk::requirement Req, bool Trunc, bool Level, bool FastPath = false>
 struct adapter_impl
 {
   static_assert(std::is_same_v<KeyT, float>, "N10 is the fp32 route");
@@ -349,7 +413,14 @@ struct adapter_impl
     {
       t = __shfl_sync(0xffffffffu, w[(K - 1) / LW], (K - 1) % LW, LW);
     }
-    recover<IPT, LW, K>(w0, t, seg, lt, lane, out_idx);
+    if constexpr (FastPath)
+    {
+      recover_fast_path<IPT, LW, K>(w0, t, seg, lt, lane, out_idx);
+    }
+    else
+    {
+      recover_two_class<IPT, LW, K>(w0, t, seg, lt, lane, out_idx);
+    }
   }
 };
 } // namespace n10
