@@ -44,8 +44,52 @@
 #include <cuda/std/bit>
 #include <cuda/std/cstdint>
 
+// Optional phase profile (approaches/B1/profile_det_phases.cu only): with B1_PROFILE defined, thread 0
+// writes clock64 stamps to topk_b1_det2::g_stamps (16 slots per call) at the phase boundaries of
+// select_indices_striped, and the end stamp sits behind an extra block barrier. Compiled out otherwise.
+#ifdef B1_PROFILE
+#  define B1_STAMP(i)                                   \
+    do                                                  \
+    {                                                   \
+      if (threadIdx.x == 0)                             \
+      {                                                 \
+        ::topk_b1_det2::g_stamps[(i)] = clock64();      \
+      }                                                 \
+    } while (0)
+#  define B1_STAMP_SYNC(i) \
+    do                     \
+    {                      \
+      __syncthreads();     \
+      B1_STAMP(i);         \
+    } while (0)
+#  define B1_STAMP_FLAG(i, v)                             \
+    do                                                    \
+    {                                                     \
+      if (threadIdx.x == 0)                               \
+      {                                                   \
+        ::topk_b1_det2::g_stamps[(i)] = (long long) (v);  \
+      }                                                   \
+    } while (0)
+#else
+#  define B1_STAMP(i) \
+    do                \
+    {                 \
+    } while (0)
+#  define B1_STAMP_SYNC(i) \
+    do                     \
+    {                      \
+    } while (0)
+#  define B1_STAMP_FLAG(i, v) \
+    do                        \
+    {                         \
+    } while (0)
+#endif
+
 namespace topk_b1_det2
 {
+#ifdef B1_PROFILE
+__device__ long long g_stamps[16];
+#endif
 using namespace ::cub;
 using namespace ::cub::detail;
 namespace detail = ::cub::detail;
@@ -274,16 +318,18 @@ private:
     {
       const int pass_end_bit   = max_bit - pass * RadixBits;
       const int pass_begin_bit = (::cuda::std::max) (pass_end_bit - RadixBits, 0);
-      if (run_radix_pass(
-            unsigned_keys,
-            k_remaining,
-            num_candidates,
-            kth_key_prefix,
-            prefix_mask,
-            pass,
-            pass_begin_bit,
-            pass_end_bit - pass_begin_bit,
-            pass + 1 < num_passes))
+      const bool done = run_radix_pass(
+        unsigned_keys,
+        k_remaining,
+        num_candidates,
+        kth_key_prefix,
+        prefix_mask,
+        pass,
+        pass_begin_bit,
+        pass_end_bit - pass_begin_bit,
+        pass + 1 < num_passes);
+      B1_STAMP(2 + pass);
+      if (done)
       {
         break;
       }
@@ -318,6 +364,7 @@ private:
       }
     }
     __syncthreads();
+    B1_STAMP(6);
 
     // Every warp derives the (slot, warp) bases itself: lane l owns slot l per round of 32 slots, reads the
     // counts of its slot, keeps the prefix of the warps below its own, and a shuffle scan orders the slots.
@@ -359,6 +406,7 @@ private:
       tie_rank[i]    = base + __popc(ballots[i] & lt_mask);
       taken |= static_cast<tie_mask_t>(tie_rank[i] < take) << i;
     }
+    B1_STAMP(7);
   }
 
 public:
@@ -374,6 +422,7 @@ public:
   _CCCL_DEVICE_API _CCCL_FORCEINLINE void select_indices_striped(KeyT (&keys)[items_per_thread], int k, int* out_idx)
   {
     _CCCL_ASSERT(k > 0 && k < tile_items, "k must be in (0, tile_items)");
+    B1_STAMP(0);
 
     if (linear_tid == 0)
     {
@@ -398,6 +447,8 @@ public:
         unsigned_keys[i] = (unsigned_keys[i] == twiddled_minus_zero) ? twiddled_zero : unsigned_keys[i];
       }
     }
+
+    B1_STAMP(1);
 
     bit_ordered_type kth_prefix{};
     bit_ordered_type prefix_mask{};
@@ -517,6 +568,8 @@ public:
         }
       }
     }
+    B1_STAMP_SYNC(8);
+    B1_STAMP_FLAG(9, select_all_candidates ? 0 : 1);
   }
 };
 } // namespace topk_b1_det2
