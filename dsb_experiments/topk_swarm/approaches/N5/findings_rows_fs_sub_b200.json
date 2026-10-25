@@ -1,0 +1,76 @@
+{
+ "author": "opt-N5",
+ "approach_id": "N5",
+ "variant": "rows_fs_sub",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "packed_rows",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 0,
+  "sync_assumed": "the whole hardware warp calls the primitive together (all logical warps at once), as the harness does",
+  "sync_performed": "shuffles, ballots and one any-vote over the full hardware warp, no barrier",
+  "type_constraints": "bf16 keys only, two rows of N keys per logical warp of 8 or 16 lanes packed as bf16x2 words (row 0 low, row 1 high, word j = item j LW + lane), int32 source indices derived from the position, output row r's k indices at out_idx[r K, (r + 1) K). The exchange in the select form (ops_sel, two HMNMX2 and one predicated move per stage word) because the ternary form compiles to a four-instruction phi shape at these instantiations (T53). fp32 unsupported",
+  "nan_behavior": "a NaN key is never selected (it loses every max.bf16x2 and min.bf16x2 against a number and both set.gt and set.eq are false), so with fewer than k non-NaN keys output slots stay unwritten. Focus-set inputs carry no NaN. -0.0 equals +0.0: the network orders -0.0 below +0.0, the recovery classifies by IEEE comparison, the selected set is the oracle's set in every case (signed_zero pattern passes under both requirements). Denormals compared as values",
+  "tie_break_support": "both unsorted requirements with the same code: the tie class at the k-th key fills the remaining slots, in index order whenever it has to be capped (prefer_smaller_index exact by construction), measured identical throughput under both requirements in every cell",
+  "sorted_output_support": "none: the greater class is written in lane order, then the tie class (lane order on the common path, index order on the capped path). A sorted output would need one shuffle per selected key to move the recovered index to its network position",
+  "k_range": "[1, N / 2] with MaxK = round_up(k, LW) dividing N, measured k 4, 16, 32, 64",
+  "n_range": "N = LW x IPT with N / MaxK a power of two, measured N 32, 64, 128 at LW 8 and 16 (two rows of N per call)"
+ },
+ "report_path": "approaches/N5/REPORT.md",
+ "source_paths": [
+  "harness/adapters/N5_rows_fs_sub.cuh",
+  "harness/adapters/N5_rows_fs.cuh",
+  "harness/adapters/N5_rows_f_sub.cuh",
+  "approaches/N5/n5_detail.cuh",
+  "approaches/N5/n5_net.cuh",
+  "approaches/W1/warp_level_topk.cuh",
+  "approaches/W1/w1_common.cuh",
+  "harness/topk_harness.cuh",
+  "harness/adapters/W1_eager_same_sub.cuh"
+ ],
+ "techniques_adopted": [
+  "T7",
+  "T17",
+  "T18",
+  "T28",
+  "T34",
+  "T36",
+  "T37",
+  "T40",
+  "T42",
+  "T47",
+  "T52"
+ ],
+ "techniques_contributed": [
+  "T53"
+ ],
+ "correctness_notes": "Oracle battery (13 cases) passed on every cell under both requirements, every row of every logical warp checked on its own. Control W1_eager_same_sub (opt-W1b's one-word index-in-key network at the same logical warp size, member-mask shuffles) in the same lock section, final commit 8f613a317f (batch b3). The ternary-form sibling N5_rows_f_sub ran in the preceding lock section of the same lease against the same control (batch N5_rows_f_sub_vs_W1_eager_same_sub_focus_b3_20261025_160143.json) and is quoted in the findings. prefer_smaller_index and not_guaranteed share the common path but compile to different kernels in the fast form (the exact ballot fallback is compiled in for prefer_smaller_index, the capped prefix for not_guaranteed), and the prefer_smaller_index kernel carries 3 to 16 more registers and runs 2 to 4 percent slower in throughput in most cells (up to 9 percent at LW 8 N 128), a T28 schedule and register effect of code that never executes on random input. The exact form compiles the same code for both requirements and measured identical throughput to 0.1 percent.",
+ "findings": {
+  "low_level": [
+   "At LW 16 and LW 8 (IPT 8 and 16 at N 128) ptxas compiles the ternary exchange into two predicated HMNMX2 writing different registers plus two predicated IMAD.MOV (four instructions per stage word) where the warp-scope instantiation of the same source gets the two-instruction predicated pair: the select form (ops_sel) gives the deterministic three. Throughput kernels at N 128 k 16: select form 2112 (LW 16) and 3616 (LW 8) SASS instructions against the ternary form's 2280 and 4016, registers 40 against 54 (LW 16) and 64 against 64 (LW 8), measured 608 against 571 Gelem per s at LW 16 and 632 against 601 at LW 8 (5 to 6 percent).",
+   "Every sub-warp throughput kernel of the harness, this adapter's and the control's, carries a BRA.DIV fast and slow copy of the whole call body (the slow copy with a WARPSYNC.COL per shuffle, 115 to 193 per kernel) and BSSY regions, so the static instruction counts are about twice the executed path, in variant and control alike (W1_eager_same_sub at LW 16 N 128 k 16: 1688 instructions, 216 SHFL for a 108-stage network).",
+   "Registers of the select-form kernel: 30 to 32 at N 32 to 64 (8 blocks per SM), 40 at LW 16 N 128 k at most 16 (6), 60 to 64 at N 128 k 32 to 64 and at LW 8 N 128 (4 to 5). The control: 32 to 40 at N 128 k at most 16, 48 at k 64 (6 to 5).",
+   "Full-warp shuffles with the logical warp width and full-warp ballots masked to the logical warp's lanes (T37, T40), the recovery's scan with __shfl_up_sync at width LW, and one __any_sync over the hardware warp that makes the tie-class fallback uniform over all logical warps (the fallback's ballots are full-warp collectives, so a per-group branch would be undefined)."
+  ],
+  "algorithmic": [
+   "Same-session throughput against W1_eager_same_sub (b3, not_guaranteed, Gelem per s): LW 8 N 32 705 and 578 against 513 and 471 (k 4, 16: 1.38x, 1.23x), N 64 726, 641, 574 against 515, 436, 348 (1.41x to 1.65x), N 128 713, 632, 554, 483 against 506, 413, 354, 281 (k 4 to 64: 1.41x, 1.53x, 1.57x, 1.72x); LW 16 N 32 459 and 460 against 310 and 337 (1.48x, 1.37x), N 64 556, 555, 477 against 333, 337, 280 (1.65x to 1.70x), N 128 608, 608, 522, 464 against 363, 336, 285, 240 (1.67x, 1.81x, 1.83x, 1.93x). The card's sub-warp must-beat (W1_eager_same_sub LW 8 N 128 k 64 282) is passed at 483 (1.72x), and the W2 sub-warp card values at LW 8 N 128 (k 16 485, k 64 147) are passed at 632 and 483.",
+   "The sub-warp gain exceeds the warp-scope gain (1.4x to 1.9x against 1.2x to 1.4x) because the control's per-row cost at a small logical warp is dominated by in-register and short shuffle stages that the SIMD form halves without any recovery growth (the recovery is per word, N / LW words per lane, the same count as at warp scope for the same N).",
+   "Latency per call (two rows, select form): LW 16 N 32 1030 against 766 (0.74x per call), N 64 1344 against 1589 (1.18x), N 128 2263 against 3186 (1.41x) and 2045 against 3818 at k 32 (1.87x); LW 8 N 32 1003 against 980 (1.02x), N 64 1709 against 1953 (1.14x), N 128 2600 against 4522 at k 16 (1.74x) and 2562 against 5274 at k 32 (2.06x). At sub-warp the two-row call is faster than one one-word call from N 64 on, so per row 2x to 4x in latency, the one scope where the card's prediction of no latency gain is wrong.",
+   "The split form at sub-warp (N5_split_f_sub, card N5_split_f_sub_b200_20261025_1) reaches 1.07x to 1.61x throughput and 1.16x to 2.63x latency against the same control, 10 to 20 points below the two-row form in throughput."
+  ],
+  "negative": [
+   "The ternary exchange form loses 5 to 6 percent to the select form at sub-warp (571 against 608 at LW 16 N 128 k 16, 601 against 632 at LW 8) through the four-instruction phi shape, the reverse of warp scope (T53).",
+   "LW 8 N 32 k 16 (1.23x) and LW 16 N 32 (1.37x to 1.48x) gain least: one or two tiles per row, the scan and the two HSET2 per word are not amortized."
+  ],
+  "surprises": [
+   "The latency regime flips at sub-warp: two rows in one call cost less than the control's one row from N 64 on (1.14x to 2.06x per call, 2x to 4x per row), because the sub-warp control's network is mostly in-register and short-stride shuffle stages whose count the SIMD word halves.",
+   "prefer_smaller_index and not_guaranteed share the common path but compile to different kernels in the fast form (the exact ballot fallback is compiled in for prefer_smaller_index, the capped prefix for not_guaranteed), and the prefer_smaller_index kernel carries 3 to 16 more registers and runs 2 to 4 percent slower in throughput in most cells (up to 9 percent at LW 8 N 128), a T28 schedule and register effect of code that never executes on random input. The exact form compiles the same code for both requirements and measured identical throughput to 0.1 percent."
+  ],
+  "open_questions": [
+   "Why the if-conversion produces the phi shape at IPT 8 and 16 but the coalesced pair at IPT 4 (a ptxas register coalescing decision across many interleaved independent stage words), and whether a per-word asm barrier or a different stage interleaving restores the pair.",
+   "LW 4 compiles (the harness grid's N 8 to 32 at LW 4) and was not measured in the three batches."
+  ]
+ }
+}
