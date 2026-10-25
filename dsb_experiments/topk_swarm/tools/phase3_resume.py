@@ -81,6 +81,19 @@ def dedicated_ready(arch, min_remaining):
     return best
 
 
+def dedicated_pending(arch):
+    """A dedicated successor the broker already requested (requested or bootstrapping): wait, do not double-request."""
+    for n in registry().get("nodes", []):
+        if n.get("arch") != arch or n.get("status") not in ("requested", "bootstrapping"):
+            continue
+        ded = n.get("dedicated") or n.get("dedicated_to") or []
+        if isinstance(ded, str):
+            ded = [x.strip() for x in ded.split(",")]
+        if HOLDER in ded:
+            return n
+    return None
+
+
 def request_dedicated(arch, dry):
     cmd = [PY, os.path.join(HERE, "broker.py"), "request", "--cluster", CLUSTER[arch], "--dedicate",
            "eval-engineer,hw-researcher", "--make-room", "--wait", "30m",
@@ -183,10 +196,15 @@ def run_pass(node, arch, pass_, extra, tag, chains, jobs, note, dry):
 def track(arch, args):
     node = dedicated_ready(arch, 25)
     if not node:
-        if args.no_request:
+        pending = dedicated_pending(arch)
+        if pending:
+            log("%s: the broker's successor %s is %s, waiting for it instead of requesting" % (
+                arch, pending.get("name"), pending.get("status")))
+        elif args.no_request:
             log("%s: no dedicated node ready and requests disabled" % arch)
             return
-        request_dedicated(arch, args.dry_run)
+        else:
+            request_dedicated(arch, args.dry_run)
         node = wait_dedicated(arch, 60, 45 * 60, args.dry_run)
         if not node:
             log("%s: no dedicated node became ready, giving up this track" % arch)
