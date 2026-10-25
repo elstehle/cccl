@@ -14,6 +14,7 @@ if [[ "$SKIP" != "1" || ! -x "$OUT/icache_micro" ]]; then
   "$NVCC" -arch=sm_100 -O3 -std=c++17 -Xptxas -v -o "$OUT/icache_micro" "$HERE/icache_micro.cu" 2> "$OUT/ptxas_icache.txt"
   cuobjdump -sass "$OUT/icache_micro" > "$OUT/sass_icache.txt" 2>>"$LOG" || true
 fi
-MEASURE="cd '$OUT' && export CUDA_VISIBLE_DEVICES=$GPU && nvidia-smi --query-gpu=name,clocks.sm,clocks.max.sm,clocks.mem,temperature.gpu,power.draw --format=csv > clocks_before_$STAMP.txt && ./icache_micro --node '$NODE' --date '$DATE' > icache_$STAMP.jsonl 2>> '$LOG' && nvidia-smi --query-gpu=name,clocks.sm,clocks.max.sm,clocks.mem,temperature.gpu,power.draw --format=csv > clocks_after_$STAMP.txt"
+# nvidia-smi samples SM and memory clock, power and temperature every 100 ms while the benchmark runs
+MEASURE="cd '$OUT' && export CUDA_VISIBLE_DEVICES=$GPU && nvidia-smi --query-gpu=name,pci.bus_id,vbios_version,ecc.mode.current,clocks.max.sm,clocks.max.mem,power.limit --format=csv > gpu_info_$STAMP.txt && (nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_throttle_reasons.active --format=csv,noheader -lms 100 > clocks_during_$STAMP.txt 2>/dev/null & echo \$! > smi.pid) && ./icache_micro --node '$NODE' --date '$DATE' > icache_$STAMP.jsonl 2>> '$LOG'; kill \$(cat smi.pid) 2>/dev/null; rm -f smi.pid; true"
 if [[ -n "$LOCK" ]]; then flock "$LOCK" -c "$MEASURE"; else bash -c "$MEASURE"; fi
 echo "lines: $(wc -l < "$OUT/icache_$STAMP.jsonl") results in $OUT (icache_$STAMP.jsonl)"

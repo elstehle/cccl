@@ -37,7 +37,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SWARM = os.path.dirname(HERE)
 
-CELL_KEYS = ["key_type", "value_type", "output_form", "n", "k", "threads", "requirement", "input_pattern",
+CELL_KEYS = ["key_type", "value_type", "output_form", "n", "k", "rows", "threads", "requirement", "input_pattern",
              "workload_name", "regime", "metric", "value", "control_name", "control_value", "canary_start",
              "canary_end", "resources", "raw_file"]
 RES_KEYS = ["registers", "smem_bytes", "spill_bytes", "occupancy_blocks_per_sm", "bar_sync_count", "stack_bytes",

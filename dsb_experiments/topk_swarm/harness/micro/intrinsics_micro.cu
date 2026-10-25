@@ -967,7 +967,133 @@ struct W2PackedList
   }
 };
 
-struct ReduxElect // redux chain with an elect.sync per step feeding the next input: incremental cost of elect
+// ================================================================ pipe throughput (for opt-N5)
+// K independent accumulators per lane, one operation each per step, as inline PTX so that nothing
+// folds across steps. Run by 1, 4, 8 and 16 warps per block. cycles per step divided by the SASS
+// instruction count per step (read from the dump, fused three-input forms count as one) is the
+// cycles per warp instruction, and warps per scheduler times instructions per step over cycles per
+// step is the sustained warp instructions per cycle per scheduler.
+struct TpMaxBf16x2
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("max.bf16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+  }
+};
+struct TpMaxU32
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("max.u32 %0, %0, %1;" : "+r"(v) : "r"(c));
+  }
+};
+struct TpMaxU16x2
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("max.u16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+  }
+};
+struct TpSetBf16x2
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("set.gt.u32.bf16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+  }
+};
+struct TpLop3
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("lop3.b32 %0, %0, %1, %2, 0x96;" : "+r"(v) : "r"(c), "r"(c ^ 0x5555u));
+  }
+};
+struct TpImad
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("mad.lo.u32 %0, %0, 3, %1;" : "+r"(v) : "r"(c));
+  }
+};
+struct TpMaxF32
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    float f = __uint_as_float(v);
+    asm volatile("max.f32 %0, %0, %1;" : "+f"(f) : "f"(__uint_as_float(c)));
+    v = __float_as_uint(f);
+  }
+};
+struct TpSel
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    asm volatile("{\n\t.reg .pred p;\n\tsetp.gt.u32 p, %0, %1;\n\tselp.b32 %0, %1, %0, p;\n\t}" : "+r"(v) : "r"(c));
+  }
+};
+// one bitonic stage on packed bf16x2: shuffle partner, max and min, keep one by lane direction
+struct TpStageBf16x2
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    unsigned t = __shfl_xor_sync(kFull, v, 1);
+    unsigned a, b;
+    asm volatile("max.bf16x2 %0, %1, %2;" : "=r"(a) : "r"(v), "r"(t));
+    asm volatile("min.bf16x2 %0, %1, %2;" : "=r"(b) : "r"(v), "r"(t));
+    v = (threadIdx.x & 1) ? b : a;
+  }
+};
+struct TpStageU16x2 // the same stage on twiddled u16x2 words
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c)
+  {
+    unsigned t = __shfl_xor_sync(kFull, v, 1);
+    unsigned a, b;
+    asm volatile("max.u16x2 %0, %1, %2;" : "=r"(a) : "r"(v), "r"(t));
+    asm volatile("min.u16x2 %0, %1, %2;" : "=r"(b) : "r"(v), "r"(t));
+    v = (threadIdx.x & 1) ? b : a;
+  }
+};
+
+template <class Op, int K, int BLOCK>
+struct Tput
+{
+  using value_t = unsigned;
+  using Smem    = NoSmem;
+  static constexpr int block = BLOCK;
+  unsigned acc[K];
+  __device__ value_t init(Smem&)
+  {
+#pragma unroll
+    for (int i = 0; i < K; ++i)
+    {
+      acc[i] = (threadIdx.x * 2654435761u) ^ (static_cast<unsigned>(i) * 0x9e3779b9u) ^ 0x3f803f80u;
+    }
+    return 0;
+  }
+  __device__ void reset(Smem&, int) {}
+  __device__ value_t step(value_t v, int n, Smem&)
+  {
+    unsigned c = (threadIdx.x * 77u + static_cast<unsigned>(n) * 0x01010101u) ^ 0x3f003f00u;
+#pragma unroll
+    for (int i = 0; i < K; ++i)
+    {
+      Op::op(acc[i], c + static_cast<unsigned>(i));
+    }
+    return v + 1u;
+  }
+  __device__ value_t finish(value_t v)
+  {
+#pragma unroll
+    for (int i = 0; i < K; ++i)
+    {
+      v = v * 3u + acc[i];
+    }
+    return v;
+  }
+};
+
+struct ReduxElect // redux chain with an elect.sync per stepstruct ReduxElect // redux chain with an elect.sync per step feeding the next input: incremental cost of elect
 {
   using value_t = unsigned;
   using Smem    = NoSmem;
@@ -1589,6 +1715,62 @@ struct AtomNoRetIndep
   }
 };
 
+// Block size study (for opt-N8): the all-threads aggregated atomic round and the classic redux round
+// at 2, 4, 8 and 16 warps per block, same IPT-free body as atomic256 and classic-redux above.
+template <int BLOCK>
+struct BlockMaxAtomicB
+{
+  using value_t = unsigned;
+  using Smem    = AtomSmem<unsigned>;
+  static constexpr int block = BLOCK;
+  __device__ value_t init(Smem&)
+  {
+    return threadIdx.x * 2654435761u;
+  }
+  __device__ void reset(Smem& sh, int)
+  {
+    for (int i = threadIdx.x; i < kMaxChain; i += BLOCK)
+    {
+      sh.slots[i] = 0;
+    }
+  }
+  __device__ value_t step(value_t v, int n, Smem& sh)
+  {
+    atomicMax(&sh.slots[n], v);
+    __syncthreads();
+    return sh.slots[n] + threadIdx.x;
+  }
+};
+
+template <int BLOCK>
+struct BlockMaxClassicReduxB
+{
+  using value_t = unsigned;
+  struct Smem
+  {
+    unsigned partial[BLOCK / 32];
+  };
+  static constexpr int block = BLOCK;
+  static constexpr int warps = BLOCK / 32;
+  __device__ value_t init(Smem&)
+  {
+    return threadIdx.x * 2654435761u;
+  }
+  __device__ void reset(Smem&, int) {}
+  __device__ value_t step(value_t v, int, Smem& sh)
+  {
+    unsigned x = redux_max_u32(v);
+    if ((threadIdx.x & 31) == 0)
+    {
+      sh.partial[threadIdx.x >> 5] = x;
+    }
+    __syncthreads();
+    unsigned y = sh.partial[(threadIdx.x & 31) % warps];
+    y          = redux_max_u32(y);
+    return y + threadIdx.x;
+  }
+};
+
 // hybrid8: warp shfl-max -> lane0-of-each-warp atomicMax into slot[n] -> 1 barrier -> read.
 template <typename T>
 struct BlockMaxHybrid8
@@ -2024,6 +2206,23 @@ int main(int argc, char** argv)
   run<ReduxIndep<8>>("redux indep: 8 independent per step + merge", "warp");
   run<ShflIndep<1>>("shfl indep: 1 per step + merge", "warp");
   run<ShflIndep<8>>("shfl indep: 8 independent per step + merge", "warp");
+  // pipe throughput: 8 independent accumulators per lane, 1, 4, 8, 16 warps per block
+#define TPUT_ROWS(OP, LABEL)                                                              \
+  run<Tput<OP, 8, 32>>("tput " LABEL " x8 indep, 1 warp", "tput");                      \
+  run<Tput<OP, 8, 128>>("tput " LABEL " x8 indep, 4 warps (128 thr)", "tput");         \
+  run<Tput<OP, 8, 256>>("tput " LABEL " x8 indep, 8 warps (256 thr)", "tput");         \
+  run<Tput<OP, 8, 512>>("tput " LABEL " x8 indep, 16 warps (512 thr)", "tput");
+  TPUT_ROWS(TpMaxBf16x2, "max.bf16x2 HMNMX2")
+  TPUT_ROWS(TpMaxU32, "max.u32 VIMNMX")
+  TPUT_ROWS(TpMaxU16x2, "max.u16x2 VIMNMX.U16x2")
+  TPUT_ROWS(TpSetBf16x2, "set.gt.u32.bf16x2 HSET2")
+  TPUT_ROWS(TpLop3, "lop3 LOP3")
+  TPUT_ROWS(TpImad, "mad.lo.u32 IMAD")
+  TPUT_ROWS(TpMaxF32, "max.f32 FMNMX")
+  TPUT_ROWS(TpSel, "setp+selp ISETP+SEL")
+  TPUT_ROWS(TpStageBf16x2, "stage bf16x2: shfl + max + min + sel")
+  TPUT_ROWS(TpStageU16x2, "stage u16x2: shfl + max + min + sel")
+#undef TPUT_ROWS
   // the same chains run by every warp of a 128, 256 and 512 thread block at once: per-scheduler or per-SM limits
   run<ReduxIndep<1, 128>>("redux indep x4 warps: 1 per step + merge (128 thr)", "warp");
   run<ReduxIndep<4, 128>>("redux indep x4 warps: 4 independent per step + merge (128 thr)", "warp");
@@ -2103,6 +2302,19 @@ int main(int argc, char** argv)
   run<BlockMaxHybrid8<unsigned>>("blockmax hybrid8 u32 (shfl+atomic)", "blockmax");
   run<BlockMaxHybrid8<unsigned long long>>("blockmax hybrid8 u64 (shfl+atomic)", "blockmax");
   run<BlockMaxHybrid8Redux>("blockmax hybrid8 u32 (redux+atomic)", "blockmax");
+  // block size study: barrier, all-threads aggregated atomic round and classic redux round against warps per block
+  run<SyncThreads<64>>("__syncthreads, 2 warps (64 thr)", "barrier");
+  run<SyncThreads<128>>("__syncthreads, 4 warps (128 thr)", "barrier");
+  run<SyncThreads<256>>("__syncthreads, 8 warps (256 thr)", "barrier");
+  run<SyncThreads<512>>("__syncthreads, 16 warps (512 thr)", "barrier");
+  run<BlockMaxAtomicB<64>>("blockmax atomic all-threads u32, 2 warps (64 thr)", "blockmax");
+  run<BlockMaxAtomicB<128>>("blockmax atomic all-threads u32, 4 warps (128 thr)", "blockmax");
+  run<BlockMaxAtomicB<256>>("blockmax atomic all-threads u32, 8 warps (256 thr)", "blockmax");
+  run<BlockMaxAtomicB<512>>("blockmax atomic all-threads u32, 16 warps (512 thr)", "blockmax");
+  run<BlockMaxClassicReduxB<64>>("blockmax classic redux u32, 2 warps (64 thr)", "blockmax");
+  run<BlockMaxClassicReduxB<128>>("blockmax classic redux u32, 4 warps (128 thr)", "blockmax");
+  run<BlockMaxClassicReduxB<256>>("blockmax classic redux u32, 8 warps (256 thr)", "blockmax");
+  run<BlockMaxClassicReduxB<512>>("blockmax classic redux u32, 16 warps (512 thr)", "blockmax");
 
   // F. shared memory fills (256 threads), pointer-chased through a 4 MB footprint (L2 resident, beyond L1)
   prepare_fill_buffer();

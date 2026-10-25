@@ -83,10 +83,24 @@ Rules:
 | `striped` | `i * T + t` | `KeyT[IPT]` |
 | `packed_striped` | word `j = i / P` of the thread is input word `j * T + t`, holding items `(j * T + t) * P + s` for `s < P` in its P lanes, low lane first | `uint32_t[IPT / P]`, `P = key_traits<KeyT>::packed_per_word` (2 for 16-bit keys) |
 
-`idx[i]` is always the input item index of `keys[i]` (for packed, of lane `i % P` of word
-`i / P`). An adapter may ignore `idx` and derive indices from positions. Blocked loads use the
+| `packed_rows` (rows per group) | word `j` of the thread is item `j * T + t` of every row: row `r` of the call sits in key lane `r` of the word (row 0 in the low bits) | `uint32_t[IPT]`, requires `static constexpr int rows = P` |
+
+`idx[i]` is always the input item index of `keys[i]` (for packed_striped, of lane `i % P` of word
+`i / P`, for packed_rows of word `i`, the same index for every row). An adapter may ignore `idx` and derive indices from positions. Blocked loads use the
 widest aligned vector (16 bytes, else 8, else scalar), as a real kernel would, striped and packed
 loads are per element or per word and coalesce by construction.
+
+### 1.1.1 Rows per group
+
+An adapter that processes R independent rows of N keys per call (N5's bf16x2 network, two rows
+per lane) declares `static constexpr int rows = R` and the `packed_rows` arrangement (R must equal
+the keys per word, 2 for 16-bit keys). The harness then generates R rows per input (row 0 of a
+multi-row input equals the single-row input of the same seed, row r uses seed plus 1000003 r),
+loads them packed per item, expects `R x K` output slots with row r's k indices in
+`out_idx[r * K, (r + 1) * K)`, each in `[0, N)`, checks every row on its own in the oracle, reports
+tie statistics per row, and counts `R x N` elements per call in Gelem/s. Cells carry `rows`.
+`N0_rows_naive` under `adapters/` is a slow but exact two-row example (k shuffle arg-max rounds per
+row) that exercises the path.
 
 ### 1.2 Output form and how index-only output is checked
 

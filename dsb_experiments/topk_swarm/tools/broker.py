@@ -7,8 +7,11 @@
                                                  excludes hosts that already carry an active entry
   broker.py bootstrap <node-or-job> [--image REF] run nodes/bootstrap_<cluster>.sh on the node, mark ready
   broker.py release <node-or-job> [--force]      remove the container, scancel, mark released
-  broker.py renew --target N [--wait 0]          re-request when the pool would drop below N within 45 min
-  broker.py tick --target N [--wait 10m]         reconcile, release unheld nodes with < 5 min left,
+  broker.py renew --target N | --per-arch b200=3,gb200=1 [--wait 0]
+                                                 re-request when the pool would drop below the target
+                                                 within 45 min, in total or per arch
+  broker.py tick --target N | --per-arch SPEC [--wait 10m]
+                                                 reconcile, release unheld nodes with < 5 min left,
                                                  renew, bootstrap every requested node that is running
   broker.py fetch <holder>                       tar <root>/results/<holder>/ from every ready node
                                                  into state/results/<holder>/
@@ -51,7 +54,24 @@ CLUSTERS = {
         bootstrap="bootstrap_dlcluster.sh",
         image="nvidia/cuda:13.4.2-devel-ubuntu24.04"),
 }
+ARCH_TO_CLUSTER = {c["arch"]: name for name, c in CLUSTERS.items()}
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"]
+
+
+def parse_per_arch(spec):
+    """'b200=3,gb200=1' -> {'b200': 3, 'gb200': 1}"""
+    out = {}
+    for part in (spec or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        arch, _, n = part.partition("=")
+        if arch not in ARCH_TO_CLUSTER or not n.isdigit():
+            raise ValueError("bad per-arch target %r, expected e.g. b200=3,gb200=1" % spec)
+        out[arch] = int(n)
+    if not out:
+        raise ValueError("empty per-arch target")
+    return out
 EXPIRING_S = 45 * 60      # below this a ready node becomes expiring and counts as gone for renew
 RELEASE_S = 5 * 60        # below this an unheld node is released (cleanup) instead of dying on its own
 BROKER_LOG = LOGS / "broker.log"
@@ -476,23 +496,30 @@ def bootstrap_node(key, image=None, timeout=2400, force=False):
     return 0
 
 
-def renew_pool(target, wait_s=0, queues=None):
-    """Request holds until `target` nodes are good for the next 45 minutes. Returns (rc, new job ids)."""
+def renew_pool(target=None, wait_s=0, queues=None, per_arch=None):
+    """Request holds until the pool is good for the next 45 minutes: `target` nodes in total (at least one
+    per arch, then alternating clusters), or `per_arch` = {'b200': 3, 'gb200': 1}. Returns (rc, new job ids)."""
     queues = queues if queues is not None else all_queues()
     jids = []
     with Registry() as reg:
         notes = reconcile(reg.data, queues)
         good = good_nodes(reg.data)
-        need = target - len(good)
         cap = reg.data.get("cap", 6)
         room = cap - count_active(reg.data)
         reg.save()
+        if per_arch:
+            counts = {a: sum(1 for n in good if n.get("arch") == a) for a in per_arch}
+            deficits = {a: max(0, per_arch[a] - counts[a]) for a in per_arch}
+            need = sum(deficits.values())
+            desc = ", ".join("%s %d/%d" % (a, counts[a], per_arch[a]) for a in sorted(per_arch))
+        else:
+            need = target - len(good)
+            desc = "%d/%d" % (len(good), target)
         if need <= 0:
-            print("pool ok: %d node(s) good for the next 45 min, target %d" % (len(good), target))
+            print("pool ok: good for the next 45 min %s" % desc)
             rc = 0
         elif room <= 0:
-            print("pool below target (%d good, target %d) but cap %d is full, waiting for expiries or releases"
-                  % (len(good), target, cap))
+            print("pool below target (%s) but cap %d is full, waiting for expiries or releases" % (desc, cap))
             rc = 3
         else:
             need = min(need, room)
@@ -501,10 +528,22 @@ def renew_pool(target, wait_s=0, queues=None):
                 print("no login host reachable, nothing requested")
                 rc = 1
             else:
-                have_arch = {n["arch"] for n in good}
-                order = [c for c in reachable if CLUSTERS[c]["arch"] not in have_arch]
-                while len(order) < need:
-                    order.extend(reachable)
+                order = []
+                if per_arch:
+                    d = dict(deficits)
+                    while sum(d.values()) > 0:
+                        for a in sorted(d, key=lambda a: -d[a]):
+                            if d[a] > 0:
+                                d[a] -= 1
+                                if ARCH_TO_CLUSTER[a] in reachable:
+                                    order.append(ARCH_TO_CLUSTER[a])
+                else:
+                    have_arch = {n["arch"] for n in good}
+                    order = [c for c in reachable if CLUSTERS[c]["arch"] not in have_arch]
+                    while len(order) < need:
+                        order.extend(reachable)
+                if not order:
+                    print("pool below target (%s) but the needed cluster is unreachable" % desc)
                 for cluster in order[:need]:
                     jid = submit(reg.data, cluster)
                     if jid:
@@ -570,13 +609,22 @@ def cmd_release(args):
     return release_node(args.node, force=args.force)
 
 
+def target_args(args):
+    per_arch = parse_per_arch(args.per_arch) if args.per_arch else None
+    if per_arch is None and args.target is None:
+        raise SystemExit("one of --target N or --per-arch b200=3,gb200=1 is required")
+    return args.target, per_arch
+
+
 def cmd_renew(args):
-    rc, _ = renew_pool(args.target, parse_duration(args.wait))
+    target, per_arch = target_args(args)
+    rc, _ = renew_pool(target, parse_duration(args.wait), per_arch=per_arch)
     return rc
 
 
 def cmd_tick(args):
     """One maintenance pass. Safe to run every few minutes."""
+    target, per_arch = target_args(args)
     queues = all_queues()
     with Registry() as reg:
         notes = reconcile(reg.data, queues)
@@ -597,7 +645,7 @@ def cmd_tick(args):
         print("note: " + note)
     for jid in dying:
         release_node(jid)
-    rc, _ = renew_pool(args.target, parse_duration(args.wait), queues=None)
+    rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
     with Registry() as reg:
         todo = [n["job_id"] for n in reg.data["nodes"] if n.get("status") == "requested" and n.get("ssh")]
     for jid in todo:
@@ -680,11 +728,13 @@ def main(argv=None):
     rl.add_argument("--force", action="store_true", help="release even if a holder still has a lease")
     rl.set_defaults(func=cmd_release)
     rn = sub.add_parser("renew")
-    rn.add_argument("--target", type=int, required=True)
+    rn.add_argument("--target", type=int, default=None, help="total nodes good for the next 45 min")
+    rn.add_argument("--per-arch", default=None, help="per-arch target, e.g. b200=3,gb200=1 (overrides --target)")
     rn.add_argument("--wait", default="0")
     rn.set_defaults(func=cmd_renew)
     t = sub.add_parser("tick")
-    t.add_argument("--target", type=int, required=True)
+    t.add_argument("--target", type=int, default=None, help="total nodes good for the next 45 min")
+    t.add_argument("--per-arch", default=None, help="per-arch target, e.g. b200=3,gb200=1 (overrides --target)")
     t.add_argument("--wait", default="10m", help="how long to wait for newly requested jobs to start")
     t.add_argument("--image", default=None)
     t.set_defaults(func=cmd_tick)

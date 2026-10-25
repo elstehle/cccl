@@ -53,7 +53,8 @@ enum class arrangement
 {
   blocked,
   striped,
-  packed_striped
+  packed_striped,
+  packed_rows
 };
 enum class output_form
 {
@@ -86,8 +87,28 @@ inline constexpr const char* to_string(requirement r)
 }
 inline constexpr const char* to_string(arrangement a)
 {
-  return a == arrangement::blocked ? "blocked" : a == arrangement::striped ? "striped" : "packed_striped";
+  return a == arrangement::blocked ? "blocked"
+       : a == arrangement::striped  ? "striped"
+       : a == arrangement::packed_striped
+         ? "packed_striped"
+         : "packed_rows";
 }
+
+template <arrangement A>
+inline constexpr bool is_packed_v = (A == arrangement::packed_striped) || (A == arrangement::packed_rows);
+
+// Rows per group: an adapter that processes R independent rows of N keys per call declares
+// `static constexpr int rows = R` (default 1). Rows > 1 require the packed_rows arrangement.
+template <class A, class = void>
+struct rows_of
+{
+  static constexpr int value = 1;
+};
+template <class A>
+struct rows_of<A, std::void_t<decltype(A::rows)>>
+{
+  static constexpr int value = A::rows;
+};
 inline constexpr const char* to_string(output_form o)
 {
   return o == output_form::indices ? "indices" : "pairs";
@@ -120,7 +141,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.4";
+inline constexpr const char* harness_version = "0.5";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -387,10 +408,16 @@ struct cell_cfg
   static constexpr int thr_groups      = thr_block / Threads;
   static constexpr bool pairs          = (A::output == output_form::pairs);
   static constexpr bool data_dependent = Info::data_dependent;
+  static constexpr int rows            = rows_of<A>::value;
+  static constexpr int out_slots       = rows * K; // row r's k indices at [r * K, (r + 1) * K)
+  static constexpr int keys_per_call   = rows * N;
   using TS                             = typename A::TempStorage;
 
   static_assert(N % Threads == 0, "N must be a multiple of the thread count");
   static_assert(A::items_per_thread == IPT, "adapter items_per_thread must equal N / Threads");
+  static_assert(rows == 1 || A::input_arrangement == arrangement::packed_rows,
+                "rows > 1 requires the packed_rows arrangement");
+  static_assert(rows == 1 || rows == traits::packed_per_word, "packed_rows packs one row per key lane of the word");
 
   __host__ __device__ static constexpr size_t ts_bytes(int groups)
   {
@@ -398,11 +425,11 @@ struct cell_cfg
   }
   __host__ __device__ static constexpr size_t out_idx_bytes(int groups)
   {
-    return align_up(size_t(2) * groups * K * sizeof(int), 16);
+    return align_up(size_t(2) * groups * out_slots * sizeof(int), 16);
   }
   __host__ __device__ static constexpr size_t out_key_bytes(int groups)
   {
-    return pairs ? align_up(size_t(2) * groups * K * sizeof(KeyT), 16) : 0;
+    return pairs ? align_up(size_t(2) * groups * out_slots * sizeof(KeyT), 16) : 0;
   }
   __host__ __device__ static constexpr size_t dyn_bytes(int groups)
   {
@@ -428,11 +455,11 @@ struct smem_view
   }
   __device__ __forceinline__ int* idx_buf(int buffer, int group, int groups) const
   {
-    return out_idx + (static_cast<size_t>(buffer) * groups + group) * Cfg::K;
+    return out_idx + (static_cast<size_t>(buffer) * groups + group) * Cfg::out_slots;
   }
   __device__ __forceinline__ typename Cfg::KeyT* key_buf(int buffer, int group, int groups) const
   {
-    return Cfg::pairs ? out_keys + (static_cast<size_t>(buffer) * groups + group) * Cfg::K : nullptr;
+    return Cfg::pairs ? out_keys + (static_cast<size_t>(buffer) * groups + group) * Cfg::out_slots : nullptr;
   }
 };
 
@@ -498,6 +525,27 @@ __device__ __forceinline__ void load_input(
       idx[i]         = item;
     }
   }
+  else if constexpr (A::input_arrangement == arrangement::packed_rows)
+  {
+    // packed_rows: one word per item index, row r of the call in key lane r of the word (row 0 in
+    // the low bits), words striped across lanes. The call's input holds rows x N keys row-major.
+    constexpr int P = traits::packed_per_word;
+    static_assert(rows_of<A>::value == P, "packed_rows needs rows == keys per word");
+    constexpr int N = IPT * T;
+#pragma unroll
+    for (int j = 0; j < IPT; ++j)
+    {
+      const int item = j * T + lane;
+      uint32_t w     = 0;
+#pragma unroll
+      for (int r = 0; r < P; ++r)
+      {
+        w |= static_cast<uint32_t>(in[static_cast<size_t>(r) * N + item]) << (r * 8 * sizeof(typename traits::bits_t));
+      }
+      ks[j]  = w;
+      idx[j] = item;
+    }
+  }
   else
   {
     // packed_striped: P keys per 32-bit word, blocked inside the word, words striped across lanes
@@ -524,7 +572,7 @@ __device__ __forceinline__ void load_input(
 template <class KeyT, class A>
 __device__ __forceinline__ void perturb_first(typename A::key_storage& ks, int dep)
 {
-  if constexpr (A::input_arrangement == arrangement::packed_striped)
+  if constexpr (is_packed_v<A::input_arrangement>)
   {
     ks[0] ^= static_cast<uint32_t>(dep);
   }
@@ -544,9 +592,9 @@ fold_inputs(const typename A::key_storage& ks, const int (&idx)[A::items_per_thr
   using traits      = key_traits<KeyT>;
   constexpr int IPT = A::items_per_thread;
   uint32_t acc0 = 0, acc1 = 0, acc2 = 0, acc3 = 0;
-  if constexpr (A::input_arrangement == arrangement::packed_striped)
+  if constexpr (is_packed_v<A::input_arrangement>)
   {
-    constexpr int words = IPT / traits::packed_per_word;
+    constexpr int words = static_cast<int>(sizeof(typename A::key_storage) / sizeof(uint32_t));
 #pragma unroll
     for (int j = 0; j < words; j += 4)
     {
@@ -595,6 +643,7 @@ struct noop_adapter
   static constexpr int items_per_thread          = A::items_per_thread;
   static constexpr arrangement input_arrangement = A::input_arrangement;
   static constexpr output_form output            = A::output;
+  static constexpr int rows                      = rows_of<A>::value;
   using key_storage                              = typename A::key_storage;
   struct TempStorage
   {
@@ -640,12 +689,13 @@ __global__ void __launch_bounds__(Cfg::lat_block) oracle_kernel(
   group_sync<T>();
   A::run(ks, idx, sm.ts[group], sm.idx_buf(0, group, groups), sm.key_buf(0, group, groups));
   group_sync<T>();
-  for (int t = lane; t < K; t += T)
+  constexpr int slots = Cfg::out_slots;
+  for (int t = lane; t < slots; t += T)
   {
-    g_out_idx[group * K + t] = sm.idx_buf(0, group, groups)[t];
+    g_out_idx[group * slots + t] = sm.idx_buf(0, group, groups)[t];
     if constexpr (Cfg::pairs)
     {
-      g_out_keys[group * K + t] = Cfg::traits::to_bits(sm.key_buf(0, group, groups)[t]);
+      g_out_keys[group * slots + t] = Cfg::traits::to_bits(sm.key_buf(0, group, groups)[t]);
     }
   }
 }
@@ -695,7 +745,8 @@ __global__ void __launch_bounds__(Cfg::lat_block) lat_kernel(
       if constexpr (DataDep)
       {
         const int which = (n + (dep & zero_mask)) & (num_inputs - 1);
-        load_input<typename Cfg::KeyT, Cfg::Threads, A>(g_in + static_cast<size_t>(which) * N, ks, idx, lane);
+        load_input<typename Cfg::KeyT, Cfg::Threads, A>(
+          g_in + static_cast<size_t>(which) * Cfg::keys_per_call, ks, idx, lane);
       }
       else
       {
@@ -741,7 +792,8 @@ __global__ void __launch_bounds__(Cfg::thr_block)
   for (int c = 0; c < calls; ++c)
   {
     const int which = (gid * 5 + c) & (num_inputs - 1);
-    load_input<typename Cfg::KeyT, Cfg::Threads, A>(g_in + static_cast<size_t>(which) * N, ks, idx, lane);
+    load_input<typename Cfg::KeyT, Cfg::Threads, A>(
+      g_in + static_cast<size_t>(which) * Cfg::keys_per_call, ks, idx, lane);
     int* o                 = sm.idx_buf(c & 1, group, groups);
     typename Cfg::KeyT* ok = sm.key_buf(c & 1, group, groups);
     A::run(ks, idx, sm.ts[group], o, ok);
@@ -1073,31 +1125,45 @@ struct host_input
 {
   using traits = key_traits<KeyT>;
   using bits_t = typename traits::bits_t;
-  std::vector<float> values; // widened to float, the oracle's view
-  std::vector<bits_t> bits; // device representation
+  std::vector<float> values; // widened to float, the oracle's view, rows x n row-major
+  std::vector<bits_t> bits; // device representation, rows x n row-major
   std::string pattern;
   unsigned seed = 0;
+  int n         = 0;
+  int rows      = 1;
+  std::vector<float> row(int r) const
+  {
+    return std::vector<float>(values.begin() + static_cast<size_t>(r) * n, values.begin() + static_cast<size_t>(r + 1) * n);
+  }
 };
 
+// One call's input: `rows` independent rows of n keys of the pattern (row r uses seed + 1000003 r,
+// so row 0 of a multi-row input equals the single-row input of the same seed).
 template <class KeyT>
-host_input<KeyT> make_input(const std::string& pattern, int n, int k, unsigned seed)
+host_input<KeyT> make_input(const std::string& pattern, int n, int k, unsigned seed, int rows = 1)
 {
   using traits = key_traits<KeyT>;
   host_input<KeyT> in;
   in.pattern = pattern;
   in.seed    = seed;
-  auto f     = make_pattern(pattern, n, k, seed);
-  in.values.resize(n);
-  in.bits.resize(n);
-  for (int j = 0; j < n; ++j)
+  in.n       = n;
+  in.rows    = rows;
+  in.values.resize(static_cast<size_t>(rows) * n);
+  in.bits.resize(static_cast<size_t>(rows) * n);
+  for (int r = 0; r < rows; ++r)
   {
-    const KeyT key = traits::from_float(f[j]);
-    in.bits[j]     = traits::to_bits(key);
-    in.values[j]   = traits::to_float(key);
-    if (std::isnan(in.values[j]))
+    auto f = make_pattern(pattern, n, k, seed + 1000003u * static_cast<unsigned>(r));
+    for (int j = 0; j < n; ++j)
     {
-      fprintf(stderr, "pattern %s produced NaN at %d\n", pattern.c_str(), j);
-      exit(2);
+      const KeyT key          = traits::from_float(f[j]);
+      const size_t at         = static_cast<size_t>(r) * n + j;
+      in.bits[at]             = traits::to_bits(key);
+      in.values[at]           = traits::to_float(key);
+      if (std::isnan(in.values[at]))
+      {
+        fprintf(stderr, "pattern %s produced NaN at %d\n", pattern.c_str(), j);
+        exit(2);
+      }
     }
   }
   return in;
@@ -1635,17 +1701,19 @@ struct cell_runner
   static bool oracle_one(const host_input<KeyT>& in, std::string& why)
   {
     constexpr int groups = Cfg::lat_groups;
+    constexpr int slots  = Cfg::out_slots;
     bits_t* d_in;
     int* d_idx;
     bits_t* d_keys = nullptr;
-    TOPK_CHECK(cudaMalloc(&d_in, N * sizeof(bits_t)));
-    TOPK_CHECK(cudaMalloc(&d_idx, static_cast<size_t>(groups) * K * sizeof(int)));
+    TOPK_CHECK(cudaMalloc(&d_in, static_cast<size_t>(Cfg::keys_per_call) * sizeof(bits_t)));
+    TOPK_CHECK(cudaMalloc(&d_idx, static_cast<size_t>(groups) * slots * sizeof(int)));
     if constexpr (Cfg::pairs)
     {
-      TOPK_CHECK(cudaMalloc(&d_keys, static_cast<size_t>(groups) * K * sizeof(bits_t)));
+      TOPK_CHECK(cudaMalloc(&d_keys, static_cast<size_t>(groups) * slots * sizeof(bits_t)));
     }
-    TOPK_CHECK(cudaMemcpy(d_in, in.bits.data(), N * sizeof(bits_t), cudaMemcpyHostToDevice));
-    TOPK_CHECK(cudaMemset(d_idx, 0xff, static_cast<size_t>(groups) * K * sizeof(int)));
+    TOPK_CHECK(cudaMemcpy(d_in, in.bits.data(), static_cast<size_t>(Cfg::keys_per_call) * sizeof(bits_t),
+                          cudaMemcpyHostToDevice));
+    TOPK_CHECK(cudaMemset(d_idx, 0xff, static_cast<size_t>(groups) * slots * sizeof(int)));
     const size_t dyn = Cfg::dyn_bytes(groups);
     auto kern        = oracle_kernel<Cfg, A>;
     enable_large_smem(kern, dyn);
@@ -1663,12 +1731,12 @@ struct cell_runner
       }
       return false;
     }
-    std::vector<int> h_idx(static_cast<size_t>(groups) * K);
+    std::vector<int> h_idx(static_cast<size_t>(groups) * slots);
     TOPK_CHECK(cudaMemcpy(h_idx.data(), d_idx, h_idx.size() * sizeof(int), cudaMemcpyDeviceToHost));
     std::vector<float> h_keys;
     if constexpr (Cfg::pairs)
     {
-      std::vector<bits_t> kb(static_cast<size_t>(groups) * K);
+      std::vector<bits_t> kb(static_cast<size_t>(groups) * slots);
       TOPK_CHECK(cudaMemcpy(kb.data(), d_keys, kb.size() * sizeof(bits_t), cudaMemcpyDeviceToHost));
       h_keys.resize(kb.size());
       for (size_t i = 0; i < kb.size(); ++i)
@@ -1679,12 +1747,17 @@ struct cell_runner
     bool ok = true;
     for (int g = 0; g < groups && ok; ++g)
     {
-      auto v = check_topk(in.values, K, Cfg::Req, h_idx.data() + static_cast<size_t>(g) * K,
-                          Cfg::pairs ? h_keys.data() + static_cast<size_t>(g) * K : nullptr);
-      if (!v.ok)
+      for (int r = 0; r < Cfg::rows && ok; ++r)
       {
-        ok  = false;
-        why = (groups > 1 ? "group " + std::to_string(g) + ": " : std::string()) + v.why;
+        const size_t at = static_cast<size_t>(g) * slots + static_cast<size_t>(r) * K;
+        auto v = check_topk(Cfg::rows == 1 ? in.values : in.row(r), K, Cfg::Req, h_idx.data() + at,
+                            Cfg::pairs ? h_keys.data() + at : nullptr);
+        if (!v.ok)
+        {
+          ok  = false;
+          why = (groups > 1 ? "group " + std::to_string(g) + ": " : std::string())
+              + (Cfg::rows > 1 ? "row " + std::to_string(r) + ": " : std::string()) + v.why;
+        }
       }
     }
     TOPK_CHECK(cudaFree(d_in));
@@ -1725,7 +1798,7 @@ struct cell_runner
     {
       for (int s = 0; s < it.seeds; ++s)
       {
-        auto in = make_input<KeyT>(it.pattern, N, K, static_cast<unsigned>(s));
+        auto in = make_input<KeyT>(it.pattern, N, K, static_cast<unsigned>(s), Cfg::rows);
         std::string why;
         ++r.oracle_cases;
         if (!oracle_one(in, why))
@@ -1834,7 +1907,7 @@ struct cell_runner
       all_ms.push_back(ms);
       best_ms = std::min(best_ms, static_cast<double>(ms));
     }
-    elements = static_cast<long long>(grid) * groups * calls * N;
+    elements = static_cast<long long>(grid) * groups * calls * C::keys_per_call;
     gelem    = static_cast<double>(elements) / (best_ms * 1e-3) / 1e9;
     TOPK_CHECK(cudaEventDestroy(e0));
     TOPK_CHECK(cudaEventDestroy(e1));
@@ -1867,14 +1940,17 @@ struct cell_runner
     r.id = Info::id;
     // num_inputs distinct inputs of the cell's pattern (seeds disjoint from the oracle seeds), and
     // their tie structure at rank k (bf16 rows tie at the pivot routinely, the numbers must say so)
-    std::vector<bits_t> h(static_cast<size_t>(num_inputs) * N);
+    std::vector<bits_t> h(static_cast<size_t>(num_inputs) * Cfg::keys_per_call);
     for (int i = 0; i < num_inputs; ++i)
     {
-      auto in = make_input<KeyT>(o.pattern, N, K, 1000u + i);
-      std::copy(in.bits.begin(), in.bits.end(), h.begin() + static_cast<size_t>(i) * N);
-      const tie_stats t = tie_stats_at_k(in.values, K);
-      r.ties_at_k.push_back(t.ties_at_k);
-      r.strictly_above.push_back(t.strictly_above);
+      auto in = make_input<KeyT>(o.pattern, N, K, 1000u + i, Cfg::rows);
+      std::copy(in.bits.begin(), in.bits.end(), h.begin() + static_cast<size_t>(i) * Cfg::keys_per_call);
+      for (int row = 0; row < Cfg::rows; ++row)
+      {
+        const tie_stats t = tie_stats_at_k(Cfg::rows == 1 ? in.values : in.row(row), K);
+        r.ties_at_k.push_back(t.ties_at_k);
+        r.strictly_above.push_back(t.strictly_above);
+      }
     }
     run_oracle(o, r);
     if (!r.oracle_ok || o.oracle_only)
@@ -1984,6 +2060,7 @@ template <class KeyT>
 json make_cells(const adapter_result& v,
                 const adapter_result* c,
                 const std::string& control_name,
+                int rows,
                 int threads,
                 int n,
                 int k,
@@ -2001,6 +2078,7 @@ json make_cells(const adapter_result& v,
     j.add("output_form", to_string(out));
     j.add("n", n);
     j.add("k", k);
+    j.add("rows", rows);
     j.add("threads", threads);
     j.add("requirement", to_string(req));
     j.add("input_pattern", pattern);
@@ -2080,6 +2158,7 @@ json adapter_static_json()
 {
   json j = json::object();
   j.add("items_per_thread", Cfg::IPT);
+  j.add("rows", Cfg::rows);
   j.add("input_arrangement", to_string(Cfg::A::input_arrangement));
   j.add("output_form", to_string(Cfg::A::output));
   j.add("temp_storage_bytes", static_cast<long long>(sizeof(typename Cfg::TS)));
@@ -2182,7 +2261,7 @@ int run_cell(int argc, char** argv)
     root.add("status",
              !selftest_ok ? "selftest_failed" : vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
     root.add("cells",
-             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, Threads, N, K, Req,
+             vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, VCfg::rows, Threads, N, K, Req,
                                              VA::output, o.pattern, can0, can1)
                           : json::array());
 
