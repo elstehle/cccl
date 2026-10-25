@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Emit the TECHNIQUES.md entry for the pipe throughput rows of intrinsics_micro.cu.
+"""Emit the first version of the TECHNIQUES.md pipe throughput entry from the fused rows of intrinsics_micro.cu.
+
+T47 as it stands in TECHNIQUES.md was rewritten by hand after the unfused rerun (alternating max and min rows,
+half-rate pipes) and carries opt-N5's codegen note, so this script documents the data path, not the final text.
 
   python3 tput_entry.py <results-dir> <stamp> [<results-dir> <stamp> ...] > entry.md
 

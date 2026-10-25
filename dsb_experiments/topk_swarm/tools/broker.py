@@ -294,15 +294,20 @@ def print_table(reg, show_all=False):
     print("active=%d cap=%d good_for_45min=%d" % (count_active(reg), reg.get("cap", 6), len(good_nodes(reg, now))))
 
 
-def submit(reg, cluster):
+def submit(reg, cluster, nodelist=None, note=None):
     """sbatch a hold on cluster and append a `requested` entry. Caller holds the registry lock.
-    Hosts that already carry an active entry on this cluster are excluded (one job per host)."""
+    Hosts that already carry an active entry on this cluster and the permanent exclude list are
+    excluded (one job per host). `nodelist` pins the request to one host and bypasses the exclude
+    list for an explicit one-off, which is recorded in the entry."""
     c = CLUSTERS[cluster]
     busy = {n["ssh"] for n in reg["nodes"]
             if n.get("cluster") == cluster and n.get("status") in ACTIVE_STATES and n.get("ssh")}
     banned = set(EXCLUDE_HOSTS.get(cluster, [])) | set(reg.get("exclude_hosts", {}).get(cluster, []))
     busy = sorted(busy | banned)
-    exclude = (" --exclude=" + ",".join(busy)) if busy else ""
+    if nodelist:
+        exclude = " --nodelist=%s" % nodelist
+    else:
+        exclude = (" --exclude=" + ",".join(busy)) if busy else ""
     r = ssh(c["login"], c["sbatch"].format(exclude=exclude), timeout=90)
     m = re.search(r"Submitted batch job (\d+)", r.out or "")
     if not m:
@@ -313,10 +318,14 @@ def submit(reg, cluster):
         "name": "pending-%s" % jid, "cluster": cluster, "arch": c["arch"], "login": c["login"],
         "ssh": None, "job_id": jid, "lease_start": None, "lease_expires": None, "status": "requested",
         "root": None, "exec_prefix": None, "container": None, "cuda": None, "nvcc": None, "cmake": None,
-        "clone_commit": None, "gpus": [], "requested_at": iso(utcnow()), "excluded_hosts": busy,
+        "clone_commit": None, "gpus": [], "requested_at": iso(utcnow()), "excluded_hosts": [] if nodelist else busy,
     }
+    if nodelist:
+        entry["nodelist"] = nodelist
+        entry["one_off"] = note or "pinned request"
     reg["nodes"].append(entry)
-    print("requested %s job %s (%s)%s" % (cluster, jid, c["arch"], (" excluding " + ",".join(busy)) if busy else ""))
+    print("requested %s job %s (%s)%s" % (cluster, jid, c["arch"],
+                                         (" pinned to " + nodelist) if nodelist else ((" excluding " + ",".join(busy)) if busy else "")))
     return jid
 
 
@@ -621,7 +630,7 @@ def cmd_request(args):
             print("refused: %d active + %d requested would exceed cap %d" % (active, args.count, cap))
             return 3
         for _ in range(args.count):
-            jid = submit(reg.data, args.cluster)
+            jid = submit(reg.data, args.cluster, nodelist=args.nodelist, note=args.note)
             if jid:
                 jids.append(jid)
         reg.save()
@@ -769,6 +778,8 @@ def main(argv=None):
     r.add_argument("--cluster", required=True, choices=sorted(CLUSTERS))
     r.add_argument("--count", type=int, default=1)
     r.add_argument("--wait", default="0", help="wait this long for the job(s) to start, e.g. 30m")
+    r.add_argument("--nodelist", default=None, help="pin to one host (bypasses the exclude list, one-off)")
+    r.add_argument("--note", default=None, help="why this one-off exists, stored in the entry")
     r.set_defaults(func=cmd_request)
     b = sub.add_parser("bootstrap")
     b.add_argument("node", help="node name, ssh host or job id")
