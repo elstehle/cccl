@@ -46,8 +46,30 @@
 
 #include <cuda_bf16.h>
 
+// Optional phase profile: with B4_PROFILE defined, thread 0 writes clock64 stamps to b4::g_stamps
+// (16 slots per call), used by approaches/B4/profile_phases.cu only. Compiled out otherwise.
+#ifdef B4_PROFILE
+#  define B4_STAMP(i)                                   \
+    do                                                  \
+    {                                                   \
+      if (threadIdx.x == 0)                             \
+      {                                                 \
+        ::b4::g_stamps[(i)] = clock64();                \
+      }                                                 \
+    } while (0)
+#else
+#  define B4_STAMP(i) \
+    do                \
+    {                 \
+    } while (0)
+#endif
+
 namespace b4
 {
+
+#ifdef B4_PROFILE
+__device__ long long g_stamps[16];
+#endif
 
 using u32 = ::cuda::std::uint32_t;
 
@@ -176,6 +198,7 @@ public:
   {
     const int warp = tid / 32;
     const int lane = tid % 32;
+    B4_STAMP(0);
 
     // Prologue: key images, group maxima, warp partials of the bracket
     u32 tk[ipt];
@@ -212,6 +235,7 @@ public:
     }
     reset_bins(0);
     __syncthreads();
+    B4_STAMP(1);
 
     u32 lo = storage.bracket[0][0];
     u32 hi = storage.bracket[0][1];
@@ -232,6 +256,7 @@ public:
     u32 pos, total;
     scan_t(storage.scan).ExclusiveSum(cnt, pos, total);
     const int c = static_cast<int>(total);
+    B4_STAMP(2);
 
     if (c <= cap && c >= k)
     {
@@ -246,6 +271,7 @@ public:
         }
       }
       __syncthreads();
+      B4_STAMP(3);
       const int slots = ceil_div_rt(c, Threads);
       u32 ctk[smax];
       u32 cinv[smax];
@@ -262,6 +288,7 @@ public:
         cinv[j] = word_inv(w);
       }
       cand_slots<smax> sl{ctk, cinv, c, slots};
+      B4_STAMP(4);
       finish<smax, true>(sl, lo, hi, k, out);
     }
     else
@@ -517,6 +544,7 @@ private:
       st.im |= digit_mask << shift;
     }
     ++st.pass;
+    B4_STAMP(5 + st.pass);
   }
 
   // Emission over the set: items lexicographically above the pivot prefix go to out[0, sel_total)
@@ -542,7 +570,9 @@ private:
       }
     }
     u32 excl;
+    B4_STAMP(10);
     scan_t(storage.scan).ExclusiveSum((n_sel << 16) | n_piv, excl);
+    B4_STAMP(11);
     u32 pos_sel = excl >> 16;
     u32 pos_piv = excl & 0xFFFFu;
     const u32 need = static_cast<u32>(st.k_rem);
@@ -576,14 +606,17 @@ private:
         pos_piv += p ? 1u : 0u;
       }
     }
+    B4_STAMP(12);
     if (mode == emit_mode::w2)
     {
       __syncthreads();
+      B4_STAMP(13);
       if (tid < 32)
       {
         warp_finish(st.count, st.k_rem, out + st.sel_total);
       }
     }
+    B4_STAMP(14);
   }
 
   template <bool HasImage, class Slots>

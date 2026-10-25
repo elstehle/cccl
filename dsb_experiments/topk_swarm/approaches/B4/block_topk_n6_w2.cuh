@@ -63,12 +63,17 @@ namespace topk_b1
 // bucket alone. Without it the min and max are tracked over all candidates of the pass, which only detects a
 // tie class once it is the whole candidate set (one pass later when the pivot bucket is a tie class inside a
 // larger candidate set, the bf16 case).
+// ClassTicket (N9 second build): the items above the pivot bin and the pivot bin's members draw
+// their tickets from one atomic on a class-indexed counter (as B1_idx does), instead of two atomics
+// on constant addresses, which ptxas warp-aggregates with S2R SR_LTMASK and SR_LANEID per site
+// (TECHNIQUES.md T23, T39).
 template <typename KeyT,
           int ThreadsPerBlock,
           int ItemsPerThread,
           bool NormalizeSignedZero = false,
           tie_break TieBreak       = tie_break::none,
-          bool PerBucketTracking   = false>
+          bool PerBucketTracking   = false,
+          bool ClassTicket         = false>
 class block_topk_n6w2
 {
 private:
@@ -457,7 +462,26 @@ private:
     {
       bool is_sel_i, is_cand_i;
       classify(i, is_sel_i, is_cand_i);
-      if constexpr (SkipCandidates)
+      if constexpr (SkipCandidates && ClassTicket)
+      {
+        // one atomic on a class-indexed counter: class 0 the items above the pivot bin (output
+        // slots), class 1 the pivot bin's members (warp finish buffer slots)
+        const int cls = is_cand_i ? 1 : 0;
+        if (is_sel_i || is_cand_i)
+        {
+          const auto t = atomicAdd_block(&storage.selected_offset[cls], histo_counter_t{1});
+          if (cls == 0)
+          {
+            out_idx[t] = item_slot(i);
+          }
+          else
+          {
+            storage.pivot_key[t] = twiddle(vals[i]);
+            storage.pivot_inv[t] = inv_mask - static_cast<u32>(item_slot(i));
+          }
+        }
+      }
+      else if constexpr (SkipCandidates)
       {
         if (is_sel_i)
         {

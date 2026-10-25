@@ -1,0 +1,30 @@
+{
+  "author": "opt-B4",
+  "approach_id": "B4",
+  "variant": "base",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 39300,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 bracket and bin reset, 1 in the compaction scan, 1 after the compaction stores, 3 per finishing pass (histogram, scan internal, state), 1 in the emission scan, 1 before the warp finish",
+    "k_range": "[1, N) at run time, the bound is accepted only when the candidate count is at least k (always for k <= Threads), else the tile fallback runs",
+    "n_range": "N = Threads x IPT, Threads 128, 256 or 512, IPT >= 1, N <= 32768 (16-bit count fields), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "fp32 and bf16 keys, int32 indices derived from the striped position",
+    "nan_behavior": "a NaN with the sign bit clear orders above +inf and is selected first, a NaN with the sign bit set orders below -inf, the all-ones pattern collides with the empty-slot sentinel of the warp finish (unsupported), never produced by focus-set inputs. -0.0 is folded onto +0.0 under prefer_smaller_index only (one FADD or one select per item in the prologue), kept distinct under not_guaranteed",
+    "tie_break_support": "not_guaranteed and prefer_smaller_index, one code path: the warp finish orders the pivot set by (key descending, index ascending), a tie class larger than 32 is taken in scan order under not_guaranteed and ranked by index passes under prefer_smaller_index, the items above the pivot set are an exact set under both",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  },
+  "report_path": "approaches/B4/REPORT.md",
+  "source_paths": [
+    "harness/adapters/B4_base.cuh",
+    "approaches/B4/block_topk_bound.cuh",
+    "approaches/B4/sim_bound.py",
+    "harness/cells_b4.json"
+  ],
+  "techniques_adopted": ["T1", "T3", "T7", "T17", "T19", "T21", "T24", "T25", "T29", "T31", "T32", "T34", "T36"],
+  "techniques_contributed": []
+}
