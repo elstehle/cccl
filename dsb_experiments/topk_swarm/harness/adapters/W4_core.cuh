@@ -334,8 +334,8 @@ W4_HD inline constexpr bool tree_valid(int threads, int runs, int run_len, int k
 template <typename W, int Threads, int Runs, int RunLen, int K>
 struct merge_tree
 {
-  W4_HD static constexpr int G      = word_ops<W>::group;
-  W4_HD static constexpr int levels = log2_ceil(Runs);
+  static constexpr int G      = word_ops<W>::group;
+  static constexpr int levels = log2_ceil(Runs);
 
   W4_HD static constexpr int in_len(int l)
   {
@@ -384,8 +384,8 @@ struct merge_tree
     }
     return m;
   }
-  W4_HD static constexpr int words0 = buf_words(0);
-  W4_HD static constexpr int words1 = buf_words(1);
+  static constexpr int words0 = buf_words(0);
+  static constexpr int words1 = buf_words(1);
 
   W4_HD static constexpr bool valid()
   {
