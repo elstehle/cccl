@@ -61,3 +61,19 @@ n8_fetch() {
   n8_env
   n8_ssh "tar czf - -C $ROOT/results/$HOLDER ." | tar xzf - -C $SWARM/state/results/$HOLDER && ls -t $SWARM/state/results/$HOLDER | head -8
 }
+
+# Measure with an SM clock trace: nvidia-smi samples every 100 ms into $W/smi_<label>.csv on the node
+# while run.py --measure-only runs under the GPU lock (the hardware researcher's request for the
+# node-split cells). $1 = label, rest = run.py args.
+n8_measure_smi() {
+  n8_env
+  local label=$1; shift
+  local W=$ROOT/work/$HOLDER
+  n8_ssh "cd $W/harness && export PATH=/usr/local/cuda/bin:\$PATH && (nvidia-smi --query-gpu=timestamp,clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_throttle_reasons.active --format=csv -lms 100 > $W/smi_$label.csv 2>/dev/null & echo \$! > $W/smi_$label.pid); python3 run.py --repo $ROOT/cccl --root $ROOT --holder $HOLDER --gpu $GPU --node-name $NODE_NAME --arch-name $ARCH --cells cells_n8.json --measure-only --label $label $* > $W/measure_$label.log 2>&1; echo exit=\$?; kill \$(cat $W/smi_$label.pid) 2>/dev/null; grep -E 'measured|cells with|FAILED|WARNING' $W/measure_$label.log | head -4 | cut -c1-160; wc -l < $W/smi_$label.csv"
+}
+
+n8_fetch_smi() {
+  n8_env
+  local label=$1
+  n8_ssh "cat $ROOT/work/$HOLDER/smi_$label.csv" > $SWARM/state/results/$HOLDER/smi_${label}_$NODE_NAME.csv && wc -l $SWARM/state/results/$HOLDER/smi_${label}_$NODE_NAME.csv
+}
