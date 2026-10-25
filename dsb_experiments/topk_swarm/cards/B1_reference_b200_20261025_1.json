@@ -2657,7 +2657,7 @@
   "surprises": [
    "The July main header figure (2499 cycles at N 1024 k 16 fp32, including its 50-cycle chain link) is no longer what main does: main now carries the productized optimization and measures 1905 net of the control, within 3 percent of the July v6 prototype (1857 with its link included). The throughput did not follow to the same degree: 355 Gelem/s here against 329 for the July header and 437 for v6 (main's exchange union adds barriers, and this harness reloads the input per call and averages 16 inputs instead of one).",
    "The non-additive control at N 16384 k 4096 seen with harness 0.2 (net rose while raw fell when loads were vectorized) was the chain-16 L1 effect plus the control's smaller carve-out, both removed in 0.6: that cell now reads 24.5k with R^2 1.0000.",
-   "GB200 latency in cycles is identical to B200 to within 1 percent for every cell (same SM), throughput is 7 to 10 percent higher on GB200 (clocks). This is a consistency check only, cards never compare archs."
+   "Latency in cycles on GB200 matches B200 to within 1 percent up to N 4096 (same SM) and reads 2 to 3.5 percent lower at N 16384 and 32768, where the L2-bound load phase and its subtraction differ between the two memory systems; throughput is 6 to 7 percent higher on GB200 (clocks: the fixed FMA canary runs in 3644 us against 3776 us). Consistency check only, cards never compare archs."
   ],
   "open_questions": [
    "A values-only epilogue (scatter indices by ticket, no key gather) is the obvious index-only saving, the B1 optimizer should measure it against the pairs path (the idea card estimates about 100 cycles).",
