@@ -51,6 +51,7 @@
 #include <type_traits>
 
 #include "../W1/warp_level_topk.cuh"
+#include "n5_net.cuh"
 #include "topk_harness.cuh"
 
 namespace n5
@@ -152,8 +153,47 @@ struct ops_pred
   }
 };
 
-template <int LW, int M, int T, class Ops>
-using net_t = w1::eager_topk<uint32_t, LW, M, T, w1::shfl_split32, Ops>;
+// Network selection. net_w1: the W1 recursion as is (direction recomputed per stage from the lane
+// id). net_dir: the N5 copy with the direction as one bit test on precomputed parity words
+// (n5_net.cuh).
+struct net_w1
+{
+  template <int LW, int M, int T, class Ops>
+  struct bind
+  {
+    using net              = w1::eager_topk<uint32_t, LW, M, T, w1::shfl_split32, Ops>;
+    static constexpr int R = net::R;
+    static constexpr int L = net::L;
+    __device__ __forceinline__ static void run(uint32_t (&w)[R], int lane, unsigned mask)
+    {
+      net::run(w, lane, mask);
+    }
+    __device__ __forceinline__ static void merge0(uint32_t (&w)[R], int lane, unsigned mask)
+    {
+      net::template merge_tile0<L / 2>(w, lane, mask);
+    }
+  };
+};
+struct net_dir
+{
+  template <int LW, int M, int T, class Ops>
+  struct bind
+  {
+    using net              = eager_topk_dir<uint32_t, LW, M, T, w1::shfl_split32, Ops>;
+    static constexpr int R = net::R;
+    static constexpr int L = net::L;
+    __device__ __forceinline__ static void run(uint32_t (&w)[R], int lane, unsigned mask)
+    {
+      const typename net::dir_t dir(lane);
+      net::run(w, dir, mask);
+    }
+    __device__ __forceinline__ static void merge0(uint32_t (&w)[R], int lane, unsigned mask)
+    {
+      const typename net::dir_t dir(lane);
+      net::template merge_tile0<L / 2>(w, dir, mask);
+    }
+  };
+};
 
 constexpr unsigned full_mask = 0xffffffffu;
 
@@ -252,7 +292,7 @@ rows_supported(topk::key_type kt, int threads, int n, int k, topk::requirement r
       && (req == topk::requirement::not_guaranteed || req == topk::requirement::prefer_smaller_index);
 }
 
-template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops, class Recover = recover_exact>
+template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops, class Recover = recover_exact, class Net = net_w1>
 struct rows_adapter
 {
   static constexpr int rows                            = 2;
@@ -265,7 +305,7 @@ struct rows_adapter
   using key_storage                                    = uint32_t[items_per_thread];
   struct TempStorage
   {};
-  using net = net_t<LW, M, T, Ops>;
+  using net = typename Net::template bind<LW, M, T, Ops>;
   static_assert(net::R == items_per_thread, "tile words times tiles must cover the lane's words");
   static constexpr bool exact = std::is_same<Recover, recover_exact>::value;
   static constexpr bool psi   = Req == topk::requirement::prefer_smaller_index;
@@ -413,7 +453,10 @@ struct rows_adapter
       // the tie class overflows the remaining slots in a row (warp-uniform, rare on random input):
       // prefer_smaller_index needs the index-ordered ballot rank, not_guaranteed the capped prefix
       const uint32_t need = ta + te; // per row: count_greater + count_equal, 16-bit fields
-      if ((need & 0xffffu) > static_cast<uint32_t>(K) || (need >> 16) > static_cast<uint32_t>(K))
+      const bool over     = (need & 0xffffu) > static_cast<uint32_t>(K) || (need >> 16) > static_cast<uint32_t>(K);
+      // uniform over the hardware warp: the fallback runs full-warp collectives, so every logical
+      // warp of the hardware warp takes it together (the fallback is exact for any group)
+      if (__any_sync(full_mask, over))
       {
         if constexpr (psi)
         {
@@ -444,7 +487,7 @@ split_supported(topk::key_type kt, int threads, int n, int k, topk::requirement 
       && (req == topk::requirement::not_guaranteed || req == topk::requirement::prefer_smaller_index);
 }
 
-template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops, class Recover = recover_exact>
+template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops, class Recover = recover_exact, class Net = net_w1>
 struct split_adapter
 {
   static constexpr int items_per_thread                = N / LW;
@@ -457,7 +500,7 @@ struct split_adapter
   using key_storage                                    = uint32_t[words];
   struct TempStorage
   {};
-  using net = net_t<LW, M, T, Ops>;
+  using net = typename Net::template bind<LW, M, T, Ops>;
   static_assert(net::R == words, "tile words times tiles must cover the lane's words");
   static constexpr bool exact = std::is_same<Recover, recover_exact>::value;
   static constexpr bool psi   = Req == topk::requirement::prefer_smaller_index;
@@ -575,7 +618,7 @@ struct split_adapter
       const uint32_t br = __shfl_xor_sync(full_mask, b[M - 1 - r], LW - 1);
       w[r]              = hmax2(a, br);
     }
-    net::template merge_tile0<net::L / 2>(w, lane, full_mask);
+    net::merge0(w, lane, full_mask);
 
     // 3. the k-th key, in both halves
     const uint32_t tw = kth_word<LW, K>(w);
@@ -611,7 +654,8 @@ struct split_adapter
       const int pa        = excl & 0xffffu;
       const int ta        = tot & 0xffffu;
       const int pe        = ta + (excl >> 16);
-      if (ta + (tot >> 16) > static_cast<uint32_t>(K))
+      const bool over     = ta + (tot >> 16) > static_cast<uint32_t>(K);
+      if (__any_sync(full_mask, over)) // uniform over the hardware warp, see rows_adapter
       {
         if constexpr (psi)
         {
