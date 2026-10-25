@@ -1,0 +1,75 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "N6",
+  "variant": "w_atom32w2",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 768,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "shared-memory atomics (fire and forget), redux.sync, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 16 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 256 to 4096",
+    "type_constraints": "bf16 and fp32 keys widened to fp32 in registers with minus zero folded onto plus zero, int32 indices derived from the position (no index registers)",
+    "nan_behavior": "unsupported (the fixed-point image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code and measured identical cycles in all 72 cell pairs",
+    "sorted_output_support": "not inherent (items above the pivot bin in index order, then the finish in descending key order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [
+      "The card of record for N6 at warp scope: N6w_atom32 (exact per-lane bound, one 32-bin bracket pass counted by one shared atomic per item, packed W2 finish on at most 64 or 128 compacted candidates, bracket refinement and radix digits as fallbacks) against W2_packed_v3 in the same lock section. Registers 64 at IPT 8, 80 (bf16) and 128 (fp32) at IPT 16, 168 at IPT 32, 255 with 8 bytes of spill at IPT 64, 255 with a 4232 byte stack frame, 624 bytes of spill, 391 STL and 660 to 670 LDL at IPT 128 (N 4096, local memory, T36). Occupancy 4, 3, 2, 1, 1 blocks of 256 threads per SM against W2 at 4 to 1 (64 to 255 registers at k 64 and above).",
+      "Per item on the common path about 50 instructions (bin image 4, address and atomic 2, pivot test and min max 10, finish about 35) and per pass the dependent fixed costs (two redux and a division for the bracket, the histogram zeroing and two __syncwarp with an LDS, a 5-step shuffle suffix scan, a ballot, a popc and a shuffle for the pivot, two redux for the pivot range), which the atom32f batch showed to dominate below IPT 64 (13 fewer instructions per item changed nothing).",
+      "Latency fits R squared 0.996 to 1.000, canary 32.001 cycles per op at both ends, both requirements identical in all 76 cell pairs, oracle battery passed on all 152 cells including k 1024."
+    ],
+    "algorithmic": [
+      "N6w_atom32 takes k 64 and above from W2_packed_v3 at N 256 to 1024 and k 128 and above at N 2048: bf16 N 256 k 64 1307 against 1868 (1.43x), k 128 1368 against 5388 (3.9x), N 512 k 64 1879 against 2704 (1.44x), k 128 2225 against 7428 (3.3x), k 256 2564 against 14404 (5.6x), N 1024 k 64 3682 against 7308 (2.0x), k 128 4010 against 11872 (3.0x), k 256 4740 against 22624 (4.8x), N 2048 k 128 13826 against 21324 (1.54x), k 256 15982 against 40044 (2.5x), k 1024 17741 against 152618 (8.6x). fp32: N 256 k 64 1262 against 2083 (1.65x), N 512 k 64 1915 against 4711 (2.46x), k 256 2814 against 12334 (4.4x), N 1024 k 128 4321 against 12479 (2.9x), N 2048 k 256 15981 against 39660 (2.5x), k 1024 15880 against 151563 (9.5x).",
+      "W2_packed_v3 keeps k 16 everywhere (bf16 N 256 568 against 1096, N 512 820 against 1644, N 1024 1485 against 3000, N 2048 2377 against 8539, fp32 within 1.4x to 2x of those ratios) and N 2048 k 64 (10071 against 11854 bf16, 10159 against 12530 fp32), and everything at N 4096 (6537 to 48554 against 50391 to 62846), where N6w runs from local memory.",
+      "Kill criterion 1 of the idea card is met: N 512 k 64 bf16 at 1879 is 1.44x under W2_packed_v3 (bar 1.3x, at most 2080). Kill criterion 2 (1.5x over W3 at N 2048 k 256) is met only through W2: N6w_atom32 against W3_d4c at that cell is 15982 against 20341 (1.27x, W3 measured in the w3b batch against N6w_v2 at 18481, same node and day), both register bound at IPT 64, and at N 512 to 1024 k 64 to 128 the ratio is 2.0x to 2.7x in N6w's favour.",
+      "Throughput: 2.3x to 7x over W2 from k 64 (bf16 N 512 k 64 506 against 170 Gelem per s, k 256 396 against 57, N 1024 k 64 466 against 213, N 2048 k 256 264 against 66, k 1024 136 against 17.5), W2 ahead at k 16 (731 against 570 at N 512, 922 against 245 at N 2048) and at N 4096 k at most 64.",
+      "The winner map at warp scope after this card: W2_packed_v3 for k at most 16 at every N and k 64 at N 2048, N6w_atom32 for k 64 to 1024 at N 256 to 2048 (k 128 and above at N 2048), W3_d4c as the fallback and the k over N 1 over 2 row at N 2048 and above until N6w compacts before its second pass, nothing of this family at N 4096 until the register footprint is cut."
+    ],
+    "negative": [
+      "N 4096 (IPT 128) is lost to local memory in every N6w variant (4 KB stack frame, 60 to 63 thousand cycles against W2 6.5 to 48 thousand): the float tile alone is half the register file. N 2048 k 64 is lost by 15 to 20 percent to W2 at 255 registers."
+    ],
+    "surprises": [
+      "The fp32 W2 control at N 2048 k 1024 (151563 cycles, 255 registers, a rolled round loop over a list of 64) is where N6w gains most (9.5x), a cell the idea card listed under W1_reference."
+    ],
+    "open_questions": [
+      "A B200 confirmation of the two kill cells (N 512 k 64 and N 2048 k 256) in one session, all numbers of this card are from one GB200 node and one day.",
+      "The IPT 64 and 128 register footprint (two-half item loop, bf16 tile kept as 16-bit keys), the dependent fixed costs below IPT 64 (ballot scan, approximate reciprocal, tree-reduced pivot min max), and compaction before the second bracket pass for k 1024, in that order."
+    ]
+  },
+  "techniques_adopted": [
+    "T1",
+    "T4",
+    "T7",
+    "T9",
+    "T10",
+    "T17",
+    "T19",
+    "T21",
+    "T25",
+    "T32",
+    "T33",
+    "T36",
+    "T38",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T59",
+    "T60"
+  ],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/N6w_atomic_impl.cuh",
+    "harness/adapters/N6w_atom32.cuh",
+    "approaches/N6w/sim_warp_bins.py",
+    "approaches/N6w/sim_warp_bins.md",
+    "approaches/N6w/model_device.py"
+  ],
+  "correctness_notes": "oracle battery passed on all 152 cells"
+}

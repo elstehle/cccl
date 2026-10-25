@@ -1,0 +1,70 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "N6",
+  "variant": "w_atom32f",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 768,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "shared-memory atomics (fire and forget), redux.sync, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 16 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 256 to 4096",
+    "type_constraints": "bf16 and fp32 keys widened to fp32 in registers with minus zero folded onto plus zero, int32 indices derived from the position (no index registers)",
+    "nan_behavior": "unsupported (the fixed-point image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code and measured identical cycles in all 72 cell pairs",
+    "sorted_output_support": "not inherent (items above the pivot bin in index order, then the finish in descending key order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [
+      "The trimmed finish (flags recomputed from the images in two loops instead of stored bit masks, both rank passes in one loop with the ballots consumed at once, the W2 rounds unrolled by four under a uniform guard) and the unpacked bin store up to 32 items per lane change the instruction stream by about 13 instructions per item on the common path, and the measured cycles move by 2 to 8 percent in the wrong direction at IPT 8 to 32: bf16 N 256 k 16 1178 against 1096, k 64 1397 against 1307, N 512 k 64 1914 against 1879, N 1024 k 128 4051 against 4010, N 1024 k 256 4793 against 4740, same registers (64, 80, 168), same throughput within 3 percent at IPT 8 and 16 and 30 to 40 percent lower at IPT 32 (292 against 467 Gelem per s at N 1024 k 64, occupancy 1 against 2 although both report 168 registers, so the throughput kernel of this build is larger).",
+      "At IPT 64 (N 2048, 255 registers with 8 bytes of spill in both) the fp32 cells gain 1.2x to 1.5x (k 16 7219 against 8761, k 64 8831 against 12527, k 256 10301 against 15981, k 1024 13166 against 15868) while the bf16 cells lose 5 to 9 percent (k 64 12668 against 11855, k 256 17679 against 15982): with the register file full the ptxas schedule, not the source, decides, as T28 and T50 describe for networks.",
+      "The rounds unrolled by four (w2_rounds_u4) did not change the k slope at N 512 (k 16 to 256: 1652 to 2656 against 1644 to 2564 for the rolled loop), so the rolled W2 round is not the 60 cycles the v1 card inferred from the k dependence, the per-lane top-m bound carries that slope."
+    ],
+    "algorithmic": [
+      "Below IPT 64 the latency of N6w is no longer set by the instruction count per item: with the atomic histogram the common path is about 50 instructions per item and 16 items, yet N 512 k 64 costs 1880 cycles, of which the dependent fixed costs (two redux and a float division for the bracket, the 5-step shuffle scan, the ballot and shuffle of the pivot, the serial per-item min and max of the pivot bin images, two __syncwarp with their LDS, and about 5 redux rounds) add up to more than half. Removing 13 instructions per item from the finish is invisible behind them.",
+      "The k 1024 cells at N 2048 (second bracket pass over the whole tile) measure 17739 to 18662 bf16 and 13166 to 15868 fp32 against W2_packed_v3 at about 152000 (previous sessions), W3_d4c with its compaction stays ahead there (16083 and 15628)."
+    ],
+    "negative": [
+      "A leaner finish (recomputed flags, fused ranks, unrolled rounds) is a measured no-op to small loss at IPT 8 to 32 on this primitive: the finish is latency bound on its collectives and shared-memory round trips, not issue bound. Do not spend further batches on per-item ALU trimming at warp scope below IPT 64, the levers left are the dependent fixed costs (scan, bracket division, serial min max chains) and the register footprint above IPT 32."
+    ],
+    "surprises": [
+      "The same source change is 1.2x to 1.5x faster for fp32 and 5 to 9 percent slower for bf16 at N 2048, where both key types run the identical instruction stream apart from the three-instruction bf16 image mask: at 255 registers the outcome is the scheduler lottery, which makes IPT 64 cells unreliable for A/B conclusions until the register footprint is cut."
+    ],
+    "open_questions": [
+      "Tree-reducing the serial per-item min and max chain of the pivot bin images (two or four accumulators), a ballot-based scan over the count bits instead of five dependent shuffles, and an approximate reciprocal for the bracket scale (any positive scale keeps the map monotone) are the untested fixed-cost levers, each worth 50 to 150 cycles on the model.",
+      "Whether the throughput loss at IPT 32 (occupancy 1 against 2 at the same register count) is a shared-memory or a code-size effect of this build."
+    ]
+  },
+  "techniques_adopted": [
+    "T1",
+    "T4",
+    "T7",
+    "T9",
+    "T10",
+    "T17",
+    "T19",
+    "T21",
+    "T25",
+    "T28",
+    "T32",
+    "T33",
+    "T36",
+    "T38",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T59",
+    "T60"
+  ],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/N6w_atomic_impl.cuh",
+    "harness/adapters/N6w_atom32f.cuh"
+  ],
+  "correctness_notes": "oracle battery passed on all 168 cells"
+}

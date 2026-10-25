@@ -1,0 +1,55 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "W3",
+  "variant": "d4c",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 2048,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "ballots, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 64 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 from 128 to 32768, measured 512 to 4096 (temp storage N/2 words, 8192 bytes at N 4096)",
+    "type_constraints": "bf16 (16 image bits, 4 digit passes) and fp32 (32 image bits, 8 passes) with minus zero folded onto plus zero, int32 indices derived from the position",
+    "nan_behavior": "unsupported (the image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the tie class at the k-th key is taken in index order by ballot ranks (lane-major on the register tile, slot-major on the compacted array), both requirements run the same code and measure identical cycles",
+    "sorted_output_support": "not inherent (index order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [
+      "A 4-bit digit pass over IPT items costs five ballots per item (four digit bits and the candidate flag) plus about 20 ALU instructions (shift and mask of the digit, two range compares, five predicate LOP3, four LOP3 of the bucket match, popc and add), the ballots pipeline across items (the SASS interleaves VOTE every five to six instructions), so a pass is about 35 cycles per item at one warp plus a 5-step shuffle suffix scan, a ballot, a popc and a shuffle for the pivot (about 250 cycles).",
+      "Registers 72 at IPT 16, 128 at IPT 32, 255 at IPT 64 and 128, with 88 to 120 bytes of spill at IPT 128 (N 4096, stack 32 bytes, 11 to 15 STL and LDL), occupancy 3, 2, 1, 1 blocks of 256 threads per SM. The per-item image array plus the compaction copy (CIPT = IPT/4 images and indices) and the chunked ballot arrays drive the count.",
+      "fp32 costs within 4 percent of bf16 in every cell although it has twice the digit passes (N 512 k 64: 5298 against 5126, N 2048 k 256: 19198 against 20341): the compaction at N/4 candidates fires after two fp32 passes (the k-th key's exponent class) and after three bf16 passes (exponents 126 and 127 share the first 8 image bits and hold 29 percent of normal data, T30), so both run about two and a half full passes plus cheap compacted ones.",
+      "Latency fits R squared 0.9985 to 1.0000, canary 32.001 cycles per op at both ends, prefer_smaller_index identical to not_guaranteed in all 56 cell pairs."
+    ],
+    "algorithmic": [
+      "Against N6w_v2 (one bracket pass plus the packed W2 finish) in the same lock section, W3_d4c is 1.5 to 2.1x slower wherever one bracket pass suffices: bf16 N 512 k 64 5126 against 2429, k 128 5126 against 2771, N 1024 k 64 9791 against 5493, N 1024 k 256 10373 against 7154, N 2048 k 128 19810 against 16636, and only 1.28x at N 512 k 256 (3986 against 3116) and 1.10x at N 2048 k 256 (20341 against 18481), where N6w pays the per-lane top-8 bound and a deep finish. W3 wins the cells where N6w needs a second bracket pass over the whole tile: k 1024 at N 2048 (16083 against 24861 bf16, 15628 against 25198 fp32) and at N 4096 (82231 against 95615), and the register-bound N 4096 k 64 (58430 against 74077).",
+      "Against W2_packed_v3 (N6w_v2's control in its own session, same node and day) W3_d4c is faster from k 128 on (N 512 k 128 5126 against 7428, N 1024 k 256 10373 against 22624, N 2048 k 256 20341 against 40044, N 2048 k 1024 16083 against 152615) and slower at k 64 (N 512 5126 against 2704, N 2048 19262 against 10071).",
+      "Throughput follows the latency ratios: W3_d4c 190 Gelem per s at N 512 k 64 to 128 against N6w_v2 318 to 350, 255 against 292 at k 256, and ahead at k 1024 (127 against 98 at N 2048 bf16).",
+      "The idea card's model (pass about 81 + 26 IPT, bf16 N 2048 about 7700 with four passes) is off by 2.5x: the measured pass is about 35 cycles per item (the ballots pipeline at the T17 rate but the 20 ALU instructions per item issue in series on one warp) and the first two or three passes sweep the whole tile before the compaction pays."
+    ],
+    "negative": [
+      "W3 has no cell of its own on random input below k over N of 1 over 2: N6w's single bracket pass beats its digit passes by 1.5 to 2x up to k 256, and above that W3's own compaction only wins because N6w (this version) has none."
+    ],
+    "surprises": [
+      "The key width does not matter for the pass count that costs: compaction after the exponent class makes fp32 as cheap as bf16.",
+      "An infinite loop appeared in the first build when lanes 16 to 31 shared the bucket masks of lanes 0 to 15 for a 4-bit digit (the suffix scan then located a non-existent bucket and the range never shrank), the fix is one select of the count per lane (cnt = lane < 2^d ? cnt : 0)."
+    ],
+    "open_questions": [
+      "The 5-bit digit schedule (W3_d5c, bf16 5+5+5+1, fp32 5x6+2) and the no-compaction control (W3_d4) were built but not measured within the batch budget.",
+      "Whether a shared-memory atomic histogram (one atomic per item instead of five ballots) does for W3 what it does for N6w, and whether 8-bit digits then pay (256 bins, 8 per lane in the scan)."
+    ]
+  },
+  "techniques_adopted": ["T4", "T5", "T17", "T21", "T25", "T30", "T32", "T36"],
+  "techniques_contributed": [],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/W3_impl.cuh",
+    "harness/adapters/W3_d4c.cuh"
+  ],
+  "correctness_notes": "oracle battery (random, tie_heavy, sorted, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) passed on all 112 cells, including k 1024 at N 2048 and 4096"
+}
