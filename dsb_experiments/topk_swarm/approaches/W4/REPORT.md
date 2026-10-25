@@ -109,7 +109,7 @@ the cycle in every cell (the word order is the tie-break, the code is the same).
 Phase profile (`approaches/W4/phase_probe.cu`, one block, 256 calls on 16 run-sorted random
 inputs, clock64 stamps with a barrier after each phase, the stage phase also absorbs the input
 loads): bf16 M 4 stage 1245, level 0 search plus split exchange 1497 and merge 1066, level 1 931
-and 557 (5298 with the probe syncs); fp32 M 4 2454, 1016 and 2693, 1083 and 1490 (8737); fp32 M 8
+and 557 (5298 with the probe syncs). fp32 M 4: 2454, 1016 and 2693, 1083 and 1490 (8737). fp32 M 8:
 2643, 1029 and 2759, 956 and 1508, 997 and 822 (10716). So at 256 threads the two or three static
 searches with their exchange barrier are about 1000 cycles each (12 steps of two dependent loads,
 about 85 cycles per step including the barrier) and are the largest phase for bf16, the chunk
@@ -140,13 +140,13 @@ The final build (v4) against the sorted incumbents of PRIORITIES.md section 4:
 
 Phase profile of v3 (the build before the layout change, one warp, 256 calls): bf16 N 2048 k 1024
 prepare (words, Batcher sort of 64, run store) 5750, then per level search 509 to 792 and merge
-3153 to 3178 (4 chunks of 16 outputs, about 790 per chunk), last level 1686, total 23437; fp32
+3153 to 3178 (4 chunks of 16 outputs, about 790 per chunk), last level 1686, total 23437. fp32:
 prepare 29442, merges 8595 to 8820 per level (2150 per chunk), total 73921. bf16 N 2048 k 64:
 prepare 6553, merges 1891, 897, 407, 201, 133 (the truncation shrinks the outputs per lane to 32,
 16, 8, 4, 2), searches about 500 each, total 12623. Profile of the final build (v4): bf16 N 2048 k 1024 prepare 6439, searches 451 to 1122,
-merges 1864, 2389, 2932, 3581 and 1178 (total 21986); fp32 prepare 15697, merges 4657, 5424, 6513,
-8791 and 2446 (47067); bf16 N 2048 k 64 prepare 6404 then merges 1140, 529, 310, 213, 65 (10914);
-fp32 N 2048 k 64 prepare 14429 then 2530, 1264, 616, 314, 104 (21471). The merge of the same 64
+merges 1864, 2389, 2932, 3581 and 1178 (total 21986). fp32: prepare 15697, merges 4657, 5424, 6513,
+8791 and 2446 (47067). bf16 N 2048 k 64: prepare 6404 then merges 1140, 529, 310, 213, 65 (10914).
+fp32 N 2048 k 64: prepare 14429 then 2530, 1264, 616, 314, 104 (21471). The merge of the same 64
 outputs per lane grows from level 0 to level 3 (1864 to 3581 bf16): the skewed layout spreads the
 runs over the banks, not the lanes of one pair, and at level 3 the 16 lanes of a pair read one run
 at positions 32 words apart (16-way conflicts) where at level 0 only 2 lanes share a run.
@@ -287,7 +287,7 @@ run, not built.
   every oracle passed, every fit R squared 1.0000, canary 32.001 cycles per op at the start and
   end of every batch.
 - The fp32 warp sort (section 5) and the fp32 N 2048 throughput cells (temp storage).
-- The chunk merge's contract needs the runs sorted and full; a device agent that produces chunk
+- The chunk merge's contract needs the runs sorted and full. A device agent that produces chunk
   results with B1 to B4 or N6 (unsorted) would need W5, W2 or a sort for the chunks first, or
   the unsorted B3_tuned over the M k candidates (7100 against 6571 for fp32, 6501 against 4266
   for bf16 at M 4).
