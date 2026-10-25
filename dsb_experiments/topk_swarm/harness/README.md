@@ -191,7 +191,11 @@ adds `stl_count`, `ldl_count`, `bar_sync_count` and `sass_instructions` from `cu
 The kernel symbol comes from `cudaFuncGetName`, so the match is exact. A register array that
 NVVM could not promote shows up as a stack frame with STL and LDL in the SASS while
 `spill_bytes` stays 0, so `stack_bytes`, `stl_count` and `ldl_count` are carried into the card
-resources and `summarize_batch.py` and the run.py summary flag them as `LOCAL`. The numbers include the
+resources and `summarize_batch.py` and the run.py summary flag them as `LOCAL`. `sass_instructions`
+is there for the same reason: two cells that run the same network with a different k (for example
+k 16 and k 32 at MaxK 32, where only a store predicate differs) can compile to different code and
+differ by 20 percent in cycles, which the instruction count and register count show and a
+cycle-only table hides. Compare them before reading a k dependence into a data-oblivious primitive. The numbers include the
 harness (loads, barrier, output write), which is the same for variant and control.
 
 ## 7. Cells, JSON, run.py
