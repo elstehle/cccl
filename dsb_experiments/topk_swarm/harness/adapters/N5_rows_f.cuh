@@ -1,5 +1,5 @@
-// Adapter N5_rows_p: N5_rows with the exchange predicated inside one PTX block (n5::ops_pred) instead of the select form.
-// the W1 eager bitonic top-k network (template recursion, T42 exchange) run once on both rows with
+// Adapter N5_rows_f: N5_rows with the scan-only index recovery (n5::recover_fast): both classes placed by the lane scan, the
+// exact ballot rank only when the tie class overflows the remaining slots under prefer_smaller_index. Same contract.
 // max.bf16x2 and min.bf16x2, indices recovered after the network from each row's k-th key (greater
 // keys by lane scan, equal keys in index order by ballot rank). approaches/N5/n5_detail.cuh.
 //
@@ -17,9 +17,9 @@
 
 #include "../../approaches/N5/n5_detail.cuh"
 
-struct N5_rows_p_info
+struct N5_rows_f_info
 {
-  static constexpr const char* id       = "N5_rows_p";
+  static constexpr const char* id       = "N5_rows_f";
   static constexpr topk::scope scope    = topk::scope::warp;
   static constexpr bool data_dependent  = false;
   static constexpr const char* contract =
@@ -33,5 +33,5 @@ struct N5_rows_p_info
 };
 
 template <typename KeyT, int Threads, int N, int K, topk::requirement Req>
-struct N5_rows_p : n5::rows_adapter<KeyT, Threads, N, K, Req, n5::ops_pred>
+struct N5_rows_f : n5::rows_adapter<KeyT, Threads, N, K, Req, n5::ops_bf16, n5::recover_fast>
 {};

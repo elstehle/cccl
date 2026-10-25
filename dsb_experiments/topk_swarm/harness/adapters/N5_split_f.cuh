@@ -1,5 +1,5 @@
-// Adapter N5_split_p: N5_split with the exchange predicated inside one PTX block (n5::ops_pred) instead of the select form.
-// halves of 32-bit words (the harness's packed_striped arrangement), the W1 eager bitonic top-k
+// Adapter N5_split_f: N5_split with the scan-only index recovery (n5::recover_fast): both classes placed by the lane scan, the
+// exact ballot rank only when the tie class overflows the remaining slots under prefer_smaller_index. Same contract.
 // network run once on both sets with max.bf16x2 and min.bf16x2, the two top-MaxK results merged
 // by one more bitonic merge on one-key words, indices recovered from the k-th key (greater keys by
 // lane scan, equal keys in index order by ballot rank). approaches/N5/n5_detail.cuh. The single-row
@@ -19,9 +19,9 @@
 
 #include "../../approaches/N5/n5_detail.cuh"
 
-struct N5_split_p_info
+struct N5_split_f_info
 {
-  static constexpr const char* id       = "N5_split_p";
+  static constexpr const char* id       = "N5_split_f";
   static constexpr topk::scope scope    = topk::scope::warp;
   static constexpr bool data_dependent  = false;
   static constexpr const char* contract =
@@ -35,5 +35,5 @@ struct N5_split_p_info
 };
 
 template <typename KeyT, int Threads, int N, int K, topk::requirement Req>
-struct N5_split_p : n5::split_adapter<KeyT, Threads, N, K, Req, n5::ops_pred>
+struct N5_split_f : n5::split_adapter<KeyT, Threads, N, K, Req, n5::ops_bf16, n5::recover_fast>
 {};

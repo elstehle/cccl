@@ -48,6 +48,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 
 #include "../W1/warp_level_topk.cuh"
 #include "topk_harness.cuh"
@@ -84,8 +85,31 @@ __device__ __forceinline__ uint32_t heq2_mask(uint32_t a, uint32_t b)
   return r;
 }
 
-// Exchange policy for w1::eager_topk. Both SIMD results and a select: ptxas is expected to turn the
-// select into two predicated HMNMX2, as it does for the VIMNMX pair of the one-word route (T42).
+// Exchange policy for w1::eager_topk. The calls sit inside the ternary: the front end keeps a
+// branch around the two asm statements (an asm result cannot be speculated into a select) and
+// ptxas if-converts it into two predicated HMNMX2 that write the same register, the shape of the
+// one-word VIMNMX route (T42). See approaches/N5/micro/exchange_forms.cu for the forms compared.
+struct ops_bf16
+{
+  __device__ __forceinline__ static uint32_t max(uint32_t a, uint32_t b)
+  {
+    return hmax2(a, b);
+  }
+  __device__ __forceinline__ static void exchange(uint32_t& k, uint32_t other, bool keep_max)
+  {
+    k = keep_max ? hmax2(k, other) : hmin2(k, other);
+  }
+  __device__ __forceinline__ static void exchange_regs(uint32_t& a, uint32_t& b, bool desc)
+  {
+    const uint32_t lo = hmin2(a, b);
+    const uint32_t hi = hmax2(a, b);
+    a                 = desc ? hi : lo;
+    b                 = desc ? lo : hi;
+  }
+};
+
+// Both SIMD results computed, then a select: ptxas keeps both HMNMX2 unpredicated and selects
+// with a predicated IMAD.MOV, three instructions per stage word (the first N5 batch ran this form).
 struct ops_sel
 {
   __device__ __forceinline__ static uint32_t max(uint32_t a, uint32_t b)
@@ -100,15 +124,13 @@ struct ops_sel
   }
   __device__ __forceinline__ static void exchange_regs(uint32_t& a, uint32_t& b, bool desc)
   {
-    const uint32_t lo = hmin2(a, b);
-    const uint32_t hi = hmax2(a, b);
-    a                 = desc ? hi : lo;
-    b                 = desc ? lo : hi;
+    ops_bf16::exchange_regs(a, b, desc);
   }
 };
 
-// The same exchange with the predicate set and applied inside one PTX block (fallback if ops_sel is
-// not predicated by ptxas).
+// The exchange with the predicate set and applied inside one PTX block: the predicate is
+// materialized as a register around every asm block (SEL, ISETP, IMAD.MOV), worse than both forms
+// above (424 against 352 SASS instructions in the N 128 k 32 split kernel). Kept as the record.
 struct ops_pred
 {
   __device__ __forceinline__ static uint32_t max(uint32_t a, uint32_t b)
@@ -183,6 +205,42 @@ __host__ __device__ constexpr bool lw_ok(int lw)
 }
 
 // ------------------------------------------------------------------------------------------------
+// Index recovery policies
+//   recover_exact  greater keys placed by the lane scan, equal keys ranked in index order by one
+//                  ballot per word and half, the first k minus count_greater of them written.
+//                  Exact under both requirements, always the same code path.
+//   recover_fast   greater and equal keys both placed by the lane scan (lane-major order). When
+//                  the tie class fits the remaining slots (a warp-uniform test on the scan
+//                  totals, the common case on random bf16 input) every equal key is written and
+//                  no cap test runs. When it overflows, not_guaranteed caps the equal class at k
+//                  (any equal keys fill the remaining slots) and prefer_smaller_index emits the
+//                  equal keys by the exact ballot rank, so both requirements stay exact.
+// ------------------------------------------------------------------------------------------------
+struct recover_exact
+{};
+struct recover_fast
+{};
+
+// Greater keys of word j (per-half masks ma) at the lane's running positions pa0 (row 0 or the
+// single row) and pa1 (row 1), items item0 (low half) and item1 (high half).
+__device__ __forceinline__ void
+emit_greater2(uint32_t ma, int item0, int item1, int& pa0, int& pa1, int* out0, int* out1)
+{
+  const bool a0 = (ma & 0xffffu) != 0;
+  const bool a1 = ma > 0xffffu;
+  if (a0)
+  {
+    out0[pa0] = item0;
+  }
+  if (a1)
+  {
+    out1[pa1] = item1;
+  }
+  pa0 += a0;
+  pa1 += a1;
+}
+
+// ------------------------------------------------------------------------------------------------
 // rows_adapter: two rows of N per call (packed_rows)
 // ------------------------------------------------------------------------------------------------
 __host__ __device__ constexpr bool
@@ -194,7 +252,7 @@ rows_supported(topk::key_type kt, int threads, int n, int k, topk::requirement r
       && (req == topk::requirement::not_guaranteed || req == topk::requirement::prefer_smaller_index);
 }
 
-template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops>
+template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops, class Recover = recover_exact>
 struct rows_adapter
 {
   static constexpr int rows                            = 2;
@@ -209,6 +267,84 @@ struct rows_adapter
   {};
   using net = net_t<LW, M, T, Ops>;
   static_assert(net::R == items_per_thread, "tile words times tiles must cover the lane's words");
+  static constexpr bool exact = std::is_same<Recover, recover_exact>::value;
+  static constexpr bool psi   = Req == topk::requirement::prefer_smaller_index;
+  // one scan carries the four counts in 8-bit fields when every prefix fits (N at most 255)
+  static constexpr bool one_scan = N <= 255;
+
+  // equal keys of every word in index order (word, lane) per row, by ballot rank, the first
+  // K - count_greater of them: pe0 and pe1 enter as the greater totals of the rows
+  __device__ __forceinline__ static void
+  emit_equal_exact(const uint32_t (&me)[items_per_thread], int pe0, int pe1, int lane, const lanes<LW>& ln, int* out_idx)
+  {
+    int* out1 = out_idx + K;
+#pragma unroll
+    for (int j = 0; j < items_per_thread; ++j)
+    {
+      const int item    = j * LW + lane;
+      const bool e0     = (me[j] & 0xffffu) != 0;
+      const bool e1     = me[j] > 0xffffu;
+      const unsigned b0 = __ballot_sync(full_mask, e0) & ln.gmask;
+      const unsigned b1 = __ballot_sync(full_mask, e1) & ln.gmask;
+      const int r0      = pe0 + __popc(b0 & ln.lt);
+      const int r1      = pe1 + __popc(b1 & ln.lt);
+      if (e0 && r0 < K)
+      {
+        out_idx[r0] = item;
+      }
+      if (e1 && r1 < K)
+      {
+        out1[r1] = item;
+      }
+      pe0 += __popc(b0);
+      pe1 += __popc(b1);
+    }
+  }
+
+  __device__ __forceinline__ static void
+  emit_greater(const uint32_t (&ma)[items_per_thread], int pa0, int pa1, int lane, int* out_idx)
+  {
+    int* out1 = out_idx + K;
+#pragma unroll
+    for (int j = 0; j < items_per_thread; ++j)
+    {
+      const int item = j * LW + lane;
+      emit_greater2(ma[j], item, item, pa0, pa1, out_idx, out1);
+    }
+  }
+
+  // both classes by lane prefix, Cap: the equal class stops at K (not_guaranteed), else all of it
+  template <bool Cap>
+  __device__ __forceinline__ static void emit_fast(
+    const uint32_t (&ma)[items_per_thread],
+    const uint32_t (&me)[items_per_thread],
+    int pa0,
+    int pa1,
+    int pe0,
+    int pe1,
+    int lane,
+    int* out_idx)
+  {
+    int* out1 = out_idx + K;
+#pragma unroll
+    for (int j = 0; j < items_per_thread; ++j)
+    {
+      const int item = j * LW + lane;
+      emit_greater2(ma[j], item, item, pa0, pa1, out_idx, out1);
+      const bool e0 = (me[j] & 0xffffu) != 0;
+      const bool e1 = me[j] > 0xffffu;
+      if (e0 && (!Cap || pe0 < K))
+      {
+        out_idx[pe0] = item;
+      }
+      if (e1 && (!Cap || pe1 < K))
+      {
+        out1[pe1] = item;
+      }
+      pe0 += e0;
+      pe1 += e1;
+    }
+  }
 
   __device__ __forceinline__ static void
   run(key_storage& in, int (&)[items_per_thread], TempStorage&, int* out_idx, KeyT*)
@@ -229,58 +365,68 @@ struct rows_adapter
     // 2. the k-th key of both rows in one word
     const uint32_t t2 = kth_word<LW, K>(w);
 
-    // 3. classes per word, strictly-greater counts per lane and row (16-bit fields, no carry)
+    // 3. classes per word and per-lane counts (row 0 low field, row 1 high field)
     uint32_t ma[IPT], me[IPT];
-    uint32_t acc = 0;
+    uint32_t acc_a = 0, acc_e = 0;
 #pragma unroll
     for (int j = 0; j < IPT; ++j)
     {
       ma[j] = hgt2_mask(in[j], t2);
       me[j] = heq2_mask(in[j], t2);
-      acc += ma[j] & 0x00010001u;
+      acc_a += ma[j] & 0x00010001u;
+      acc_e += me[j] & 0x00010001u;
     }
-    const uint32_t incl = inclusive_scan<LW>(acc, lane);
-    const uint32_t tot  = __shfl_sync(full_mask, incl, LW - 1, LW);
-    const uint32_t excl = incl - acc;
-    int pa0             = static_cast<int>(excl & 0xffffu);
-    int pa1             = static_cast<int>(excl >> 16);
-    int pe0             = static_cast<int>(tot & 0xffffu); // the tie class starts after the greater class
-    int pe1             = static_cast<int>(tot >> 16);
-    int* out1           = out_idx + K;
 
-    // 4. emission: greater keys by lane prefix, equal keys in index order by ballot rank
-#pragma unroll
-    for (int j = 0; j < IPT; ++j)
+    if constexpr (exact)
     {
-      const int item  = j * LW + lane;
-      const bool a0   = (ma[j] & 0xffffu) != 0;
-      const bool a1   = (ma[j] >> 16) != 0;
-      const bool e0   = (me[j] & 0xffffu) != 0;
-      const bool e1   = (me[j] >> 16) != 0;
-      if (a0)
+      const uint32_t incl = inclusive_scan<LW>(acc_a, lane);
+      const uint32_t tot  = __shfl_sync(full_mask, incl, LW - 1, LW);
+      const uint32_t excl = incl - acc_a;
+      emit_greater(ma, excl & 0xffffu, excl >> 16, lane, out_idx);
+      emit_equal_exact(me, tot & 0xffffu, tot >> 16, lane, ln, out_idx);
+    }
+    else
+    {
+      uint32_t xa, xe, ta, te; // exclusive prefixes and totals, two 16-bit fields each
+      if constexpr (one_scan)
       {
-        out_idx[pa0] = item;
+        const uint32_t v    = acc_a | (acc_e << 8);
+        const uint32_t incl = inclusive_scan<LW>(v, lane);
+        const uint32_t tot  = __shfl_sync(full_mask, incl, LW - 1, LW);
+        const uint32_t excl = incl - v;
+        xa                  = excl & 0x00ff00ffu;
+        xe                  = (excl >> 8) & 0x00ff00ffu;
+        ta                  = tot & 0x00ff00ffu;
+        te                  = (tot >> 8) & 0x00ff00ffu;
       }
-      if (a1)
+      else
       {
-        out1[pa1] = item;
+        const uint32_t ia = inclusive_scan<LW>(acc_a, lane);
+        const uint32_t ie = inclusive_scan<LW>(acc_e, lane);
+        ta                = __shfl_sync(full_mask, ia, LW - 1, LW);
+        te                = __shfl_sync(full_mask, ie, LW - 1, LW);
+        xa                = ia - acc_a;
+        xe                = ie - acc_e;
       }
-      pa0 += a0;
-      pa1 += a1;
-      const unsigned b0 = __ballot_sync(full_mask, e0) & ln.gmask;
-      const unsigned b1 = __ballot_sync(full_mask, e1) & ln.gmask;
-      const int r0      = pe0 + __popc(b0 & ln.lt);
-      const int r1      = pe1 + __popc(b1 & ln.lt);
-      if (e0 && r0 < K)
+      const int pa0 = xa & 0xffffu, pa1 = xa >> 16;
+      const int pe0 = (ta & 0xffffu) + (xe & 0xffffu), pe1 = (ta >> 16) + (xe >> 16);
+      // the tie class overflows the remaining slots in a row (warp-uniform, rare on random input):
+      // prefer_smaller_index needs the index-ordered ballot rank, not_guaranteed the capped prefix
+      const uint32_t need = ta + te; // per row: count_greater + count_equal, 16-bit fields
+      if ((need & 0xffffu) > static_cast<uint32_t>(K) || (need >> 16) > static_cast<uint32_t>(K))
       {
-        out_idx[r0] = item;
+        if constexpr (psi)
+        {
+          emit_greater(ma, pa0, pa1, lane, out_idx);
+          emit_equal_exact(me, ta & 0xffffu, ta >> 16, lane, ln, out_idx);
+        }
+        else
+        {
+          emit_fast<true>(ma, me, pa0, pa1, pe0, pe1, lane, out_idx);
+        }
+        return;
       }
-      if (e1 && r1 < K)
-      {
-        out1[r1] = item;
-      }
-      pe0 += __popc(b0);
-      pe1 += __popc(b1);
+      emit_fast<false>(ma, me, pa0, pa1, pe0, pe1, lane, out_idx);
     }
   }
 };
@@ -298,7 +444,7 @@ split_supported(topk::key_type kt, int threads, int n, int k, topk::requirement 
       && (req == topk::requirement::not_guaranteed || req == topk::requirement::prefer_smaller_index);
 }
 
-template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops>
+template <typename KeyT, int LW, int N, int K, topk::requirement Req, class Ops, class Recover = recover_exact>
 struct split_adapter
 {
   static constexpr int items_per_thread                = N / LW;
@@ -313,6 +459,90 @@ struct split_adapter
   {};
   using net = net_t<LW, M, T, Ops>;
   static_assert(net::R == words, "tile words times tiles must cover the lane's words");
+  static constexpr bool exact = std::is_same<Recover, recover_exact>::value;
+  static constexpr bool psi   = Req == topk::requirement::prefer_smaller_index;
+
+  // equal keys in index order (word, lane, half) by ballot rank, pe enters as the greater total
+  __device__ __forceinline__ static void
+  emit_equal_exact(const uint32_t (&me)[words], int pe, int lane, const lanes<LW>& ln, int* out_idx)
+  {
+#pragma unroll
+    for (int j = 0; j < words; ++j)
+    {
+      const int item0   = 2 * (j * LW + lane);
+      const bool e0     = (me[j] & 0xffffu) != 0;
+      const bool e1     = me[j] > 0xffffu;
+      const unsigned b0 = __ballot_sync(full_mask, e0) & ln.gmask;
+      const unsigned b1 = __ballot_sync(full_mask, e1) & ln.gmask;
+      const int r0      = pe + __popc(b0 & ln.lt) + __popc(b1 & ln.lt);
+      const int r1      = r0 + e0;
+      if (e0 && r0 < K)
+      {
+        out_idx[r0] = item0;
+      }
+      if (e1 && r1 < K)
+      {
+        out_idx[r1] = item0 + 1;
+      }
+      pe += __popc(b0) + __popc(b1);
+    }
+  }
+
+  __device__ __forceinline__ static void emit_greater(const uint32_t (&ma)[words], int pa, int lane, int* out_idx)
+  {
+#pragma unroll
+    for (int j = 0; j < words; ++j)
+    {
+      const int item0 = 2 * (j * LW + lane);
+      const bool a0   = (ma[j] & 0xffffu) != 0;
+      const bool a1   = ma[j] > 0xffffu;
+      if (a0)
+      {
+        out_idx[pa] = item0;
+      }
+      pa += a0;
+      if (a1)
+      {
+        out_idx[pa] = item0 + 1;
+      }
+      pa += a1;
+    }
+  }
+
+  template <bool Cap>
+  __device__ __forceinline__ static void
+  emit_fast(const uint32_t (&ma)[words], const uint32_t (&me)[words], int pa, int pe, int lane, int* out_idx)
+  {
+#pragma unroll
+    for (int j = 0; j < words; ++j)
+    {
+      const int item0 = 2 * (j * LW + lane);
+      const bool a0   = (ma[j] & 0xffffu) != 0;
+      const bool a1   = ma[j] > 0xffffu;
+      const bool e0   = (me[j] & 0xffffu) != 0;
+      const bool e1   = me[j] > 0xffffu;
+      if (a0)
+      {
+        out_idx[pa] = item0;
+      }
+      pa += a0;
+      if (a1)
+      {
+        out_idx[pa] = item0 + 1;
+      }
+      pa += a1;
+      if (e0 && (!Cap || pe < K))
+      {
+        out_idx[pe] = item0;
+      }
+      pe += e0;
+      if (e1 && (!Cap || pe < K))
+      {
+        out_idx[pe] = item0 + 1;
+      }
+      pe += e1;
+    }
+  }
 
   __device__ __forceinline__ static void
   run(key_storage& in, int (&)[items_per_thread], TempStorage&, int* out_idx, KeyT*)
@@ -351,54 +581,50 @@ struct split_adapter
     const uint32_t tw = kth_word<LW, K>(w);
     const uint32_t t2 = __byte_perm(tw, 0u, 0x3232);
 
-    // 4. classes per word, strictly-greater count per lane (both halves are the same row)
+    // 4. classes per word and per-lane counts (both halves are the same row)
     uint32_t ma[words], me[words];
-    uint32_t acc = 0;
+    uint32_t acc_a = 0, acc_e = 0;
 #pragma unroll
     for (int j = 0; j < words; ++j)
     {
       ma[j] = hgt2_mask(in[j], t2);
       me[j] = heq2_mask(in[j], t2);
-      acc += ma[j] & 0x00010001u;
+      acc_a += ma[j] & 0x00010001u;
+      acc_e += me[j] & 0x00010001u;
     }
-    const uint32_t ca   = (acc & 0xffffu) + (acc >> 16);
-    const uint32_t incl = inclusive_scan<LW>(ca, lane);
-    const uint32_t tot  = __shfl_sync(full_mask, incl, LW - 1, LW);
-    int pa              = static_cast<int>(incl - ca);
-    int pe              = static_cast<int>(tot);
+    const uint32_t ca = (acc_a & 0xffffu) + (acc_a >> 16);
+    const uint32_t ce = (acc_e & 0xffffu) + (acc_e >> 16);
 
-    // 5. emission: greater keys by lane prefix, equal keys in index order (word, lane, half)
-#pragma unroll
-    for (int j = 0; j < words; ++j)
+    if constexpr (exact)
     {
-      const int item0 = 2 * (j * LW + lane);
-      const bool a0   = (ma[j] & 0xffffu) != 0;
-      const bool a1   = (ma[j] >> 16) != 0;
-      const bool e0   = (me[j] & 0xffffu) != 0;
-      const bool e1   = (me[j] >> 16) != 0;
-      if (a0)
+      const uint32_t incl = inclusive_scan<LW>(ca, lane);
+      const uint32_t tot  = __shfl_sync(full_mask, incl, LW - 1, LW);
+      emit_greater(ma, incl - ca, lane, out_idx);
+      emit_equal_exact(me, tot, lane, ln, out_idx);
+    }
+    else
+    {
+      const uint32_t v    = ca | (ce << 16);
+      const uint32_t incl = inclusive_scan<LW>(v, lane);
+      const uint32_t tot  = __shfl_sync(full_mask, incl, LW - 1, LW);
+      const uint32_t excl = incl - v;
+      const int pa        = excl & 0xffffu;
+      const int ta        = tot & 0xffffu;
+      const int pe        = ta + (excl >> 16);
+      if (ta + (tot >> 16) > static_cast<uint32_t>(K))
       {
-        out_idx[pa] = item0;
+        if constexpr (psi)
+        {
+          emit_greater(ma, pa, lane, out_idx);
+          emit_equal_exact(me, ta, lane, ln, out_idx);
+        }
+        else
+        {
+          emit_fast<true>(ma, me, pa, pe, lane, out_idx);
+        }
+        return;
       }
-      pa += a0;
-      if (a1)
-      {
-        out_idx[pa] = item0 + 1;
-      }
-      pa += a1;
-      const unsigned b0 = __ballot_sync(full_mask, e0) & ln.gmask;
-      const unsigned b1 = __ballot_sync(full_mask, e1) & ln.gmask;
-      const int r0      = pe + __popc(b0 & ln.lt) + __popc(b1 & ln.lt);
-      const int r1      = r0 + e0;
-      if (e0 && r0 < K)
-      {
-        out_idx[r0] = item0;
-      }
-      if (e1 && r1 < K)
-      {
-        out_idx[r1] = item0 + 1;
-      }
-      pe += __popc(b0) + __popc(b1);
+      emit_fast<false>(ma, me, pa, pe, lane, out_idx);
     }
   }
 };

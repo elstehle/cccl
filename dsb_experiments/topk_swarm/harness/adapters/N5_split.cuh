@@ -35,5 +35,5 @@ struct N5_split_info
 };
 
 template <typename KeyT, int Threads, int N, int K, topk::requirement Req>
-struct N5_split : n5::split_adapter<KeyT, Threads, N, K, Req, n5::ops_sel>
+struct N5_split : n5::split_adapter<KeyT, Threads, N, K, Req, n5::ops_bf16>
 {};

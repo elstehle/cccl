@@ -33,5 +33,5 @@ struct N5_rows_info
 };
 
 template <typename KeyT, int Threads, int N, int K, topk::requirement Req>
-struct N5_rows : n5::rows_adapter<KeyT, Threads, N, K, Req, n5::ops_sel>
+struct N5_rows : n5::rows_adapter<KeyT, Threads, N, K, Req, n5::ops_bf16>
 {};
