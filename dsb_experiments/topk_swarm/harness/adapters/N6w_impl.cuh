@@ -671,8 +671,10 @@ __device__ __forceinline__ void emit_range(const uint32_t (&tw)[IPT], const rang
 }
 
 // ------------------------------------------------------------------------------------------------
-// Candidate compaction: the items inside the range go to shared memory in index order and come
-// back as CIPT slots per lane (slot j of lane l holds candidate l + 32 j), padded with image 0
+// Candidate compaction: the items above the range are emitted at out_idx[0 .. above), the items
+// inside the range go to shared memory in index order and come back as CIPT slots per lane (slot
+// j of lane l holds candidate l + 32 j), padded with image 0. The caller continues on the
+// compacted slots and emits their selection at out_idx + above.
 // ------------------------------------------------------------------------------------------------
 template <int IPT, int CIPT, class Idx>
 __device__ __forceinline__ void compact(
@@ -683,15 +685,18 @@ __device__ __forceinline__ void compact(
   uint32_t* smem_idx,
   uint32_t (&ctw)[CIPT],
   uint32_t (&cidx)[CIPT],
+  int* out_idx,
   int lane,
   uint32_t lt)
 {
-  flags<IPT> in;
+  flags<IPT> in, up;
 #pragma unroll
   for (int i = 0; i < IPT; ++i)
   {
     in.set(i, (tw[i] >= st.tmin) & (tw[i] <= st.tmax));
+    up.set(i, tw[i] > st.tmax);
   }
+  scatter_flags<IPT, true>(up, tw, idx, val_index{}, reinterpret_cast<uint32_t*>(out_idx), lt);
   const int R = rank_base<IPT>(in, lt);
   int own     = 0;
 #pragma unroll

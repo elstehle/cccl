@@ -57,15 +57,16 @@ struct primitive
       }
       if (open(st))
       {
+        const int above = K - st.r; // items above the range, emitted by compact at out_idx[0, above)
         uint32_t ctw[CIPT], cidx[CIPT];
-        compact<IPT, CIPT>(tw, idx_blocked{idx_base}, st, ts.tw, ts.idx, ctw, cidx, lane, lt);
+        compact<IPT, CIPT>(tw, idx_blocked{idx_base}, st, ts.tw, ts.idx, ctw, cidx, out_idx, lane, lt);
         const int nv = st.n;
 #pragma unroll 1
         while (open(st))
         {
           digit_pass<KeyT, CIPT, D, false, true>(ctw, st, lane, nv);
         }
-        emit_range<CIPT, false>(ctw, st, out_idx, idx_array<CIPT>{cidx}, lt);
+        emit_range<CIPT, false>(ctw, st, out_idx + above, idx_array<CIPT>{cidx}, lt);
         return;
       }
     }
