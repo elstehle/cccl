@@ -194,7 +194,7 @@ prefer_larger_index would be the mirror (lanes above me in the rank) and was not
 ## 7. Open items
 
 - The two-class pass is issue bound at about 50 cycles per item per lane in the measured SASS, the
-  pipelined-ballot model predicts half; whether a scheduling barrier recovers it is untested.
+  pipelined-ballot model predicts half, and whether a scheduling barrier recovers it is untested.
 - N 8 and LW 4 N 32 lose to the pairs network, the route table should keep the pairs there under
   not_guaranteed and N10 under prefer_smaller_index.
 - Registers at sub-warp N 128 (118 at LW 8, 168 at LW 4 in the latency kernel, throughput occupancy
