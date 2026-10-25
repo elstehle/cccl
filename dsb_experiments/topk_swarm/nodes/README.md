@@ -63,3 +63,22 @@ Computelab (B200, x86): login `ssh computelab-sc-01`. Detachable hold: `sbatch -
 dlcluster (GB200, aarch64): login `ssh dlcluster`. Detachable hold: `sbatch -p gb200nvl4,gb200nvl72_preprod -A blackwell --gres=gpu:GB200:1 -t 4:00:00 ~/b200_alloc/hold.sh`, attach with `srun --jobid=<id> --pty bash -l`. The interactive form is `srun -p gb200nvl4 -A blackwell --gres=gpu:GB200:1 -t 4:00:00 --pty bash -l`. No docker daemon, no cmake on the bare node, pyxis and enroot work, local storage under `/raid`. Details in `/Users/estehle/.claude/projects/-Users-estehle-Downloads-cccl/memory/dlcluster-gb200-allocation.md`.
 
 Cap: at most six nodes in `requested`, `bootstrapping`, `ready` or `expiring` state at any time across both clusters. Target pool two to four, at least one of each arch when both clusters grant. Release a node (`scancel`) when no holder has used it for 30 minutes and no wave is pending. Re-request ahead of expiry when the pool would drop below target. The 5 GB NFS home is not a work area, only `hold.sh` and small scripts live there.
+
+## Broker notes (verified 2026-10-25, phase 0)
+
+- `gpus[].index` is the CUDA device index as seen through `exec_prefix`. Both containers expose only the job's GPU, so the index is 0 on both arches and `CUDA_VISIBLE_DEVICES=0` with `locks/gpu0.lock` is always right. Never touch other GPUs of a node, they belong to other jobs.
+- The lease line is `node=... gpu=... root=... exec_prefix='...' arch=... cuda=... expires=... login=...`. `exec_prefix` is shell quoted, parse the line with `shlex.split`. Direct ssh from the Mac to the node works on both clusters, the fallback is `ssh -J <login> <node>`.
+- Running on a node from the Mac, compile outside the lock, measure inside, one ssh per step and short output:
+
+  ```
+  ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new <node> \
+    "<exec_prefix> bash -c 'cd <root>/work/<holder> && nvcc -arch=sm_100 -O3 -o bench bench.cu > build.log 2>&1 && echo built'"
+  ssh ... <node> "<exec_prefix> bash -c 'cd <root>/work/<holder> && CUDA_VISIBLE_DEVICES=0 flock <root>/locks/gpu0.lock -c \"./bench --variant x --control y\" > <root>/results/<holder>/run1.json && echo done'"
+  python3 $SWARM/tools/broker.py fetch <holder>
+  ```
+
+- computelab B200: `exec_prefix` is `docker exec -i topk_swarm`, root inside the container, image `nvidia/cuda:13.4.2-devel-ubuntu24.04`, cmake 4.3.2 at `/opt/cmake/bin/cmake` and on `PATH`, host directory `/tmp/topk_swarm` is `/work`.
+- dlcluster GB200: the bare node has no CUDA toolkit and `/raid` is not writable for the user, so the broker uses enroot directly, no pyxis, no slurm steps. `exec_prefix` is `ENROOT_RESTRICT_DEV=y enroot start --rw -e NVIDIA_VISIBLE_DEVICES=<uuid> -m /tmp/estehle/topk_swarm:/work topk_swarm`. Every command is a fresh container start (about half a second), concurrent starts work, the rootfs is persistent and writable, the NVIDIA entrypoint banner is removed. cmake 4.4.4 from a pip venv at `/opt/cmake/bin/cmake` and on `PATH`. For apt inside the container use `enroot start --root ...` and run `umount /etc/localtime` first, otherwise the tzdata postinst fails.
+- Both containers have python3 3.12, git, ninja and flock. The clone is `<root>/cccl` on the swarm branch, update it with `git fetch` and `git reset --hard origin/<branch>`, never commit there.
+- `tools/broker.py fetch <holder>` tars `<root>/results/<holder>/` from every ready node into `state/results/<holder>/` and keeps the archives under `state/results/_archives/<holder>/`.
+- computelab slurm prints Pacific time, dlcluster prints UTC. The broker derives expiry from `squeue %L` (time left), so registry times are UTC on both.
