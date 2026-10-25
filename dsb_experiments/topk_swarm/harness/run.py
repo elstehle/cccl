@@ -325,10 +325,12 @@ def main():
     ap.add_argument("--jobs", type=int, default=min(16, os.cpu_count() or 4))
     ap.add_argument("--timeout-compile", type=int, default=2400)
     ap.add_argument("--timeout-run", type=int, default=1800)
+    ap.add_argument("--retries", type=int, default=1, help="retries of a cell that exits with an error (default 1)")
     ap.add_argument("--build-only", action="store_true")
     ap.add_argument("--measure-only", action="store_true", help="reuse binaries from a previous build")
     ap.add_argument("--dry-run", action="store_true", help="list the cells and exit")
     ap.add_argument("--label", default="batch")
+    ap.add_argument("--source-commit", help="commit of the adapter source (default: harness/SOURCE_COMMIT if present)")
     ap.add_argument("--node-name", default=socket.gethostname(),
                     help="node name for the batch meta (inside a container the hostname is the container id)")
     ap.add_argument("--arch-name", default="", help="b200 or gb200, from the lease line")
@@ -431,7 +433,13 @@ def main():
         ptxas_by_cell[c["name"]] = parse_ptxas(os.path.join(gen_dir, c["name"] + ".ptxas.txt"))
         sass_by_cell[c["name"]] = sass_stats(args.cuobjdump, c["binary"])
 
+    source_commit = args.source_commit
+    if not source_commit:
+        sc_file = os.path.join(harness_dir, "SOURCE_COMMIT")
+        if os.path.exists(sc_file):
+            source_commit = open(sc_file).read().strip() or None
     meta = {
+        "source_commit": source_commit,
         "batch": batch,
         "label": args.label,
         "holder": args.holder,
@@ -489,7 +497,16 @@ def main():
                     extra.append("--oracle-only")
                 st, sec = run_binary(c["binary"], extra, os.path.join(log_dir, c["name"] + ".log"),
                                      args.timeout_run, env)
-                rec = {"cell": c, "pattern": pat, "status": st, "seconds": sec, "json": out}
+                retries = 0
+                while st.startswith("run_error") and retries < args.retries:
+                    # a transient device error (CUDA error 46, device busy) kills a cell before its
+                    # oracle, one retry after a pause has saved such cells, the log keeps both runs
+                    retries += 1
+                    time.sleep(5)
+                    st, sec2 = run_binary(c["binary"], extra, os.path.join(log_dir, c["name"] + ".log"),
+                                          args.timeout_run, env)
+                    sec += sec2
+                rec = {"cell": c, "pattern": pat, "status": st, "seconds": sec, "json": out, "retries": retries}
                 try:
                     rec["data"] = json.load(open(out))
                 except Exception:
@@ -563,9 +580,14 @@ def main():
     log("cells with numbers: %d, failed: %d, unsupported: %d" % (len(out_cells), len(failed), len(unsupported)))
     for cell in out_cells:
         ctrl = ("%.4g" % cell["control_value"]) if "control_value" in cell else "none"
-        log("  %-4s T%-3d N%-5d K%-4d %-20s %-10s %12.4g  ctrl %s  regs %s spill %s" % (
+        res = cell["resources"]
+        local = ""
+        if res.get("stack_bytes") or res.get("stl_count") or res.get("ldl_count"):
+            local = " LOCAL stack %sB stl %s ldl %s" % (res.get("stack_bytes", 0), res.get("stl_count", 0),
+                                                       res.get("ldl_count", 0))
+        log("  %-4s T%-3d N%-5d K%-4d %-20s %-10s %12.4g  ctrl %s  regs %s spill %s%s" % (
             cell["key_type"], cell["threads"], cell["n"], cell["k"], cell["requirement"], cell["regime"],
-            cell["value"], ctrl, cell["resources"].get("registers"), cell["resources"].get("spill_bytes")))
+            cell["value"], ctrl, res.get("registers"), res.get("spill_bytes"), local))
     for f in failed:
         log("  FAILED %s %s: %s" % (f["cell"], f.get("pattern", ""), f["reason"]))
     return 0

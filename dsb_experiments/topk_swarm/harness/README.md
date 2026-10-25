@@ -188,7 +188,10 @@ Per regime from the harness kernel that contains the primitive: registers, stati
 shared memory, local bytes (`cudaFuncGetAttributes`), occupancy in blocks per SM. run.py refines
 `spill_bytes` from `nvcc -Xptxas -v` (spill stores plus spill loads of that kernel symbol) and
 adds `stl_count`, `ldl_count`, `bar_sync_count` and `sass_instructions` from `cuobjdump -sass`.
-The kernel symbol comes from `cudaFuncGetName`, so the match is exact. The numbers include the
+The kernel symbol comes from `cudaFuncGetName`, so the match is exact. A register array that
+NVVM could not promote shows up as a stack frame with STL and LDL in the SASS while
+`spill_bytes` stays 0, so `stack_bytes`, `stl_count` and `ldl_count` are carried into the card
+resources and `summarize_batch.py` and the run.py summary flag them as `LOCAL`. The numbers include the
 harness (loads, barrier, output write), which is the same for variant and control.
 
 ## 7. Cells, JSON, run.py
@@ -236,7 +239,9 @@ batch of the variant is merged through a second `--batch`. `--root` derives
 `--work <root>/work/<holder>`, `--out <root>/results/<holder>` and `--lock <root>/locks/gpu<i>.lock`. `--node-name` and `--arch-name` come from the lease line
 (inside a container the hostname is the container id, so pass them). Filters: `--keys`, `--req`, `--n`, `--k`, `--threads`,
 `--patterns`, `--regimes`, `--oracle-only`, `--no-battery`. `--build-only` and `--measure-only`
-split the phases, `--dry-run` lists the cells. Compiles never run under the lock.
+split the phases, `--dry-run` lists the cells. A cell binary that exits with an error (seen once as
+CUDA error 46, device busy, before the oracle) is retried once after 5 seconds (`--retries`), the
+batch records `retries` per run. Compiles never run under the lock.
 
 Card: `python3 $SWARM/tools/make_card.py --batch <batch.json> --findings <findings.json> --out $SWARM/cards/<approach>_<variant>_<arch>_<yyyymmdd>_<n>.json`,
 then `python3 $SWARM/tools/board.py`.

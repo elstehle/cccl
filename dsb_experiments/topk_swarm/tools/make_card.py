@@ -5,12 +5,16 @@ cards/schema.json, and write it to cards/.
   python3 tools/make_card.py --batch state/results/<holder>/<batch>.json [--batch ...] \
       --findings <findings.json> --out cards/<approach>_<variant>_<arch>_<yyyymmdd>_<n>.json
 
-The findings file carries what the harness cannot know (author-written):
+The card's `commit` is the commit of the adapter source the kernels were built from (the
+optimizer's worktree HEAD): pass --source-commit, or write it to harness/SOURCE_COMMIT before
+shipping the harness so run.py records it in the batch. The node's CCCL clone commit goes to the
+optional `clone_commit` field. The findings file carries what the harness cannot know
+(author-written):
   {
     "author": "eval-engineer",
     "approach_id": "B1",            (optional, default: adapter id up to the first underscore)
     "variant": "reference",         (optional, default: adapter id after the first underscore)
-    "commit": "...",                (optional, default: repo commit recorded in the batch)
+    "commit": "...",                (optional, same meaning as --source-commit)
     "contract": {...},              (schema contract object)
     "findings": {...},              (schema findings object, all five lists)
     "techniques_adopted": [], "techniques_contributed": [],
@@ -36,7 +40,8 @@ SWARM = os.path.dirname(HERE)
 CELL_KEYS = ["key_type", "value_type", "output_form", "n", "k", "threads", "requirement", "input_pattern",
              "workload_name", "regime", "metric", "value", "control_name", "control_value", "canary_start",
              "canary_end", "resources", "raw_file"]
-RES_KEYS = ["registers", "smem_bytes", "spill_bytes", "occupancy_blocks_per_sm", "bar_sync_count"]
+RES_KEYS = ["registers", "smem_bytes", "spill_bytes", "occupancy_blocks_per_sm", "bar_sync_count", "stack_bytes",
+            "stl_count", "ldl_count", "sass_instructions"]
 
 
 def fallback_validate(obj, schema, path="$"):
@@ -113,6 +118,8 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--schema", default=os.path.join(SWARM, "cards", "schema.json"))
     ap.add_argument("--arch", help="override arch (b200|gb200)")
+    ap.add_argument("--source-commit", help="commit of the adapter source the kernels were built from (the "
+                    "optimizer's worktree HEAD). Required unless every batch recorded one from harness/SOURCE_COMMIT")
     ap.add_argument("--allow-missing-control", action="store_true",
                     help="keep cells without a control value (control_value set to the variant value, flagged)")
     args = ap.parse_args()
@@ -128,6 +135,17 @@ def main():
     arch = args.arch or arch_of(b0)
     if not arch:
         raise SystemExit("cannot infer arch from the batch, pass --arch")
+    recorded = {b.get("source_commit") for b in batches}
+    source_commit = args.source_commit or findings.get("commit")
+    if not source_commit:
+        if len(recorded) == 1 and next(iter(recorded)):
+            source_commit = next(iter(recorded))
+        else:
+            raise SystemExit("--source-commit is required: the card's commit field is the adapter source commit, "
+                             "not the node's clone commit (or write harness/SOURCE_COMMIT before shipping the harness)")
+    if len(recorded - {None, ""}) > 1:
+        raise SystemExit("batches record different source commits: %s" % sorted(recorded - {None, ""}))
+    clone_commits = {(b.get("repo") or {}).get("commit", "")[:12] for b in batches} - {""}
 
     cells, notes, cases, oracle_all_ok = [], [], 0, True
     counted_runs = set()
@@ -183,7 +201,7 @@ def main():
         "cuda_version": b0["node"].get("nvcc_version", "unknown"),
         "node": b0["node"].get("hostname", "unknown"),
         "date": b0.get("date"),
-        "commit": findings.get("commit") or (b0.get("repo", {}).get("commit", "")[:12] or "unknown"),
+        "commit": source_commit,
         "author": findings["author"],
         "contract": findings["contract"],
         "correctness": {"oracle_passed": oracle_all_ok, "cases": cases, "notes": " | ".join(notes)},
@@ -194,6 +212,8 @@ def main():
         "report_path": findings["report_path"],
         "source_paths": findings["source_paths"],
     }
+    if len(clone_commits) == 1:
+        card["clone_commit"] = next(iter(clone_commits))
     if findings.get("verification"):
         card["verification"] = findings["verification"]
     card["_controls"] = control_ids
