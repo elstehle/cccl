@@ -47,7 +47,7 @@ pairs), the pairs policies give `not_guaranteed` only. Keys bf16 and fp32. `-0.0
 to `+0.0` in the packed policies and compares equal in the pairs policies. NaN: the packed policies
 order a NaN by its sign bit (deterministic), the pairs policies let a NaN lose every exchange (never
 selected). Limits: MaxK divides N, the level-parallel loop needs N / MaxK a power of two, bf16 packed
-needs N <= 65536. Temp storage none, synchronization shuffles only, no stack, no spills in any cell.
+needs N <= 65536. Temp storage none, synchronization shuffles only, no stack, no spills in any cell. (Amendment after verification: two sub-warp latency cells, fp32 and bf16 LW4 N128 k64, spill 352 and 48 bytes at 168 registers, the numbers stand.)
 
 ## 3. Where the time goes
 
