@@ -260,6 +260,35 @@ caveats: Both are compute capability 10.0 with the same SM. B300 (sm_103) and Ru
 author: hw-researcher
 """))
 
+    def I(name_k, name_1, k):
+        parts = []
+        for n in nodes:
+            if not n.ok:
+                continue
+            a, b_ = n.cyc(name_k), n.cyc(name_1)
+            if a is None or b_ is None:
+                continue
+            parts.append(f"{n.label} {(a - b_) / (k - 1):.1f}")
+        return ", ".join(parts) if parts else "not measured"
+
+    entries.append(("indep_issue", f"""### T?: independent ballots, redux and shuffles pipeline at about 5 to 6 cycles each after the first, not 4
+applies to: N1 bit-serial select, W3 ballot histograms, N4 tie passes, B5 and any code that issues several warp collectives on independent data
+measured: one step issues K independent collectives on the same input and merges the results. Ballot: K=1 {B('ballot indep: 1 per step + merge')} cycles, K=4 {B('ballot indep: 4 independent per step + merge')}, K=8 {B('ballot indep: 8 independent per step + merge')}, K=16 {B('ballot indep: 16 independent per step + merge')}, so each further ballot in flight costs {I('ballot indep: 8 independent per step + merge', 'ballot indep: 1 per step + merge', 8)} cycles at K=8 and {I('ballot indep: 16 independent per step + merge', 'ballot indep: 1 per step + merge', 16)} at K=16 (including the shift and mask that build its predicate). Redux: K=1 {B('redux indep: 1 per step + merge')}, K=8 {B('redux indep: 8 independent per step + merge')}, {I('redux indep: 8 independent per step + merge', 'redux indep: 1 per step + merge', 8)} per further redux. Shuffle: K=1 {B('shfl indep: 1 per step + merge')}, K=8 {B('shfl indep: 8 independent per step + merge')}, {I('shfl indep: 8 independent per step + merge', 'shfl indep: 1 per step + merge', 8)} per further shuffle. Dependent chains for reference: ballot {B('ballot_sync')}, redux {B('redux.sync.max.u32')}, shuffle {B('shfl_xor (single)')}. {prov}{miss}
+evidence: `bench<BallotIndep<8>, 2>`: 16 x `VOTE.ANY` with 16 `SHF.R.U32.HI` and 16 `LOP3.LUT` for the predicates, merged by `IADD3`. `bench<ReduxIndep<8>, 2>`: 16 x `CREDUX.MAX` plus 16 `IMAD.U32` moves. `bench<ShflIndep<8>, 2>`: 16 x `SHFL.BFLY` (sass_sm_100.txt).
+how to use: Model a round that issues IPT independent ballots as 27 + 6 (IPT - 1) cycles, not 23 + 4 (IPT - 1): at IPT 8 that is 69 instead of 51, at IPT 16 about 124 instead of 83. Redux and shuffles pipeline at the same rate, so a warp phase that reduces several independent values (N6 bracket, B5 candidates) pays about 6 cycles per extra value. The merge adds (IADD3) are included in these numbers.
+caveats: One warp. With several warps per scheduler the VOTE, REDUX and SHFL pipes are shared and the per-op cost in the throughput regime is higher. The predicate construction (2 ALU ops per ballot) is part of the measured increment, a ballot of a ready predicate may be about 2 cycles cheaper.
+author: hw-researcher
+"""))
+
+    entries.append(("bf16x2_masks", f"""### T?: bf16x2 compares to per-half masks are one 6-cycle HSET2, integer u16x2 and u8x4 compare masks are emulated at 20 to 24 cycles
+applies to: N5 two-row bf16x2 networks, W1 packed 16-bit keys, any threshold filter or candidate count over packed keys, all scopes
+measured: cycles per dependent operation from pair chains against the IMAD base: `__hgt2_mask` on `__nv_bfloat162` (per-half `0xffff`) {D('simd pair: 8 x (__hgt2_mask bf16x2 per-half mask + imad)', 'alu base: 8 x imad u32 per step')}, PTX `set.gt.u32.bf16x2` {D('simd pair: 8 x (set.gt.u32.bf16x2 ptx + imad)', 'alu base: 8 x imad u32 per step')}, `min.bf16x2` {D('simd pair: 8 x (min.bf16x2 ptx + imad)', 'alu base: 8 x imad u32 per step')}, `max.bf16x2` {D('simd pair: 8 x (max.bf16x2 ptx + imad)', 'alu base: 8 x imad u32 per step')}, `__vcmpgtu2` (u16x2 per-half mask) {D('simd pair: 8 x (__vcmpgtu2 u16x2 per-half mask + imad)', 'alu base: 8 x imad u32 per step')}, `__vcmpgtu4` (u8x4 per-byte mask) {D('simd pair: 8 x (__vcmpgtu4 u8x4 per-byte mask + imad)', 'alu base: 8 x imad u32 per step')}, native `__vmaxu2` u16x2 for reference {D('simd pair: 8 x (__vmaxu2 u16x2 + imad)', 'alu base: 8 x imad u32 per step')}. {prov}{miss}
+evidence: `HSET2.BF16_V2.GT.AND R.., R.., R.., PT` for both `__hgt2_mask` and the PTX `set.gt.u32.bf16x2` (`bench<AluPair<OpHgt2MaskBf16>, 2>`, `bench<AluPair<OpSetGtBf16x2Ptx>, 2>`), `HMNMX2.BF16_V2` for `min.bf16x2`. `__vcmpgtu2` is 10 instructions per call (`LOP3.LUT` x6, `SHF.R.U32.HI`, `IMAD.IADD`, `PRMT`), `__vcmpgtu4` 8 instructions (sass_sm_100.txt). PTX ISA 9.4: `set.CmpOp.{{u32,s32,bf16x2}}.bf16x2` requires sm_90, the integer `set.CmpOp.{{u16x2,s16x2,u8x4,s8x4}}` forms exist only on sm_107f.
+how to use: Keep bf16 keys as bf16 inside packed networks and filters: compare with `__hgt2_mask` (or `__hge2_mask`, `__hlt2_mask`, `__heq2_mask`), select with `max.bf16x2` and `min.bf16x2`, and count candidates with `__popc(mask)` divided by 16, all native at 6 cycles. Do not twiddle bf16 to u16 pairs for compares: the integer per-half compare mask has no sm_100 instruction and costs 4 times a native compare. Twiddled u16x2 remains fine for pure min and max networks (native `VIMNMX.U16x2`). Semantics of the bf16 forms: `+0.0 > -0.0` for max and min, `__hgt2_mask` is false for NaN operands (`__hgtu2_mask` is the unordered form).
+caveats: The predicate-returning `__vibmax_u16x2` (max plus per-half swap predicates) was not measured and may cover the swap decision for value-index pairs without a mask. Per-half mask to per-half select still needs a `LOP3` or `PRMT` based blend (one instruction) which is not in these numbers.
+author: hw-researcher
+"""))
+
     for i, (slug, text) in enumerate(entries, 1):
         path = os.path.join(a.out, f"T_{i:02d}_{slug}.md")
         with open(path, "w") as f:

@@ -443,6 +443,48 @@ struct OpMaxBf16x2Ptx : OpU32
     return max_bf16x2(v, c1(i));
   }
 };
+struct OpMinBf16x2Ptx : OpU32
+{
+  static __device__ value_t apply(value_t v, int i)
+  {
+    unsigned r;
+    asm("min.bf16x2 %0, %1, %2;" : "=r"(r) : "r"(v), "r"(c1(i)));
+    return r;
+  }
+};
+struct OpHgt2MaskBf16 : OpU32 // per-half 0xffff masks from a bf16x2 compare
+{
+  static __device__ value_t apply(value_t v, int i)
+  {
+    unsigned cb      = c1(i);
+    __nv_bfloat162 a = *reinterpret_cast<__nv_bfloat162*>(&v);
+    __nv_bfloat162 c = *reinterpret_cast<__nv_bfloat162*>(&cb);
+    return __hgt2_mask(a, c);
+  }
+};
+struct OpSetGtBf16x2Ptx : OpU32 // set.gt.u32.bf16x2: all-ones word when both halves compare true
+{
+  static __device__ value_t apply(value_t v, int i)
+  {
+    unsigned r;
+    asm("set.gt.u32.bf16x2 %0, %1, %2;" : "=r"(r) : "r"(v), "r"(c1(i)));
+    return r;
+  }
+};
+struct OpVcmpgtu2 : OpU32 // per-half 0xffff masks from a u16x2 compare
+{
+  static __device__ value_t apply(value_t v, int i)
+  {
+    return __vcmpgtu2(v, c1(i));
+  }
+};
+struct OpVcmpgtu4 : OpU32 // per-byte 0xff masks from a u8x4 compare
+{
+  static __device__ value_t apply(value_t v, int i)
+  {
+    return __vcmpgtu4(v, c1(i));
+  }
+};
 struct OpMaxF16x2Ptx : OpU32
 {
   static __device__ value_t apply(value_t v, int i)
@@ -696,6 +738,78 @@ struct WarpMaxShflF32 // fmaxf shuffle tree, the portable fp32 warp max
       x = fmaxf(x, __shfl_xor_sync(kFull, x, d));
     }
     return x + static_cast<float>(threadIdx.x);
+  }
+};
+
+// K independent warp collectives per step (all depend on v, none on each other), merged into the next
+// input: (slope minus the dependent-chain slope of one op) / (K - 1) is the issue cost of each further
+// op in flight, the pipelining assumption of N1 and W3.
+template <int K>
+struct BallotIndep
+{
+  using value_t = unsigned;
+  using Smem    = NoSmem;
+  static constexpr int block = 32;
+  __device__ value_t init(Smem&)
+  {
+    return threadIdx.x * 2654435761u;
+  }
+  __device__ void reset(Smem&, int) {}
+  __device__ value_t step(value_t v, int, Smem&)
+  {
+    unsigned acc = 0;
+#pragma unroll
+    for (int i = 0; i < K; ++i)
+    {
+      acc += __ballot_sync(kFull, (v >> ((threadIdx.x + i) & 31)) & 1);
+    }
+    return acc * 3u + threadIdx.x;
+  }
+};
+
+template <int K>
+struct ReduxIndep
+{
+  using value_t = unsigned;
+  using Smem    = NoSmem;
+  static constexpr int block = 32;
+  __device__ value_t init(Smem&)
+  {
+    return threadIdx.x * 2654435761u;
+  }
+  __device__ void reset(Smem&, int) {}
+  __device__ value_t step(value_t v, int, Smem&)
+  {
+    unsigned acc = 0;
+#pragma unroll
+    for (int i = 0; i < K; ++i)
+    {
+      acc += redux_max_u32(v ^ (static_cast<unsigned>(i) * 0x9e3779b9u));
+    }
+    return acc * 3u + threadIdx.x;
+  }
+};
+
+template <int K>
+struct ShflIndep
+{
+  using value_t = unsigned;
+  using Smem    = NoSmem;
+  static constexpr int block = 32;
+  __device__ value_t init(Smem&)
+  {
+    return threadIdx.x * 2654435761u;
+  }
+  __device__ void reset(Smem&, int) {}
+  __device__ value_t step(value_t v, int, Smem&)
+  {
+    unsigned acc = 0;
+#pragma unroll
+    for (int i = 0; i < K; ++i)
+    {
+      acc += __shfl_xor_sync(kFull, v + static_cast<unsigned>(i), 1 << (i & 4 ? 4 : i & 3));
+    }
+    return acc * 3u + threadIdx.x;
   }
 };
 
@@ -1778,6 +1892,11 @@ int main(int argc, char** argv)
   run<AluPair<OpHMax2Bf16>>("simd pair: 8 x (__hmax2 bf16x2 + imad)", "simd");
   run<AluPair<OpMaxBf16x2Ptx>>("simd pair: 8 x (max.bf16x2 ptx + imad)", "simd");
   run<AluPair<OpMaxF16x2Ptx>>("simd pair: 8 x (max.f16x2 ptx + imad)", "simd");
+  run<AluPair<OpMinBf16x2Ptx>>("simd pair: 8 x (min.bf16x2 ptx + imad)", "simd");
+  run<AluPair<OpHgt2MaskBf16>>("simd pair: 8 x (__hgt2_mask bf16x2 per-half mask + imad)", "simd");
+  run<AluPair<OpSetGtBf16x2Ptx>>("simd pair: 8 x (set.gt.u32.bf16x2 ptx + imad)", "simd");
+  run<AluPair<OpVcmpgtu2>>("simd pair: 8 x (__vcmpgtu2 u16x2 per-half mask + imad)", "simd");
+  run<AluPair<OpVcmpgtu4>>("simd pair: 8 x (__vcmpgtu4 u8x4 per-byte mask + imad)", "simd");
   run<AluBase<OpF32>>("alu base: 8 x ffma f32 per step", "alu");
   run<AluPair<OpFMax>>("alu pair: 8 x (fmaxf + ffma)", "alu");
   run<AluPair<OpFMaxMax>>("alu pair: 8 x (fmaxf(fmaxf(v,a),b) + ffma)", "alu");
@@ -1799,6 +1918,14 @@ int main(int argc, char** argv)
   run<WarpMaxShflU64>("warp max 5-shfl tree u64", "warp");
   run<WarpMaxShflF32>("warp max 5-shfl tree f32 (fmaxf)", "warp");
   run<Ballot>("ballot_sync", "warp");
+  run<BallotIndep<1>>("ballot indep: 1 per step + merge", "warp");
+  run<BallotIndep<4>>("ballot indep: 4 independent per step + merge", "warp");
+  run<BallotIndep<8>>("ballot indep: 8 independent per step + merge", "warp");
+  run<BallotIndep<16>>("ballot indep: 16 independent per step + merge", "warp");
+  run<ReduxIndep<1>>("redux indep: 1 per step + merge", "warp");
+  run<ReduxIndep<8>>("redux indep: 8 independent per step + merge", "warp");
+  run<ShflIndep<1>>("shfl indep: 1 per step + merge", "warp");
+  run<ShflIndep<8>>("shfl indep: 8 independent per step + merge", "warp");
   run<BallotFfsElect>("ballot + ffs + winner select", "warp");
   run<ReduxBallotRound>("W2 round unpacked: redux + ballot(v==max) + ffs + select", "warp");
   run<ReduxPackedRound>("W2 round packed key|index: redux + compare select", "warp");
