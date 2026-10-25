@@ -57,11 +57,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1_reference_gb200_20261025_1.json | B1 | reference | block | gb200 | gb200-nvl4-ts2-100 | 13.4.92 | 2026-10-25 | eval-engineer | 84 | pass | no |
 | B2_packed_b200_20261025_3.json | B2 | packed | block | b200 | umbriel-b200-047 | 13.4.92 | 2026-10-25 | opt-B2b | 24 | pass | no |
 | B2_twolevel_b200_20261025_2.json | B2 | twolevel | block | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N8 | 144 | pass | no |
-| N10_auto_b200_20261025_1.json | N10 | auto | warp | b200 | umbriel-b200-028 | 13.4.92 | 2026-10-25 | opt-N10 | 102 | pass | no |
+| N10_auto_b200_20261025_1.json | N10 | auto | warp | b200 | umbriel-b200-028 | 13.4.92 | 2026-10-25 | opt-N10 | 114 | pass | no |
 | N10_auto_sub_b200_20261025_1.json | N10 | auto_sub | subwarp | b200 | umbriel-b200-028 | 13.4.92 | 2026-10-25 | opt-N10 | 138 | pass | no |
 | N10_ge1_ltrunc_b200_20261025_1.json | N10 | ge1_ltrunc | warp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 26 | pass | no |
 | N10_ge1_ltrunc_sub_b200_20261025_1.json | N10 | ge1_ltrunc_sub | subwarp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 46 | pass | no |
-| N10_ge1_trunc_b200_20261025_1.json | N10 | ge1_trunc | warp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 90 | pass | no |
+| N10_ge1_trunc_b200_20261025_1.json | N10 | ge1_trunc | warp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 102 | pass | no |
 | N10_ge1_trunc_sub_b200_20261025_1.json | N10 | ge1_trunc_sub | subwarp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 138 | pass | no |
 | N10_u32_b200_20261025_1.json | N10 | u32 | warp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 52 | pass | no |
 | N10_u32_ltrunc_b200_20261025_1.json | N10 | u32_ltrunc | warp | b200 | umbriel-b200-020 | 13.4.92 | 2026-10-25 | opt-N10 | 26 | pass | no |
@@ -4869,9 +4869,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 696 | W1_minmax_pairs@not_guaranteed | 756 | 1.09x | 41 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 696 | N10_u32_trunc | 696 | 1.00x | 41 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | pivot_tie | 694 | N10_u32_trunc | 694 | 1.00x | 41 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | all_equal | 692 | N10_u32_trunc | 692 | 1.00x | 41 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 764 | N10_ge1_trunc | 747 | 0.98x | 41 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 747 | N10_u32_trunc | 696 | 0.93x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | pivot_tie | 781 | N10_u32_trunc | 694 | 0.89x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | all_equal | 781 | N10_u32_trunc | 692 | 0.89x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 747 | W1_eager_same | 934 | 1.25x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 815 | W1_eager_same | 934 | 1.15x | 41 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 706 | N10_u32_trunc | 696 | 0.99x | 41 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -4886,9 +4888,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 661 | W1_minmax_pairs@not_guaranteed | 720 | 1.09x | 41 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 661 | N10_u32_trunc | 661 | 1.00x | 41 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | pivot_tie | 659 | N10_u32_trunc | 659 | 1.00x | 41 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | all_equal | 657 | N10_u32_trunc | 657 | 1.00x | 41 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 729 | N10_ge1_trunc | 712 | 0.98x | 41 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 712 | N10_u32_trunc | 661 | 0.93x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | pivot_tie | 746 | N10_u32_trunc | 659 | 0.88x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | all_equal | 746 | N10_u32_trunc | 657 | 0.88x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 712 | W1_eager_same | 934 | 1.31x | 41 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 815 | W1_eager_same | 934 | 1.15x | 41 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 678 | N10_u32_trunc | 661 | 0.97x | 41 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -4921,9 +4925,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 960 | W1_minmax_pairs@not_guaranteed | 1649 | 1.72x | 54 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 960 | N10_u32_trunc | 1106 | 1.15x | 54 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | pivot_tie | 1060 | N10_u32_trunc | 1105 | 1.04x | 54 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | all_equal | 1060 | N10_u32_trunc | 1104 | 1.04x | 54 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 960 | N10_ge1_trunc | 1053 | 1.10x | 54 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 1053 | N10_u32_trunc | 1106 | 1.05x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | pivot_tie | 1149 | N10_u32_trunc | 1105 | 0.96x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | all_equal | 1149 | N10_u32_trunc | 1104 | 0.96x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 1053 | W1_eager_same | 1918 | 1.82x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 1238 | W1_eager_same | 1918 | 1.55x | 59 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 953 | N10_u32_trunc | 1106 | 1.16x | 59 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -4938,9 +4944,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 925 | W1_minmax_pairs@not_guaranteed | 2004 | 2.17x | 54 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 925 | N10_u32_trunc | 1071 | 1.16x | 54 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | pivot_tie | 1019 | N10_u32_trunc | 1070 | 1.05x | 54 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | all_equal | 1019 | N10_u32_trunc | 1069 | 1.05x | 54 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 925 | N10_ge1_trunc | 1018 | 1.10x | 54 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 1018 | N10_u32_trunc | 1071 | 1.05x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | pivot_tie | 1108 | N10_u32_trunc | 1070 | 0.97x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | all_equal | 1108 | N10_u32_trunc | 1069 | 0.96x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 1018 | W1_eager_same | 1917 | 1.88x | 54 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 1238 | W1_eager_same | 1917 | 1.55x | 59 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 918 | N10_u32_trunc | 1071 | 1.17x | 59 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -4985,9 +4993,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 1273 | W1_minmax_pairs@not_guaranteed | 4301 | 3.38x | 72 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 1273 | N10_u32_trunc | 1966 | 1.54x | 72 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | pivot_tie | 1537 | N10_u32_trunc | 1960 | 1.28x | 72 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | all_equal | 1537 | N10_u32_trunc | 1960 | 1.28x | 72 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 1273 | N10_ge1_trunc | 1862 | 1.46x | 72 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 1862 | N10_u32_trunc | 1966 | 1.06x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | pivot_tie | 2126 | N10_u32_trunc | 1960 | 0.92x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | all_equal | 2126 | N10_u32_trunc | 1960 | 0.92x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 1862 | W1_eager_same | 3826 | 2.05x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 2105 | W1_eager_same | 3826 | 1.82x | 72 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 1422 | N10_u32_trunc | 1966 | 1.38x | 64 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -5002,9 +5012,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 1240 | W1_minmax_pairs@not_guaranteed | 4545 | 3.67x | 72 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 1240 | N10_u32_trunc | 1931 | 1.56x | 72 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | pivot_tie | 1503 | N10_u32_trunc | 1925 | 1.28x | 72 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | all_equal | 1503 | N10_u32_trunc | 1924 | 1.28x | 72 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 1240 | N10_ge1_trunc | 1829 | 1.48x | 72 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 1829 | N10_u32_trunc | 1931 | 1.06x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | pivot_tie | 2092 | N10_u32_trunc | 1925 | 0.92x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | all_equal | 2092 | N10_u32_trunc | 1924 | 0.92x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 1829 | W1_eager_same | 3826 | 2.09x | 72 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 2105 | W1_eager_same | 3826 | 1.82x | 72 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 1386 | N10_u32_trunc | 1931 | 1.39x | 64 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -6005,9 +6017,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 291.2 | W1_minmax_pairs@not_guaranteed | 198.2 | 1.47x | 28 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 291.2 | N10_u32_trunc | 291.2 | 1.00x | 28 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | pivot_tie | 292.2 | N10_u32_trunc | 292.2 | 1.00x | 28 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | all_equal | 292.7 | N10_u32_trunc | 292.8 | 1.00x | 28 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 304.6 | N10_ge1_trunc | 304.3 | 1.00x | 32 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 304.4 | N10_u32_trunc | 291.2 | 1.05x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | pivot_tie | 278.5 | N10_u32_trunc | 292.2 | 0.95x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | all_equal | 279 | N10_u32_trunc | 292.9 | 0.95x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 304.4 | W1_eager_same | 177 | 1.72x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 278 | W1_eager_same | 177.1 | 1.57x | 28 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 64 | 16 | prefer_smaller_index | random | 291.3 | N10_u32_trunc | 291.2 | 1.00x | 28 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -6022,9 +6036,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 300.6 | W1_minmax_pairs@not_guaranteed | 199.3 | 1.51x | 28 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 300.8 | N10_u32_trunc | 300.7 | 1.00x | 28 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | pivot_tie | 301.4 | N10_u32_trunc | 301.4 | 1.00x | 28 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | all_equal | 302.3 | N10_u32_trunc | 302.4 | 1.00x | 28 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 315.5 | N10_ge1_trunc | 315.3 | 1.00x | 32 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 315.2 | N10_u32_trunc | 300.7 | 1.05x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | pivot_tie | 287.7 | N10_u32_trunc | 301.3 | 0.95x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | all_equal | 288.1 | N10_u32_trunc | 302.3 | 0.95x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 315.2 | W1_eager_same | 177.8 | 1.77x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 277.9 | W1_eager_same | 177.8 | 1.56x | 28 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 64 | 32 | prefer_smaller_index | random | 300.7 | N10_u32_trunc | 300.7 | 1.00x | 28 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -6057,9 +6073,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 322.6 | W1_minmax_pairs@not_guaranteed | 181.2 | 1.78x | 32 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 322.6 | N10_u32_trunc | 299.2 | 1.08x | 32 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | pivot_tie | 290 | N10_u32_trunc | 299.8 | 0.97x | 32 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | all_equal | 290.1 | N10_u32_trunc | 299.9 | 0.97x | 32 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 322.6 | N10_ge1_trunc | 317.4 | 1.02x | 32 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 317.5 | N10_u32_trunc | 299.2 | 1.06x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | pivot_tie | 287.3 | N10_u32_trunc | 299.7 | 0.96x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | all_equal | 287.5 | N10_u32_trunc | 299.9 | 0.96x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 317.5 | W1_eager_same | 165.4 | 1.92x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 292.1 | W1_eager_same | 165.5 | 1.77x | 32 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 128 | 16 | prefer_smaller_index | random | 303.5 | N10_u32_trunc | 299.1 | 1.01x | 32 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -6074,9 +6092,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 328.8 | W1_minmax_pairs@not_guaranteed | 182.7 | 1.80x | 32 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 328.8 | N10_u32_trunc | 304.5 | 1.08x | 32 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | pivot_tie | 295.1 | N10_u32_trunc | 305.1 | 0.97x | 32 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | all_equal | 295.2 | N10_u32_trunc | 305.2 | 0.97x | 32 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 328.8 | N10_ge1_trunc | 323.4 | 1.02x | 32 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 323.5 | N10_u32_trunc | 304.5 | 1.06x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | pivot_tie | 292.3 | N10_u32_trunc | 305.1 | 0.96x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | all_equal | 292.5 | N10_u32_trunc | 305.2 | 0.96x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 323.4 | W1_eager_same | 167 | 1.94x | 32 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 292 | W1_eager_same | 167 | 1.75x | 32 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 128 | 32 | prefer_smaller_index | random | 308.9 | N10_u32_trunc | 304.5 | 1.01x | 32 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -6121,9 +6141,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 341.1 | W1_minmax_pairs@not_guaranteed | 180.1 | 1.89x | 40 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 341.1 | N10_u32_trunc | 288.8 | 1.18x | 40 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | pivot_tie | 304.2 | N10_u32_trunc | 289.4 | 1.05x | 40 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | all_equal | 304.1 | N10_u32_trunc | 289.4 | 1.05x | 40 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 341.1 | N10_ge1_trunc | 273.4 | 1.25x | 40 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 273.4 | N10_u32_trunc | 288.9 | 0.95x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | pivot_tie | 250.6 | N10_u32_trunc | 289.4 | 0.87x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | all_equal | 250.6 | N10_u32_trunc | 289.4 | 0.87x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 273.5 | W1_eager_same | 163.3 | 1.67x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 284.5 | W1_eager_same | 163.3 | 1.74x | 32 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 256 | 16 | prefer_smaller_index | random | 277.4 | N10_u32_trunc | 288.9 | 0.96x | 32 | 0 | N10_u32_ltrunc_b200_20261025_1.json |
@@ -6138,9 +6160,11 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 344.3 | W1_minmax_pairs@not_guaranteed | 178.2 | 1.93x | 40 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 344.3 | N10_u32_trunc | 291.2 | 1.18x | 40 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | pivot_tie | 306.2 | N10_u32_trunc | 291.7 | 1.05x | 40 | 0 | N10_auto_b200_20261025_1.json |
+| N10 | auto | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | all_equal | 306.3 | N10_u32_trunc | 291.8 | 1.05x | 40 | 0 | N10_auto_b200_20261025_1.json |
 | N10 | ge1_ltrunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 344.4 | N10_ge1_trunc | 275.8 | 1.25x | 40 | 0 | N10_ge1_ltrunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 275.8 | N10_u32_trunc | 291.3 | 0.95x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | pivot_tie | 252.5 | N10_u32_trunc | 291.7 | 0.87x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
+| N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | all_equal | 252.6 | N10_u32_trunc | 291.6 | 0.87x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | ge1_trunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 275.9 | W1_eager_same | 163.5 | 1.69x | 38 | 0 | N10_ge1_trunc_b200_20261025_1.json |
 | N10 | u32 | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 284.4 | W1_eager_same | 163.5 | 1.74x | 32 | 0 | N10_u32_b200_20261025_1.json |
 | N10 | u32_ltrunc | b200 | warp | fp32 | 256 | 32 | prefer_smaller_index | random | 279.5 | N10_u32_trunc | 291.3 | 0.96x | 32 | 0 | N10_u32_ltrunc_b200_20261025_1.json |

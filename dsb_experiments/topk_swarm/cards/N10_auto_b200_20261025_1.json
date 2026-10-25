@@ -26,8 +26,8 @@
  },
  "correctness": {
   "oracle_passed": true,
-  "cases": 669,
-  "notes": "Batch 3 (umbriel-b200-028, one lease, five consecutive run.py lock sections, canaries 32.001 cycles per op in every section). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Controls in the same lock section: W1_eager_same (section s1, both requirements), W1_minmax_pairs under not_guaranteed (section s2, prefer_smaller_index cells), N10_u32_trunc (section s5, patterns random, pivot_tie and all_equal, prefer_smaller_index cells). The all_equal pattern cells of the tie section are dropped from the card because the card schema's input_pattern enum has no all_equal value, their numbers (identical to pivot_tie within 2 cycles) are quoted in the findings and stay in the batch JSON."
+  "cases": 753,
+  "notes": "Batch 3 (umbriel-b200-028, one lease, five consecutive run.py lock sections, canaries 32.001 cycles per op in every section). Oracle battery (13 patterns, prefer_smaller_index checked exactly, including tie_heavy, pivot_tie, all_equal, signed_zero, inf_denorm) passed on every cell before any number. not_guaranteed and prefer_smaller_index are the same instantiation and measured within 0.04 percent of each other in every cell pair, the card lists both. Controls in the same lock section: W1_eager_same (section s1, both requirements), W1_minmax_pairs under not_guaranteed (section s2, prefer_smaller_index cells), N10_u32_trunc (section s5, patterns random, pivot_tie and all_equal, prefer_smaller_index cells)."
  },
  "cells": [
   {
@@ -2398,7 +2398,7 @@
     "sass_instructions": 432,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2428,7 +2428,7 @@
     "sass_instructions": 216,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2458,7 +2458,7 @@
     "sass_instructions": 432,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2488,7 +2488,67 @@
     "sass_instructions": 216,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 16,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 692,
+   "control_name": "N10_u32_trunc",
+   "control_value": 692,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 41,
+    "smem_bytes": 144,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 432,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 16,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 292.7469364,
+   "control_name": "N10_u32_trunc",
+   "control_value": 292.8474626,
+   "canary_start": 3775.775909,
+   "canary_end": 3779.360056,
+   "resources": {
+    "registers": 28,
+    "smem_bytes": 1040,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 216,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2518,7 +2578,7 @@
     "sass_instructions": 424,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2548,7 +2608,7 @@
     "sass_instructions": 208,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2578,7 +2638,7 @@
     "sass_instructions": 424,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2608,7 +2668,67 @@
     "sass_instructions": 208,
     "bssy_count": 0
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 32,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 657,
+   "control_name": "N10_u32_trunc",
+   "control_value": 657,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 41,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 424,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 64,
+   "k": 32,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 302.3139513,
+   "control_name": "N10_u32_trunc",
+   "control_value": 302.3905638,
+   "canary_start": 3775.455952,
+   "canary_end": 3779.360056,
+   "resources": {
+    "registers": 28,
+    "smem_bytes": 2064,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 208,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2638,7 +2758,7 @@
     "sass_instructions": 824,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2668,7 +2788,7 @@
     "sass_instructions": 432,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2698,7 +2818,7 @@
     "sass_instructions": 824,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2728,7 +2848,67 @@
     "sass_instructions": 432,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 16,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1059.849462,
+   "control_name": "N10_u32_trunc",
+   "control_value": 1104,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 54,
+    "smem_bytes": 144,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 824,
+    "bssy_count": 2
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 16,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 290.0533112,
+   "control_name": "N10_u32_trunc",
+   "control_value": 299.9057926,
+   "canary_start": 3774.847984,
+   "canary_end": 3779.328108,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 1040,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 432,
+    "bssy_count": 1
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2758,7 +2938,7 @@
     "sass_instructions": 808,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2788,7 +2968,7 @@
     "sass_instructions": 432,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2818,7 +2998,7 @@
     "sass_instructions": 808,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2848,7 +3028,67 @@
     "sass_instructions": 432,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1019,
+   "control_name": "N10_u32_trunc",
+   "control_value": 1069,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 54,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 32,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 808,
+    "bssy_count": 2
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 128,
+   "k": 32,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 295.1774322,
+   "control_name": "N10_u32_trunc",
+   "control_value": 305.2322773,
+   "canary_start": 3775.583982,
+   "canary_end": 3779.4559,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 2064,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 432,
+    "bssy_count": 1
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2878,7 +3118,7 @@
     "sass_instructions": 1576,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2908,7 +3148,7 @@
     "sass_instructions": 824,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2938,7 +3178,7 @@
     "sass_instructions": 1576,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2968,7 +3208,67 @@
     "sass_instructions": 824,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 16,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1537,
+   "control_name": "N10_u32_trunc",
+   "control_value": 1960,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 72,
+    "smem_bytes": 144,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 28,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1576,
+    "bssy_count": 2
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 16,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 304.1367957,
+   "control_name": "N10_u32_trunc",
+   "control_value": 289.3793824,
+   "canary_start": 3775.360107,
+   "canary_end": 3779.520035,
+   "resources": {
+    "registers": 40,
+    "smem_bytes": 1040,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 824,
+    "bssy_count": 1
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -2998,7 +3298,7 @@
     "sass_instructions": 1560,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -3028,7 +3328,7 @@
     "sass_instructions": 824,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -3058,7 +3358,7 @@
     "sass_instructions": 1560,
     "bssy_count": 2
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   },
   {
    "key_type": "fp32",
@@ -3088,7 +3388,67 @@
     "sass_instructions": 824,
     "bssy_count": 1
    },
-   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1503,
+   "control_name": "N10_u32_trunc",
+   "control_value": 1924,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 72,
+    "smem_bytes": 272,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 28,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 1560,
+    "bssy_count": 2
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 256,
+   "k": 32,
+   "threads": 32,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "all_equal",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 306.2643558,
+   "control_name": "N10_u32_trunc",
+   "control_value": 291.7653351,
+   "canary_start": 3775.360107,
+   "canary_end": 3779.360056,
+   "resources": {
+    "registers": 40,
+    "smem_bytes": 2064,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 6,
+    "bar_sync_count": 0,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 824,
+    "bssy_count": 1
+   },
+   "raw_file": "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
   }
  ],
  "findings": {
@@ -3148,7 +3508,7 @@
  "_batches": [
   "state/results/opt-N10/N10_auto_vs_W1_eager_same_focus_b3_s1_20261025_154659.json",
   "state/results/opt-N10/N10_auto_vs_W1_minmax_pairs_focus_b3_s2_20261025_154747.json",
-  "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047_filtered.json"
+  "state/results/opt-N10/N10_auto_vs_N10_u32_trunc_focus_b3_s5_20261025_155047.json"
  ],
  "_canary": [
   {
