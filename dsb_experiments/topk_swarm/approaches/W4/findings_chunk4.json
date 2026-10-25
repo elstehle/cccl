@@ -1,0 +1,69 @@
+{
+ "author": "opt-W4",
+ "approach_id": "W4",
+ "variant": "chunk4",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked, the tile is 4 consecutive runs of N / 4 items each sorted by (key descending, index ascending), the harness sorted-runs option (--runs 4) provides such input",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 66960,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage or the output buffer by a block barrier (the harness does), the input runs are not checked",
+  "sync_performed": "5 __syncthreads per call (after the staging of the runs, then per level one after the split exchange and one at the level boundary, none after the last level), 13 BAR.SYNC in the latency kernel (two inlined calls plus the harness), no atomics, no shuffles",
+  "k_range": "powers of two with k <= N/2 and every merge level splitting evenly over the 256 threads (w4::tree_valid), measured 2048 at N 8192",
+  "n_range": "N = 256 x IPT with N / 4 a power of two and a multiple of IPT, N <= 32768 (fp32) or 65536 (bf16), measured 8192",
+  "type_constraints": "fp32 as a 64-bit word (twiddled key high, inverted index low), bf16 as a 32-bit word (16 twiddled key bits above the inverted 16-bit index), int32 indices from the blocked position, runs sorted on entry. Temp storage 66960 bytes for fp32 N 8192 (keys of 4 runs of 2048 plus key and index halves of 2 merged runs, 32-word swizzle groups, one pad group per buffer, 256 ints of split exchange), 50464 bytes for bf16",
+  "nan_behavior": "twiddled bitwise: a positive NaN orders above +inf, a negative NaN below -inf, the all-ones negative NaN collides with the all-zero absent-item filler word (never produced by focus-set inputs). -0.0 is folded onto +0.0 before the twiddle (one FADD for fp32, one compare and select for bf16), so both zeros form one tie class ordered by index",
+  "tie_break_support": "inherent: word order (key descending, index ascending), the merge path takes the earlier run on ties (its indices are smaller), the chunk network compares full words, prefer_smaller_index is the same binary as not_guaranteed",
+  "sorted_output_support": "inherent at zero extra cost: slot r holds rank r"
+ },
+ "findings": {
+  "low_level": [
+   "Resources at N 8192 k 2048 (umbriel-b200-091, nvcc 13.4.92, commit 6f4b9c2190): 116 (bf16) and 119 (fp32) registers in the latency kernel, 2928 and 3456 SASS instructions for the two inlined calls, 13 BAR.SYNC, no spill, no stack frame, no STL or LDL. Dynamic shared memory 66848 (bf16) and 83344 (fp32) bytes including the harness output buffers, occupancy 2 blocks per SM in the throughput regime.",
+   "Phase profile (approaches/W4/phase_probe.cu, one block, 256 calls on 16 run-sorted random inputs, clock64 stamps with a __syncthreads after each phase, same node): bf16 stage 1260, level 0 split plus exchange 1483 and merge 1067, level 1 split plus exchange 931 and merge 558 (5302 with the probe syncs); fp32 stage 2450, 1019 and 2694, 1083 and 1489 (8736). The two merge-path searches with their exchange barrier are 40 percent of the bf16 call, about 85 cycles per static step at 256 threads; the chunk merges are 30 percent; the staging (twiddle and 32 STS per thread, the probe's stage also absorbs the input loads) the rest.",
+   "The fp32 chunk network costs 2.5x the bf16 one (2694 against 1067 at level 0): a 64-bit compare-exchange is two ISETP and four SEL against two VIMNMX on the 32-bit word (T42, T7), and the level 1 input carries a key half and an index half (two LDS per item against one).",
+   "v1 to v2 in two sessions on the same node with B3_tuned at 7115 and 7100: the fp32 cell went from 8123 to 6571 (keys-only level 0 staging with the index implicit from the position, key and index halves apart from level 1, swizzle on the absolute buffer position, no per-run pad), the bf16 cell from 4251 to 4266 (unchanged, its word already carried the index), temp storage 100 KB to 67 KB for fp32."
+  ],
+  "algorithmic": [
+   "Against B3_tuned in the same lock section at N 8192 k 2048 (4 sorted runs of 2048): bf16 4266 against 6501 cycles (1.52x), fp32 6571 against 7100 (1.08x), both requirements identical to the cycle. Throughput bf16 525 against 426 Gelem per s (1.23x), fp32 319 against 338 (0.94x, the 67 to 83 KB of shared memory hold occupancy at 2 blocks per SM).",
+   "Against B6_radix (full sort) in a second lock section: bf16 4255 against 13511 (3.18x), fp32 6567 against 32578 (4.96x), throughput 2.64x and 4.76x. Against the select plus post-sort route of the B6 report (B3_tuned plus the sort of the k words, 6501 + 5550 bf16 and 7100 + 13487 fp32 from the same session and the B6 card) the merge is 2.8x and 3.1x cheaper, before the unmeasured gather that route also needs.",
+   "Verdict against the card's bar (under 6.5k cycles, B3_tuned's unsorted selection over the same 8192 candidates): bf16 passes at 4266, fp32 at 6571 is 8 percent under the in-session B3_tuned (7100) and 1 percent over the literal 6.5k taken from the B3 card's node. The merge of 4 sorted runs is the cheapest sorted route for this cell by about 3x and also beats the unsorted selection.",
+   "Cost model that held: 2 levels, each a 12-step static merge-path search (log2(2049)), one split exchange, and one chunk of 16 (level 0) or 8 (level 1) outputs per thread with a 48 or 20 exchange network; the exchanges of all threads are issue bound at 256 threads (about 500 to 1000 cycles per level), the searches are latency bound at about 85 cycles per step including the barrier."
+  ],
+  "negative": [
+   "The fp32 cell does not clear B3_tuned by the margin the bf16 cell does: the 64-bit word's exchange network and the two-array level 1 traffic cost 2300 cycles more than bf16, the same gap the B6 sort shows between its 4-pass and 8-pass word.",
+   "Throughput: 0.94x of B3_tuned for fp32 with occupancy 2, so the merge is a latency primitive at this smem footprint (the chunk merge of a batched kernel runs once per row after M chunk selections, where latency is what matters).",
+   "The per-run swizzle of v1 cost nothing at block scope (the two pairs of level 0 sit in different warps), unlike at warp scope where it was a 16-way conflict."
+  ],
+  "surprises": [
+   "The searches, not the merges, are the largest phase at block scope: 12 dependent probe steps with two loads each plus the exchange barrier cost about 1000 cycles per level, where the July warp merge sort study found k-ary search a loss at ranges up to 4 x IPT. Here the range is 2048, the case that study left open.",
+   "Stage of the fp32 keys (32 twiddles and 32 STS per thread) shows at 2x the bf16 stage in the probe, which is mostly the exposure of the 8 KB of input loads per warp, not the stores."
+  ],
+  "open_questions": [
+   "A 4-ary merge path (6 steps with 3 probes per side, loads independent within a step) for the block form: predicted 300 to 400 cycles less per level, to be measured as its own variant.",
+   "Level 1 words of fp32 as one 64-bit array (LDS.64 and STS.64 with a 16-word swizzle group) instead of two 32-bit halves, and STS.128 staging with a quad-preserving swizzle.",
+   "Runs shorter than N / M (a per-chunk top-k that returns fewer than k valid items) are not in the contract, they need per-run lengths in the merge path and the chunk loads.",
+   "The gather of the selected keys that the select plus post-sort route needs is still unmeasured, so that route's real cost is higher than the sums quoted."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T29",
+  "T36",
+  "T42",
+  "T54",
+  "T55"
+ ],
+ "techniques_contributed": [],
+ "report_path": "approaches/W4/REPORT.md",
+ "source_paths": [
+  "harness/adapters/W4_chunk4.cuh",
+  "harness/adapters/W4_impl.cuh",
+  "harness/adapters/W4_core.cuh",
+  "approaches/W4/host_test.cpp",
+  "approaches/W4/cells_w4.json"
+ ],
+ "correctness_notes": "Every cell passed the full oracle battery under both requirements on run-sorted input (harness 0.8 --runs 4: random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized, 22 cases per cell), the prefer_smaller_index check is the exact index set. Two batches merged: against B3_tuned (label v2_chunk4) and against B6_radix (label v2_chunk4b6), both on umbriel-b200-091, source commit 6f4b9c2190. The host emulation approaches/W4/host_test.cpp passes 288 cases against std::sort.",
+ "commit": "6f4b9c2190dd4c2375e21ad37c5f3e26745141b2"
+}
