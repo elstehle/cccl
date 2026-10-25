@@ -431,7 +431,7 @@ def release_node(key, force=False):
     return 0 if r.ok else 1
 
 
-def dedicate_node(key, holders=None, clear=False):
+def dedicate_node(key, holders=None, clear=False, no_successor=None):
     with Registry() as reg:
         node = find_node(reg.data, key)
         if node is None:
@@ -439,11 +439,17 @@ def dedicate_node(key, holders=None, clear=False):
             return 1
         if clear:
             node.pop("dedicated_to", None)
+            node.pop("no_successor", None)
             print("%s: dedication cleared, back in the pool" % node_label(node))
         else:
-            node["dedicated_to"] = holders
-            node["dedicated_at"] = iso(utcnow())
-            print("%s: dedicated to %s, lease ends %s" % (node_label(node), ",".join(holders), node.get("lease_expires")))
+            if holders:
+                node["dedicated_to"] = holders
+                node["dedicated_at"] = iso(utcnow())
+            if no_successor is not None:
+                node["no_successor"] = bool(no_successor)
+            print("%s: dedicated to %s, lease ends %s, successor %s" % (
+                node_label(node), ",".join(node.get("dedicated_to") or []), node.get("lease_expires"),
+                "off" if node.get("no_successor") else "on (90 min before the end)"))
         reg.save()
     return 0
 
@@ -482,6 +488,8 @@ def successor_pass(wait_s):
         cap = reg.data.get("cap", 6)
         for n in list(reg.data["nodes"]):
             if not n.get("dedicated_to") or n.get("status") not in ("ready", "expiring"):
+                continue
+            if n.get("no_successor"):
                 continue
             rem = remaining_seconds(n, now)
             if rem is None or rem >= SUCCESSOR_S:
@@ -758,10 +766,10 @@ def cmd_retire(args):
 
 
 def cmd_dedicate(args):
-    if not args.clear and not args.to:
-        raise SystemExit("pass --to a,b or --clear")
+    if not args.clear and not args.to and args.no_successor is None:
+        raise SystemExit("pass --to a,b, --clear, --no-successor or --successor")
     holders = [h.strip() for h in (args.to or "").split(",") if h.strip()]
-    return dedicate_node(args.node, holders, clear=args.clear)
+    return dedicate_node(args.node, holders, clear=args.clear, no_successor=args.no_successor)
 
 
 def target_args(args):
@@ -904,6 +912,10 @@ def main(argv=None):
     d.add_argument("node")
     d.add_argument("--to", default=None, help="comma separated holder names")
     d.add_argument("--clear", action="store_true")
+    d.add_argument("--no-successor", dest="no_successor", action="store_const", const=True, default=None,
+                   help="do not request a successor 90 minutes before this node's lease ends")
+    d.add_argument("--successor", dest="no_successor", action="store_const", const=False,
+                   help="request a successor again (default)")
     d.set_defaults(func=cmd_dedicate)
     b = sub.add_parser("bootstrap")
     b.add_argument("node", help="node name, ssh host or job id")
