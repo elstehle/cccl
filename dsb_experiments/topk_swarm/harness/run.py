@@ -336,6 +336,8 @@ def main():
     ap.add_argument("--timeout-run", type=int, default=1800)
     ap.add_argument("--retries", type=int, default=1, help="retries of a cell that exits with an error (default 1)")
     ap.add_argument("--build-only", action="store_true")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="do not recompile a cell whose binary already exists (harness and adapters pinned)")
     ap.add_argument("--measure-only", action="store_true", help="reuse binaries from a previous build")
     ap.add_argument("--dry-run", action="store_true", help="list the cells and exit")
     ap.add_argument("--label", default="batch")
@@ -402,7 +404,7 @@ def main():
     builds = {}
     jobs = []
     canary_bin = os.path.join(gen_dir, "canary_main")
-    if not args.measure_only:
+    if not args.measure_only and not (args.skip_existing and os.path.exists(canary_bin)):
         jobs.append(("canary_main", os.path.join(harness_dir, "canary_main.cu"), canary_bin))
     for c in cells:
         name = cell_name(variant, control, c, args.control_req, args.runs)
@@ -411,6 +413,10 @@ def main():
         c["name"] = name
         c["binary"] = binary
         if args.measure_only:
+            continue
+        if args.skip_existing and os.path.exists(binary):
+            builds[name] = {"status": "ok", "seconds": 0, "log": os.path.join(gen_dir, name + ".ptxas.txt"),
+                            "skipped_existing": True}
             continue
         with open(src, "w") as f:
             f.write(TU_TEMPLATE.format(

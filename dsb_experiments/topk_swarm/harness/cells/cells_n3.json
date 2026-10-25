@@ -1,0 +1,47 @@
+{
+  "name": "n3",
+  "description": "N3 cells: the wave 2b candidate cell N 32768 k 2048 and the two edge cells of the card (N 32768 k 1024, N 16384 k 2048), bf16 and fp32, both unsorted requirements, random input, both regimes, 256 and 512 threads.",
+  "key_types": [
+    "bf16",
+    "fp32"
+  ],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": [
+    "not_guaranteed",
+    "prefer_smaller_index"
+  ],
+  "input_patterns": [
+    "random"
+  ],
+  "regimes": [
+    "latency",
+    "throughput"
+  ],
+  "k_values": [
+    1024,
+    2048
+  ],
+  "k_max_fraction": 0.5,
+  "scopes": {
+    "block": {
+      "threads": [
+        256,
+        512
+      ],
+      "n": [
+        16384,
+        32768
+      ]
+    }
+  },
+  "k_by_n": {
+    "16384": [
+      2048
+    ],
+    "32768": [
+      1024,
+      2048
+    ]
+  }
+}

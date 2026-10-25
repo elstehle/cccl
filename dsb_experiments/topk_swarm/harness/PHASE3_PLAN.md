@@ -145,6 +145,19 @@ the matrix, verification by the usual verifiers on the same node from the same b
   puts both on the same cells file (the sorted-runs input is a different cell in the matrix and is
   reported as such, `input_pattern` plus `runs`).
 
+## 6.1 Adjustments at the go (lead, after commit 91fac66081)
+
+- B1_det3 had no card on the swarm branch at the go and is skipped.
+- B1_det (the pre-fix deterministic AIR path, both requirements) is a second control of every
+  prefer_smaller_index batch of the block pass (`psi_second_control` in the manifest): each such
+  cell is measured twice, once against `B1_reference@not_guaranteed` and once against `B1_det`,
+  and `tools/winners.py --second-reference B1_det` prints B1_det's value and the margin over it as
+  an extra reference column so the deterministic price is in the matrix. The variant's duplicate
+  measurement from the B1_det batches is not a candidate. This adds 36 batches and about 50
+  minutes to the block pass.
+- The harness is pinned at 0.10 for the whole of phase 3, every batch records the version and the
+  node, and `WINNERS_<arch>.md` prints both.
+
 ## 7. Go procedure
 
 1. Lead gives the go, broker names the B200 node and starts the pre-flight.
