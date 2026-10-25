@@ -1,0 +1,68 @@
+{
+  "author": "opt-B4",
+  "approach_id": "B4",
+  "variant": "v2",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 39300,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 bracket and bin reset, 1 in the compaction scan, 1 after the compaction stores, 3 per finishing pass (histogram, scan internal, state), 1 in the emission scan, 1 before the warp finish",
+    "k_range": "[1, N) at run time, the bound is accepted only when the candidate count is at least k (always for k <= Threads), else the tile fallback runs",
+    "n_range": "N = Threads x IPT, Threads 128, 256 or 512, IPT >= 1, N <= 32768 (16-bit count fields), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "fp32 and bf16 keys, int32 indices derived from the striped position",
+    "nan_behavior": "a NaN with the sign bit clear orders above +inf and is selected first, a NaN with the sign bit set orders below -inf, the all-ones pattern collides with the empty-slot sentinel of the warp finish (unsupported), never produced by focus-set inputs. -0.0 is folded onto +0.0 under prefer_smaller_index only (one FADD or one select per item in the prologue), kept distinct under not_guaranteed",
+    "tie_break_support": "not_guaranteed and prefer_smaller_index, one code path: the warp finish orders the pivot set by (key descending, index ascending), a tie class larger than 32 is taken in scan order under not_guaranteed and ranked by index passes under prefer_smaller_index, the items above the pivot set are an exact set under both",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  },
+  "report_path": "approaches/B4/REPORT.md",
+  "source_paths": [
+    "harness/adapters/B4_v2.cuh",
+    "approaches/B4/block_topk_bound_v2.cuh",
+    "approaches/B4/profile_phases.cu",
+    "harness/cells_b4.json"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T7",
+    "T17",
+    "T19",
+    "T21",
+    "T24",
+    "T25",
+    "T29",
+    "T31",
+    "T32",
+    "T34",
+    "T36"
+  ],
+  "techniques_contributed": [],
+  "correctness_notes": "All 92 cells of each batch passed the oracle battery (13 cases per cell) under both requirements, including signed_zero under prefer_smaller_index (fold of -0.0 in the prologue), tie_heavy, pivot_tie and all_equal (the candidate buffer overflows there and the tile fallback runs), inf_denorm and the sorted inputs (striped tile, exactly 256 candidates).",
+  "findings": {
+    "low_level": [
+      "Changes against B4_base: the candidate image is computed once at load time into a register per slot, the passes issue one histogram atomic per pivot item (no key min and max tracking), the tie-class test is a block min and max over the pivot items run only when the pivot set exceeds 32 and is not exactly the remaining k (two redux per warp, one barrier), the slot loops run in uniform groups of four slots, the emission classifies each slot once into two bitmasks and stores from the bits, the count sweep uses four accumulators, the scale uses __fdividef. Registers 64 at IPT 4, 125 to 128 at IPT 16 to 32, 255 from IPT 64 with 596 to 884 bytes of spill at IPT 128 (B4_base 848 to 1064).",
+      "Phase profile (same method as B4_base, cycles): bf16 N 4096 k 16 bracket 420, count and scan 669, compaction 470, candidate loads 717, pass 898, classify 936, scan 436, stores 655, total 5306 (B4_base 7199); fp32 N 32768 k 256 bracket 1371, count and scan 1747, compaction 3078, loads 805, pass 950, classify 1515, scan 426, stores 788, total 11153 (B4_base 11495). The pass and the emission halved, the candidate loads grew to 700 to 800 cycles (sixteen shared loads each behind a divergent branch on the slot's validity, serialized at the load latency), and the compaction store sweep at IPT 128 grew from 1800 to 3100 cycles with the extra register pressure of the image array (the compiler schedules the twiddle into the store sweep)."
+    ],
+    "algorithmic": [
+      "Against B4_base in the same lock section (B200, cycles per call, not_guaranteed, bf16 then fp32): N 1024 k 16 2858 and 3009 against 3328 and 3431 (1.16x and 1.14x), N 4096 k 16 4951 and 5177 against 7249 and 7007 (1.46x and 1.35x), k 256 5146 and 5349 against 7577 and 7203, N 8192 k 64 5618 and 5485 against 7179 and 7513 (1.28x and 1.37x), N 16384 k 64 6766 and 6234 against 7879 and 7741 (1.16x and 1.24x), k 256 7025 and 6521 against 7901 and 8017, N 32768 k 64 9207 and 8528 against 9552 and 9178 (1.04x and 1.08x), k 256 9331 and 8627 against 9524 and 9316, k 1024 13950 and 12937 against 15549 and 15179, k 2048 22715 and 24438 against 56022 and 56834 (2.5x and 2.3x). Throughput 1.0x to 1.3x (N 8192 fp32 511 against 438 Gelem per s, N 32768 767 against 720). prefer_smaller_index within 3 to 12 percent of not_guaranteed (fp32 N 32768 k 256 9147 against 8627).",
+      "Chained to the B4_base cards (estimates): v2 is 2.2x to 2.5x under B3_tuned and 2.0x to 2.5x under B1_idx at N 32768 k 16 to 256 (fp32 k 256 8627 against 20009 and 21765), 1.5x to 1.7x at N 16384 (bf16 k 64 6766 against 11004 and 9340), about even at N 8192 (bf16 k 64 5618 against 6259 and 5785, fp32 5485 against 6085 and 6087), 0.7x at N 4096 (4951 against 3798 and 3369).",
+      "What is left per the profile at N 4096: candidate loads 700, pass 900 (a 350-cycle scan and two barriers of it), classify and stores 1600, two more scans 1100, the bracket 420. The structure, not the slot work, is now the cost: four block scans and nine barriers per call."
+    ],
+    "negative": [
+      "Grouping slots by four and precomputing the image removed about half of the per-slot cost (pass 1708 to 898, classify 1698 to 936, stores 1818 to 655 at N 4096), not the five sixths the issue count predicted; the groups are still separate basic blocks.",
+      "The register sweeps at IPT 128 did not improve (bracket 1371, count 1747, compaction 3078 cycles) and the compaction got worse than B4_base's 1771, so v2 gains only 4 to 8 percent at N 32768."
+    ],
+    "surprises": [
+      "A divergent branch around a shared load per candidate slot costs the full load latency per slot: sixteen slots took 700 cycles where sixteen independent LDS would take about 100 (fixed in v3 by an unconditional load from a clamped address, T31's advice reversed: clamp, do not predicate, when the slots are few).",
+      "Removing register state from the finish (no min and max tracking, no second classify) changed the compiler's schedule of the compaction sweep at IPT 128 for the worse by 1300 cycles, the same kind of global register-allocation effect as T24."
+    ],
+    "open_questions": [
+      "B4_v3 (batch b6) takes the sweeps to the value domain with raw candidate words, loads the candidates unconditionally and emits by bin tickets after a single pass; see its card.",
+      "A custom warp-shuffle block scan (about 230 cycles) in place of cub's BlockScan (about 350 to 430 here) for the three scans of the call, not built."
+    ]
+  }
+}

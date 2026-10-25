@@ -1,0 +1,71 @@
+{
+  "author": "opt-B4",
+  "approach_id": "B4",
+  "variant": "base",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "striped",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 39300,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 bracket and bin reset, 1 in the compaction scan, 1 after the compaction stores, 3 per finishing pass (histogram, scan internal, state), 1 in the emission scan, 1 before the warp finish",
+    "k_range": "[1, N) at run time, the bound is accepted only when the candidate count is at least k (always for k <= Threads), else the tile fallback runs",
+    "n_range": "N = Threads x IPT, Threads 128, 256 or 512, IPT >= 1, N <= 32768 (16-bit count fields), measured 1024 to 32768 at 256 threads",
+    "type_constraints": "fp32 and bf16 keys, int32 indices derived from the striped position",
+    "nan_behavior": "a NaN with the sign bit clear orders above +inf and is selected first, a NaN with the sign bit set orders below -inf, the all-ones pattern collides with the empty-slot sentinel of the warp finish (unsupported), never produced by focus-set inputs. -0.0 is folded onto +0.0 under prefer_smaller_index only (one FADD or one select per item in the prologue), kept distinct under not_guaranteed",
+    "tie_break_support": "not_guaranteed and prefer_smaller_index, one code path: the warp finish orders the pivot set by (key descending, index ascending), a tie class larger than 32 is taken in scan order under not_guaranteed and ranked by index passes under prefer_smaller_index, the items above the pivot set are an exact set under both",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  },
+  "report_path": "approaches/B4/REPORT.md",
+  "source_paths": [
+    "harness/adapters/B4_base.cuh",
+    "approaches/B4/block_topk_bound.cuh",
+    "approaches/B4/sim_bound.py",
+    "harness/cells_b4.json"
+  ],
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T7",
+    "T17",
+    "T19",
+    "T21",
+    "T24",
+    "T25",
+    "T29",
+    "T31",
+    "T32",
+    "T34",
+    "T36"
+  ],
+  "techniques_contributed": [],
+  "correctness_notes": "All 92 cells of each batch passed the oracle battery (13 cases per cell) under both requirements, including signed_zero under prefer_smaller_index (fold of -0.0 in the prologue), tie_heavy, pivot_tie and all_equal (the candidate buffer overflows there and the tile fallback runs), inf_denorm and the sorted inputs (striped tile, exactly 256 candidates).",
+  "findings": {
+    "low_level": [
+      "Code shape of this first build: twiddle sweep over the tile, per-thread maximum (VIMNMX3), two redux per warp and one barrier for the bound, count sweep, one cub BlockScan, predicated compaction stores (STS predicated, no branch region, T32), one shared load per candidate slot behind a divergent branch, then per candidate slot and pass the fixed-point image recomputed (SEL, LOP3, FADD, FFMA, two VIMNMX), a three-part prefix test, three shared atomics (histogram, key min, key max), inside a BSSY region per slot, and two classify sweeps plus a scan in the emission. Registers 64 at IPT 4, 80 to 128 at IPT 16 to 32, 255 from IPT 64 on with 848 to 1064 bytes of spill at IPT 128 (B1_idx 250 and 0, B3_tuned 255 and 64 to 696). prefer_smaller_index builds spill 2784 to 3948 bytes at IPT 128 (the index passes add a third pass body of 128 slots).",
+      "Phase profile of this build (clock64 stamps, approaches/B4/profile_phases.cu, same node, median of 32 calls, cycles): bf16 N 4096 k 16 bracket 412, count and scan 557, compaction 294, candidate loads 226, first pass 1708, emission classify 1698, emission scan 347, emission stores 1818, total 7199; fp32 N 32768 k 256 bracket 1366, count and scan 1577, compaction 1771, loads 212, pass 1753, classify 2020, scan 347, stores 1893, total 11495 (the stamps add about 1500 to the harness number). The finish phases cost about 240 cycles per candidate slot for 16 slots of which 6 are live: every slot is its own uniform branch and executes as a dependent chain of float arithmetic and compares with nothing to overlap, so the latency and not the issue count is paid per slot (T42).",
+      "Per-slot work in the pass is 36 SASS instructions: the image recompute, the three-part pivot prefix test, the bin, three ATOMS and the region. The scale division compiled to a MUFU.RCP, FCHK and a slow-path CALL (fixed, once per call)."
+    ],
+    "algorithmic": [
+      "Against B3_tuned in the same lock section (B200, cycles per call, random normal, not_guaranteed, bf16 then fp32): N 32768 k 16 9546 and 9059 against 19102 and 18568 (2.0x), k 64 9542 and 9169 against 19117 and 19455, k 256 9539 and 9297 against 19151 and 20009 (2.0x and 2.15x), k 1024 15555 and 15191 against 19237 and 20449, k 2048 56155 and 57020 against 19249 and 20783 (0.34x); N 16384 k 64 7878 and 7748 against 11004 and 10452 (1.40x and 1.35x), k 256 7890 and 8018 against 11011 and 11337; N 8192 k 64 7170 and 7508 against 6259 and 6085 (0.87x and 0.81x); N 4096 k 64 7288 and 7137 against 3798 and 4152 (0.52x and 0.58x); N 1024 k 16 3326 and 3430 against 1884 and 2034. Against B1_idx (batch b2, same session): N 32768 k 64 9541 and 9161 against 16806 and 18737 (1.76x and 2.05x), k 256 9535 and 9316 against 18675 and 21765 (1.96x and 2.34x), N 16384 k 64 7873 and 7745 against 9340 and 10421, N 8192 k 64 7177 and 7506 against 5785 and 6087. Throughput: N 32768 672 and 720 Gelem per s against B3_tuned 400 and 345 and B1_idx 455 and 395 (1.6x to 2.1x), N 16384 445 and 463 against 465 and 312, below N 16384 behind both (occupancy 2 to 5 blocks against 3 to 8).",
+      "The kill experiment of the card holds: fp32 N 32768 k 256 at 9297 cycles is under the 13.4k threshold (1.5x under B3_tuned) and 2.15x under B3_tuned, 2.34x under B1_idx. The must-beat at N 16384 k 64 (7k) and N 8192 k 64 (4k) is missed by this build.",
+      "Candidate statistics on the GPU match the host simulation (approaches/B4/sim_bound.md): the thread-max bound leaves about 1500 candidates at every N from 4096 on (4.7 percent at N 32768, 31 percent at N 4096), the buffer of 4096 never overflowed on random input, sorted input compacts to exactly 256 candidates on the striped tile, and the pivot bin after one image pass holds 2 to 24 items (k 16 to 256), so the warp finish is the exit in every random row with k at most 256. For k 1024 and 2048 the group-maxima bound (2 and 4 groups) leaves 3300 and 6800 candidates (13 and 27 slots per thread) and the pivot bin 30 to 60 items, so a second image pass runs; the cost there is the slot count times the per-slot price of this build.",
+      "prefer_smaller_index costs 8 to 30 percent in this build (bf16 N 16384 k 64 10060 against 7878, fp32 N 32768 k 256 10189 against 9297): the -0.0 fold in the prologue (one select or FADD per item, 128 items) and the index-pass body in the fallback path that pushes the IPT 128 kernels to 2784 to 3948 bytes of spill (the fast path is the same code)."
+    ],
+    "negative": [
+      "The per-slot structure (one uniform branch, image recompute, three atomics, three-part prefix test per slot and pass) made the finish cost about 240 cycles per candidate slot, 16 slots, in every call: at N 4096 the finish is 5200 of 7200 cycles. The card's model charged the finish 1740 cycles total.",
+      "The key min and max tracking atomics in every pass (N6b's per-bucket tracking) triple the atomics of a pass for a tie-class test that is needed only when the pivot set exceeds the warp finish, which never happens on random rows with k at most 256.",
+      "k 2048 at N 16384 and 32768 is 2.3x to 2.9x slower than B3_tuned: 27 to 51 candidate slots per thread times the per-slot price, two to three passes. B4 is not the primitive for k at or above N over 16, B3's emission is."
+    ],
+    "surprises": [
+      "The per-slot cost is latency, not issue: a uniform branch per slot turns the finish into a chain of dependent float operations and compares with no overlap across slots, so 16 mostly empty slots cost as much as 16 full ones (T42).",
+      "The sweeps at IPT 128 are 4700 of 9300 cycles (bracket 1400 to 1800, count and scan 1500 to 1600, compaction 1800): the compiler keeps the twiddled tile live across the count scan and the predicated store sweep issues 128 shared stores per thread (one SM-wide pipe), so the sweep floor is about 10 cycles per item slot, not the 3 to 5 instructions of the card."
+    ],
+    "open_questions": [
+      "The restructured builds B4_v2 (batch b4) and B4_v3 (batch b6) address the per-slot structure and the sweeps, see their cards.",
+      "A 16-slot buffer (cap 4096) is 2.7x the p99 candidate count; cap 2048 (8 slots) would halve the finish's slot work at a 0.3 to 10 percent fallback rate on random input (host simulation), not measured."
+    ]
+  }
+}

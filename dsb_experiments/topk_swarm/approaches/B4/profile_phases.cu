@@ -1,7 +1,10 @@
 // Phase profile of block_topk_bound on one block: clock64 stamps per phase, random normal input
 // rounded to the key type, striped tile. Build: nvcc -std=c++17 -O3 -arch=sm_100 -DB4_PROFILE
 // -I<cccl>/cub -I<cccl>/libcudacxx/include -I<cccl>/thrust profile_phases.cu
-#if defined(B4_V3)
+#if defined(B4_V4)
+#  include "block_topk_bound_v4.cuh"
+namespace b4p = b4v4;
+#elif defined(B4_V3)
 #  include "block_topk_bound_v3.cuh"
 namespace b4p = b4v3;
 #elif defined(B4_V2)

@@ -24,7 +24,14 @@
     "approaches/B4/block_topk_n6_w2.cuh",
     "approaches/B1/block_topk_n6.cuh"
   ],
-  "techniques_adopted": ["T1", "T3", "T19", "T23", "T25", "T38"],
+  "techniques_adopted": [
+    "T1",
+    "T3",
+    "T19",
+    "T23",
+    "T25",
+    "T38"
+  ],
   "techniques_contributed": [],
   "correctness_notes": "All 48 cells passed the oracle battery (13 cases per cell) under both requirements, including signed_zero under prefer_smaller_index (N6's normalization) and tie_heavy and pivot_tie (the pivot bin exceeds 32 there and the N6 passes run unchanged).",
   "findings": {
@@ -47,7 +54,7 @@
       "N6b's first-pass exit rate on bf16 logits is so high (the pivot bin is a single bf16 value in nearly every row from N 4096 on) that the second pass is already a rare path for bf16 at k at most 64."
     ],
     "open_questions": [
-      "N9_w2fin2 (one class-indexed ticket per item as in B1_idx) isolates the aggregation cost of the constant-address ticket, batch n9b.",
+      "N9_w2fin2 (batch n9b, same session, one class-indexed ticket per item as in B1_idx) measured 1722 against 1686 at bf16 N 1024 k 16 and 1851 against 2041 at k 64, 3359 against 4043 at N 4096 k 64 under not_guaranteed, 3651 against 6188 at N 4096 k 64 under prefer_smaller_index: the aggregated constant-address ticket cost 50 to 750 cycles per call in this first build, see card N9_w2fin2_b200_20261025_1.",
       "A finish that skips the ticket entirely (the pivot members are at most 32, a ballot per item slot and a warp-level prefix would place them without atomics) was not built; T22 says per-slot ballots form a dependent chain, so the gain is unclear.",
       "Whether N6b itself should take the W2 finish only under prefer_smaller_index (where it replaces the rank) and keep the second pass under not_guaranteed."
     ]
