@@ -150,6 +150,121 @@ __global__ void __launch_bounds__(BLOCK) body_rounds(long long* out, unsigned* s
   }
 }
 
+// B2-shaped round with what the real kernel has and the IMAD body lacks: a dependent list shift of
+// 32 predicated selects (SEL on a data predicate) and a one-lane guarded atomic that ptxas wraps in
+// BSSY, BRA, BSYNC (T32), so the 80 KB body is not straight-line any more.
+template <int ROUNDS, int BLOCK, bool BRANCH>
+__global__ void __launch_bounds__(BLOCK) body_rounds_sel(long long* out, unsigned* smids, int reps)
+{
+  __shared__ unsigned slots[16];
+  unsigned sm = smid();
+  unsigned list[8];
+#pragma unroll
+  for (int i = 0; i < 8; ++i)
+  {
+    list[i] = threadIdx.x * 2654435761u + static_cast<unsigned>(i) * 40503u;
+  }
+  for (int i = threadIdx.x; i < 16; i += BLOCK)
+  {
+    slots[i] = 0;
+  }
+  long long best = LLONG_MAX;
+#pragma unroll 1
+  for (int r = 0; r < reps; ++r)
+  {
+    __syncthreads();
+    long long t0 = clock64();
+    asm volatile("" ::: "memory");
+#pragma unroll
+    for (int rd = 0; rd < ROUNDS; ++rd)
+    {
+      unsigned m = slots[rd & 15];
+      bool win   = (list[0] & 0xffu) == static_cast<unsigned>(rd & 0x7f); // data predicate, rarely true
+      // 32 selects: four passes of a shift of the 8-entry list
+#pragma unroll
+      for (int pass = 0; pass < 4; ++pass)
+      {
+#pragma unroll
+        for (int i = 0; i < 7; ++i)
+        {
+          list[i] = win ? list[i + 1] : list[i];
+        }
+        list[7] = win ? (m ^ static_cast<unsigned>(pass)) : list[7];
+      }
+      if constexpr (BRANCH)
+      {
+        if (threadIdx.x == static_cast<unsigned>(rd & (BLOCK - 1)))
+        {
+          atomicMax(&slots[rd & 15], list[0]); // one lane, divergent: BSSY, BRA, BSYNC
+        }
+      }
+      else
+      {
+        atomicMax(&slots[rd & 15], list[0]); // uniform address, all lanes: aggregated by ptxas
+      }
+      __syncthreads();
+    }
+    unsigned v = list[0] ^ list[3] ^ list[7];
+    if (sm == 0xffffffffu)
+    {
+      g_sink = static_cast<int>(v);
+    }
+    asm volatile("" ::: "memory");
+    __syncthreads();
+    long long t1 = clock64();
+    best = ::min(best, t1 - t0);
+  }
+  if (threadIdx.x == 0)
+  {
+    out[blockIdx.x]   = best;
+    smids[blockIdx.x] = sm;
+  }
+}
+
+template <int ROUNDS, int BLOCK, bool BRANCH>
+void run_rounds_sel(int blocks, const char* tag)
+{
+  long long* d;
+  unsigned* ds;
+  cudaMalloc(&d, sizeof(long long) * blocks);
+  cudaMalloc(&ds, sizeof(unsigned) * blocks);
+  body_rounds_sel<ROUNDS, BLOCK, BRANCH><<<blocks, BLOCK>>>(d, ds, 4);
+  cudaDeviceSynchronize();
+  body_rounds_sel<ROUNDS, BLOCK, BRANCH><<<blocks, BLOCK>>>(d, ds, kReps);
+  cudaError_t err = cudaDeviceSynchronize();
+  if (err != cudaSuccess)
+  {
+    fprintf(stderr, "KERNEL ERROR: %s\n", cudaGetErrorString(err));
+    return;
+  }
+  long long* h = new long long[blocks];
+  unsigned* hs = new unsigned[blocks];
+  cudaMemcpy(h, d, sizeof(long long) * blocks, cudaMemcpyDeviceToHost);
+  cudaMemcpy(hs, ds, sizeof(unsigned) * blocks, cudaMemcpyDeviceToHost);
+  long long mn = LLONG_MAX, mx = 0;
+  for (int b = 0; b < blocks; ++b)
+  {
+    mn = ::min(mn, h[b]);
+    mx = ::max(mx, h[b]);
+  }
+  printf("{\"name\":\"rounds-sel %s %s ROUNDS %d BLOCK %d blocks %d\",\"rounds\":%d,\"block\":%d,\"blocks\":%d,\"branch\":%s,"
+         "\"cycles_min\":%lld,\"cycles_max\":%lld,\"per_round_min\":%.1f,\"per_round_max\":%.1f,"
+         "\"arch\":\"%s\",\"device\":\"%s\",\"node\":\"%s\",\"date\":\"%s\",\"file\":\"harness/micro/icache_micro.cu\",\"per_block\":[",
+         BRANCH ? "branchy" : "uniform", tag, ROUNDS, BLOCK, blocks, ROUNDS, BLOCK, blocks, BRANCH ? "true" : "false",
+         mn, mx, static_cast<double>(mn) / ROUNDS, static_cast<double>(mx) / ROUNDS,
+         g_meta.arch.c_str(), g_meta.device.c_str(), g_meta.node.c_str(), g_meta.date.c_str());
+  for (int b = 0; b < blocks; ++b)
+  {
+    printf("%s[%u,%lld]", b ? "," : "", hs[b], h[b]);
+  }
+  printf("]}\n");
+  fflush(stdout);
+  delete[] h;
+  delete[] hs;
+  cudaFree(d);
+  cudaFree(ds);
+}
+
 template <int ROUNDS, int BLOCK>
 void run_rounds(int blocks, const char* tag)
 {
@@ -403,6 +518,13 @@ int main(int argc, char** argv)
   run_rounds<128, 128>(sms, "one block per SM");
   run_rounds<128, 256>(sms, "one block per SM");
   run_rounds<128, 128>(1, "one block again");
+  // select-heavy rounds with and without a divergent one-lane atomic branch, 128 rounds is about 90 KB of code
+  run_rounds_sel<128, 128, false>(1, "one block");
+  run_rounds_sel<128, 128, true>(1, "one block");
+  run_rounds_sel<128, 256, false>(1, "one block");
+  run_rounds_sel<128, 256, true>(1, "one block");
+  run_rounds_sel<32, 128, true>(1, "one block");
+  run_rounds_sel<128, 128, true>(sms, "one block per SM");
   // memory latency per SM: L2 resident (4 MB) and beyond L2 (512 MB)
   run_chase(4u << 20, "L2 4MB", 1, 4096);
   run_chase(4u << 20, "L2 4MB", sms, 4096);

@@ -1031,6 +1031,74 @@ struct TpSel
     asm volatile("{\n\t.reg .pred p;\n\tsetp.gt.u32 p, %0, %1;\n\tselp.b32 %0, %1, %0, p;\n\t}" : "+r"(v) : "r"(c));
   }
 };
+// alternating max and min on the same accumulator (step parity): adjacent steps cannot fuse into a
+// three-input form, so the SASS count per step equals the operation count
+struct TpAltBf16x2
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c, int n)
+  {
+    if (n & 1)
+    {
+      asm volatile("min.bf16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+    }
+    else
+    {
+      asm volatile("max.bf16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+    }
+  }
+};
+struct TpAltU32
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c, int n)
+  {
+    if (n & 1)
+    {
+      asm volatile("min.u32 %0, %0, %1;" : "+r"(v) : "r"(c));
+    }
+    else
+    {
+      asm volatile("max.u32 %0, %0, %1;" : "+r"(v) : "r"(c));
+    }
+  }
+};
+struct TpAltU16x2
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c, int n)
+  {
+    if (n & 1)
+    {
+      asm volatile("min.u16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+    }
+    else
+    {
+      asm volatile("max.u16x2 %0, %0, %1;" : "+r"(v) : "r"(c));
+    }
+  }
+};
+struct TpAltF32
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c, int n)
+  {
+    float f = __uint_as_float(v);
+    if (n & 1)
+    {
+      asm volatile("min.f32 %0, %0, %1;" : "+f"(f) : "f"(__uint_as_float(c)));
+    }
+    else
+    {
+      asm volatile("max.f32 %0, %0, %1;" : "+f"(f) : "f"(__uint_as_float(c)));
+    }
+    v = __float_as_uint(f);
+  }
+};
+struct TpShfl
+{
+  static __device__ __forceinline__ void op(unsigned& v, unsigned c, int n)
+  {
+    v = __shfl_xor_sync(kFull, v, 1 + (n & 3));
+  }
+};
+
 // one bitonic stage on packed bf16x2: shuffle partner, max and min, keep one by lane direction
 struct TpStageBf16x2
 {
@@ -1054,6 +1122,17 @@ struct TpStageU16x2 // the same stage on twiddled u16x2 words
     v = (threadIdx.x & 1) ? b : a;
   }
 };
+
+template <class Op>
+__device__ __forceinline__ auto call_op(unsigned& v, unsigned c, int n, int) -> decltype(Op::op(v, c, n), void())
+{
+  Op::op(v, c, n);
+}
+template <class Op>
+__device__ __forceinline__ void call_op(unsigned& v, unsigned c, int, long)
+{
+  Op::op(v, c);
+}
 
 template <class Op, int K, int BLOCK>
 struct Tput
@@ -1080,7 +1159,7 @@ struct Tput
 #pragma unroll
     for (int i = 0; i < K; ++i)
     {
-      Op::op(acc[i], c);
+      call_op<Op>(acc[i], c, n, 0);
     }
     return v + 1u;
   }
@@ -2224,6 +2303,11 @@ int main(int argc, char** argv)
   TPUT_ROWS(TpSel, "setp+selp ISETP+SEL")
   TPUT_ROWS(TpStageBf16x2, "stage bf16x2: shfl + max + min + sel")
   TPUT_ROWS(TpStageU16x2, "stage u16x2: shfl + max + min + sel")
+  TPUT_ROWS(TpAltBf16x2, "alt max/min bf16x2 HMNMX2 unfused")
+  TPUT_ROWS(TpAltU32, "alt max/min u32 VIMNMX unfused")
+  TPUT_ROWS(TpAltU16x2, "alt max/min u16x2 VIMNMX.U16x2 unfused")
+  TPUT_ROWS(TpAltF32, "alt max/min f32 FMNMX unfused")
+  TPUT_ROWS(TpShfl, "shfl.bfly SHFL")
 #undef TPUT_ROWS
   // the same chains run by every warp of a 128, 256 and 512 thread block at once: per-scheduler or per-SM limits
   run<ReduxIndep<1, 128>>("redux indep x4 warps: 1 per step + merge (128 thr)", "warp");
