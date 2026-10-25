@@ -236,7 +236,7 @@ One line of rationale and evidence per issue. "KB" is the knowledge base section
 | TK-S13.2 | sorted-output check | TK-P13 | The harness had no order check until verify-W4, B3_tuned fails 20 of 44 cases as the negative control (KB 2.10) | V |
 | TK-S13.3 | signed-zero battery | TK-P13 | Five seeds plus the boundary and pivot_tie_zero patterns, after W5_v3 passed a single seed with a broken contract (KB 2.10) | V |
 | TK-S13.4 | oracle self-test | TK-P13 | A false negative at k equal to N over 2 in harness 0.3 and earlier (KB 2.10) | V |
-| TK-S13.5 | node pre-flight and outlier rule | TK-P13 | One B200 ran 128-thread kernels above about 64 KB of SASS 1.29x to 2.04x slower with every synthetic identical (T58, KB 2.10, 10.6) | V |
+| TK-S13.5 | node pre-flight and outlier rule | TK-P13 | One B200 ran 128-thread kernels above about 64 KB of SASS 1.29x to 2.04x slower with every synthetic identical (T58, KB 2.10, 10.6), and both GB200 hosts run the 128-thread k 64 configuration 3 to 15 percent slower than the healthy B200s, a generation property with an open mechanism (KB 2.12) | V |
 | TK-S13.6 | phase stamps | TK-P13 | clock64 stamps between phases found every structural cost of B4, N3 and the deterministic AIR path that the instruction count hid (T56, KB 2.10) | V |
 | TK-S13.7 | harness version policy | TK-P13 | A card is judged under its harness version, the 0.6 control change moved shared-memory-heavy controls by 9 to 11 percent (KB 9, 2.10, `cards/README.md`) | V |
 
@@ -3599,11 +3599,11 @@ Owner: TBD
 - One B200 ran 128-thread kernels above about 64 KB of SASS 1.29x to 2.04x slower than three others from the same binary with every smaller kernel and every synthetic identical to the cycle, hosts identical in every inventory item, and was drained by the cluster for a failed reboot minutes after the last measurement. Rules: name the node on every latency card of such a kernel, reproduce on a second GPU before a number enters a winner table, pre-flight the evaluation node, ratios within one session stay valid.
 - **Scope**: The performance CI and any cross-node comparison.
 - **Comparison method**: Not applicable.
-- **Status**: Recorded as T58, a pre-flight script exists in the study tree.
+- **Status**: Recorded as T58, a pre-flight script exists in the study tree. Open item from the phase 3 pre-flights: both GB200 hosts (gb200-nvl4-ts2-99 and ts2-105, within 1.6 percent of each other on 25 cells) run the 128-thread k 64 configuration with 32 to 64 items per thread 3 to 15 percent slower than the healthy B200s while every other 128-thread cell matches within 0.5 percent, so this is a generation property of one warp per scheduler with a long register-resident list and not a node or code size, the same configuration that deviated on umbriel-b200-020. The mechanism is open, the GB200 pass values stand as measured.
 
 ## Problem coverage
 
-Validity of latency numbers across GPUs.
+Validity of latency numbers across GPUs and across the B200 and GB200 generations.
 
 ## Output guarantees
 
