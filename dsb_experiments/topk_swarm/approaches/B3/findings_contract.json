@@ -1,0 +1,20 @@
+{
+  "author": "opt-B3",
+  "approach_id": "B3",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 0,
+    "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+    "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+    "k_range": "[1, N) at run time, k == N unsupported",
+    "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+    "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+    "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+    "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+    "sorted_output_support": "not supported inherently, post-sort of k"
+  }
+}

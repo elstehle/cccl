@@ -1,0 +1,57 @@
+{
+ "author": "opt-B3",
+ "approach_id": "B3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 4176,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+  "k_range": "[1, N) at run time, k == N unsupported",
+  "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+  "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+  "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+  "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "commit": "35140d46f1",
+ "report_path": "approaches/B3/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B3_padded.cuh",
+  "approaches/B3/block_topk_compact.cuh",
+  "approaches/B3/model.py",
+  "harness/cells_b3.json"
+ ],
+ "techniques_adopted": [
+  "T9",
+  "T10",
+  "T11"
+ ],
+ "techniques_contributed": [
+  "T31"
+ ],
+ "correctness_notes": "Every cell passed the full oracle battery for both requirements (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized). Control is B3_baseline in the same lock section (previous variant). One change: the compacted candidates of thread t sit at a stride of cpt + 1 words and only valid slots are loaded.",
+ "findings": {
+  "low_level": [
+   "Candidate loads with a per-thread stride of cpt words (cpt = N/1024) hit one bank per warp instruction at N 32768 (32-way conflicts on 32 loads, issued by all 256 threads because the baseline clamped the address instead of predicating). The padded stride cpt + 1 makes the banks (t + j) mod 32 distinct, the loads are predicated on slot validity, and the store side computes the padded word as q + q / cpt (shift and add).",
+   "Registers unchanged in the latency kernel (39 to 255), the fp32 N 4096 latency spill of 24 bytes disappeared, fp32 N 32768 spills 648 against 688 bytes. Throughput kernel at bf16 N 8192: 64 registers against 127 for the baseline (ptxas allocation changed with the predicated loads), occupancy 4 against 2 blocks per SM, which is the 1.21x there.",
+   "Shared memory grows by one word per thread (cand_words = (cpt + 1) x 256 instead of N/4), 10832 to 10320 bytes at N 8192 bf16 stays below every occupancy step."
+  ],
+  "algorithmic": [
+   "Latency against the baseline on the compaction cells: N 32768 k 256 1.34x (bf16) and 1.33x (fp32), N 16384 k 64 1.14x and 1.29x, N 8192 k 64 1.05x and 1.10x, N 4096 and below 1.00x (stride 1 to 4 words, few conflicts). Fallback cells (k = N/16, no compaction) 0.97x to 1.01x, unchanged as expected.",
+   "Chained to batch 1 the compaction path is at 1.02x (bf16) and 1.07x (fp32) of B1 at the kill cells N 8192 k 64 and at 1.10x (bf16) and 1.32x (fp32) at N 32768 k 256, the bank conflicts were about half of the compaction path's loss at large N and none of it at small N."
+  ],
+  "negative": [
+   "bf16 N 4096 k 256 latency 0.971x: a fallback cell whose code did not change, the padded buffer moves the harness's output array by 2 KB in dynamic shared memory, a 3 percent swing of the kind T28 warns about."
+  ],
+  "surprises": [
+   "ptxas chose 64 instead of 127 registers for the bf16 N 8192 throughput kernel after a change that only touched the candidate loads, worth 2 blocks per SM."
+  ],
+  "open_questions": [
+   "The compaction path still loses to B1 at N 8192 and below after the fix, the remaining overhead is the branch regions around the per-item memory operations (next batch) and the compaction sweep itself."
+  ]
+ }
+}

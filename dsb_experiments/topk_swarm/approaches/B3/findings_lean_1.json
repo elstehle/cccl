@@ -1,0 +1,53 @@
+{
+ "author": "opt-B3",
+ "approach_id": "B3",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": false,
+  "temp_storage_bytes": 6224,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 histogram init, 3 per radix pass (histogram, scan internal, state), 2 in the compaction (scan internal, buffer ready), 1 in the final emission (scan internal)",
+  "k_range": "[1, N) at run time, k == N unsupported",
+  "n_range": "N = 256 x IPT, IPT >= 1, N <= 32768 (16-bit index and count fields), measured 1024 to 32768",
+  "type_constraints": "fp32 and bf16 (fp16 has traits, outside the focus set), int32 indices derived from the blocked position",
+  "nan_behavior": "positive NaN orders above +inf and is selected first, negative NaN orders below -inf, never produced by focus-set inputs. -0.0 is normalized to +0.0 for ranking (fp32 through one FADD with +0.0, bf16 through a compare and select)",
+  "tie_break_support": "inherent: positions come from block scans in blocked order, the compacted candidates are in index order and the ties at the k-th key are ranked in index order, so prefer_smaller_index and prefer_larger_index run the same code as not_guaranteed",
+  "sorted_output_support": "not supported inherently, post-sort of k"
+ },
+ "commit": "39ef997320",
+ "report_path": "approaches/B3/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B3_lean.cuh",
+  "approaches/B3/block_topk_compact.cuh",
+  "approaches/B3/model.py",
+  "harness/cells_b3.json"
+ ],
+ "techniques_adopted": [
+  "T9",
+  "T10",
+  "T11",
+  "T32"
+ ],
+ "techniques_contributed": [],
+ "correctness_notes": "Every cell passed the full oracle battery for both requirements (random x4 seeds, tie_heavy, sorted_asc, sorted_desc, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized). Control is B3_digit9 in the same lock section. One change: the guarded per-item memory operations are plain C++ again, one store inside each if, destinations and values computed before it, positions advanced by selects, no inline PTX.",
+ "findings": {
+  "low_level": [
+   "BSSY counts are identical to the control in every inspected kernel (494 at fp32 N 16384 K 64, 86 at bf16 N 8192, 16 at bf16 N 1024), the reconvergence regions are the histogram atomics and no source shape of the stores changes them. ISETP drops (3238 against 4062 at fp32 N 16384) but IMAD rises (2502 against 2064): the per-item 64-bit destination pointers are kept live, registers 255 against 195 (fp32 N 16384 latency), 215 against 128 (bf16 N 16384 throughput), spills 1000 bytes at bf16 N 32768 (0 before) and 1608 at fp32 N 32768 (804 before)."
+  ],
+  "algorithmic": [
+   "Latency 0.92x to 1.06x against digit9, throughput 0.75x (bf16 N 16384, occupancy 1 against 2) to 1.03x. The variant is rejected, the predicated asm form of B3_straight stays the best store shape measured."
+  ],
+  "negative": [
+   "Writing `int* dst = out + pos; if (c) *dst = v;` per item in an unrolled tile loop is worse than the asm form and than the original `if (c) out[pos++] = v`: the compiler materializes a 64-bit pointer per item (knowledge base 2.2 and 2.5, loop-carried state is where registers hide)."
+  ],
+  "surprises": [
+   "The branch regions are insensitive to the store spelling altogether, the only thing that moved them (padded to straight) was removing the position increment from the guarded region."
+  ],
+  "open_questions": [
+   "A 32-bit shared address (cvta once, per-item offset) in C++ instead of a generic pointer may keep the lean shape without the register cost, untested."
+  ]
+ }
+}
