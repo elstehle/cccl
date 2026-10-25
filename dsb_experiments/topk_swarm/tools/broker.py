@@ -448,6 +448,26 @@ def dedicate_node(key, holders=None, clear=False):
     return 0
 
 
+def free_a_slot(reason):
+    """Release one idle pool node to make cap room for a dedicated node: an idle expiring node first,
+    else the idle non-dedicated node with the least lease time left. Returns the released job id or None."""
+    with Registry() as reg:
+        now = utcnow()
+        idle = [n for n in reg.data["nodes"]
+                if n.get("status") in ("ready", "expiring") and not n.get("dedicated_to")
+                and not any(g.get("holder") for g in n.get("gpus", []))
+                and not any((g.get("queue") or []) for g in n.get("gpus", []))]
+        if not idle:
+            print("make room (%s): every pool node is held, nothing released" % reason)
+            return None
+        expiring = [n for n in idle if n.get("status") == "expiring"]
+        pick = min(expiring or idle, key=lambda n: remaining_seconds(n, now) or 0)
+        jid, label = pick["job_id"], node_label(pick)
+    print("make room (%s): releasing idle pool node %s (job %s)" % (reason, label, jid))
+    release_node(jid)
+    return jid
+
+
 def successor_pass(wait_s):
     """For every dedicated node with less than 90 minutes left, make sure a successor with the same
     dedication exists (requested, bootstrapping or ready with more time). Returns (new job ids, blocked)
@@ -692,6 +712,12 @@ def cmd_status(args):
 
 def cmd_request(args):
     jids = []
+    if args.make_room:
+        with Registry() as reg:
+            short = count_active(reg.data) + args.count - reg.data.get("cap", 6)
+        for _ in range(max(0, short)):
+            if free_a_slot("request --make-room") is None:
+                break
     with Registry() as reg:
         active = count_active(reg.data)
         cap = reg.data.get("cap", 6)
@@ -786,9 +812,13 @@ def cmd_tick(args):
             release_node(jid)
         if idle_expiring:
             if succ_blocked:
-                successor_pass(parse_duration(args.wait))
+                _, succ_blocked = successor_pass(parse_duration(args.wait))
             if rc == 3:
                 rc, _ = renew_pool(target, parse_duration(args.wait), queues=None, per_arch=per_arch)
+        if succ_blocked:
+            # dedicated successors win over pool size: give up one idle pool node
+            if free_a_slot("dedicated successor") is not None:
+                successor_pass(parse_duration(args.wait))
     with Registry() as reg:
         todo = [n["job_id"] for n in reg.data["nodes"] if n.get("status") == "requested" and n.get("ssh")]
     for jid in todo:
@@ -862,6 +892,7 @@ def main(argv=None):
     r.add_argument("--nodelist", default=None, help="pin to one host (bypasses the exclude list, one-off)")
     r.add_argument("--note", default=None, help="why this one-off exists, stored in the entry")
     r.add_argument("--dedicate", default=None, help="holders this node is reserved for, e.g. eval-engineer,hw-researcher")
+    r.add_argument("--make-room", action="store_true", help="if the cap is full, release idle pool nodes first (for dedicated requests)")
     r.set_defaults(func=cmd_request)
     d = sub.add_parser("dedicate")
     d.add_argument("node")
