@@ -172,7 +172,9 @@ static void report(const char* label, const std::vector<long long>& st, int reps
     std::sort(d.begin(), d.end());
     printf(" %7lld n%-3d", d[d.size() / 2], (int) d.size());
   }
-  std::vector<long long> tot;
+  // total: start to end stamp. post: last pass stamp to end stamp (tie phase plus epilogue, the end stamp
+  // sits behind a barrier, so this is the block's view and not warp 0's). Both are medians over the rows.
+  std::vector<long long> tot, post;
   for (int r = 0; r < reps; ++r)
   {
     if (want_flag >= 0 && st[r * 16 + 9] != want_flag)
@@ -180,11 +182,22 @@ static void report(const char* label, const std::vector<long long>& st, int reps
       continue;
     }
     tot.push_back(st[r * 16 + 8] - st[r * 16 + 0]);
+    long long last_pass = 0;
+    for (int q = 5; q >= 2; --q)
+    {
+      if (st[r * 16 + q] != 0)
+      {
+        last_pass = st[r * 16 + q];
+        break;
+      }
+    }
+    post.push_back(st[r * 16 + 8] - last_pass);
   }
   if (!tot.empty())
   {
     std::sort(tot.begin(), tot.end());
-    printf(" | total %7lld", tot[tot.size() / 2]);
+    std::sort(post.begin(), post.end());
+    printf(" | total %7lld post %6lld", tot[tot.size() / 2], post[post.size() / 2]);
   }
   printf("\n");
 }

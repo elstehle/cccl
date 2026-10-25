@@ -15,14 +15,17 @@
 //     summed. Nothing per slot stays in registers but one bit per slot (the candidate mask).
 //   * With tie_ballots::warp_sparse a warp first ORs its candidate masks (one redux per mask word), zeros its
 //     table row, and ballots only the slots that hold a candidate somewhere in the warp (a loop over the set
-//     bits of the union, warp uniform). Warps without a candidate skip the base scan and the lookup. With
-//     tie_ballots::per_slot every slot is balloted as in B1_det2 (attribution in the phase profile).
+//     bits of the union, warp uniform, per 32-bit half of the mask). With tie_ballots::per_slot every slot is
+//     balloted as in B1_det2 (cheaper up to 8 slots, the adapter chooses by items per thread). In both forms
+//     the warps without a candidate (one any-vote) skip the base scan and the lookup.
 //   * Every warp derives its own (warp, slot) bases by the shuffle scan as before and writes them to a second
 //     small table in shared memory (own row, warp sync, no block barrier).
-//   * Only the threads that hold a candidate loop over the set bits of their mask: two shared loads and a
-//     popcount give rank = base[warp][slot] + popc(ballot[warp][slot] & lt_mask), and the item is written to
-//     out[total_selected + rank] when the rank is below the remaining k. The epilogue's ticket loop keeps the
-//     class-indexed ticket (T57) and no longer branches on a taken mask.
+//   * Only the threads that hold a candidate look their ranks up: two shared loads and a popcount give
+//     rank = base[warp][slot] + popc(ballot[warp][slot] & lt_mask), and the item is written to
+//     out[total_selected + rank] when the rank is below the remaining k. Up to 8 slots this is one predicated
+//     lookup per slot with compile-time offsets, above it a loop over the set bits of the candidate mask (per
+//     32-bit half). The epilogue's ticket loop keeps the class-indexed ticket (T57) and no longer branches on
+//     a taken mask.
 //
 // Everything else is B1_det2 (prologue -0.0 normalization under prefer_smaller_index, two radix passes for
 // bf16 and up to four for fp32, index-only epilogue by class-indexed tickets), see that header.
@@ -108,26 +111,6 @@ enum class tie_ballots
   per_slot, // one ballot per item slot and warp, as B1_det2
   warp_sparse // one ballot per slot that holds a candidate somewhere in the warp, warps without ties skip
 };
-
-// Helpers over the per-thread candidate mask (32 or 64 bits wide).
-[[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE int lowest_set_bit(::cuda::std::uint32_t m)
-{
-  return __ffs(static_cast<int>(m)) - 1;
-}
-[[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE int lowest_set_bit(::cuda::std::uint64_t m)
-{
-  return __ffsll(static_cast<long long>(m)) - 1;
-}
-[[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE ::cuda::std::uint32_t warp_or(::cuda::std::uint32_t m)
-{
-  return __reduce_or_sync(0xffffffffu, m);
-}
-[[nodiscard]] _CCCL_DEVICE_API _CCCL_FORCEINLINE ::cuda::std::uint64_t warp_or(::cuda::std::uint64_t m)
-{
-  const ::cuda::std::uint32_t lo = __reduce_or_sync(0xffffffffu, static_cast<::cuda::std::uint32_t>(m));
-  const ::cuda::std::uint32_t hi = __reduce_or_sync(0xffffffffu, static_cast<::cuda::std::uint32_t>(m >> 32));
-  return (static_cast<::cuda::std::uint64_t>(hi) << 32) | lo;
-}
 
 template <typename KeyT,
           int ThreadsPerBlock,
@@ -363,6 +346,41 @@ private:
     total_selected = k - k_remaining;
   }
 
+  // Ballot the slots whose bit is set in the warp-uniform word `warp_half` (slots base .. base + 31), one
+  // ballot per set slot, lane 0 stores the ballot word into the warp's row of the tie table.
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void
+  ballot_slots(::cuda::std::uint32_t warp_half, ::cuda::std::uint32_t lane_half, int base, int warp, int lane)
+  {
+    while (warp_half != 0)
+    {
+      const int b = __ffs(static_cast<int>(warp_half)) - 1;
+      warp_half &= warp_half - 1u;
+      const unsigned ballot = __ballot_sync(0xffffffffu, ((lane_half >> b) & 1u) != 0u);
+      if (lane == 0)
+      {
+        storage.tie_table[warp][base + b] = ballot;
+      }
+    }
+  }
+
+  // Rank lookup for the candidates whose bit is set in this lane's word `lane_half` (slots base .. base + 31):
+  // rank = base of the (warp, slot) plus the candidates of the slot in lower lanes, written out when below take.
+  _CCCL_DEVICE_API _CCCL_FORCEINLINE void lookup_slots(
+    ::cuda::std::uint32_t lane_half, int base, int warp, unsigned lt_mask, int take, int total_selected, int* out_idx)
+  {
+    while (lane_half != 0)
+    {
+      const int b = __ffs(static_cast<int>(lane_half)) - 1;
+      lane_half &= lane_half - 1u;
+      const int i    = base + b;
+      const int rank = storage.base_table[warp][i] + __popc(storage.tie_table[warp][i] & lt_mask);
+      if (rank < take)
+      {
+        out_idx[total_selected + rank] = item_slot(i);
+      }
+    }
+  }
+
   // Deterministic tie-break, per candidate. The candidates are the items equal to the k-th key (every bit is
   // in the prefix when this runs) and `take` of them, the ones with the smallest source indices, are written
   // to out_idx[total_selected, total_selected + take). Striped tile order (slot major, then warp, then lane)
@@ -380,19 +398,24 @@ private:
     const int lane         = linear_tid % 32;
     const unsigned lt_mask = (1u << lane) - 1u;
     constexpr int rounds   = ::cuda::ceil_div(items_per_thread, 32);
+    constexpr bool wide    = sizeof(tie_mask_t) == 8;
 
+    // One candidate bit per slot (the compiler builds the word as a LOP3 tree, not a chain).
     tie_mask_t cand_mask = 0;
+    _CCCL_PRAGMA_UNROLL_FULL()
+    for (int i = 0; i < items_per_thread; ++i)
+    {
+      const bool cand = (unsigned_keys[i] & prefix_mask) == kth_prefix;
+      cand_mask |= static_cast<tie_mask_t>(cand) << i;
+    }
+    const ::cuda::std::uint32_t cand_lo = static_cast<::cuda::std::uint32_t>(cand_mask);
+    const ::cuda::std::uint32_t cand_hi = wide ? static_cast<::cuda::std::uint32_t>(cand_mask >> (wide ? 32 : 0)) : 0u;
+
     bool warp_has_candidate;
     if constexpr (Ballots == tie_ballots::warp_sparse)
     {
-      _CCCL_PRAGMA_UNROLL_FULL()
-      for (int i = 0; i < items_per_thread; ++i)
-      {
-        const bool cand = (unsigned_keys[i] & prefix_mask) == kth_prefix;
-        cand_mask |= static_cast<tie_mask_t>(cand) << i;
-      }
       // Zero the warp's table row, then ballot only the slots that hold a candidate somewhere in the warp.
-      // The union is warp uniform, so the loop and its ballots are too.
+      // The union is warp uniform, so the loops and their ballots are too.
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int rnd = 0; rnd < rounds; ++rnd)
       {
@@ -402,18 +425,14 @@ private:
           storage.tie_table[warp][slot] = 0;
         }
       }
-      tie_mask_t warp_slots = warp_or(cand_mask);
-      warp_has_candidate    = warp_slots != 0;
+      const ::cuda::std::uint32_t union_lo = __reduce_or_sync(0xffffffffu, cand_lo);
+      const ::cuda::std::uint32_t union_hi = wide ? __reduce_or_sync(0xffffffffu, cand_hi) : 0u;
+      warp_has_candidate                   = (union_lo | union_hi) != 0u;
       __syncwarp();
-      while (warp_slots != 0)
+      ballot_slots(union_lo, cand_lo, 0, warp, lane);
+      if constexpr (wide)
       {
-        const int i = lowest_set_bit(warp_slots);
-        warp_slots &= warp_slots - 1;
-        const unsigned ballot = __ballot_sync(0xffffffffu, ((cand_mask >> i) & 1) != 0);
-        if (lane == 0)
-        {
-          storage.tie_table[warp][i] = ballot;
-        }
+        ballot_slots(union_hi, cand_hi, 32, warp, lane);
       }
     }
     else
@@ -421,15 +440,13 @@ private:
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int i = 0; i < items_per_thread; ++i)
       {
-        const bool cand = (unsigned_keys[i] & prefix_mask) == kth_prefix;
-        cand_mask |= static_cast<tie_mask_t>(cand) << i;
-        const unsigned ballot = __ballot_sync(0xffffffffu, cand);
+        const unsigned ballot = __ballot_sync(0xffffffffu, ((cand_mask >> i) & 1) != 0);
         if (lane == (i % 32))
         {
           storage.tie_table[warp][i] = ballot;
         }
       }
-      warp_has_candidate = true;
+      warp_has_candidate = __any_sync(0xffffffffu, cand_mask != 0);
     }
     __syncthreads();
     B1D3_STAMP(6);
@@ -438,51 +455,91 @@ private:
     {
       // Every warp derives its own (slot, warp) bases: lane l owns slot l per round of 32 slots, sums the
       // ballot populations of its slot over the warps, keeps the prefix of the warps below its own, a shuffle
-      // scan orders the slots, and the base goes to the warp's row of the base table.
-      int running = 0;
+      // scan orders the slots, and the base goes to the warp's row of the base table. The rounds load, sum
+      // and scan side by side and are chained only by the running total at the end.
+      histo_counter_t words[rounds][num_warps];
       _CCCL_PRAGMA_UNROLL_FULL()
       for (int rnd = 0; rnd < rounds; ++rnd)
       {
         const int slot      = rnd * 32 + lane;
         const bool has_slot = slot < items_per_thread;
-        int total           = 0;
-        int wpre            = 0;
         _CCCL_PRAGMA_UNROLL_FULL()
         for (int w = 0; w < num_warps; ++w)
         {
-          const int v = has_slot ? __popc(storage.tie_table[w][has_slot ? slot : 0]) : 0;
-          wpre += (w < warp) ? v : 0;
-          total += v;
+          words[rnd][w] = has_slot ? storage.tie_table[w][has_slot ? slot : 0] : 0u;
         }
-        constexpr int slots_in_round = (items_per_thread < 32) ? items_per_thread : 32;
-        int incl                     = total;
+      }
+      int total[rounds];
+      int wpre[rounds];
+      int incl[rounds];
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int rnd = 0; rnd < rounds; ++rnd)
+      {
+        total[rnd] = 0;
+        wpre[rnd]  = 0;
         _CCCL_PRAGMA_UNROLL_FULL()
-        for (int d = 1; d < slots_in_round; d <<= 1)
+        for (int w = 0; w < num_warps; ++w)
         {
-          const int n = __shfl_up_sync(0xffffffffu, incl, d);
+          const int v = __popc(words[rnd][w]);
+          wpre[rnd] += (w < warp) ? v : 0;
+          total[rnd] += v;
+        }
+        incl[rnd] = total[rnd];
+      }
+      constexpr int slots_in_round = (items_per_thread < 32) ? items_per_thread : 32;
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int d = 1; d < slots_in_round; d <<= 1)
+      {
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int rnd = 0; rnd < rounds; ++rnd)
+        {
+          const int n = __shfl_up_sync(0xffffffffu, incl[rnd], d);
           if (lane >= d)
           {
-            incl += n;
+            incl[rnd] += n;
           }
         }
-        if (has_slot)
+      }
+      int running = 0;
+      _CCCL_PRAGMA_UNROLL_FULL()
+      for (int rnd = 0; rnd < rounds; ++rnd)
+      {
+        const int slot = rnd * 32 + lane;
+        if (slot < items_per_thread)
         {
-          storage.base_table[warp][slot] = running + (incl - total) + wpre;
+          storage.base_table[warp][slot] = running + (incl[rnd] - total[rnd]) + wpre[rnd];
         }
-        running += __shfl_sync(0xffffffffu, incl, slots_in_round - 1);
+        if (rnd + 1 < rounds)
+        {
+          running += __shfl_sync(0xffffffffu, incl[rnd], slots_in_round - 1);
+        }
       }
       __syncwarp();
       B1D3_STAMP(10);
 
-      // Only the threads that hold a candidate look up their ranks, one lookup per candidate.
-      while (cand_mask != 0)
+      // Only the threads that hold a candidate look up their ranks, one lookup per candidate. Few slots:
+      // one predicated lookup per slot with compile-time table offsets. Many slots: a loop over the set bits.
+      if constexpr (items_per_thread <= 8)
       {
-        const int i = lowest_set_bit(cand_mask);
-        cand_mask &= cand_mask - 1;
-        const int rank = storage.base_table[warp][i] + __popc(storage.tie_table[warp][i] & lt_mask);
-        if (rank < take)
+        _CCCL_PRAGMA_UNROLL_FULL()
+        for (int i = 0; i < items_per_thread; ++i)
         {
-          out_idx[total_selected + rank] = item_slot(i);
+          if (((cand_mask >> i) & 1) != 0)
+          {
+            const int rank = storage.base_table[warp][i] + __popc(storage.tie_table[warp][i] & lt_mask);
+            if (rank < take)
+            {
+              out_idx[total_selected + rank] = item_slot(i);
+            }
+          }
+        }
+      }
+      else
+      {
+        lookup_slots(cand_lo, 0, warp, lt_mask, take, total_selected, out_idx);
+        if constexpr (wide)
+        {
+          lookup_slots(cand_hi, 32, warp, lt_mask, take, total_selected, out_idx);
         }
       }
     }
