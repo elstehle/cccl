@@ -81,17 +81,52 @@ def expand_cells(spec, scope, args):
     ks = [int(x) for x in args.k.split(",")] if args.k else spec["k_values"]
     threads = [int(x) for x in args.threads.split(",")] if args.threads else sc["threads"]
     frac = spec.get("k_max_fraction", 0.5)
+    k_by_n = {int(a): b for a, b in spec.get("k_by_n", {}).items()}
     cells = []
     for key, t, n, k, req in itertools.product(keys, threads, ns, ks, reqs):
         if n < t or k > n * frac:
+            continue
+        if n in k_by_n and k not in k_by_n[n]:
             continue
         cells.append({"key_type": key, "threads": t, "n": n, "k": k, "requirement": req})
     return cells
 
 
+def expand_named_cells(path, scope, args, default_threads):
+    """Cells from ideas/named_cells.json (one object per workload) for one scope. regime and
+    requirement "both" expand to the two focus values. threads defaults to the scope's first
+    thread count (subwarp cells need an explicit "threads" or get the smallest logical warp that
+    divides n). Cells whose n is not a multiple of the thread count are skipped and reported."""
+    data = json.load(open(path))
+    items = data if isinstance(data, list) else data.get("cells", [])
+    keys = args.keys.split(",") if args.keys else None
+    reqs = args.req.split(",") if args.req else None
+    cells, skipped = [], []
+    for it in items:
+        if it.get("scope") != scope:
+            continue
+        if keys and it.get("key_type") not in keys:
+            continue
+        n, k = int(it["n"]), int(it["k"])
+        t = int(it.get("threads", 0)) or default_threads.get(scope, 32)
+        if scope == "subwarp" and not it.get("threads"):
+            t = next((x for x in (4, 8, 16) if n % x == 0 and n >= x and n // x <= 32), 0)
+        if t == 0 or n % t != 0 or n < t:
+            skipped.append((it.get("name"), "n %d is not a multiple of %d threads" % (n, t)))
+            continue
+        req_list = ["not_guaranteed", "prefer_smaller_index"] if it.get("requirement") == "both" else [it["requirement"]]
+        if reqs:
+            req_list = [r for r in req_list if r in reqs]
+        for req in req_list:
+            cells.append({"key_type": it["key_type"], "threads": t, "n": n, "k": k, "requirement": req,
+                          "workload_name": it.get("name"), "named_regime": it.get("regime", "both")})
+    return cells, skipped
+
+
 def cell_name(variant, control, c):
-    return "%s__%s__%s_T%d_N%d_K%d_%s" % (variant, control, c["key_type"], c["threads"], c["n"], c["k"],
+    base = "%s__%s__%s_T%d_N%d_K%d_%s" % (variant, control, c["key_type"], c["threads"], c["n"], c["k"],
                                          c["requirement"])
+    return base + ("__" + c["workload_name"]) if c.get("workload_name") else base
 
 
 def nvcc_version(nvcc):
@@ -268,6 +303,7 @@ def main():
     ap.add_argument("--adapter", required=True, help="variant adapter id (header adapters/<id>.cuh)")
     ap.add_argument("--control", help="control adapter id (default: the variant itself, an A/A control)")
     ap.add_argument("--cells", default=os.path.join(HERE, "cells_focus.json"))
+    ap.add_argument("--named-cells", help="ideas/named_cells.json: run these workload cells instead of the grid")
     ap.add_argument("--keys", help="comma list, subset of the cells file")
     ap.add_argument("--req", help="comma list of requirements")
     ap.add_argument("--n", help="comma list of N")
@@ -310,7 +346,14 @@ def main():
     if v_meta["scope"] != c_meta["scope"]:
         raise SystemExit("variant scope %s differs from control scope %s" % (v_meta["scope"], c_meta["scope"]))
     spec = json.load(open(args.cells))
-    cells = expand_cells(spec, v_meta["scope"], args)
+    if args.named_cells:
+        default_threads = {sc: v["threads"][0] for sc, v in spec["scopes"].items()}
+        cells, skipped = expand_named_cells(args.named_cells, v_meta["scope"], args, default_threads)
+        for name, why in skipped:
+            log("skipping named cell %s: %s" % (name, why))
+        spec = dict(spec, name="named")
+    else:
+        cells = expand_cells(spec, v_meta["scope"], args)
     if not cells:
         raise SystemExit("no cells after filtering")
 
@@ -428,7 +471,10 @@ def main():
         for c in runnable:
             for pat in patterns:
                 out = os.path.join(log_dir, "%s__%s.json" % (c["name"], pat))
-                extra = ["--out", out, "--pattern", pat, "--regimes", args.regimes, "--seeds", str(args.seeds)]
+                regimes = args.regimes
+                if c.get("named_regime") and c["named_regime"] != "both":
+                    regimes = ",".join(r for r in args.regimes.split(",") if r == c["named_regime"]) or regimes
+                extra = ["--out", out, "--pattern", pat, "--regimes", regimes, "--seeds", str(args.seeds)]
                 if args.no_battery:
                     extra.append("--no-battery")
                 if args.oracle_only:
@@ -476,6 +522,10 @@ def main():
                     refine_resources(blk.get("resources_noop", {}), ptx, sas)
         for cell in d.get("cells", []):
             refine_resources(cell["resources"], ptx, sas)
+            if c.get("workload_name"):
+                cell["workload_name"] = c["workload_name"]
+                cell["input_pattern"] = "named_workload" if cell.get("input_pattern") == "random" else cell["input_pattern"]
+                cell["named_pattern"] = rec["pattern"]
             cell["raw"] = {
                 "cell_json": rec["json"],
                 "variant": d.get("variant"),

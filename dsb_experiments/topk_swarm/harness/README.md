@@ -194,9 +194,17 @@ harness (loads, barrier, output write), which is the same for variant and contro
 ## 7. Cells, JSON, run.py
 
 `cells_focus.json` lists key types, requirements, patterns, regimes, k values and per scope the
-thread counts and N values. A cell is one combination with `k <= N/2` and `N >= Threads`. run.py
-expands the scope of the adapter, generates one TU per cell (variant and control in the same
-process), compiles them in parallel with
+thread counts and N values. A cell is one combination with `k <= N/2` and `N >= Threads`, and
+an optional `k_by_n` map restricts the k values per N (`cells_flipbands.json` uses it for the dense
+grids on the flip bands of `ideas/PRIORITIES.md`, phase 3). `--named-cells ideas/named_cells.json`
+runs the algorithm researcher's named workload cells instead of the grid: each entry gives scope,
+key type, n, k, requirement and regime (`both` expands to the two focus values), the thread count
+is the scope's first entry in the cells file unless the entry has `threads` (sub-warp cells get the
+smallest logical warp that divides n). Non power of two N is fine as long as N is a multiple of the
+thread count, otherwise the cell is skipped with a message (partial tiles are not in the contract
+yet). Named cells carry `workload_name`, `input_pattern` `named_workload` and the generating
+pattern in `named_pattern`. run.py expands the scope of the adapter, generates one TU per cell
+(variant and control in the same process), compiles them in parallel with
 
 ```
 nvcc -std=c++17 -O3 -arch=sm_100 -I<repo>/cub -I<repo>/libcudacxx/include -I<repo>/thrust -I<harness> -Xptxas -v

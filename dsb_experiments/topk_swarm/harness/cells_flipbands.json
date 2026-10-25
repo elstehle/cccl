@@ -1,0 +1,25 @@
+{
+  "name": "flipbands",
+  "description": "Dense grids on the bands where ideas/PRIORITIES.md expects the winner to flip (phase 3 refinement): warp N 256 k 8 to 64, N 512 k 16 to 64, N 1024 and 2048 at k 16 and 32, block N 1024 k 8 to 64, N 8192 and above at k 16 to 256. Same filters as cells_focus.json: a cell is one combination with k <= n/2 and n >= threads, k restricted per N by k_by_n below.",
+  "key_types": ["bf16", "fp32"],
+  "value_type": "int32",
+  "output_form": "indices",
+  "requirements": ["not_guaranteed", "prefer_smaller_index"],
+  "input_patterns": ["random"],
+  "regimes": ["latency", "throughput"],
+  "k_values": [8, 16, 24, 32, 48, 64, 128, 256],
+  "k_max_fraction": 0.5,
+  "k_by_n": {
+    "256": [8, 16, 24, 32, 48, 64],
+    "512": [16, 24, 32, 48, 64],
+    "1024": [8, 16, 24, 32, 48, 64],
+    "2048": [16, 32],
+    "8192": [16, 32, 64, 128, 256],
+    "16384": [16, 32, 64, 128, 256],
+    "32768": [16, 32, 64, 128, 256]
+  },
+  "scopes": {
+    "warp": {"threads": [32], "n": [256, 512, 1024, 2048]},
+    "block": {"threads": [256], "n": [1024, 8192, 16384, 32768]}
+  }
+}

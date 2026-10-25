@@ -116,3 +116,40 @@ Card: `cards/W1_reference_gb200_20261025_1.json`, raw file: `state/results/eval-
 | fp32 | 4096 | 64 | not_guaranteed | 159561 | 159556 | 159609 | 48 | 1.0000 | 72.3 | 72.3 | 7498 | 1 | 255 | 524 | 1.0 |
 | fp32 | 4096 | 256 | not_guaranteed | 226711 | 226726 | 226759 | 48 | 1.0000 | 48.2 | 48.2 | 7880 | 1 | 255 | 476 | 1.0 |
 | fp32 | 4096 | 1024 | not_guaranteed | 309566 | 309446 | 309614 | 48 | 1.0000 | 35.5 | 35.5 | 8682 | 1 | 255 | 536 | 1.0 |
+
+## 4. Why W1 fp32 compiles to more registers and runs 3 to 4 percent slower on GB200
+
+Observation (curator, from the two cards): W1_reference fp32 uses 22 registers on GB200 against 19
+on B200 at N 32, 63 against 56 at N 512, and is 583 against 605 cycles (N 32, k 4 and 16) and 9970
+against 10281 (N 512) slower on GB200, while every B1 cell and every bf16 W1 cell match within 1
+percent. Same commit (fc5de9f429), same nvcc version string (13.4.92, build compiler.38855100_0),
+same gcc 13.3.0 host compiler, same generated TU text.
+
+Evidence, cell `W1_reference__W1_reference__fp32_T32_N32_K4_not_guaranteed`:
+
+- Preprocessed device source (`nvcc --keep`, the `.cpp1.ii`): 270 differing lines, all of them
+  glibc host types (`__nlink_t`, pthread layouts), aarch64 vector math declarations and the
+  signedness of plain `char` (unsigned on aarch64). Not one differing line in the CUB, libcu++ or
+  harness regions. The device code the compiler sees is the same.
+- PTX (`nvcc -ptx`): 1118 lines and 28 `bra` on x86 against 1199 lines and 48 `bra` on aarch64.
+  The x86 build lowers every compare-exchange of the bitonic network to branchless predicate
+  logic (`setp.ne.f32`, `setp.leu.f32`, `xor.pred`, `and.pred`, `selp`), the aarch64 build emits
+  `setp.equ.f32` followed by a branch around the swap (`@%p bra`) for every stage. The `cicc`
+  binaries differ (md5 0f1ae778 on x86, f40e958a on aarch64, both report NVVM 7.0), so the
+  if-conversion decision for `if (should_swap) swap(...)` in `WarpBitonicSortNetwork::merge_stage`
+  is made differently by the two platform builds of the same compiler version.
+- SASS (`cuobjdump -sass`, variant latency kernel): ptxas re-predicates the branches on both
+  sides (5 BRA, 60 SHFL, 60 FSETP, 62 SEL in both), but the aarch64 build has 328 instructions
+  against 312 and a longer dependency chain per stage: `FSETP.NE` then a predicated
+  `FSETP.GT.XOR` then a predicated `FSEL` (three dependent steps) against `FSETP.LEU.XOR` and
+  `FSETP.NE.AND` in parallel then `FSEL` (two steps) on x86. Three more live predicates and
+  registers, 5 percent more instructions, 3 to 4 percent more cycles on a shuffle-and-compare
+  bound chain.
+
+Conclusion: not the harness (the no-op kernels have 16 registers on both, B1 and bf16 W1 match)
+and not the host compiler's view of the source, but the device compiler front end (`cicc`) of the
+aarch64 CUDA 13.4.92 build choosing branches where the x86 build chooses selects. The bf16 path
+goes through `__hgt` and does not show the difference. Consequence for the study: numbers of
+compare-based primitives built on an aarch64 host are not the x86 numbers even for the same SM,
+GB200 cards stand on their own (as the brief requires) and a GB200 to B200 gap of a few percent on
+a sorting network is a toolchain artifact before it is a hardware effect. Catalogue entry T20.

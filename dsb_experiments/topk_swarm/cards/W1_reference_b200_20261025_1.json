@@ -1949,12 +1949,13 @@
   ],
   "surprises": [
    "The July figure for a single WarpBitonicTopK 128 to 16 call was about 2500 cycles (half of bitonic_hier's 5112 with its block barrier, smem staging and chain link), this harness measures 2041 net for the same shape and key type, consistent once the July overheads are taken out.",
-   "On GB200 the A/A control of the data-oblivious chain spreads by 2 to 4 percent at N 2048 fp32 (50216 vs 48859 at k 4, 141984 vs 136712 at k 1024) while B200 agrees to 0.01 percent, and the GB200 fp32 N 2048 k 1024 build shows 64 bytes of spill where B200 shows none at the same register count."
+   "On GB200 the A/A control of the data-oblivious chain spreads by 2 to 4 percent at N 2048 fp32 (50216 vs 48859 at k 4, 141984 vs 136712 at k 1024) while B200 agrees to 0.01 percent, and the GB200 fp32 N 2048 k 1024 build shows 64 bytes of spill where B200 shows none at the same register count.",
+   "Resolved after the cards: the GB200 fp32 register and cycle difference (19 vs 22 registers at N 32, 3 to 4 percent more cycles) is a toolchain artifact. The preprocessed device source is identical on both hosts, but the aarch64 build of cicc 13.4.92 emits a branch per compare-exchange (48 bra in PTX against 28) where the x86 build emits selects. ptxas re-predicates both, the aarch64 SASS has 328 against 312 instructions and a three-step predicated chain per stage. Details in approaches/W1/REFERENCE.md section 4, catalogue entry T20."
   ],
   "open_questions": [
    "Which part of the bf16 penalty is the shuffle packing and which the __hgt compare? A packed two-keys-per-lane variant answers both at once.",
    "Does the buffered threshold-compaction variant of PR #9281 beat the eager network for N much larger than MaxK (N 512 and up at k 16), where the eager form spends 90 percent of its time sorting chunks that are then discarded?",
-   "Is the GB200 A/A spread a clock effect on a shuffle-bound chain (cycles should be clock invariant) or an SM placement effect? Worth a repeat with more repetitions before any 3 percent GB200 claim is made for a warp primitive."
+   "Is the GB200 A/A spread of 2 to 4 percent at N 2048 fp32 (B200: 0.01 percent) a clock effect on a shuffle-bound chain or an SM placement effect? Repeat with more repetitions before any 3 percent GB200 claim for a warp primitive."
   ]
  },
  "techniques_adopted": [],
