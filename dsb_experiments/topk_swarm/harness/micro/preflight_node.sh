@@ -13,7 +13,11 @@
 # Reference values (healthy B200s umbriel-b200-047, -068, -091, 2026-10-25, nvcc 13.4.92): 80 KB IMAD round
 # 195.2 cycles, branchy IMAD round 212.6, dependent IMAD chain 4.0 to 4.1 cycles per instruction up to
 # 128 KB, L2 hit 278 to 310 cycles per hop, sanity cell 6056 (this harness copy) with the control near
-# 6050 to 6070 and the canary 32.0, SM clock 1950 to 1965 MHz under load, memory 3996 MHz.
+# 6050 to 6070 and the canary 32.0, SM clock 1950 to 1965 MHz under load, memory 3996 MHz. The same references
+# apply to a GB200 node for every in-core check (T16: identical per-SM cycle costs), only the SM clock probe
+# may read lower (1951 to 1953 MHz seen on gb200-nvl4-ts2-91) and the L2 hit latency may differ by a few percent.
+# A GB200 node needs its exec_prefix from the registry (enroot), which this script reads, and the host paths
+# /tmp/estehle/topk_swarm/topk_swarm for the fetch are mapped to /work/topk_swarm inside the container.
 set -uo pipefail
 N=${1:?node}
 H=${2:-hw-researcher}
@@ -31,10 +35,25 @@ EOF
 )
 [[ -n "$PREFIX" ]] || { echo "node $N not in the registry as ready"; exit 1; }
 echo "$(date -u +%H:%M:%SZ) node $N prefix: ${PREFIX:0:40}"
+# docker nodes have the root only inside the container, enroot nodes (GB200) map /work to a host path
+if [[ "$PREFIX" == *enroot* ]]; then HOSTROOT=/tmp/estehle/topk_swarm/topk_swarm; else HOSTROOT=""; fi
+ship_and_build() {
+  if [[ -n "$HOSTROOT" ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=20 "$N" "mkdir -p $HOSTROOT/work/hw-researcher/preflight $HOSTROOT/results/hw-researcher && cd $HOSTROOT/work/hw-researcher/preflight && tar xzf - && chmod +x micro/run_icache.sh && mkdir -p micro/build_icache cell && mv -f run.py topk_harness.cuh canary_main.cu cells_focus.json cell/ 2>/dev/null; rm -rf cell/adapters; mv adapters cell/; $PREFIX bash -c 'cd /work/topk_swarm/work/hw-researcher/preflight/micro && /usr/local/cuda/bin/nvcc -arch=sm_100 -O3 -std=c++17 -Xptxas -v -o build_icache/icache_micro icache_micro.cu > build_icache/ptxas_icache.txt 2>&1; echo build exit=\$?'"
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=20 "$N" "$PREFIX bash -c 'mkdir -p /work/topk_swarm/work/hw-researcher/preflight && cd /work/topk_swarm/work/hw-researcher/preflight && tar xzf - && chmod +x micro/run_icache.sh && mkdir -p micro/build_icache cell && mv -f run.py topk_harness.cuh canary_main.cu cells_focus.json cell/ 2>/dev/null; rm -rf cell/adapters; mv adapters cell/; cd micro && /usr/local/cuda/bin/nvcc -arch=sm_100 -O3 -std=c++17 -Xptxas -v -o build_icache/icache_micro icache_micro.cu > build_icache/ptxas_icache.txt 2>&1; echo build exit=\$?'"
+  fi
+}
+fetch_results() {
+  if [[ -n "$HOSTROOT" ]]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=20 "$N" "tar czf - -C $HOSTROOT/results/hw-researcher preflight_$N"
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=20 "$N" "$PREFIX tar czf - -C /work/topk_swarm/results/hw-researcher preflight_$N"
+  fi
+}
 
 # 1. ship and build outside the lease
-(cd "$SW/harness" && tar czf - micro/icache_micro.cu micro/icache_bodies.h micro/run_icache.sh run.py topk_harness.cuh canary_main.cu cells_focus.json adapters/B2_packed.cuh adapters/B1_reference.cuh adapters/B2_detail.cuh) \
-  | ssh -o BatchMode=yes -o ConnectTimeout=20 "$N" "$PREFIX bash -c 'mkdir -p /work/topk_swarm/work/hw-researcher/preflight && cd /work/topk_swarm/work/hw-researcher/preflight && tar xzf - && chmod +x micro/run_icache.sh && mkdir -p micro/build_icache cell && mv -f run.py topk_harness.cuh canary_main.cu cells_focus.json cell/ 2>/dev/null; rm -rf cell/adapters; mv adapters cell/; cd micro && /usr/local/cuda/bin/nvcc -arch=sm_100 -O3 -std=c++17 -Xptxas -v -o build_icache/icache_micro icache_micro.cu > build_icache/ptxas_icache.txt 2>&1; echo build exit=\$?'" 2>&1 | tail -2
+(cd "$SW/harness" && tar czf - micro/icache_micro.cu micro/icache_bodies.h micro/run_icache.sh run.py topk_harness.cuh canary_main.cu cells_focus.json adapters/B2_packed.cuh adapters/B1_reference.cuh adapters/B2_detail.cuh) | ship_and_build 2>&1 | tail -2
 
 # 2. lease (pinned, short), measure, release
 L=$(python3 tools/lease.py acquire --holder "$H" --arch b200 --node "$N" --min-remaining 15m --wait 20m 2>&1 | tail -1)
@@ -57,7 +76,7 @@ python3 tools/lease.py release --holder "$H" 2>&1 | tail -1
 echo "lease held $(( $(date +%s) - T0 )) s"
 
 # 3. fetch and evaluate
-ssh -o BatchMode=yes -o ConnectTimeout=20 "$N" "$PREFIX tar czf - -C /work/topk_swarm/results/hw-researcher preflight_$N" | tar xzf - -C "$SW/state/results/hw-researcher/" && echo "fetched $(ls "$OUT" | wc -l) files"
+fetch_results | tar xzf - -C "$SW/state/results/hw-researcher/" && echo "fetched $(ls "$OUT" | wc -l) files"
 python3 -I - "$N" "$OUT" <<'EOF'
 import glob, json, os, sys, statistics
 node, out = sys.argv[1], sys.argv[2]

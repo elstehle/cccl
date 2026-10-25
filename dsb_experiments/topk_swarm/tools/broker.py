@@ -448,13 +448,16 @@ def dedicate_node(key, holders=None, clear=False):
     return 0
 
 
-def free_a_slot(reason):
+def free_a_slot(reason, protect=()):
     """Release one idle pool node to make cap room for a dedicated node: an idle expiring node first,
-    else the idle non-dedicated node with the least lease time left. Returns the released job id or None."""
+    else the idle non-dedicated node with the least lease time left. A node is not idle when a GPU is
+    held, or when someone is queued or reserved on it (`lease.py reserve`, used while building before
+    the measurement lease). Hosts in `protect` are never picked. Returns the released job id or None."""
     with Registry() as reg:
         now = utcnow()
         idle = [n for n in reg.data["nodes"]
                 if n.get("status") in ("ready", "expiring") and not n.get("dedicated_to")
+                and n.get("ssh") not in protect and n.get("name") not in protect
                 and not any(g.get("holder") for g in n.get("gpus", []))
                 and not any((g.get("queue") or []) for g in n.get("gpus", []))]
         if not idle:
@@ -713,10 +716,11 @@ def cmd_status(args):
 def cmd_request(args):
     jids = []
     if args.make_room:
+        protect = tuple(h.strip() for h in (args.protect or "").split(",") if h.strip())
         with Registry() as reg:
             short = count_active(reg.data) + args.count - reg.data.get("cap", 6)
         for _ in range(max(0, short)):
-            if free_a_slot("request --make-room") is None:
+            if free_a_slot("request --make-room", protect=protect) is None:
                 break
     with Registry() as reg:
         active = count_active(reg.data)
@@ -893,6 +897,7 @@ def main(argv=None):
     r.add_argument("--note", default=None, help="why this one-off exists, stored in the entry")
     r.add_argument("--dedicate", default=None, help="holders this node is reserved for, e.g. eval-engineer,hw-researcher")
     r.add_argument("--make-room", action="store_true", help="if the cap is full, release idle pool nodes first (for dedicated requests)")
+    r.add_argument("--protect", default=None, help="hosts make-room must not release, comma separated")
     r.set_defaults(func=cmd_request)
     d = sub.add_parser("dedicate")
     d.add_argument("node")

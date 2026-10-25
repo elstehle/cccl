@@ -3,7 +3,14 @@
 
   python3 tools/lease.py acquire --holder <name> --arch any|b200|gb200 [--node <name>] [--min-remaining 45m] [--wait 30m]
   python3 tools/lease.py release --holder <name>
+  python3 tools/lease.py reserve --holder <name> --node <node> [--for 45m]
+  python3 tools/lease.py unreserve --holder <name>
   python3 tools/lease.py status
+
+reserve marks a node for a holder who is building there before taking the measurement lease:
+it queues the holder on the node (head of the line if first), so the broker does not release the
+node to make room and nobody else takes the GPU in the meantime. The reservation expires after
+--for, is replaced by the holder's acquire, and is removed by release or unreserve.
 
 acquire prints one line on success and exits 0:
   node=<ssh> gpu=<index> root=<root> exec_prefix=<prefix> arch=<arch> cuda=<cuda> expires=<iso> login=<login-host>
@@ -165,6 +172,37 @@ def cmd_acquire(args):
         time.sleep(min(POLL_SECONDS, max(1, deadline - time.monotonic())))
 
 
+def cmd_reserve(args):
+    until = utcnow() + datetime.timedelta(seconds=parse_duration(args.for_))
+    with Registry() as reg:
+        found = None
+        for node in reg.data.get("nodes", []):
+            if args.node in (node.get("name"), node.get("ssh")) and node.get("status") in LEASABLE_STATES:
+                found = node
+        if found is None:
+            sys.stderr.write("lease: no ready node named %s\n" % args.node)
+            return 1
+        dequeue(reg, args.holder)
+        for gpu in found.get("gpus", []):
+            q = gpu.get("queue") or []
+            q.append({"holder": args.holder, "since": iso(utcnow()), "until": iso(until), "reserve": True})
+            gpu["queue"] = q
+        reg.save()
+    audit("reserve", args.holder, "node=%s until=%s" % (found.get("ssh"), iso(until)))
+    print("reserved %s for %s until %s (position %d)" % (found.get("ssh"), args.holder, iso(until), len(found["gpus"][0]["queue"])))
+    return 0
+
+
+def cmd_unreserve(args):
+    with Registry() as reg:
+        changed = dequeue(reg, args.holder)
+        if changed:
+            reg.save()
+    audit("unreserve", args.holder, "changed=%s" % changed)
+    print("unreserved %s: %s" % (args.holder, "done" if changed else "nothing queued"))
+    return 0
+
+
 def cmd_release(args):
     freed = []
     with Registry() as reg:
@@ -174,6 +212,9 @@ def cmd_release(args):
                     gpu["holder"] = None
                     gpu["since"] = None
                     freed.append("%s:gpu%s" % (node.get("ssh") or node.get("name"), gpu.get("index")))
+        if dequeue(reg, args.holder):
+            freed = freed or ["(reservation only)"]
+            reg.save()
         if freed:
             reg.save()
     audit("release", args.holder, "freed=%s" % (",".join(freed) if freed else "nothing"))
@@ -218,6 +259,14 @@ def main(argv=None):
     r = sub.add_parser("release", help="free every GPU held by --holder", allow_abbrev=False)
     r.add_argument("--holder", required=True)
     r.set_defaults(func=cmd_release)
+    rv = sub.add_parser("reserve", help="mark a node for a holder who is building there", allow_abbrev=False)
+    rv.add_argument("--holder", required=True)
+    rv.add_argument("--node", required=True)
+    rv.add_argument("--for", dest="for_", default="45m")
+    rv.set_defaults(func=cmd_reserve)
+    uv = sub.add_parser("unreserve", help="drop a holder's reservations", allow_abbrev=False)
+    uv.add_argument("--holder", required=True)
+    uv.set_defaults(func=cmd_unreserve)
     s = sub.add_parser("status", help="print the registry")
     s.add_argument("--all", action="store_true", help="include released and lost nodes")
     s.set_defaults(func=cmd_status)
