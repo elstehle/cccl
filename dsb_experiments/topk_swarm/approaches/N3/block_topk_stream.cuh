@@ -54,8 +54,33 @@
 
 #include <cuda_bf16.h>
 
+#ifdef N3_PROFILE
+#  define N3_STAMP(i)                                                   \
+    do                                                                  \
+    {                                                                   \
+      if (threadIdx.x == 0)                                             \
+      {                                                                 \
+        const int c_          = ::n3::g_stamp_cursor;                   \
+        ::n3::g_stamps[c_]    = clock64();                              \
+        ::n3::g_stamp_ids[c_] = (i);                                    \
+        ::n3::g_stamp_cursor  = c_ + 1;                                 \
+      }                                                                 \
+    } while (0)
+#else
+#  define N3_STAMP(i) \
+    do                \
+    {                 \
+    } while (0)
+#endif
+
 namespace n3
 {
+
+#ifdef N3_PROFILE
+__device__ long long g_stamps[64];
+__device__ int g_stamp_ids[64];
+__device__ int g_stamp_cursor;
+#endif
 
 using u32 = ::cuda::std::uint32_t;
 
@@ -514,6 +539,7 @@ struct block_topk_stream
       ca += (c == 2) ? 1u : 0u;
       cp += (c == 1) ? 1u : 0u;
     }
+    N3_STAMP(9);
     u32 pre;
     scan_t(s.scan).ExclusiveSum((ca << 16) | cp, pre);
     u32 apos = pre >> 16;
@@ -542,6 +568,7 @@ struct block_topk_stream
         ++ppos;
       }
     }
+    N3_STAMP(10);
     if (r.mode == 2)
     {
       __syncthreads();
@@ -644,6 +671,7 @@ struct block_topk_stream
 
   __device__ __forceinline__ void begin()
   {
+    N3_STAMP(0);
 #pragma unroll
     for (int j = 0; j < bpt; ++j)
     {
@@ -707,6 +735,7 @@ struct block_topk_stream
       vq.cv            = 0.0f;
       vq.lo_t          = 0u;
       vq.sh            = 0;
+      N3_STAMP(1);
       // every item of the first chunk is a candidate, stored at its striped position
 #pragma unroll
       for (int i = 0; i < cpt; ++i)
@@ -716,8 +745,10 @@ struct block_topk_stream
       }
       n_buf = ChunkSize;
       __syncthreads();
+      N3_STAMP(2);
       scan_hist(ku, vq, true);
       __syncthreads();
+      N3_STAMP(3);
       thr = __uint_as_float(s.ctrl[C_THRN]);
     }
     else
@@ -742,6 +773,7 @@ struct block_topk_stream
         }
       }
       const u32 c = (c0 + c1) + (c2 + c3);
+      N3_STAMP(4);
       // the thread's histogram bins (slot u, highest bin first) and the packed scan
       const int u = Threads - 1 - tid;
       u32 h[bpt];
@@ -769,6 +801,7 @@ struct block_topk_stream
         }
         above += h[j];
       }
+      N3_STAMP(5);
       if (n_buf + tot_c > static_cast<u32>(Cap))
       {
         __syncthreads();
@@ -790,6 +823,7 @@ struct block_topk_stream
       }
       n_buf += tot_c;
       __syncthreads();
+      N3_STAMP(6);
       thr = __uint_as_float(s.ctrl[C_THRN]);
     }
   }
@@ -797,8 +831,11 @@ struct block_topk_stream
   __device__ __forceinline__ void finish(int k, int* out)
   {
     image_params q     = vq;
+    N3_STAMP(7);
     const resolution r = resolve(static_cast<u32>(k), q);
+    N3_STAMP(8);
     emit(q, r, out);
+    N3_STAMP(11);
   }
 };
 
