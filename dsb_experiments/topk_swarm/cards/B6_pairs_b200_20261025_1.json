@@ -1,0 +1,344 @@
+{
+ "approach_id": "B6",
+ "variant": "pairs",
+ "scope": "block",
+ "arch": "b200",
+ "cuda_version": "13.4.92",
+ "node": "umbriel-b200-020",
+ "date": "2026-10-25",
+ "commit": "971a398f42",
+ "author": "opt-B6",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 9216,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside cub::BlockRadixSort's pairs sort, one more per pass than the keys-only form (the value exchange), 29 BAR.SYNC in the latency kernel against 26 for B6_radix, 4 passes bf16 and 8 fp32",
+  "k_range": "[1, N) at compile time",
+  "n_range": "N = Threads x IPT, N <= 32768, measured N 2048 at 256 threads",
+  "type_constraints": "bf16 (16-bit twiddled key, int32 value) and fp32 (32-bit twiddled key, int32 value), the index is the sort value. Temp storage max(rank counters 9216, key exchange, value exchange (N + N/32) x 4): 9216 at N 2048 for both types",
+  "nan_behavior": "as B6_radix: twiddled bitwise, -0.0 folded onto +0.0",
+  "tie_break_support": "inherent through the stability of the pairs sort with the input in index order, same binary for both requirements",
+  "sorted_output_support": "inherent at zero extra cost"
+ },
+ "correctness": {
+  "oracle_passed": true,
+  "cases": 52,
+  "notes": "B6_pairs against B6_radix at the kill cell (N 2048 k 1024, bf16 and fp32, both requirements, both regimes, label kill_pairs, umbriel-b200-020, source commit 971a398f42), full oracle battery passed in every cell for both requirements."
+ },
+ "cells": [
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 6877.512097,
+   "control_name": "B6_radix",
+   "control_value": 5550.481183,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 29,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 904,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 121.4838028,
+   "control_name": "B6_radix",
+   "control_value": 159.1697692,
+   "canary_start": 3776.223898,
+   "canary_end": 3779.232025,
+   "resources": {
+    "registers": 63,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 13,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 480,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 6877.834677,
+   "control_name": "B6_radix",
+   "control_value": 5550.791667,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 29,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 904,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 121.4495871,
+   "control_name": "B6_radix",
+   "control_value": 159.0829612,
+   "canary_start": 3776.096106,
+   "canary_end": 3779.4559,
+   "resources": {
+    "registers": 63,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 13,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 480,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 13398.43683,
+   "control_name": "B6_radix",
+   "control_value": 13495.94355,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 29,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 760,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 62.32009394,
+   "control_name": "B6_radix",
+   "control_value": 59.40622185,
+   "canary_start": 3776.000023,
+   "canary_end": 3777.856112,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 13,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 13417.43414,
+   "control_name": "B6_radix",
+   "control_value": 13495.35081,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 29,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 760,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 2048,
+   "k": 1024,
+   "rows": 1,
+   "threads": 256,
+   "requirement": "prefer_smaller_index",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 62.32990475,
+   "control_name": "B6_radix",
+   "control_value": 59.40567425,
+   "canary_start": 3775.775909,
+   "canary_end": 3777.760029,
+   "resources": {
+    "registers": 64,
+    "smem_bytes": 17472,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 4,
+    "bar_sync_count": 13,
+    "stack_bytes": 0,
+    "stl_count": 0,
+    "ldl_count": 0,
+    "sass_instructions": 392,
+    "bssy_count": 0
+   },
+   "raw_file": "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+  }
+ ],
+ "findings": {
+  "low_level": [
+   "bf16: the pairs sort exchanges a 16-bit key and a 32-bit value per item per pass through two buffers with one extra barrier (29 against 26 BAR.SYNC), 904 against 1008 SASS instructions (the 16-bit key path has fewer address and mask instructions than the packed word), 64 against 56 registers, 13 against 14 BAR.SYNC in the throughput kernel. fp32: 760 against 888 instructions, 64 registers both, shared memory 17472 for both pairs kernels (the two 4-byte exchange buffers alias, 9216 of counters dominate at N 2048) against 25088 for the 64-bit word.",
+   "Canaries 32.00 cycles and 3776 us at both ends, occupancy 4 blocks per SM for every kernel."
+  ],
+  "algorithmic": [
+   "bf16 N 2048 k 1024: pairs 6878 against the packed 32-bit word 5550 cycles (1.24x slower), throughput 121 against 159 Gelem per s (0.76x). The packed word carries the index through the keys-only exchange for free, the pairs sort pays a second scatter and gather and a barrier per pass, about 330 cycles per pass at IPT 8.",
+   "fp32 N 2048 k 1024: pairs 13398 against the 64-bit word 13496 (0.99x, a tie), throughput 62.3 against 59.4 (1.05x). The 64-bit word's exchange moves the same 8 bytes per item as the key plus value exchange, and the 64-bit digit extraction (SHF.R.U64 per item per pass) costs what the pairs sort's extra barrier costs. For fp32 the word form has no lever at block scope, the pairs sort is the simpler equivalent.",
+   "Both forms are stable and give prefer_smaller_index at zero cost (identical cycles under both requirements)."
+  ],
+  "negative": [
+   "Neither form changes the B6 verdict: the pairs sort is 2.7x (bf16) and 5.3x (fp32) behind B3_tuned at the kill cell by the same-session chain through B6_radix."
+  ],
+  "surprises": [
+   "The u64 word saves the value exchange and still ties the pairs sort at fp32: at block scope the 64-bit word buys nothing (T11 found the same for 64-bit atomics), unlike at warp scope where the W1 u64 word costs 13 to 30 percent over the min max pairs but gives the requirement."
+  ],
+  "open_questions": [
+   "A 32-bit truncated word for fp32 (top 32 - log2 N key bits plus the index, B2's N4 idea) would halve the exchange bytes and would need a tie class check after the sort, which at 5x behind the select is not worth building."
+  ]
+ },
+ "techniques_adopted": [
+  "T21",
+  "T34",
+  "T36"
+ ],
+ "techniques_contributed": [
+  "T55"
+ ],
+ "report_path": "approaches/B6/REPORT.md",
+ "source_paths": [
+  "harness/adapters/B6_pairs.cuh",
+  "harness/adapters/B6_radix.cuh"
+ ],
+ "clone_commit": "b6bfae9a37bb",
+ "_controls": [
+  "B6_radix"
+ ],
+ "_batches": [
+  "state/results/opt-B6/B6_pairs_vs_B6_radix_b6_kill_pairs_20261025_155526.json"
+ ],
+ "_canary": [
+  {
+   "start": {
+    "timestamp": "2026-10-25T15:55:29Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3775.648117
+   },
+   "end": {
+    "timestamp": "2026-10-25T15:55:33Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3775.615931
+   }
+  }
+ ]
+}
