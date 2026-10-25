@@ -11,22 +11,56 @@
     "temp_storage_bytes": 512,
     "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
     "sync_performed": "ballots, redux.sync, shuffles and __syncwarp over the full warp mask, no barriers",
-    "k_range": "[1, N/2], measured 16 to 1024",
+    "k_range": "[1, N/2], measured 16 to 1024 (the k 1024 cells of this batch failed the oracle on inf_denorm and carry no number, fixed in the later variants)",
     "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 256 to 4096",
     "type_constraints": "bf16 and fp32 keys widened to fp32 in registers with minus zero folded onto plus zero, int32 indices derived from the position (no index registers)",
     "nan_behavior": "unsupported (the fixed-point image of NaN is unordered), focus-set inputs contain no NaN",
-    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code",
-    "sorted_output_support": "not inherent (items above the pivot bin are emitted in index order, the finish in descending key order), post-sort of k"
+    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code and measured identical cycles in all 72 cell pairs",
+    "sorted_output_support": "not inherent (items above the pivot bin in index order, then the finish in descending key order), post-sort of k"
   },
   "findings": {
-    "low_level": [],
-    "algorithmic": [],
-    "negative": [],
-    "surprises": [],
-    "open_questions": []
+    "low_level": [
+      "The common path (one bracket pass, packed W2 finish) executes about 75 instructions per item on one warp: bin image 4 (FADD, FFMA, two IMNMX), five ballots with their predicate LOP3, five LOP3 of the bucket match, POPC and IADD for the count (28), the post-scan pivot test with two selects and two min max (10), and the finish with two flag sets, two lane-major rank passes (one ballot per item each) and two predicated scatters (about 35). The SASS of the N 512 k 64 bf16 latency kernel has 6160 instructions for two inlined copies of the primitive, of which 1656 LOP3, 771 IMAD, 678 VOTE, 584 ISETP, 563 SHF, 262 POPC, 130 STS, 36 SHFL and 14 CREDUX, with the VOTEs interleaved every five to six instructions, so the ballots already pipeline at the T17 rate and the issue slots, not the ballot latency, set the cost. Marginal cost per added item at k 64 bf16: 105 cycles from IPT 8 to 16, 183 from 16 to 32, 179 from 32 to 64.",
+      "Registers 64 at IPT 8, 96 at 16, 168 at 32, 255 at 64 (no spill) and 255 with a 4132 byte stack frame, 616 bytes of spill, 372 STL and 661 LDL at IPT 128 (N 4096), where the float copy of the tile plus the per-item bin images and the chunked finish arrays exceed the file. Occupancy 4, 3, 2, 1, 1 blocks of 256 threads per SM. The N 4096 cells (61 to 75 thousand cycles) are a local-memory artifact (T36), not the algorithm.",
+      "The fixed costs per pass are the 5-step shuffle suffix scan (about 180 cycles), the pivot location (ballot, popc, shuffle, about 80) and two redux for the pivot bin's image range (about 30). The rounds of the packed W2 finish run in a rolled loop (runtime r) at about 60 cycles per round against T19's 26 for an unrolled list: the k dependence from k 16 to 256 at N 512 (2181 to 3074 bf16) is about half rounds and half the per-lane top-m bound.",
+      "Latency fits R squared 0.998 to 1.000, canary 32.001 cycles per op at both ends, prefer_smaller_index identical to not_guaranteed in every cell (same binary path)."
+    ],
+    "algorithmic": [
+      "The host simulation (approaches/N6w/sim_warp_bins.md, 200 rows per cell) holds on the GPU: with the exact per-lane bound the pivot bin after one 32-bin pass has 8 to 11 items at k 64, 12 to 21 at k 128, 24 to 39 at k 256 (max 61), so the packed W2 finish runs on at most 64 compacted candidates in 85 to 97 percent of the rows and the rest exit whole. Measured tie multiplicity at rank k on bf16 is 1.0 to 4.2 and never forced a tie-class emission on random input.",
+      "Against W2_packed_v3 in the same lock section N6w_ballot wins from k 64 on where W2's list is deep and loses at k 16 everywhere: bf16 N 256 k 64 1573 against 1868 (1.19x), k 128 1631 against 5388 (3.3x), N 512 k 64 2412 against 2704 (1.12x), k 128 2740 against 7428 (2.7x), k 256 3074 against 14404 (4.7x), N 1024 k 64 5342 against 7308 (1.37x), k 256 6907 against 22624 (3.3x), N 2048 k 128 12074 against 21324 (1.77x), k 256 13104 against 40044 (3.1x), and k 16: N 256 1374 against 568, N 512 2181 against 820, N 1024 4463 against 1485, N 2048 10096 against 2377. fp32 within 5 percent of bf16 in every cell (N 512 k 64 2478 against W2 4711, 1.9x, k 256 4223 against 12334). N 2048 k 64 is lost to W2 (11078 against 10071 bf16, 11786 against 10159 fp32).",
+      "The kill criterion of the idea card (N 512 k 64 bf16 at most 2080 cycles, 1.3x under W2_packed_v3) is missed by this variant: 2412 against 2704 is 1.12x. The cost model of the card (about 57 cycles per item plus 600 fixed, 2000 at N 512 k 64) undercounted the per-item instruction stream by about half: the finish costs as much as the pass, and the pass is issue bound at about 28 instructions per item on top of the 30 cycles of ballot throughput.",
+      "Throughput is the stronger axis: 353 Gelem per s at bf16 N 512 k 64 against W2's 169 (2.1x), 323 against 109 at k 128, 295 against 57 at k 256, 327 against 221 at N 1024 k 64, 271 against 66 at N 2048 k 256, and W2 ahead only at k 16 (731 against 392 at N 512). Eight warps per block hide the dependent chains that the latency regime exposes."
+    ],
+    "negative": [
+      "The ballot-count histogram is the floor of this variant: five ballots per item cost about 30 cycles of VOTE throughput per item at one warp (T17, T33) and the per-item consumers add 20 more, so the pass alone is 35 to 50 cycles per item before the finish. A shared-memory atomic histogram replaces the five ballots by one atomic (card N6w_atom32).",
+      "k 1024 at N 2048 failed the inf_denorm oracle in this build: the guard on a degenerate bracket tested the width and not the scale, a width of infinity gave a scale of plus zero, inf times zero produced NaN images for the infinite items and placed -inf in the top bin, so two items were counted above the pivot but never emitted (duplicate index in the output). Fixed in commit 58626e3f (scale must be positive) for the later variants, the host model approaches/N6w/model_device.py reproduces and now passes the case."
+    ],
+    "surprises": [
+      "fp32 and bf16 cost the same: the finish never needed the fp32 relative packing fallback on random input, and the bracket arithmetic is identical for both (the bf16 image is widened once).",
+      "The per-item marginal cost rises from 105 to 180 cycles above IPT 16 although the instruction count per item is flat, which the register count (96 to 168 to 255) and the compaction scatter's store traffic explain better than any pipe limit."
+    ],
+    "open_questions": [
+      "The IPT 64 and 128 register problem: the float tile (IPT registers) plus the per-item bins and the finish's two ballot arrays reach 255 registers at N 2048 and spill 4 KB at N 4096. A two-half item loop or recomputing the image from a packed key (T24) would decide whether N6w can own N 2048 to 4096 at all.",
+      "The rolled W2 rounds (about 60 cycles each) against an unrolled-by-four loop, and the list depth of the finish (2 words to IPT 16, 4 above) were not swept."
+    ]
   },
-  "techniques_adopted": ["T1", "T4", "T7", "T17", "T19", "T21", "T24", "T25", "T32", "T36", "T38", "T41"],
-  "techniques_contributed": [],
+  "techniques_adopted": [
+    "T1",
+    "T4",
+    "T7",
+    "T17",
+    "T19",
+    "T21",
+    "T24",
+    "T25",
+    "T32",
+    "T36",
+    "T38",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T60"
+  ],
   "report_path": "approaches/N6w/REPORT.md",
   "source_paths": [
     "harness/adapters/N6w_impl.cuh",
@@ -34,5 +68,5 @@
     "approaches/N6w/sim_warp_bins.py",
     "approaches/N6w/sim_warp_bins.md"
   ],
-  "correctness_notes": ""
+  "correctness_notes": "oracle battery passed on 144 of 148 cells, the four N 2048 k 1024 cells failed inf_denorm (see negative findings) and carry no number"
 }

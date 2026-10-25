@@ -1,0 +1,68 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "N6",
+  "variant": "w_v2",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 512,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "ballots, redux.sync, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 16 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 256 to 4096",
+    "type_constraints": "bf16 and fp32 keys widened to fp32 in registers with minus zero folded onto plus zero, int32 indices derived from the position (no index registers)",
+    "nan_behavior": "unsupported (the fixed-point image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code and measured identical cycles in all 72 cell pairs",
+    "sorted_output_support": "not inherent (items above the pivot bin in index order, then the finish in descending key order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [
+      "Same instruction stream as N6w_ballot per item, with the ballots of a chunk of up to eight items issued before any consumer and the per-item bin images packed six per word (5-bit fields, IPT/6 registers instead of IPT): the SASS of the N 512 k 64 bf16 latency kernel (6160 instructions, 678 VOTE, 1656 LOP3, 262 POPC) shows the same interleaving ptxas had already produced for the per-item order, so the restructure changed nothing measurable at IPT 8 to 16 (N 256 k 64 1586 against 1573 in the v1 batch, N 512 k 64 2429 against 2412, same control values of W2_packed_v3 within 1 cycle).",
+      "Registers went up, not down: 114 to 116 at IPT 16 (96 before), 128 at IPT 32 (168 before, the packed bins help there), 255 with 28 bytes of spill at IPT 64 (255 and no spill before), 255 with a 4884 byte stack at IPT 128 (4132 before). The chunk arrays (eight items times five ballot words) cost more than the packing saved at the largest tiles, and the IPT 64 cells regressed by 15 to 30 percent (bf16 N 2048 k 64 14280 against 11078, k 256 18481 against 13104) while fp32 at IPT 64 did not move (13352 against 13126).",
+      "The k 1024 cells (full-range bracket, second bracket pass, packed finish) now pass the oracle and measure 24865 (bf16) and 25122 (fp32) cycles at N 2048 against W2_packed_v3 152615 and 151559 (6.1x), at 105 and 51 Gelem per s against 17."
+    ],
+    "algorithmic": [
+      "The verdicts against W2_packed_v3 are those of N6w_ballot: wins from k 64 at N 256 to 1024 (1.18x to 4.6x), 1.8x and 3.0x at N 2048 k 128 and 256, 6.1x at k 1024, losses at k 16 (2.5x to 4.8x slower) and at N 2048 k 64 (1.4x slower). The kill cell N 512 k 64 bf16 stays at 2429 against 2704 (1.11x), above the 2080 bar.",
+      "The ballot pipelining hypothesis is refuted as the explanation of the per-item cost: ptxas interleaves independent ballots across items on its own (the VOTE spacing in the SASS is five to six instructions in both spellings), and the measured cost is the issue count of about 75 instructions per item on the common path plus the dependent fixed costs per pass."
+    ],
+    "negative": [
+      "Issuing the ballots of a chunk of items before their consumers (the T17 microbenchmark shape) does not speed up a ballot-count histogram inside a real pass on nvcc 13.4.92: the scheduler already does it, and the chunk arrays cost registers at IPT 64 and above (15 to 30 percent slower at N 2048 bf16).",
+      "Packing the per-item bin images into 5-bit fields saves registers at IPT 32 (168 to 128) but not the IPT 128 spill, where the float tile alone is half the register file."
+    ],
+    "surprises": [
+      "A structural change that looked like a sure win from the cost model (ballot latency hidden behind independent work) was a measured no-op at small IPT and a regression at large IPT: T28 and T36 style caution applies to warp collectives as well as to networks."
+    ],
+    "open_questions": [
+      "Whether a chunk of four (fewer live ballot words) recovers the IPT 64 regression while keeping the IPT 32 register gain of the packed bins."
+    ]
+  },
+  "techniques_adopted": [
+    "T1",
+    "T4",
+    "T7",
+    "T17",
+    "T19",
+    "T21",
+    "T24",
+    "T25",
+    "T32",
+    "T36",
+    "T38",
+    "T41"
+  ],
+  "techniques_contributed": [
+    "T60"
+  ],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/N6w_v2.cuh",
+    "approaches/N6w/sim_warp_bins.py",
+    "approaches/N6w/sim_warp_bins.md",
+    "approaches/N6w/model_device.py"
+  ],
+  "correctness_notes": "oracle battery passed on all 152 cells, k 1024 included after the scale guard fix of commit 58626e3f"
+}

@@ -1,0 +1,70 @@
+{
+  "author": "opt-N6w",
+  "approach_id": "N6",
+  "variant": "w_atom32",
+  "contract": {
+    "input_location": "registers",
+    "input_arrangement": "blocked",
+    "output_location": "smem",
+    "output_form": "indices",
+    "output_sorted": false,
+    "temp_storage_bytes": 768,
+    "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the temp storage or the output buffer by a __syncwarp (the harness does)",
+    "sync_performed": "shared-memory atomics (fire and forget), redux.sync, shuffles and __syncwarp over the full warp mask, no barriers",
+    "k_range": "[1, N/2], measured 16 to 1024",
+    "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 256 to 4096",
+    "type_constraints": "bf16 and fp32 keys widened to fp32 in registers with minus zero folded onto plus zero, int32 indices derived from the position (no index registers)",
+    "nan_behavior": "unsupported (the fixed-point image of NaN is unordered), focus-set inputs contain no NaN",
+    "tie_break_support": "inherent: the packed W2 finish orders ties by (key, inverted index), the tie-class emission ranks by index in lane-major order, both requirements run the same code and measured identical cycles in all 72 cell pairs",
+    "sorted_output_support": "not inherent (items above the pivot bin in index order, then the finish in descending key order), post-sort of k"
+  },
+  "findings": {
+    "low_level": [
+      "One fire-and-forget shared atomicAdd per item into a per-warp 32-word histogram (data-dependent address, items outside the range add to a per-lane dummy word so the atomic stays unconditional, T32) replaces the five ballots, their five predicate LOP3, the five LOP3 of the bucket match, the popc and the add: about 24 instructions and 30 cycles of VOTE throughput per item become an IMAD for the address and one ATOMS, plus a zeroing store, two __syncwarp and one LDS per lane per pass. The histogram words are hit by up to 32 lanes at random (expected maximum multiplicity about 3 to 4 for 32 items in 32 bins), and the measured gain says the serialized replays cost far less than the ballots they replace.",
+      "Against N6w_v2 in the same lock section: bf16 N 256 k 16 1096 against 1410, k 64 1307 against 1586, k 128 1368 against 1661, N 512 k 16 1644 against 2184, k 64 1879 against 2429, k 128 2225 against 2771, k 256 2564 against 3116, N 1024 k 16 3000 against 4631, k 64 3682 against 5493, k 128 4010 against 6108, k 256 4740 against 7154 (1.18x to 1.54x), fp32 the same within 5 percent (N 512 k 64 1915 against 2512, N 1024 k 128 4321 against 6036, N 512 k 256 2814 against 4816 where v2 took the fp32 relative packing fallback path more often). Throughput 1.3x to 1.9x (N 512 k 64 507 against 349 Gelem per s, N 1024 k 16 485 against 322, N 2048 k 16 245 against 111).",
+      "Registers 64 at IPT 8, 80 at 16 (114 for v2), 168 at 32 (128 for v2, the 8-bit bin store is unpacked there in this build and the chunk arrays are gone), 255 with 8 bytes of spill at IPT 64 and 255 with a 4232 byte stack at IPT 128, where the gain shrinks to 1.1 to 1.3x and the fp32 N 2048 k 64 to 256 cells are 4 to 20 percent slower than v2 (12528 against 11992 at k 64): both builds are register bound there and the schedule decides.",
+      "Latency fits R squared 0.994 to 1.000, canary 32.001 at both ends, identical cycles under both requirements."
+    ],
+    "algorithmic": [
+      "The counting mechanism was the lever: with the pass at about 10 instructions per item instead of 34, the bracket pass drops under the finish, and N6w at N 512 k 64 bf16 reaches 1879 cycles, below the 2080 bar of the idea card against W2_packed_v3 (2704 in the v1 and v2 sessions on this node, to be confirmed by a direct W2-controlled batch of the final variant).",
+      "The ballot histogram is a per-scheduler VOTE pipe cost (7 cycles per ballot, T33) that the atomic histogram moves to the shared memory unit, which is shared by the whole SM: the throughput regime (8 warps per SM) still gains 1.3x to 1.9x, so the atomic unit is not the bottleneck at this rate (one atomic per item per warp, about 25 per item-cycle budget).",
+      "At N 2048 and 4096 nothing changes the verdict: the register file, not the histogram, bounds both variants (255 registers, spill at IPT 128), and W2_packed_v3 keeps N 2048 k 64 (10071 against 11854)."
+    ],
+    "negative": [
+      "The atomic histogram does not help where the kernel is register bound (IPT 64 and above): the pass is already short there relative to the spill traffic."
+    ],
+    "surprises": [
+      "Random same-address conflicts among 32 lanes on 32 words did not matter: a per-item shared atomic beats five pipelined ballots by about 20 to 25 cycles per item, the opposite of the T5 and T17 guidance for match.any against ballots, because the ballot count needs five collectives plus seven ALU per item while the atomic needs one instruction."
+    ],
+    "open_questions": [
+      "Whether 128 bins (N6w_atom128, built and not measured within the budget) move more rows to the whole-bin exit and cut the W2 rounds by four without a visible histogram cost.",
+      "Whether the same replacement pays for W3 digit passes (one atomic per item per pass instead of five ballots) and makes 8-bit digits affordable at warp scope."
+    ]
+  },
+  "techniques_adopted": [
+    "T1",
+    "T4",
+    "T7",
+    "T9",
+    "T10",
+    "T17",
+    "T19",
+    "T21",
+    "T25",
+    "T32",
+    "T33",
+    "T36",
+    "T38"
+  ],
+  "techniques_contributed": [
+    "T59",
+    "T60"
+  ],
+  "report_path": "approaches/N6w/REPORT.md",
+  "source_paths": [
+    "harness/adapters/N6w_impl.cuh",
+    "harness/adapters/N6w_atomic_impl.cuh",
+    "harness/adapters/N6w_atom32.cuh"
+  ],
+  "correctness_notes": "oracle battery passed on all 168 cells"
+}

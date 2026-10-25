@@ -8,22 +8,37 @@
     "output_location": "smem",
     "output_form": "indices",
     "output_sorted": false,
-    "temp_storage_bytes": 0,
+    "temp_storage_bytes": 4,
     "sync_assumed": "the warp is converged on entry, the caller separates calls that reuse the output buffer by a __syncwarp (the harness does)",
     "sync_performed": "ballots over the full warp mask only, no shared memory, no barriers",
     "k_range": "[1, N/2], measured 16 to 128",
     "n_range": "N = 32 x IPT, a multiple of 32 up to 32768, measured 128 and 256",
-    "type_constraints": "bf16 (16 bit passes) and fp32 (32 bit passes) with minus zero folded onto plus zero, int32 indices derived from the position",
+    "type_constraints": "bf16 (16 bit passes at most) and fp32 (32 at most) with minus zero folded onto plus zero, int32 indices derived from the position",
     "nan_behavior": "unsupported (the image of NaN is unordered), focus-set inputs contain no NaN",
-    "tie_break_support": "inherent: the tie class at the k-th key is taken in index order by ballot ranks, both requirements run the same code",
+    "tie_break_support": "inherent: the tie class at the k-th key is taken in index order by ballot ranks, both requirements run the same code (identical cycles in all 20 cell pairs)",
     "sorted_output_support": "not inherent (index order), post-sort of k"
   },
   "findings": {
-    "low_level": [],
-    "algorithmic": [],
-    "negative": [],
-    "surprises": [],
-    "open_questions": []
+    "low_level": [
+      "One bit pass over IPT items is IPT ballots of (candidate and bit) with their popcounts summed, no scan, no shuffle: the whole primitive is 35 registers at IPT 4 and 49 at IPT 8 with no spill and no local memory, occupancy 8 and 6 blocks per SM against W2_packed_v3's 64 registers at k 64 (occupancy 4).",
+      "The pass count is data dependent through the exit when the candidate count equals the remaining k: on random fp32 the 32-bit walk stops after about as many passes as the 16-bit bf16 walk, both key types measure the same cycles within 3 percent in every cell (N 128 k 64: 1732 bf16 against 1739 fp32, N 256 k 128: 2369 against 2329), so the key width is not the cost driver on random data.",
+      "The cost falls with k at N 256: 3216 cycles at k 16, 3423 at k 64, 2369 at k 128 (bf16), because the exit fires once the resolved prefix isolates exactly the remaining items, which happens after fewer bits when more items share the k-th key's neighbourhood. Latency fits R squared at least 0.996, the ballots pipeline across items (ptxas interleaves VOTE with the per-item predicate ALU)."
+    ],
+    "algorithmic": [
+      "At warp scope N1 wins only where W2's per-lane list is deep: N 256 k 128 bf16 2369 against W2_packed_v3 5388 (2.3x) and fp32 2329 against 5063 (2.2x), ties at N 128 k 64 (1732 against 1775 bf16, 1739 against 1797 fp32), and loses 2 to 5x at k 16 (N 128: 2082 against 468, N 256: 3216 against 568) and at N 256 k 64 (3423 against 1868). N6w_v2 beats it in every shared cell (N 256 k 128 bf16 1661, k 64 1586, same node and day, different sessions).",
+      "Throughput: 143 to 211 Gelem per s against W2's 85 to 190 at k 64 to 128 and 455 to 615 at k 16, so N1 is a throughput win only at k 128 and above at these N, where W2's lists of 128 words are the problem.",
+      "The idea card's model (46 + 8 IPT per round, 16 rounds for bf16) predicted 1380 at N 128 k 64 and 1910 at N 256, measured 1732 and 3423: a round costs about 60 + 10 IPT (image shift, range test, ballot, popc and add per item, then a dependent tail of about 30 cycles for the sum, compare and range update), and the early exit, not the key width, sets the round count."
+    ],
+    "negative": [
+      "N1 has no warp cell of its own on the focus grid: W2_packed_v3 holds k at most 64 at N 128 to 256 and N6w holds k 128. Its value is the d = 1 row of the digit sweep and the sub-warp form (ballots serve every logical warp at once, T37 and T40), which was not built."
+    ],
+    "surprises": [
+      "fp32 costs the same as bf16 on random data because the exit on an exact candidate count fires after about the same number of bits for both: the walk stops when the prefix isolates exactly r keys, long before the 32 bits are consumed."
+    ],
+    "open_questions": [
+      "The sub-warp form (one ballot per item serving 2 to 8 logical warps, per-row popcounts over byte masks) at LW 8 N 128 k 64, the idea card's own cell against W2_packed_sw_v2 (5261 cycles), is unmeasured.",
+      "Whether a 2-bit digit per round (three popcounts, no scan) halves the round count at the same per-round cost."
+    ]
   },
   "techniques_adopted": ["T4", "T17", "T21", "T36"],
   "techniques_contributed": [],
@@ -32,5 +47,5 @@
     "harness/adapters/N6w_impl.cuh",
     "harness/adapters/N1_bitserial.cuh"
   ],
-  "correctness_notes": ""
+  "correctness_notes": "oracle battery (random, tie_heavy, sorted, pivot_tie, all_equal, signed_zero, inf_denorm, quantized_random, relu_quantized) passed on all 40 cells"
 }
