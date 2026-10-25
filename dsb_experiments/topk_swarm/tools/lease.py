@@ -15,15 +15,28 @@ Only gpus[].holder and gpus[].since are changed, under fcntl.flock on state/node
 with an atomic write of state/nodes.json.
 """
 import argparse
+import os
 import shlex
 import sys
 import time
 
 sys.path.insert(0, __import__("os").path.dirname(__import__("os").path.abspath(__file__)))
-from swarmlib import (LEASABLE_STATES, Registry, fmt_remaining, iso, parse_duration,  # noqa: E402
+from swarmlib import (LEASABLE_STATES, LOGS, Registry, fmt_remaining, iso, parse_duration,  # noqa: E402
                       remaining_seconds, utcnow)
 
 POLL_SECONDS = 15
+LEASE_LOG = LOGS / "lease.log"
+
+
+def audit(event, holder, detail):
+    """Append one line per acquire/release to state/logs/lease.log so a vanished lease can be traced."""
+    try:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        with open(LEASE_LOG, "a") as f:
+            f.write("%s %s holder=%s pid=%d ppid=%d cwd=%s %s\n" % (
+                iso(utcnow()), event, holder, os.getpid(), os.getppid(), os.getcwd(), detail))
+    except OSError:
+        pass
 
 
 def lease_line(node, gpu):
@@ -73,6 +86,7 @@ def cmd_acquire(args):
                 nodes = reg.data.get("nodes", [])
         if got is not None:
             node, gpu = got
+            audit("acquire", args.holder, "node=%s gpu=%s arch=%s since=%s" % (node.get("ssh"), gpu.get("index"), args.arch, gpu.get("since")))
             print(lease_line(node, gpu))
             return 0
         if first:
@@ -81,6 +95,7 @@ def cmd_acquire(args):
                              % (args.arch, args.min_remaining, len(ready), args.wait))
             first = False
         if time.monotonic() >= deadline:
+            audit("acquire-timeout", args.holder, "arch=%s wait=%s" % (args.arch, args.wait))
             sys.stderr.write("lease: nothing free after %s, giving up\n" % args.wait)
             return 2
         time.sleep(min(POLL_SECONDS, max(1, deadline - time.monotonic())))
@@ -97,6 +112,7 @@ def cmd_release(args):
                     freed.append("%s:gpu%s" % (node.get("ssh") or node.get("name"), gpu.get("index")))
         if freed:
             reg.save()
+    audit("release", args.holder, "freed=%s" % (",".join(freed) if freed else "nothing"))
     print("released %s: %s" % (args.holder, ", ".join(freed) if freed else "nothing held"))
     return 0
 

@@ -150,7 +150,22 @@ def all_queues():
     return {c: squeue(c) for c in CLUSTERS}
 
 
+def audit_holders(node, event, reason):
+    """Record holder-clearing broker actions in state/logs/lease.log next to the lease tool's own lines."""
+    holders = [g["holder"] for g in node.get("gpus", []) if g.get("holder")]
+    if not holders:
+        return
+    try:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        with open(LOGS / "lease.log", "a") as f:
+            f.write("%s broker-%s holder=%s pid=%d node=%s %s\n" % (
+                iso(utcnow()), event, ",".join(holders), os.getpid(), node_label(node), reason))
+    except OSError:
+        pass
+
+
 def mark_lost(node, reason):
+    audit_holders(node, "lost", reason)
     node["status"] = "lost"
     node["lost_reason"] = reason
     for g in node.get("gpus", []):
@@ -351,6 +366,7 @@ def release_node(key, force=False):
     with Registry() as reg:
         node = find_node(reg.data, snapshot["job_id"])
         if node is not None:
+            audit_holders(node, "released", "force=%s" % force)
             node["status"] = "released"
             node["released_at"] = iso(utcnow())
             for g in node.get("gpus", []):
