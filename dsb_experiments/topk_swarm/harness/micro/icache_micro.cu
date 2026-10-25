@@ -201,11 +201,11 @@ void run_rounds(int blocks, const char* tag)
 // Per-SM memory latency map: one thread per block chases a random permutation of 128-byte lines through
 // a buffer that fits L2 (4 MB) or exceeds it (512 MB), HOPS dependent loads, reports cycles per hop and
 // %smid. Launched with 1 block (the SM the latency harness lands on) and with one block per SM.
-__global__ void l2_chase(const unsigned* __restrict__ buf, unsigned start_stride, int hops, long long* out, unsigned* smids)
+__global__ void l2_chase(const unsigned* __restrict__ buf, unsigned start_stride, unsigned words, int hops, long long* out, unsigned* smids)
 {
-  unsigned sm = smid();
-  unsigned idx = (blockIdx.x * start_stride) & 0x3fffffffu;
-  idx = buf[idx]; // first hop outside the timing (TLB and first line)
+  unsigned sm  = smid();
+  unsigned idx = buf[(static_cast<unsigned long long>(blockIdx.x) * start_stride) % words]; // first hop outside the timing
+  idx          = buf[idx]; // first hop outside the timing (TLB and first line)
   long long t0 = clock64();
   for (int h = 0; h < hops; ++h)
   {
@@ -241,7 +241,7 @@ static unsigned* make_chase(size_t bytes, unsigned& stride_words)
   cudaMalloc(&d, bytes);
   cudaMemcpy(d, h, bytes, cudaMemcpyHostToDevice);
   delete[] h;
-  stride_words = static_cast<unsigned>((lines / 149) * 32);
+  stride_words = static_cast<unsigned>(((lines / 149 > 0) ? (lines / 149) : 1) * 32);
   return d;
 }
 
@@ -253,7 +253,7 @@ static void run_chase(size_t bytes, const char* tag, int blocks, int hops)
   unsigned* sm;
   cudaMalloc(&o, sizeof(long long) * blocks);
   cudaMalloc(&sm, sizeof(unsigned) * blocks);
-  l2_chase<<<blocks, 1>>>(d, stride, hops, o, sm); // warm up (L2 fill for the 4 MB case)
+  l2_chase<<<blocks, 1>>>(d, stride, static_cast<unsigned>(bytes / 4), hops, o, sm); // warm up (L2 fill for the 4 MB case)
   cudaDeviceSynchronize();
   long long* h = new long long[blocks];
   unsigned* hs = new unsigned[blocks];
@@ -261,7 +261,7 @@ static void run_chase(size_t bytes, const char* tag, int blocks, int hops)
   double sum = 0;
   for (int rep = 0; rep < 3; ++rep)
   {
-    l2_chase<<<blocks, 1>>>(d, stride, hops, o, sm);
+    l2_chase<<<blocks, 1>>>(d, stride, static_cast<unsigned>(bytes / 4), hops, o, sm);
     cudaDeviceSynchronize();
     cudaMemcpy(h, o, sizeof(long long) * blocks, cudaMemcpyDeviceToHost);
     cudaMemcpy(hs, sm, sizeof(unsigned) * blocks, cudaMemcpyDeviceToHost);
@@ -408,6 +408,15 @@ int main(int argc, char** argv)
   run_chase(4u << 20, "L2 4MB", sms, 4096);
   run_chase(512u << 20, "HBM 512MB", 1, 2048);
   run_chase(512u << 20, "HBM 512MB", sms, 2048);
+  // small buffers (the size of a harness input): does a buffer's L2 home make some SMs far from it
+  for (int k = 0; k < 3; ++k)
+  {
+    run_chase(16u << 10, "L2 16KB", sms, 2048);
+    run_chase(64u << 10, "L2 64KB", sms, 2048);
+    run_chase(256u << 10, "L2 256KB", sms, 2048);
+  }
+  run_chase(16u << 10, "L2 16KB", 1, 2048);
+  run_chase(64u << 10, "L2 64KB", 1, 2048);
   probe_clock("end");
   return 0;
 }

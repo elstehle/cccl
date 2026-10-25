@@ -1074,11 +1074,13 @@ struct Tput
   __device__ void reset(Smem&, int) {}
   __device__ value_t step(value_t v, int n, Smem&)
   {
+    // one operand per step for all K accumulators (one IADD per step, not K), it changes with n so
+    // that nothing is loop invariant
     unsigned c = (threadIdx.x * 77u + static_cast<unsigned>(n) * 0x01010101u) ^ 0x3f003f00u;
 #pragma unroll
     for (int i = 0; i < K; ++i)
     {
-      Op::op(acc[i], c + static_cast<unsigned>(i));
+      Op::op(acc[i], c);
     }
     return v + 1u;
   }
