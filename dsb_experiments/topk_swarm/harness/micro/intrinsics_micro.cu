@@ -883,6 +883,90 @@ struct ReduxPackedRound // W2 round for packed (key << 16 | index): redux max is
   }
 };
 
+// Packed W2 extraction round with a per-lane sorted list of IPT unique words (key high, inverted
+// index low): redux max of the heads, the winner (head == max) shifts its list down by one with
+// predicated selects, the next round's redux reads the new head. Critical path: redux, compare,
+// select of the head. The other IPT - 1 selects are off the path but take issue slots.
+__device__ __forceinline__ unsigned packed_word(unsigned lane, unsigned i, unsigned ipt)
+{
+  unsigned h = (lane * 2654435761u + i * 40503u + 12345u) >> 7;
+  return ((h & 0xffffu) << 16) | (0xffffu - (lane * ipt + i)); // unique: the low half is a unique inverted index
+}
+
+template <int IPT, bool BRANCHY>
+struct W2PackedList
+{
+  using value_t = unsigned;
+  using Smem    = NoSmem;
+  static constexpr int block = 32;
+  unsigned list[IPT];
+  __device__ void fill()
+  {
+#pragma unroll
+    for (int i = 0; i < IPT; ++i)
+    {
+      list[i] = packed_word(threadIdx.x, static_cast<unsigned>(i), IPT);
+    }
+    // sort descending (insertion sort, static indices, outside the timed region)
+#pragma unroll
+    for (int i = 1; i < IPT; ++i)
+    {
+#pragma unroll
+      for (int j = i; j > 0; --j)
+      {
+        unsigned a = list[j - 1], b = list[j];
+        list[j - 1] = ::max(a, b);
+        list[j]     = ::min(a, b);
+      }
+    }
+  }
+  __device__ value_t init(Smem&)
+  {
+    fill();
+    return 0;
+  }
+  __device__ void reset(Smem&, int)
+  {
+    fill();
+  }
+  __device__ value_t step(value_t v, int, Smem&)
+  {
+    unsigned m = redux_max_u32(list[0]);
+    bool win   = (list[0] == m);
+    if constexpr (BRANCHY)
+    {
+      if (win)
+      {
+#pragma unroll
+        for (int i = 0; i < IPT - 1; ++i)
+        {
+          list[i] = list[i + 1];
+        }
+        list[IPT - 1] = 0u;
+      }
+    }
+    else
+    {
+#pragma unroll
+      for (int i = 0; i < IPT - 1; ++i)
+      {
+        list[i] = win ? list[i + 1] : list[i];
+      }
+      list[IPT - 1] = win ? 0u : list[IPT - 1];
+    }
+    return v * 3u + m;
+  }
+  __device__ value_t finish(value_t v) // keeps every list entry live, so no shift can be dropped as dead
+  {
+#pragma unroll
+    for (int i = 0; i < IPT; ++i)
+    {
+      v = v * 3u + list[i];
+    }
+    return v;
+  }
+};
+
 struct ReduxElect // redux chain with an elect.sync per step feeding the next input: incremental cost of elect
 {
   using value_t = unsigned;
@@ -1671,6 +1755,16 @@ template <class E>
 struct has_report<E, std::void_t<decltype(std::declval<E&>().report(std::declval<typename E::Smem&>()))>>
     : std::true_type
 {};
+// An experiment may define `value_t finish(value_t)` to fold its remaining state into the chain value
+// inside the timed region (lands in the intercept, keeps that state live so the compiler cannot drop
+// the work that produced it).
+template <class E, class = void>
+struct has_finish : std::false_type
+{};
+template <class E>
+struct has_finish<E, std::void_t<decltype(std::declval<E&>().finish(std::declval<typename E::value_t>()))>>
+    : std::true_type
+{};
 
 template <class Exp, int N>
 __global__ void __launch_bounds__(Exp::block) bench(long long* out, unsigned* check)
@@ -1691,6 +1785,10 @@ __global__ void __launch_bounds__(Exp::block) bench(long long* out, unsigned* ch
     for (int n = 0; n < N; ++n)
     {
       v = e.step(v, n, sh);
+    }
+    if constexpr (has_finish<Exp>::value)
+    {
+      v = e.finish(v);
     }
     sink(v, sm); // scoreboard wait on the chain result before the closing barrier
     asm volatile("" ::: "memory");
@@ -1929,6 +2027,13 @@ int main(int argc, char** argv)
   run<BallotFfsElect>("ballot + ffs + winner select", "warp");
   run<ReduxBallotRound>("W2 round unpacked: redux + ballot(v==max) + ffs + select", "warp");
   run<ReduxPackedRound>("W2 round packed key|index: redux + compare select", "warp");
+  run<W2PackedList<1, false>>("W2 packed list round IPT 1: redux + head compare + predicated shift", "warp");
+  run<W2PackedList<4, false>>("W2 packed list round IPT 4: redux + head compare + predicated shift", "warp");
+  run<W2PackedList<8, false>>("W2 packed list round IPT 8: redux + head compare + predicated shift", "warp");
+  run<W2PackedList<16, false>>("W2 packed list round IPT 16: redux + head compare + predicated shift", "warp");
+  run<W2PackedList<32, false>>("W2 packed list round IPT 32: redux + head compare + predicated shift", "warp");
+  run<W2PackedList<8, true>>("W2 packed list round IPT 8: redux + head compare + branchy shift", "warp");
+  run<W2PackedList<32, true>>("W2 packed list round IPT 32: redux + head compare + branchy shift", "warp");
   run<ReduxElect>("redux chain + elect.sync per step", "warp");
   run<ReduxFfsLeader>("redux chain + ffs(activemask) leader per step", "warp");
   run<MatchAnyClasses<1>>("match_any 1 class (all equal)", "warp");
