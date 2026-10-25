@@ -744,12 +744,12 @@ struct WarpMaxShflF32 // fmaxf shuffle tree, the portable fp32 warp max
 // K independent warp collectives per step (all depend on v, none on each other), merged into the next
 // input: (slope minus the dependent-chain slope of one op) / (K - 1) is the issue cost of each further
 // op in flight, the pipelining assumption of N1 and W3.
-template <int K>
+template <int K, int BLOCK = 32>
 struct BallotIndep
 {
   using value_t = unsigned;
   using Smem    = NoSmem;
-  static constexpr int block = 32;
+  static constexpr int block = BLOCK;
   __device__ value_t init(Smem&)
   {
     return threadIdx.x * 2654435761u;
@@ -767,12 +767,12 @@ struct BallotIndep
   }
 };
 
-template <int K>
+template <int K, int BLOCK = 32>
 struct ReduxIndep
 {
   using value_t = unsigned;
   using Smem    = NoSmem;
-  static constexpr int block = 32;
+  static constexpr int block = BLOCK;
   __device__ value_t init(Smem&)
   {
     return threadIdx.x * 2654435761u;
@@ -790,12 +790,12 @@ struct ReduxIndep
   }
 };
 
-template <int K>
+template <int K, int BLOCK = 32>
 struct ShflIndep
 {
   using value_t = unsigned;
   using Smem    = NoSmem;
-  static constexpr int block = 32;
+  static constexpr int block = BLOCK;
   __device__ value_t init(Smem&)
   {
     return threadIdx.x * 2654435761u;
@@ -2024,6 +2024,22 @@ int main(int argc, char** argv)
   run<ReduxIndep<8>>("redux indep: 8 independent per step + merge", "warp");
   run<ShflIndep<1>>("shfl indep: 1 per step + merge", "warp");
   run<ShflIndep<8>>("shfl indep: 8 independent per step + merge", "warp");
+  // the same chains run by every warp of a 128, 256 and 512 thread block at once: per-scheduler or per-SM limits
+  run<ReduxIndep<1, 128>>("redux indep x4 warps: 1 per step + merge (128 thr)", "warp");
+  run<ReduxIndep<4, 128>>("redux indep x4 warps: 4 independent per step + merge (128 thr)", "warp");
+  run<ReduxIndep<8, 128>>("redux indep x4 warps: 8 independent per step + merge (128 thr)", "warp");
+  run<ReduxIndep<1, 256>>("redux indep x8 warps: 1 per step + merge (256 thr)", "warp");
+  run<ReduxIndep<4, 256>>("redux indep x8 warps: 4 independent per step + merge (256 thr)", "warp");
+  run<ReduxIndep<8, 256>>("redux indep x8 warps: 8 independent per step + merge (256 thr)", "warp");
+  run<ReduxIndep<1, 512>>("redux indep x16 warps: 1 per step + merge (512 thr)", "warp");
+  run<ReduxIndep<4, 512>>("redux indep x16 warps: 4 independent per step + merge (512 thr)", "warp");
+  run<ReduxIndep<8, 512>>("redux indep x16 warps: 8 independent per step + merge (512 thr)", "warp");
+  run<BallotIndep<8, 128>>("ballot indep x4 warps: 8 independent per step + merge (128 thr)", "warp");
+  run<BallotIndep<8, 256>>("ballot indep x8 warps: 8 independent per step + merge (256 thr)", "warp");
+  run<BallotIndep<8, 512>>("ballot indep x16 warps: 8 independent per step + merge (512 thr)", "warp");
+  run<ShflIndep<8, 128>>("shfl indep x4 warps: 8 independent per step + merge (128 thr)", "warp");
+  run<ShflIndep<8, 256>>("shfl indep x8 warps: 8 independent per step + merge (256 thr)", "warp");
+  run<ShflIndep<8, 512>>("shfl indep x16 warps: 8 independent per step + merge (512 thr)", "warp");
   run<BallotFfsElect>("ballot + ffs + winner select", "warp");
   run<ReduxBallotRound>("W2 round unpacked: redux + ballot(v==max) + ffs + select", "warp");
   run<ReduxPackedRound>("W2 round packed key|index: redux + compare select", "warp");

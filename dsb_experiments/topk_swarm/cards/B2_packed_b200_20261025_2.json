@@ -1,0 +1,553 @@
+{
+ "approach_id": "B2",
+ "variant": "packed",
+ "scope": "block",
+ "arch": "b200",
+ "cuda_version": "13.4.92",
+ "node": "umbriel-b200-047",
+ "date": "2026-10-25",
+ "commit": "5dd6ef58aa",
+ "author": "opt-B2b",
+ "contract": {
+  "input_location": "registers",
+  "input_arrangement": "blocked",
+  "output_location": "smem",
+  "output_form": "indices",
+  "output_sorted": true,
+  "temp_storage_bytes": 68,
+  "sync_assumed": "caller separates consecutive calls that reuse the temp storage by a block barrier",
+  "sync_performed": "__syncthreads inside: 1 after the slot init plus one per round (k), fp32 adds 1 for the tie count and the finish barriers on the rare tie path",
+  "k_range": "[1, min(N/2, 256)] at compile time",
+  "n_range": "N = 256 x IPT, this batch IPT 64 and 128 (N 16384 and 32768), fp32 accepted up to IPT 64 only (two live words per item)",
+  "type_constraints": "bf16 and fp32 as in the first packed card, int32 indices",
+  "nan_behavior": "as in the first packed card",
+  "tie_break_support": "inherent, not_guaranteed cells only in this batch (the batch was run with --req not_guaranteed)",
+  "sorted_output_support": "inherent"
+ },
+ "correctness": {
+  "oracle_passed": true,
+  "cases": 117,
+  "notes": "unsupported B2_packed__B1_reference__fp32_T256_N32768_K4_not_guaranteed | unsupported B2_packed__B1_reference__fp32_T256_N32768_K16_not_guaranteed | unsupported B2_packed__B1_reference__fp32_T256_N32768_K64_not_guaranteed | Second packed batch (instance opt-B2b): the large N of the focus grid against B1_reference in the same lock section, not_guaranteed only, 9 cells measured and 3 unsupported (fp32 N 32768: IPT 128 exceeds the adapter's fp32 limit of 64 because the tie finish keeps a second word per item live). Oracle: 13 cases per cell, all passed, including the N 32768 cells whose code went through local memory. Same adapter source as the first packed card (B2_packed.cuh unchanged since commit 8f15348fc3)."
+ },
+ "cells": [
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1927.103495,
+   "control_name": "B1_reference",
+   "control_value": 9491.489247,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 73,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 3,
+    "bar_sync_count": 15
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 1200.610041,
+   "control_name": "B1_reference",
+   "control_value": 526.1651505,
+   "canary_start": 3781.951904,
+   "canary_end": 3783.391953,
+   "resources": {
+    "registers": 70,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 3,
+    "bar_sync_count": 6
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 3869.076613,
+   "control_name": "B1_reference",
+   "control_value": 9567.591398,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 72,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 3,
+    "bar_sync_count": 39
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 880.7695773,
+   "control_name": "B1_reference",
+   "control_value": 525.1680046,
+   "canary_start": 3781.280041,
+   "canary_end": 3782.720089,
+   "resources": {
+    "registers": 73,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 3,
+    "bar_sync_count": 18
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 64,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 13716.59005,
+   "control_name": "B1_reference",
+   "control_value": 10342.38978,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 80,
+    "smem_bytes": 784,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 3,
+    "bar_sync_count": 135
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 64,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 308.5060671,
+   "control_name": "B1_reference",
+   "control_value": 509.8335137,
+   "canary_start": 3778.687954,
+   "canary_end": 3779.4559,
+   "resources": {
+    "registers": 80,
+    "smem_bytes": 784,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 3,
+    "bar_sync_count": 66
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 32768,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 995019.7755,
+   "control_name": "B1_reference",
+   "control_value": 19478.78091,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 15
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 32768,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 11.64442099,
+   "control_name": "B1_reference",
+   "control_value": 375.9866629,
+   "canary_start": 3787.328005,
+   "canary_end": 3780.479908,
+   "resources": {
+    "registers": 32,
+    "smem_bytes": 64,
+    "spill_bytes": 620,
+    "occupancy_blocks_per_sm": 8,
+    "bar_sync_count": 6
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 32768,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 1046496.883,
+   "control_name": "B1_reference",
+   "control_value": 19514.21505,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 254,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 39
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 32768,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 4.036364673,
+   "control_name": "B1_reference",
+   "control_value": 376.5413205,
+   "canary_start": 3778.656006,
+   "canary_end": 3779.392004,
+   "resources": {
+    "registers": 174,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 18
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 32768,
+   "k": 64,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 914862.5255,
+   "control_name": "B1_reference",
+   "control_value": 20046.65457,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 784,
+    "spill_bytes": 292,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 9
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "bf16",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 32768,
+   "k": 64,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 6.074473911,
+   "control_name": "B1_reference",
+   "control_value": 372.2207443,
+   "canary_start": 3779.103994,
+   "canary_end": 3778.496027,
+   "resources": {
+    "registers": 128,
+    "smem_bytes": 784,
+    "spill_bytes": 128,
+    "occupancy_blocks_per_sm": 2,
+    "bar_sync_count": 3
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 2613.170699,
+   "control_name": "B1_reference",
+   "control_value": 9676.724462,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 215,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 4,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 631.4255643,
+   "control_name": "B1_reference",
+   "control_value": 325.5682105,
+   "canary_start": 3778.527975,
+   "canary_end": 3779.776096,
+   "resources": {
+    "registers": 225,
+    "smem_bytes": 64,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 9
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 4243.346774,
+   "control_name": "B1_reference",
+   "control_value": 10385.77554,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 255,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 45
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 16,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 527.2520272,
+   "control_name": "B1_reference",
+   "control_value": 310.0907181,
+   "canary_start": 3777.856112,
+   "canary_end": 3779.488087,
+   "resources": {
+    "registers": 253,
+    "smem_bytes": 208,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 21
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 64,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "latency",
+   "metric": "cycles_per_call",
+   "value": 15120.85215,
+   "control_name": "B1_reference",
+   "control_value": 12128.51344,
+   "canary_start": 32.00097656,
+   "canary_end": 32.00097656,
+   "resources": {
+    "registers": 227,
+    "smem_bytes": 784,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 141
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  },
+  {
+   "key_type": "fp32",
+   "value_type": "int32",
+   "output_form": "indices",
+   "n": 16384,
+   "k": 64,
+   "threads": 256,
+   "requirement": "not_guaranteed",
+   "input_pattern": "random",
+   "regime": "throughput",
+   "metric": "gelem_per_s",
+   "value": 239.761901,
+   "control_name": "B1_reference",
+   "control_value": 279.1575166,
+   "canary_start": 3778.208017,
+   "canary_end": 3779.488087,
+   "resources": {
+    "registers": 243,
+    "smem_bytes": 784,
+    "spill_bytes": 0,
+    "occupancy_blocks_per_sm": 1,
+    "bar_sync_count": 69
+   },
+   "raw_file": "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+  }
+ ],
+ "findings": {
+  "low_level": [
+   "N 16384 (IPT 64, odd-even merge sort of 543 compare-exchanges): fully unrolled, 0 LDL and STL, 72 to 80 registers bf16 (3 blocks per SM), 215 to 255 registers fp32 (1 block per SM), 2216 to 7736 SASS instructions bf16. Round slope bf16 162 cycles (k 4 to 16) to 205 (k 16 to 64), fp32 136 to 227, fixed cost about 1280 cycles (bf16): the model round(IPT) = 80 + 2 IPT still holds at IPT 64 (208) and the prologue is the sort (1086 VIMNMX) plus the pack.",
+   "N 32768 (IPT 128, 1471 compare-exchanges): the compile-time table loop is no longer unrolled by nvcc, the register array is indexed dynamically and goes to local memory: stack frame 12800 bytes, 11833 LDL and 9874 to 10646 STL in the latency kernel, 38768 to 43112 SASS instructions, 128 to 254 registers. Every round's shift then runs through local memory too. Measured 995020 cycles at bf16 k 4, 1046497 at k 16, 914863 at k 64 against 19479 to 20047 for B1: a valid measurement of broken codegen, not of the design (the model would say about 3000 plus 330 per round). ptxas -v reports 0 spill bytes for these cells because the local array is a stack frame, not a spill, so the spill column of the board does not show it, only the stack frame and the LDL count do.",
+   "B1_reference in the same session: 122 to 127 registers bf16 and 169 fp32 at N 16384 (1 to 2 blocks per SM), 254 to 255 at N 32768, no local memory."
+  ],
+  "algorithmic": [
+   "N 16384 against B1 (latency, same lock section): bf16 k 4 1927 vs 9491 (4.9x), k 16 3869 vs 9568 (2.47x), k 64 13717 vs 10342 (0.75x). fp32 k 4 2613 vs 9677 (3.7x), k 16 4243 vs 10386 (2.45x), k 64 15121 vs 12129 (0.80x). Throughput bf16 1201, 881 and 309 Gelem/s against 526, 525 and 510, fp32 631, 527 and 240 against 326, 310 and 279.",
+   "Where rounds stop paying against B1 on the linear model, all N measured by this instance (bf16): about k 22 at N 1024, 34 at N 4096, 36 to 40 at N 8192 and 45 to 50 at N 16384 (B2 1280 + 162 to 205 k against B1 about 9450 + 14 k). fp32: about 19, 33, 50 and 45. B1 grows with N faster than the B2 round does, so the crossover k rises slowly with N while the B2 prologue (the per-thread sort) grows with IPT squared times log and becomes the problem before the round does.",
+   "N 32768 is outside what the sorted per-thread list can do: even with working codegen the prologue would be about 3000 cycles (1471 compare-exchanges at 2 warps per scheduler) and the round about 330, so k 16 would land near 8300 against B1's 19500, still a win on the model, but the other B2 instance's two-level list (card B2_twolevel_b200_20261025_1.json: 4774 at bf16 N 32768 k 16 against this adapter) is the right structure there and makes the fix of the unroll limit in this adapter unnecessary.",
+   "Index-only output and the inherent sorted order hold at every N, the slot readout is k words regardless of N."
+  ],
+  "negative": [
+   "A single `#pragma unroll` loop over a constexpr table of 1471 compare-exchange pairs is not unrolled by nvcc 13.4 and the network degrades to local memory (50x slower than B1 instead of 2x faster). Networks above about 1000 compare-exchanges must be emitted per stage or per merge level, each loop under the limit.",
+   "fp32 at IPT 64 costs 215 to 255 registers (two words per item live, 1 block per SM) and 1.3 to 1.6k cycles more than bf16 per call, the largest type gap of all N measured."
+  ],
+  "surprises": [
+   "The IPT 64 kernel still beats B1 by 2.5x at k 16 and 4.9x at k 4 with a 1280-cycle prologue, because B1's histogram sweeps cost about 9500 cycles at N 16384 regardless of k.",
+   "ptxas -v shows 0 bytes of spill for the local-memory kernels: the dynamically indexed array is a stack frame, which the harness reports separately (stack_bytes) and the board's spill column does not show."
+  ],
+  "open_questions": [
+   "Whether splitting the network into per-stage unrolled loops restores the IPT 128 codegen (expected yes, the IPT 64 network with 543 pairs unrolls) and what the prologue then costs against the two-level list.",
+   "A partial sort (top k per thread when k < IPT) instead of the full sort would cut the prologue at IPT 64 and 128 by a large factor for k 4 to 16, not built."
+  ]
+ },
+ "techniques_adopted": [
+  "T7",
+  "T9",
+  "T10",
+  "T11",
+  "T19"
+ ],
+ "techniques_contributed": [
+  "T27",
+  "T28"
+ ],
+ "report_path": "approaches/B2/REPORT_B2b.md",
+ "source_paths": [
+  "harness/adapters/B2_packed.cuh",
+  "harness/topk_harness.cuh"
+ ],
+ "_controls": [
+  "B1_reference"
+ ],
+ "_batches": [
+  "state/results/opt-B2b/B2_packed_vs_B1_reference_focus_bigN_20261025_134542.json"
+ ],
+ "_canary": [
+  {
+   "start": {
+    "timestamp": "2026-10-25T13:45:59Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3784.99198
+   },
+   "end": {
+    "timestamp": "2026-10-25T13:46:11Z",
+    "device": "NVIDIA B200",
+    "sms": 148,
+    "cuda_runtime": "13.4",
+    "cuda_driver": "13.4",
+    "lat_cycles_per_op": 32.00097656,
+    "thr_us": 3779.167891
+   }
+  }
+ ]
+}

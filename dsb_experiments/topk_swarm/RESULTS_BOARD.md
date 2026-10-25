@@ -16,6 +16,8 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1_reference_gb200_20261025_1.json | B1 | reference | block | gb200 | gb200-nvl4-ts2-100 | 13.4.92 | 2026-10-25 | eval-engineer | 84 | pass | no |
 | B1_striped_b200_20261025_1.json | B1 | striped | block | b200 | umbriel-b200-068 | 13.4.92 | 2026-10-25 | opt-B1 | 44 | pass | no |
 | B2_packed_b200_20261025_1.json | B2 | packed | block | b200 | umbriel-b200-091 | 13.4.92 | 2026-10-25 | opt-B2b | 48 | pass | no |
+| B2_packed_b200_20261025_2.json | B2 | packed | block | b200 | umbriel-b200-047 | 13.4.92 | 2026-10-25 | opt-B2b | 18 | pass | no |
+| B2_packed_b200_20261025_3.json | B2 | packed | block | b200 | umbriel-b200-047 | 13.4.92 | 2026-10-25 | opt-B2b | 24 | pass | no |
 | B2_packed_n4kill_b200_20261025_1.json | B2 | packed_n4kill | block | b200 | umbriel-b200-091 | 13.4.92 | 2026-10-25 | opt-B2b | 12 | pass | no |
 | B2_redux8_b200_20261025_1.json | B2 | redux8 | block | b200 | umbriel-b200-091 | 13.4.92 | 2026-10-25 | opt-B2b | 96 | pass | no |
 | B2_spec3_b200_20261025_1.json | B2 | spec3 | block | b200 | umbriel-b200-047 | 13.4.92 | 2026-10-25 | opt-B2b | 72 | pass | no |
@@ -39,6 +41,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 1768 | B1_reference | 1768 | 1.00x | 40 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 1768 | B1_reference | 1766 | 1.00x | 40 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 379.5 | B1_reference | 1767 | 4.66x | 21 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 348 | B1_reference | 2059 | 5.92x | 29 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 671.9 | B2_twolevel | 382.2 | 0.57x | 22 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 592.6 | B2_packed | 379.5 | 0.64x | 26 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 552.6 | B2_packed | 379.5 | 0.69x | 28 | 0 | B2_spec3_b200_20261025_1.json |
@@ -58,6 +61,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 1882 | B1_reference | 1882 | 1.00x | 40 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 1880 | B1_reference | 1882 | 1.00x | 37 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 1380 | B1_reference | 1882 | 1.36x | 21 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 1182 | B1_reference | 2265 | 1.92x | 29 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 2522 | B2_twolevel | 1392 | 0.55x | 22 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 2252 | B2_packed | 1380 | 0.61x | 28 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 2200 | B2_packed | 1380 | 0.63x | 34 | 0 | B2_spec3_b200_20261025_1.json |
@@ -80,6 +84,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 2017 | B1_reference | 2017 | 1.00x | 40 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 1979 | B1_reference | 2017 | 1.02x | 37 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 5397 | B1_reference | 2017 | 0.37x | 21 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 4504 | B1_reference | 2587 | 0.57x | 30 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 9913 | B2_twolevel | 5374 | 0.54x | 22 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 8895 | B2_packed | 5397 | 0.61x | 28 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 8728 | B2_packed | 5397 | 0.62x | 34 | 0 | B2_spec3_b200_20261025_1.json |
@@ -116,6 +121,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 3650 | B1_reference | 3650 | 1.00x | 63 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 3662 | B1_reference | 3658 | 1.00x | 63 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 718 | B1_reference | 3645 | 5.08x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 882 | B1_reference | 4933 | 5.59x | 32 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 958 | B2_twolevel | 674.1 | 0.70x | 28 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 932.2 | B2_packed | 718.2 | 0.77x | 32 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 863.9 | B2_packed | 717.9 | 0.83x | 35 | 0 | B2_spec3_b200_20261025_1.json |
@@ -135,6 +141,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 3835 | B1_reference | 3837 | 1.00x | 63 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 3866 | B1_reference | 3848 | 1.00x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 2057 | B1_reference | 3833 | 1.86x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 1907 | B1_reference | 5228 | 2.74x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 3523 | B2_twolevel | 2582 | 0.73x | 31 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 2920 | B2_packed | 2057 | 0.70x | 47 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 2835 | B2_packed | 2057 | 0.73x | 49 | 0 | B2_spec3_b200_20261025_1.json |
@@ -157,6 +164,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 4430 | B1_reference | 4429 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 4308 | B1_reference | 4425 | 1.03x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 7290 | B1_reference | 4411 | 0.61x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 6254 | B1_reference | 6074 | 0.97x | 48 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 1.422e+04 | B2_twolevel | 9717 | 0.68x | 30 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 1.435e+04 | B2_packed | 7290 | 0.51x | 46 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 1.522e+04 | B2_packed | 7290 | 0.48x | 59 | 0 | B2_spec3_b200_20261025_1.json |
@@ -226,6 +234,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B3 | baseline | b200 | block | bf16 | 8192 | 1024 | prefer_smaller_index | random | 6507 | B1_reference@not_guaranteed | 1.106e+04 | 1.70x | 127 | 0 | B3_baseline_b200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 9598 | B1_reference | 9591 | 1.00x | 122 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 9573 | B1_reference | 9572 | 1.00x | 122 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1927 | B1_reference | 9491 | 4.93x | 73 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1273 | B2_twolevel | 1002 | 0.79x | 32 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 988.2 | B2_packed | 1919 | 1.94x | 40 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1464 | B1_reference | 9587 | 6.55x | 79 | 0 | B5_hier_b200_20261025_1.json |
@@ -234,6 +243,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | bf16 | 16384 | 8 | not_guaranteed | random | 2814 | B1_reference | 9623 | 3.42x | 80 | 0 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 9679 | B1_reference | 9675 | 1.00x | 122 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 9653 | B1_reference | 9660 | 1.00x | 122 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 3869 | B1_reference | 9568 | 2.47x | 72 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 4244 | B2_twolevel | 3262 | 0.77x | 78 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 3252 | B2_packed | 3883 | 1.19x | 79 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 4709 | B1_reference | 9671 | 2.05x | 99 | 0 | B5_hier_b200_20261025_1.json |
@@ -242,6 +252,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | bf16 | 16384 | 32 | not_guaranteed | random | 8573 | B1_reference | 9871 | 1.15x | 125 | 0 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 1.038e+04 | B1_reference | 1.038e+04 | 1.00x | 127 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 1.036e+04 | B1_reference | 1.035e+04 | 1.00x | 127 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 1.372e+04 | B1_reference | 1.034e+04 | 0.75x | 80 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 1.91e+04 | B2_twolevel | 1.318e+04 | 0.69x | 80 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 1.318e+04 | B2_packed | 1.371e+04 | 1.04x | 79 | 0 | B2_twolevel_b200_20261025_1.json |
 | B3 | baseline | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 1.3e+04 | B1_reference | 1.038e+04 | 0.80x | 127 | 0 | B3_baseline_b200_20261025_1.json |
@@ -261,6 +272,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 16384 | 4096 | not_guaranteed | random | 2.142e+04 | B1_reference | 2.143e+04 | 1.00x | 128 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 1.975e+04 | B1_reference | 1.978e+04 | 1.00x | 254 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 1.971e+04 | B1_reference | 1.973e+04 | 1.00x | 254 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 9.95e+05 | B1_reference | 1.948e+04 | 0.02x | 128 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 4479 | B2_packed | 9.855e+05 | 220.02x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 4 | prefer_smaller_index | random | 4471 | B2_packed | 9.853e+05 | 220.37x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B1 | idx | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 1.644e+04 | B1_striped | 1.916e+04 | 1.17x | 248 | 0 | B1_idx_b200_20261025_1.json |
@@ -271,6 +283,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 1.971e+04 | B1_reference | 1.97e+04 | 1.00x | 254 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 1.97e+04 | B1_reference | 1.967e+04 | 1.00x | 254 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 1.916e+04 | B1_reference | 1.971e+04 | 1.03x | 255 | 248 | B1_striped_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 1.046e+06 | B1_reference | 1.951e+04 | 0.02x | 254 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 4774 | B2_packed | 1.037e+06 | 217.15x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 16 | prefer_smaller_index | random | 4762 | B2_packed | 1.037e+06 | 217.69x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B1 | idx | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 1.686e+04 | B1_striped | 1.94e+04 | 1.15x | 248 | 0 | B1_idx_b200_20261025_1.json |
@@ -281,6 +294,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 2.017e+04 | B1_reference | 2.021e+04 | 1.00x | 254 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 2.021e+04 | B1_reference | 2.016e+04 | 1.00x | 254 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 1.941e+04 | B1_reference | 2.018e+04 | 1.04x | 255 | 248 | B1_striped_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 9.149e+05 | B1_reference | 2.005e+04 | 0.02x | 128 | 292 | B2_packed_b200_20261025_2.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 2.295e+04 | B2_packed | 9.234e+05 | 40.24x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 64 | prefer_smaller_index | random | 2.295e+04 | B2_packed | 9.236e+05 | 40.24x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B1 | idx | b200 | block | bf16 | 32768 | 256 | not_guaranteed | random | 1.869e+04 | B1_striped | 2.113e+04 | 1.13x | 248 | 0 | B1_idx_b200_20261025_1.json |
@@ -310,6 +324,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 1785 | B1_reference | 1785 | 1.00x | 44 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 1785 | B1_reference | 1785 | 1.00x | 44 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 649.9 | B1_reference | 1785 | 2.75x | 30 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 612 | B1_reference | 2087 | 3.41x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 649.8 | B2_valrounds | 957.7 | 1.47x | 30 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 1012 | B2_twolevel | 706.9 | 0.70x | 30 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 842.5 | B2_packed | 649.7 | 0.77x | 32 | 0 | B2_spec_b200_20261025_1.json |
@@ -332,6 +347,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 1905 | B1_reference | 1905 | 1.00x | 44 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 1921 | B1_reference | 1905 | 0.99x | 38 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 1680 | B1_reference | 1905 | 1.13x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 1494 | B1_reference | 2306 | 1.54x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 1680 | B2_valrounds | 2103 | 1.25x | 32 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 2917 | B2_twolevel | 1679 | 0.58x | 30 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 2546 | B2_packed | 1680 | 0.66x | 32 | 0 | B2_spec_b200_20261025_1.json |
@@ -357,6 +373,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 2038 | B1_reference | 2038 | 1.00x | 44 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 2017 | B1_reference | 2038 | 1.01x | 38 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 5790 | B1_reference | 2038 | 0.35x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 4823 | B1_reference | 2607 | 0.54x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 1.027e+04 | B2_twolevel | 5648 | 0.55x | 28 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 9292 | B2_packed | 5788 | 0.62x | 32 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 1.033e+04 | B2_packed | 5789 | 0.56x | 43 | 0 | B2_spec3_b200_20261025_1.json |
@@ -395,6 +412,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 3152 | B1_reference | 3151 | 1.00x | 64 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 3143 | B1_reference | 3141 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 1068 | B1_reference | 3147 | 2.95x | 64 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 1230 | B1_reference | 4605 | 3.74x | 128 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 1064 | B2_valrounds | 1705 | 1.60x | 64 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 1285 | B2_twolevel | 978.2 | 0.76x | 79 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 1241 | B2_packed | 1066 | 0.86x | 64 | 0 | B2_spec_b200_20261025_1.json |
@@ -417,6 +435,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 3707 | B1_reference | 3702 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 3971 | B1_reference | 3704 | 0.93x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 2299 | B1_reference | 3710 | 1.61x | 64 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 2085 | B1_reference | 5447 | 2.61x | 128 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 2301 | B2_valrounds | 3067 | 1.33x | 64 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 3845 | B2_twolevel | 2688 | 0.70x | 79 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 3323 | B2_packed | 2305 | 0.69x | 80 | 0 | B2_spec_b200_20261025_1.json |
@@ -442,6 +461,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 4674 | B1_reference | 4676 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 4854 | B1_reference | 4671 | 0.96x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 7682 | B1_reference | 4675 | 0.61x | 64 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 6219 | B1_reference | 7055 | 1.13x | 128 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 1.465e+04 | B2_twolevel | 1.049e+04 | 0.72x | 79 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 1.489e+04 | B2_packed | 7697 | 0.52x | 80 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 1.597e+04 | B2_packed | 7695 | 0.48x | 80 | 0 | B2_spec3_b200_20261025_1.json |
@@ -521,6 +541,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B3 | baseline | b200 | block | fp32 | 8192 | 1024 | prefer_smaller_index | random | 8861 | B1_reference@not_guaranteed | 1.253e+04 | 1.41x | 127 | 0 | B3_baseline_b200_20261025_1.json |
 | B1 | reference | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 9728 | B1_reference | 9742 | 1.00x | 169 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 9734 | B1_reference | 9725 | 1.00x | 169 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 2613 | B1_reference | 9677 | 3.70x | 215 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 2078 | B2_twolevel | 2021 | 0.97x | 254 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 2012 | B2_packed | 2621 | 1.30x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 2931 | B1_reference | 9737 | 3.32x | 255 | 136 | B5_hier_b200_20261025_1.json |
@@ -529,6 +550,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | fp32 | 16384 | 8 | not_guaranteed | random | 3858 | B1_reference | 9536 | 2.47x | 255 | 192 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 1.046e+04 | B1_reference | 1.045e+04 | 1.00x | 169 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 1.042e+04 | B1_reference | 1.043e+04 | 1.00x | 169 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 4243 | B1_reference | 1.039e+04 | 2.45x | 255 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 5592 | B2_twolevel | 4482 | 0.80x | 255 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 4495 | B2_packed | 4248 | 0.95x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 6122 | B1_reference | 1.046e+04 | 1.71x | 255 | 0 | B5_hier_b200_20261025_1.json |
@@ -537,6 +559,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | fp32 | 16384 | 32 | not_guaranteed | random | 1.313e+04 | B1_reference | 1.096e+04 | 0.84x | 255 | 608 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 1.213e+04 | B1_reference | 1.216e+04 | 1.00x | 169 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 1.213e+04 | B1_reference | 1.214e+04 | 1.00x | 169 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 1.512e+04 | B1_reference | 1.213e+04 | 0.80x | 227 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 2.212e+04 | B2_twolevel | 1.462e+04 | 0.66x | 254 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 1.458e+04 | B2_packed | 1.519e+04 | 1.04x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B3 | baseline | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 1.488e+04 | B1_reference | 1.218e+04 | 0.82x | 223 | 0 | B3_baseline_b200_20261025_1.json |
@@ -838,6 +861,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 367.6 | B1_reference | 367.4 | 1.00x | 32 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 394.6 | B1_reference | 394.9 | 1.00x | 32 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 1274 | B1_reference | 364.6 | 3.49x | 21 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 1656 | B1_reference | 499.1 | 3.32x | 29 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 904.4 | B2_twolevel | 1266 | 0.71x | 21 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 789.6 | B2_packed | 1278 | 0.62x | 27 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 1024 | 4 | not_guaranteed | random | 719.3 | B2_packed | 1288 | 0.56x | 28 | 0 | B2_spec3_b200_20261025_1.json |
@@ -857,6 +881,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 375.3 | B1_reference | 375.5 | 1.00x | 32 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 365.1 | B1_reference | 349.5 | 1.04x | 32 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 491.4 | B1_reference | 347.2 | 1.42x | 21 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 663 | B1_reference | 460.8 | 1.44x | 30 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 299.9 | B2_twolevel | 490.1 | 0.61x | 21 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 233.3 | B2_packed | 491.1 | 0.47x | 27 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 1024 | 16 | not_guaranteed | random | 170.8 | B2_packed | 494.3 | 0.35x | 34 | 0 | B2_spec3_b200_20261025_1.json |
@@ -879,6 +904,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 346.8 | B1_reference | 346.7 | 1.00x | 32 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 341.4 | B1_reference | 322.9 | 1.06x | 32 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 143.2 | B1_reference | 320.9 | 0.45x | 19 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 192.3 | B1_reference | 409.8 | 0.47x | 28 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 81.61 | B2_twolevel | 142.1 | 0.57x | 21 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 60.82 | B2_packed | 143.1 | 0.42x | 27 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 1024 | 64 | not_guaranteed | random | 42.11 | B2_packed | 144.1 | 0.29x | 34 | 0 | B2_spec3_b200_20261025_1.json |
@@ -915,6 +941,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 574.3 | B1_reference | 574.3 | 1.00x | 48 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 617.5 | B1_reference | 617.2 | 1.00x | 48 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 1712 | B1_reference | 569.9 | 3.00x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 1597 | B1_reference | 610.5 | 2.62x | 32 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 1625 | B2_twolevel | 1865 | 0.87x | 26 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 1413 | B2_packed | 1712 | 0.83x | 32 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 4096 | 4 | not_guaranteed | random | 1323 | B2_packed | 1729 | 0.77x | 35 | 0 | B2_spec3_b200_20261025_1.json |
@@ -934,6 +961,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 573 | B1_reference | 573 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 559.1 | B1_reference | 533.7 | 1.05x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 800.1 | B1_reference | 529.7 | 1.51x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 932 | B1_reference | 592.7 | 1.57x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 724.5 | B2_twolevel | 900.5 | 0.80x | 32 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 487.5 | B2_packed | 800.2 | 0.61x | 46 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 4096 | 16 | not_guaranteed | random | 433.2 | B2_packed | 805.8 | 0.54x | 49 | 0 | B2_spec3_b200_20261025_1.json |
@@ -956,6 +984,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 521.2 | B1_reference | 521.1 | 1.00x | 57 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 520.2 | B1_reference | 485.1 | 1.07x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 227.6 | B1_reference | 481.6 | 0.47x | 32 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 258.1 | B1_reference | 538.7 | 0.48x | 48 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 222.2 | B2_twolevel | 292.6 | 0.76x | 29 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 90.56 | B2_packed | 227.5 | 0.40x | 45 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | bf16 | 4096 | 64 | not_guaranteed | random | 83.5 | B2_packed | 229 | 0.36x | 58 | 0 | B2_spec3_b200_20261025_1.json |
@@ -1025,6 +1054,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B3 | baseline | b200 | block | bf16 | 8192 | 1024 | prefer_smaller_index | random | 484.6 | B1_reference@not_guaranteed | 318.3 | 1.52x | 127 | 0 | B3_baseline_b200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 527 | B1_reference | 528.5 | 1.00x | 128 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 565.2 | B1_reference | 564.8 | 1.00x | 128 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1201 | B1_reference | 526.2 | 2.28x | 70 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1792 | B2_twolevel | 1863 | 0.96x | 38 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1854 | B2_packed | 1175 | 1.58x | 38 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | bf16 | 16384 | 4 | not_guaranteed | random | 1364 | B1_reference | 520.7 | 2.62x | 80 | 0 | B5_hier_b200_20261025_1.json |
@@ -1033,6 +1063,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | bf16 | 16384 | 8 | not_guaranteed | random | 996.8 | B1_reference | 522.5 | 1.91x | 80 | 0 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 526.2 | B1_reference | 527.7 | 1.00x | 128 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 566.7 | B1_reference | 566 | 1.00x | 128 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 880.8 | B1_reference | 525.2 | 1.68x | 73 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 923.2 | B2_twolevel | 1186 | 0.78x | 80 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 1179 | B2_packed | 868.6 | 1.36x | 79 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | bf16 | 16384 | 16 | not_guaranteed | random | 670.2 | B1_reference | 518.9 | 1.29x | 101 | 0 | B5_hier_b200_20261025_1.json |
@@ -1041,6 +1072,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | bf16 | 16384 | 32 | not_guaranteed | random | 449.6 | B1_reference | 512.4 | 0.88x | 128 | 0 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 510.1 | B1_reference | 510.4 | 1.00x | 128 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 547.2 | B1_reference | 547 | 1.00x | 128 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 308.5 | B1_reference | 509.8 | 0.61x | 80 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 424.7 | B2_twolevel | 475.4 | 0.89x | 80 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 479.1 | B2_packed | 306.5 | 1.56x | 80 | 0 | B2_twolevel_b200_20261025_1.json |
 | B3 | baseline | b200 | block | bf16 | 16384 | 64 | not_guaranteed | random | 413.2 | B1_reference | 505.1 | 0.82x | 128 | 0 | B3_baseline_b200_20261025_1.json |
@@ -1060,6 +1092,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | bf16 | 16384 | 4096 | not_guaranteed | random | 274.9 | B1_reference | 274.9 | 1.00x | 128 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | reference | b200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 375.9 | B1_reference | 375.8 | 1.00x | 254 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 402.6 | B1_reference | 403.4 | 1.00x | 254 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 11.64 | B1_reference | 376 | 0.03x | 32 | 620 | B2_packed_b200_20261025_2.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 4 | not_guaranteed | random | 1348 | B2_packed | 11.69 | 115.32x | 254 | 0 | B2_twolevel_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 4 | prefer_smaller_index | random | 1354 | B2_packed | 11.71 | 115.63x | 254 | 0 | B2_twolevel_b200_20261025_1.json |
 | B1 | idx | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 459.1 | B1_striped | 396.4 | 1.16x | 248 | 0 | B1_idx_b200_20261025_1.json |
@@ -1070,6 +1103,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 376.1 | B1_reference | 375.7 | 1.00x | 254 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 402.9 | B1_reference | 403.4 | 1.00x | 254 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 396.4 | B1_reference | 375.6 | 1.06x | 255 | 120 | B1_striped_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 4.036 | B1_reference | 376.5 | 0.01x | 174 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 16 | not_guaranteed | random | 965 | B2_packed | 4.024 | 239.83x | 254 | 0 | B2_twolevel_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 16 | prefer_smaller_index | random | 963.9 | B2_packed | 4.026 | 239.44x | 254 | 0 | B2_twolevel_b200_20261025_1.json |
 | B1 | idx | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 455 | B1_striped | 394.2 | 1.15x | 248 | 0 | B1_idx_b200_20261025_1.json |
@@ -1080,6 +1114,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 372.2 | B1_reference | 372.3 | 1.00x | 254 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 399.5 | B1_reference | 400.3 | 1.00x | 254 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 394.2 | B1_reference | 372.3 | 1.06x | 255 | 120 | B1_striped_b200_20261025_1.json |
+| B2 | packed | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 6.074 | B1_reference | 372.2 | 0.02x | 128 | 128 | B2_packed_b200_20261025_2.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 64 | not_guaranteed | random | 356.2 | B2_packed | 6.104 | 58.35x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | bf16 | 32768 | 64 | prefer_smaller_index | random | 355.7 | B2_packed | 6.109 | 58.23x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B1 | idx | b200 | block | bf16 | 32768 | 256 | not_guaranteed | random | 422.8 | B1_striped | 373.8 | 1.13x | 248 | 0 | B1_idx_b200_20261025_1.json |
@@ -1109,6 +1144,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 381.1 | B1_reference | 380.8 | 1.00x | 38 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 409 | B1_reference | 408.7 | 1.00x | 38 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 864.3 | B1_reference | 378.4 | 2.28x | 30 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 1074 | B1_reference | 540.1 | 1.99x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 863.8 | B2_valrounds | 779.9 | 1.11x | 30 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 713.4 | B2_twolevel | 955.2 | 0.75x | 31 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 1024 | 4 | not_guaranteed | random | 607.6 | B2_packed | 863.7 | 0.70x | 32 | 0 | B2_spec_b200_20261025_1.json |
@@ -1131,6 +1167,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 381.5 | B1_reference | 381.7 | 1.00x | 38 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 365.6 | B1_reference | 355.4 | 1.03x | 32 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 405.5 | B1_reference | 352.9 | 1.15x | 31 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 528.3 | B1_reference | 486.6 | 1.09x | 48 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 405.5 | B2_valrounds | 375.6 | 1.08x | 31 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 273.9 | B2_twolevel | 432.4 | 0.63x | 31 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 1024 | 16 | not_guaranteed | random | 212.9 | B2_packed | 405.5 | 0.53x | 32 | 0 | B2_spec_b200_20261025_1.json |
@@ -1156,6 +1193,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 350.8 | B1_reference | 350.6 | 1.00x | 38 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 339.7 | B1_reference | 326.6 | 1.04x | 32 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 134 | B1_reference | 324.3 | 0.41x | 31 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 176.6 | B1_reference | 424.7 | 0.42x | 40 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 79.59 | B2_twolevel | 136.8 | 0.58x | 31 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 59.16 | B2_packed | 134.1 | 0.44x | 32 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | fp32 | 1024 | 64 | not_guaranteed | random | 39.51 | B2_packed | 134.9 | 0.29x | 43 | 0 | B2_spec3_b200_20261025_1.json |
@@ -1194,6 +1232,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 571.6 | B1_reference | 571.4 | 1.00x | 64 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 613.8 | B1_reference | 614.5 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 955.4 | B1_reference | 567.3 | 1.68x | 64 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 694 | B1_reference | 471.7 | 1.47x | 128 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 955.1 | B2_valrounds | 943.1 | 1.01x | 64 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 943.2 | B2_twolevel | 991.3 | 0.95x | 61 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 4096 | 4 | not_guaranteed | random | 792.7 | B2_packed | 955.9 | 0.83x | 79 | 0 | B2_spec_b200_20261025_1.json |
@@ -1216,6 +1255,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 559.2 | B1_reference | 560.1 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 556.5 | B1_reference | 521.5 | 1.07x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 561.5 | B1_reference | 517.9 | 1.08x | 64 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 543 | B1_reference | 437.1 | 1.24x | 128 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | packed_n4kill | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 561.5 | B2_valrounds | 543.3 | 1.03x | 64 | 0 | B2_packed_n4kill_b200_20261025_1.json |
 | B2 | redux8 | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 532.4 | B2_twolevel | 629.1 | 0.85x | 57 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 4096 | 16 | not_guaranteed | random | 372.5 | B2_packed | 560.9 | 0.66x | 80 | 0 | B2_spec_b200_20261025_1.json |
@@ -1241,6 +1281,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B1 | reference | gb200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 467.3 | B1_reference | 467.2 | 1.00x | 64 | 0 | B1_reference_gb200_20261025_1.json |
 | B1 | striped | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 480.6 | B1_reference | 435.5 | 1.10x | 64 | 0 | B1_striped_b200_20261025_1.json |
 | B2 | packed | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 193 | B1_reference | 432.2 | 0.45x | 64 | 0 | B2_packed_b200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 207.9 | B1_reference | 378.6 | 0.55x | 128 | 0 | B2_packed_b200_20261025_3.json |
 | B2 | redux8 | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 182 | B2_twolevel | 235.7 | 0.77x | 57 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | spec | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 84.53 | B2_packed | 193 | 0.44x | 80 | 0 | B2_spec_b200_20261025_1.json |
 | B2 | spec3 | b200 | block | fp32 | 4096 | 64 | not_guaranteed | random | 80.24 | B2_packed | 194.3 | 0.41x | 80 | 0 | B2_spec3_b200_20261025_1.json |
@@ -1320,6 +1361,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B3 | baseline | b200 | block | fp32 | 8192 | 1024 | prefer_smaller_index | random | 329.3 | B1_reference@not_guaranteed | 224.6 | 1.47x | 114 | 0 | B3_baseline_b200_20261025_1.json |
 | B1 | reference | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 325.7 | B1_reference | 325.8 | 1.00x | 173 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 349.7 | B1_reference | 350.3 | 1.00x | 173 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 631.4 | B1_reference | 325.6 | 1.94x | 225 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 673.3 | B2_twolevel | 709.5 | 0.95x | 255 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 710.1 | B2_packed | 618.1 | 1.15x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | fp32 | 16384 | 4 | not_guaranteed | random | 608.5 | B1_reference | 322.1 | 1.89x | 255 | 0 | B5_hier_b200_20261025_1.json |
@@ -1328,6 +1370,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | fp32 | 16384 | 8 | not_guaranteed | random | 532.9 | B1_reference | 320.2 | 1.66x | 255 | 0 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 309.8 | B1_reference | 309.8 | 1.00x | 173 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 332.6 | B1_reference | 332.1 | 1.00x | 173 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 527.3 | B1_reference | 310.1 | 1.70x | 253 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 464.2 | B2_twolevel | 514.3 | 0.90x | 255 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 516.4 | B2_packed | 515.3 | 1.00x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B5 | hier | b200 | block | fp32 | 16384 | 16 | not_guaranteed | random | 432.4 | B1_reference | 306.7 | 1.41x | 255 | 0 | B5_hier_b200_20261025_1.json |
@@ -1336,6 +1379,7 @@ Generated from `cards/*.json` by `tools/board.py`. Do not edit. Verified cards a
 | B5 | hier | b200 | block | fp32 | 16384 | 32 | not_guaranteed | random | 266.1 | B1_reference | 296.3 | 0.90x | 255 | 0 | B5_hier_b200_20261025_1.json |
 | B1 | reference | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 279.2 | B1_reference | 279.4 | 1.00x | 173 | 0 | B1_reference_b200_20261025_1.json |
 | B1 | reference | gb200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 299.8 | B1_reference | 298.9 | 1.00x | 173 | 0 | B1_reference_gb200_20261025_1.json |
+| B2 | packed | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 239.8 | B1_reference | 279.2 | 0.86x | 243 | 0 | B2_packed_b200_20261025_2.json |
 | B2 | redux8 | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 173.9 | B2_twolevel | 242.6 | 0.72x | 255 | 0 | B2_redux8_b200_20261025_1.json |
 | B2 | twolevel | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 242.8 | B2_packed | 237.4 | 1.02x | 255 | 0 | B2_twolevel_b200_20261025_1.json |
 | B3 | baseline | b200 | block | fp32 | 16384 | 64 | not_guaranteed | random | 240.2 | B1_reference | 275.7 | 0.87x | 175 | 0 | B3_baseline_b200_20261025_1.json |
