@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """Node broker for topk_swarm. Owns state/nodes.json (see nodes/README.md). Stdlib only.
 
-  broker.py status [--json]                      squeue on both login hosts, reconcile, mark lost/expiring
+  broker.py status [--json] [--all]              squeue on both login hosts, reconcile, mark lost/expiring
   broker.py request --cluster computelab|dlcluster [--count 1] [--wait 0]
-                                                 detachable sbatch hold (4 h), respects the cap of 6
+                                                 detachable sbatch hold (4 h), respects the cap of 6,
+                                                 excludes hosts that already carry an active entry
   broker.py bootstrap <node-or-job> [--image REF] run nodes/bootstrap_<cluster>.sh on the node, mark ready
-  broker.py release <node-or-job>                scancel and mark released
+  broker.py release <node-or-job> [--force]      remove the container, scancel, mark released
   broker.py renew --target N [--wait 0]          re-request when the pool would drop below N within 45 min
+  broker.py tick --target N [--wait 10m]         reconcile, release unheld nodes with < 5 min left,
+                                                 renew, bootstrap every requested node that is running
   broker.py fetch <holder>                       tar <root>/results/<holder>/ from every ready node
                                                  into state/results/<holder>/
 
-Every ssh call uses BatchMode, ConnectTimeout 20 and StrictHostKeyChecking=accept-new.
-Remote output is kept short, everything is logged to state/logs/broker.log and
-state/logs/bootstrap_<node>.log. Exit codes: 0 ok, 1 error, 3 cap or target refused.
+tools/broker_loop.sh runs tick periodically. Every ssh call uses BatchMode, ConnectTimeout 20 and
+StrictHostKeyChecking=accept-new. Remote output is kept short, everything is logged to
+state/logs/broker.log and state/logs/bootstrap_<node>.log. Exit codes: 0 ok, 1 error, 3 cap refused.
 """
 import argparse
 import datetime
@@ -31,25 +34,26 @@ from swarmlib import (ACTIVE_STATES, LOGS, RESULTS, SWARM, Registry, fmt_remaini
                       node_label, parse_duration, remaining_seconds, utcnow)
 
 USER = "estehle"
-HOLD_SCRIPT = "~/b200_alloc/hold.sh"
+HOLD_SCRIPT = "~/b200_alloc/topk_hold.sh"
 JOB_NAME = "topk-swarm"
 CLUSTERS = {
     "computelab": dict(
         login="computelab-sc-01", arch="b200",
-        sbatch='sbatch --job-name=%s -p "b200@cr+mp-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb,'
+        sbatch='sbatch --job-name=%s{exclude} -p "b200@cr+mp-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb,'
                'b200@501-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb" --gres=gpu:b200:1 -t 4:00:00 %s'
                % (JOB_NAME, HOLD_SCRIPT),
         bootstrap="bootstrap_computelab.sh",
         image="nvidia/cuda:13.4.2-devel-ubuntu24.04"),
     "dlcluster": dict(
         login="dlcluster", arch="gb200",
-        sbatch='sbatch --job-name=%s -p gb200nvl4,gb200nvl72_preprod -A blackwell --gres=gpu:GB200:1 '
+        sbatch='sbatch --job-name=%s{exclude} -p gb200nvl4,gb200nvl72_preprod -A blackwell --gres=gpu:GB200:1 '
                '-t 4:00:00 %s' % (JOB_NAME, HOLD_SCRIPT),
         bootstrap="bootstrap_dlcluster.sh",
         image="nvidia/cuda:13.4.2-devel-ubuntu24.04"),
 }
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=20", "-o", "StrictHostKeyChecking=accept-new"]
-EXPIRING_S = 45 * 60
+EXPIRING_S = 45 * 60      # below this a ready node becomes expiring and counts as gone for renew
+RELEASE_S = 5 * 60        # below this an unheld node is released (cleanup) instead of dying on its own
 BROKER_LOG = LOGS / "broker.log"
 SQUEUE_FMT = "%i|%j|%T|%L|%N|%P|%l|%S"
 
@@ -178,8 +182,10 @@ def reconcile(reg, queues, now=None):
                 if limit and not n.get("lease_start"):
                     n["lease_start"] = iso(now + datetime.timedelta(seconds=left - limit))
             if job["nodes"] and (not n.get("ssh") or n["ssh"] == "pending"):
-                n["ssh"] = job["nodes"]
-                n["name"] = job["nodes"]
+                host = job["nodes"]
+                n["ssh"] = host
+                taken = any(o is not n and o.get("status") in ACTIVE_STATES and o.get("name") == host for o in reg["nodes"])
+                n["name"] = host if not taken else "%s-j%s" % (host, n["job_id"])
             n["partition"] = job["partition"]
             if left is not None and left <= 0:
                 notes.append("%s: lease is over, marked lost" % node_label(n))
@@ -216,9 +222,23 @@ def find_node(reg, key):
     return None
 
 
+def good_nodes(reg, now=None):
+    """Nodes that will still be usable in 45 minutes: requested, or ready/bootstrapping with time left."""
+    now = now or utcnow()
+    good = []
+    for n in reg["nodes"]:
+        if n.get("status") == "requested":
+            good.append(n)
+        elif n.get("status") in ("ready", "bootstrapping"):
+            rem = remaining_seconds(n, now)
+            if rem is None or rem > EXPIRING_S:
+                good.append(n)
+    return good
+
+
 def print_table(reg, show_all=False):
     now = utcnow()
-    fmt = "%-20s %-10s %-5s %-13s %-8s %-9s %-7s %s"
+    fmt = "%-22s %-10s %-5s %-13s %-8s %-9s %-7s %s"
     print(fmt % ("node", "cluster", "arch", "status", "job", "remaining", "cuda", "gpus"))
     for n in reg["nodes"]:
         if n.get("status") in ("released", "lost") and not show_all:
@@ -226,13 +246,17 @@ def print_table(reg, show_all=False):
         gpus = ", ".join("gpu%s=%s" % (g.get("index"), g.get("holder") or "free") for g in n.get("gpus", [])) or "-"
         print(fmt % (node_label(n), n.get("cluster"), n.get("arch"), n.get("status"), n.get("job_id"),
                      fmt_remaining(remaining_seconds(n, now)), n.get("cuda") or "-", gpus))
-    print("active=%d cap=%d" % (count_active(reg), reg.get("cap", 6)))
+    print("active=%d cap=%d good_for_45min=%d" % (count_active(reg), reg.get("cap", 6), len(good_nodes(reg, now))))
 
 
 def submit(reg, cluster):
-    """sbatch a hold on cluster and append a `requested` entry. Caller holds the registry lock."""
+    """sbatch a hold on cluster and append a `requested` entry. Caller holds the registry lock.
+    Hosts that already carry an active entry on this cluster are excluded (one job per host)."""
     c = CLUSTERS[cluster]
-    r = ssh(c["login"], c["sbatch"], timeout=90)
+    busy = sorted({n["ssh"] for n in reg["nodes"]
+                   if n.get("cluster") == cluster and n.get("status") in ACTIVE_STATES and n.get("ssh")})
+    exclude = (" --exclude=" + ",".join(busy)) if busy else ""
+    r = ssh(c["login"], c["sbatch"].format(exclude=exclude), timeout=90)
     m = re.search(r"Submitted batch job (\d+)", r.out or "")
     if not m:
         print("request %s failed: %s %s" % (cluster, _short(r.out, 200), _short(r.err, 200)))
@@ -242,10 +266,10 @@ def submit(reg, cluster):
         "name": "pending-%s" % jid, "cluster": cluster, "arch": c["arch"], "login": c["login"],
         "ssh": None, "job_id": jid, "lease_start": None, "lease_expires": None, "status": "requested",
         "root": None, "exec_prefix": None, "container": None, "cuda": None, "nvcc": None, "cmake": None,
-        "clone_commit": None, "gpus": [], "requested_at": iso(utcnow()),
+        "clone_commit": None, "gpus": [], "requested_at": iso(utcnow()), "excluded_hosts": busy,
     }
     reg["nodes"].append(entry)
-    print("requested %s job %s (%s)" % (cluster, jid, c["arch"]))
+    print("requested %s job %s (%s)%s" % (cluster, jid, c["arch"], (" excluding " + ",".join(busy)) if busy else ""))
     return jid
 
 
@@ -269,6 +293,206 @@ def wait_running(job_ids, wait_s, poll=30):
             break
         time.sleep(min(poll, max(1, deadline - time.monotonic())))
     return pending
+
+
+def gpu_identity(login, jid):
+    """Return (uuid, name, driver) of the job's GPU, resolved inside the job with srun --overlap."""
+    cmd = ("srun --jobid=%s --overlap -N1 -n1 bash -c 'echo CVD=$CUDA_VISIBLE_DEVICES; "
+           "nvidia-smi --query-gpu=index,uuid,name,driver_version --format=csv,noheader'" % jid)
+    r = ssh(login, cmd, timeout=150)
+    if not r.ok:
+        return None
+    cvd = None
+    rows = []
+    for line in r.out.splitlines():
+        line = line.strip()
+        if line.startswith("CVD="):
+            v = line[4:].split(",")[0].strip()
+            cvd = int(v) if v.isdigit() else None
+        elif re.match(r"^\d+,\s*GPU-", line):
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) >= 4:
+                rows.append(parts)
+    if not rows:
+        return None
+    pick = None
+    if cvd is not None:
+        for p in rows:
+            if p[0].isdigit() and int(p[0]) == cvd:
+                pick = p
+    if pick is None:
+        pick = rows[0]
+    return pick[1], pick[2], pick[3]
+
+
+def node_cleanup(node):
+    """Best effort: remove the docker container so nothing references the GPU after the lease."""
+    if node.get("cluster") == "computelab" and node.get("container") and node.get("ssh"):
+        r = ssh(node["ssh"], "docker rm -f %s >/dev/null 2>&1 && echo removed || echo none" % node["container"],
+                timeout=60, jump=node.get("jump"))
+        return r.out.strip() if r.rc != -1 else "unreachable"
+    return "nothing to clean"
+
+
+def release_node(key, force=False):
+    """Cleanup, scancel and mark released. Returns 0 ok, 1 refused or error."""
+    with Registry() as reg:
+        node = find_node(reg.data, key)
+        if node is None:
+            print("no such node or job: %s" % key)
+            return 1
+        holders = [g["holder"] for g in node.get("gpus", []) if g.get("holder")]
+        if holders and not force:
+            print("%s: still held by %s, release their leases first or pass --force" % (node_label(node), ", ".join(holders)))
+            return 1
+        snapshot = dict(node)
+    cleaned = node_cleanup(snapshot) if snapshot.get("status") in ("bootstrapping", "ready", "expiring") else "skipped"
+    r = ssh(snapshot["login"], "scancel %s" % snapshot["job_id"], timeout=60)
+    with Registry() as reg:
+        node = find_node(reg.data, snapshot["job_id"])
+        if node is not None:
+            node["status"] = "released"
+            node["released_at"] = iso(utcnow())
+            for g in node.get("gpus", []):
+                g["holder"] = None
+                g["since"] = None
+            reg.save()
+    print("%s: container %s, scancel %s rc=%d, marked released" % (node_label(snapshot), cleaned, snapshot["job_id"], r.rc))
+    return 0 if r.ok else 1
+
+
+def bootstrap_node(key, image=None, timeout=2400):
+    """Run the on-node bootstrap for a running job and mark it ready. Returns 0 ok, 1 error, 2 duplicate host."""
+    queues = all_queues()
+    with Registry() as reg:
+        reconcile(reg.data, queues)
+        node = find_node(reg.data, key)
+        if node is None:
+            print("no such node or job: %s" % key)
+            reg.save()
+            return 1
+        if node["status"] not in ACTIVE_STATES:
+            print("%s is %s, not bootstrapping" % (node_label(node), node["status"]))
+            reg.save()
+            return 1
+        if not node.get("ssh"):
+            print("job %s is not running yet (%s)" % (node["job_id"], node.get("pending_reason") or "pending"))
+            reg.save()
+            return 1
+        dup = [o for o in reg.data["nodes"] if o is not node and o.get("ssh") == node["ssh"]
+               and o.get("status") in ("bootstrapping", "ready", "expiring")]
+        if dup:
+            print("%s: host already in use by job %s, releasing this duplicate job %s"
+                  % (node["ssh"], dup[0]["job_id"], node["job_id"]))
+            reg.save()
+            release_node(node["job_id"], force=True)
+            return 2
+        node["status"] = "bootstrapping"
+        reg.save()
+        cluster, login, host, jid = node["cluster"], node["login"], node["ssh"], node["job_id"]
+        label = node_label(node)
+    c = CLUSTERS[cluster]
+    image = image or c["image"]
+
+    ident = gpu_identity(login, jid)
+    if ident is None:
+        print("%s: could not resolve the job's GPU with srun --overlap, see %s" % (label, BROKER_LOG))
+        return 1
+    uuid, gpu_name, driver = ident
+    print("%s: job gpu %s (%s, driver %s)" % (label, uuid, gpu_name, driver))
+
+    jump = None
+    if not ssh(host, "hostname", timeout=40).ok:
+        jump = login
+        if not ssh(host, "hostname", timeout=40, jump=jump).ok:
+            print("%s: cannot ssh to the node directly or via %s" % (label, login))
+            return 1
+        print("%s: direct ssh failed, using -J %s" % (label, login))
+
+    script = SWARM / "nodes" / c["bootstrap"]
+    remote = "/tmp/%s_%s" % (USER, script.name)
+    if not scp(script, host, remote, jump=jump):
+        print("%s: scp of %s failed" % (label, script.name))
+        return 1
+    r = ssh(host, "bash %s %s %s" % (remote, shlex.quote(uuid), shlex.quote(image)), timeout=timeout, jump=jump)
+    blog = LOGS / ("bootstrap_%s.log" % label)
+    with open(blog, "a") as f:
+        f.write("=== %s bootstrap %s job %s rc=%d\n%s\n--- stderr\n%s\n" % (iso(utcnow()), label, jid, r.rc, r.out, r.err))
+    tail = (r.out or "").strip().splitlines()
+    for line in tail[-8:]:
+        if not line.startswith("BOOTSTRAP_JSON"):
+            print("  " + line[:160])
+    m = re.search(r"^BOOTSTRAP_JSON (.*)$", r.out or "", re.M)
+    if not r.ok or not m:
+        print("%s: bootstrap failed (rc=%d), node left in bootstrapping, log %s" % (label, r.rc, blog))
+        if r.err.strip():
+            print("  stderr: " + _short(r.err, 300))
+        return 1
+    info = json.loads(m.group(1))
+    with Registry() as reg:
+        node = find_node(reg.data, jid)
+        for k in ("root", "host_root", "exec_prefix", "container", "image", "cuda", "nvcc", "nvcc_version",
+                  "cmake", "cmake_version", "clone_commit", "driver", "gpu_name", "gpu_uuid", "concurrent_exec"):
+            if k in info:
+                node[k] = info[k]
+        node["jump"] = jump
+        node["bootstrapped_at"] = iso(utcnow())
+        old = {g.get("index"): g for g in node.get("gpus", [])}
+        idx = info.get("gpu_index", 0)
+        keep = old.get(idx, {})
+        node["gpus"] = [{"index": idx, "holder": keep.get("holder"), "since": keep.get("since")}]
+        rem = remaining_seconds(node)
+        node["status"] = "expiring" if (rem is not None and rem < EXPIRING_S) else "ready"
+        reg.save()
+        print("%s: %s  cuda=%s nvcc=%s cmake=%s driver=%s commit=%s root=%s exec_prefix=%r expires=%s" % (
+            label, node["status"], node.get("cuda"), node.get("nvcc_version"), node.get("cmake_version"),
+            node.get("driver"), node.get("clone_commit"), node.get("root"), node.get("exec_prefix"),
+            node.get("lease_expires")))
+    return 0
+
+
+def renew_pool(target, wait_s=0, queues=None):
+    """Request holds until `target` nodes are good for the next 45 minutes. Returns (rc, new job ids)."""
+    queues = queues if queues is not None else all_queues()
+    jids = []
+    with Registry() as reg:
+        notes = reconcile(reg.data, queues)
+        good = good_nodes(reg.data)
+        need = target - len(good)
+        cap = reg.data.get("cap", 6)
+        room = cap - count_active(reg.data)
+        reg.save()
+        if need <= 0:
+            print("pool ok: %d node(s) good for the next 45 min, target %d" % (len(good), target))
+            rc = 0
+        elif room <= 0:
+            print("pool below target (%d good, target %d) but cap %d is full, waiting for expiries or releases"
+                  % (len(good), target, cap))
+            rc = 3
+        else:
+            need = min(need, room)
+            reachable = [c for c in CLUSTERS if queues.get(c) is not None]
+            if not reachable:
+                print("no login host reachable, nothing requested")
+                rc = 1
+            else:
+                have_arch = {n["arch"] for n in good}
+                order = [c for c in reachable if CLUSTERS[c]["arch"] not in have_arch]
+                while len(order) < need:
+                    order.extend(reachable)
+                for cluster in order[:need]:
+                    jid = submit(reg.data, cluster)
+                    if jid:
+                        jids.append(jid)
+                reg.save()
+                rc = 0 if jids else 1
+    for note in notes:
+        print("note: " + note)
+    if jids and wait_s > 0:
+        left = wait_running(jids, wait_s)
+        if left:
+            print("still pending after %ds: %s" % (wait_s, ", ".join(sorted(left))))
+    return rc, jids
 
 
 # ----------------------------------------------------------------------------- commands
@@ -313,188 +537,49 @@ def cmd_request(args):
     return 0
 
 
-def gpu_identity(login, jid):
-    """Return (uuid, name, driver) of the job's GPU, resolved inside the job with srun --overlap."""
-    cmd = ("srun --jobid=%s --overlap -N1 -n1 bash -c 'echo CVD=$CUDA_VISIBLE_DEVICES; "
-           "nvidia-smi --query-gpu=index,uuid,name,driver_version --format=csv,noheader'" % jid)
-    r = ssh(login, cmd, timeout=150)
-    if not r.ok:
-        return None
-    cvd = None
-    rows = []
-    for line in r.out.splitlines():
-        line = line.strip()
-        if line.startswith("CVD="):
-            v = line[4:].split(",")[0].strip()
-            cvd = int(v) if v.isdigit() else None
-        elif line.startswith("GPU-") or re.match(r"^\d+,\s*GPU-", line):
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) >= 4:
-                rows.append(parts)
-    if not rows:
-        return None
-    pick = None
-    if cvd is not None:
-        for p in rows:
-            if p[0].isdigit() and int(p[0]) == cvd:
-                pick = p
-    if pick is None:
-        pick = rows[0]
-    return pick[1], pick[2], pick[3]
-
-
 def cmd_bootstrap(args):
-    queues = all_queues()
-    with Registry() as reg:
-        reconcile(reg.data, queues)
-        node = find_node(reg.data, args.node)
-        if node is None:
-            print("no such node or job: %s" % args.node)
-            reg.save()
-            return 1
-        if node["status"] not in ACTIVE_STATES:
-            print("%s is %s, not bootstrapping" % (node_label(node), node["status"]))
-            reg.save()
-            return 1
-        if not node.get("ssh"):
-            print("job %s is not running yet (%s)" % (node["job_id"], node.get("pending_reason") or "pending"))
-            reg.save()
-            return 1
-        node["status"] = "bootstrapping"
-        reg.save()
-        cluster, login, host, jid = node["cluster"], node["login"], node["ssh"], node["job_id"]
-        label = node_label(node)
-    c = CLUSTERS[cluster]
-    image = args.image or c["image"]
-
-    ident = gpu_identity(login, jid)
-    if ident is None:
-        print("%s: could not resolve the job's GPU with srun --overlap, see %s" % (label, BROKER_LOG))
-        return 1
-    uuid, gpu_name, driver = ident
-    print("%s: job gpu %s (%s, driver %s)" % (label, uuid, gpu_name, driver))
-
-    jump = None
-    if not ssh(host, "hostname", timeout=40).ok:
-        jump = login
-        if not ssh(host, "hostname", timeout=40, jump=jump).ok:
-            print("%s: cannot ssh to the node directly or via %s" % (label, login))
-            return 1
-        print("%s: direct ssh failed, using -J %s" % (label, login))
-
-    script = SWARM / "nodes" / c["bootstrap"]
-    remote = "/tmp/%s_%s" % (USER, script.name)
-    if not scp(script, host, remote, jump=jump):
-        print("%s: scp of %s failed" % (label, script.name))
-        return 1
-    r = ssh(host, "bash %s %s %s" % (remote, shlex.quote(uuid), shlex.quote(image)), timeout=args.timeout, jump=jump)
-    blog = LOGS / ("bootstrap_%s.log" % label)
-    with open(blog, "a") as f:
-        f.write("=== %s bootstrap %s job %s rc=%d\n%s\n--- stderr\n%s\n" % (iso(utcnow()), label, jid, r.rc, r.out, r.err))
-    tail = (r.out or "").strip().splitlines()
-    for line in tail[-8:]:
-        if not line.startswith("BOOTSTRAP_JSON"):
-            print("  " + line[:160])
-    m = re.search(r"^BOOTSTRAP_JSON (.*)$", r.out or "", re.M)
-    if not r.ok or not m:
-        print("%s: bootstrap failed (rc=%d), node left in bootstrapping, log %s" % (label, r.rc, blog))
-        if r.err.strip():
-            print("  stderr: " + _short(r.err, 300))
-        return 1
-    info = json.loads(m.group(1))
-    with Registry() as reg:
-        node = find_node(reg.data, jid)
-        for k in ("root", "host_root", "exec_prefix", "container", "image", "cuda", "nvcc", "nvcc_version",
-                  "cmake", "cmake_version", "clone_commit", "driver", "gpu_name", "gpu_uuid", "concurrent_exec"):
-            if k in info:
-                node[k] = info[k]
-        node["jump"] = jump
-        node["bootstrapped_at"] = iso(utcnow())
-        old = {g.get("index"): g for g in node.get("gpus", [])}
-        idx = info.get("gpu_index", 0)
-        keep = old.get(idx, {})
-        node["gpus"] = [{"index": idx, "holder": keep.get("holder"), "since": keep.get("since")}]
-        rem = remaining_seconds(node)
-        node["status"] = "expiring" if (rem is not None and rem < EXPIRING_S) else "ready"
-        reg.save()
-        print("%s: %s  cuda=%s nvcc=%s cmake=%s driver=%s commit=%s root=%s exec_prefix=%r expires=%s" % (
-            label, node["status"], node.get("cuda"), node.get("nvcc_version"), node.get("cmake_version"),
-            node.get("driver"), node.get("clone_commit"), node.get("root"), node.get("exec_prefix"),
-            node.get("lease_expires")))
-    return 0
+    return bootstrap_node(args.node, image=args.image, timeout=args.timeout)
 
 
 def cmd_release(args):
-    with Registry() as reg:
-        node = find_node(reg.data, args.node)
-        if node is None:
-            print("no such node or job: %s" % args.node)
-            return 1
-        login, jid, label = node["login"], node["job_id"], node_label(node)
-        holders = [g["holder"] for g in node.get("gpus", []) if g.get("holder")]
-        if holders and not args.force:
-            print("%s: still held by %s, release their leases first or pass --force" % (label, ", ".join(holders)))
-            return 1
-        r = ssh(login, "scancel %s" % jid, timeout=60)
-        node["status"] = "released"
-        node["released_at"] = iso(utcnow())
-        for g in node.get("gpus", []):
-            g["holder"] = None
-            g["since"] = None
-        reg.save()
-    print("%s: scancel %s rc=%d, marked released" % (label, jid, r.rc))
-    return 0 if r.ok else 1
+    return release_node(args.node, force=args.force)
 
 
 def cmd_renew(args):
+    rc, _ = renew_pool(args.target, parse_duration(args.wait))
+    return rc
+
+
+def cmd_tick(args):
+    """One maintenance pass. Safe to run every few minutes."""
     queues = all_queues()
-    jids = []
     with Registry() as reg:
         notes = reconcile(reg.data, queues)
-        now = utcnow()
-        good = []
-        for n in reg.data["nodes"]:
-            if n.get("status") == "requested":
-                good.append(n)
-            elif n.get("status") in ("ready", "bootstrapping"):
-                rem = remaining_seconds(n, now)
-                if rem is None or rem > EXPIRING_S:
-                    good.append(n)
-        need = args.target - len(good)
-        cap = reg.data.get("cap", 6)
-        room = cap - count_active(reg.data)
-        if need <= 0:
-            print("pool ok: %d node(s) good for the next 45 min, target %d" % (len(good), args.target))
-            reg.save()
-            for note in notes:
-                print("note: " + note)
-            return 0
-        if room <= 0:
-            print("pool below target (%d good, target %d) but cap %d is full, release something first"
-                  % (len(good), args.target, cap))
-            reg.save()
-            return 3
-        need = min(need, room)
-        reachable = [c for c in CLUSTERS if queues.get(c) is not None]
-        if not reachable:
-            print("no login host reachable, nothing requested")
-            reg.save()
-            return 1
-        have_arch = {n["arch"] for n in good}
-        order = [c for c in reachable if CLUSTERS[c]["arch"] not in have_arch]
-        while len(order) < need:
-            order.extend(reachable)
-        for cluster in order[:need]:
-            jid = submit(reg.data, cluster)
-            if jid:
-                jids.append(jid)
         reg.save()
+        now = utcnow()
+        dying = []
+        for n in reg.data["nodes"]:
+            if n.get("status") not in ("ready", "expiring", "bootstrapping"):
+                continue
+            rem = remaining_seconds(n, now)
+            held = any(g.get("holder") for g in n.get("gpus", []))
+            if rem is not None and rem < RELEASE_S and not held:
+                dying.append(n["job_id"])
+            elif rem is not None and rem < RELEASE_S and held:
+                notes.append("%s: %s left and still held by %s, slurm will kill it" % (
+                    node_label(n), fmt_remaining(rem), ", ".join(g["holder"] for g in n["gpus"] if g.get("holder"))))
     for note in notes:
         print("note: " + note)
-    wait_s = parse_duration(args.wait)
-    if jids and wait_s > 0:
-        wait_running(jids, wait_s)
-    return 0 if jids else 1
+    for jid in dying:
+        release_node(jid)
+    rc, _ = renew_pool(args.target, parse_duration(args.wait), queues=None)
+    with Registry() as reg:
+        todo = [n["job_id"] for n in reg.data["nodes"] if n.get("status") == "requested" and n.get("ssh")]
+    for jid in todo:
+        bootstrap_node(jid, image=args.image)
+    with Registry() as reg:
+        print_table(reg.data)
+    return rc
 
 
 def cmd_fetch(args):
@@ -572,6 +657,11 @@ def main(argv=None):
     rn.add_argument("--target", type=int, required=True)
     rn.add_argument("--wait", default="0")
     rn.set_defaults(func=cmd_renew)
+    t = sub.add_parser("tick")
+    t.add_argument("--target", type=int, required=True)
+    t.add_argument("--wait", default="10m", help="how long to wait for newly requested jobs to start")
+    t.add_argument("--image", default=None)
+    t.set_defaults(func=cmd_tick)
     f = sub.add_parser("fetch")
     f.add_argument("holder")
     f.add_argument("--timeout", type=int, default=600)

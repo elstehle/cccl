@@ -34,6 +34,15 @@ fi
 
 state=$(docker inspect -f '{{.State.Status}}' "$CN" 2>/dev/null | tr -d '[:space:]')
 [ -n "$state" ] || state=none
+if [ "$state" != none ]; then
+  # a container left over from an earlier job on this host may hold a different GPU: replace it
+  have=$(docker inspect -f '{{range .HostConfig.DeviceRequests}}{{.DeviceIDs}}{{end}}' "$CN" 2>/dev/null)
+  if ! printf '%s' "$have" | grep -q "$UUID"; then
+    step "removing stale container $CN (gpu $have)"
+    docker rm -f "$CN" >>"$LOG" 2>&1 || fail "docker rm stale"
+    state=none
+  fi
+fi
 if [ "$state" = none ]; then
   step "starting container $CN"
   docker run -d --name "$CN" --init --gpus "\"device=$UUID\"" -v "$HOST_ROOT":/work -w /work \

@@ -21,7 +21,7 @@ RESULTS = STATE / "results"
 CAP = 6
 UTC = datetime.timezone.utc
 ACTIVE_STATES = ("requested", "bootstrapping", "ready", "expiring")
-LEASABLE_STATES = ("ready",)
+LEASABLE_STATES = ("ready", "expiring")   # expiring nodes are handed out only if --min-remaining fits
 
 
 def utcnow():
