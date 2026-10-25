@@ -192,7 +192,11 @@ microseconds canary, in `canary_start` and `canary_end`.
 Per regime from the harness kernel that contains the primitive: registers, static plus dynamic
 shared memory, local bytes (`cudaFuncGetAttributes`), occupancy in blocks per SM. run.py refines
 `spill_bytes` from `nvcc -Xptxas -v` (spill stores plus spill loads of that kernel symbol) and
-adds `stl_count`, `ldl_count`, `bar_sync_count` and `sass_instructions` from `cuobjdump -sass`.
+adds `stl_count`, `ldl_count`, `bar_sync_count`, `bssy_count` and `sass_instructions` from
+`cuobjdump -sass`. Sub-warp kernels (logical warps of 4, 8 or 16 lanes) carry `BSSY` and `BSYNC`
+convergence regions around their partial-mask shuffles and syncs, in variant and control alike
+and scaling with the network size, warp-scope kernels have none: they do not bias a same-harness
+comparison but they are one more reason not to compare sub-warp cycles with warp-scope cycles.
 The kernel symbol comes from `cudaFuncGetName`, so the match is exact. A register array that
 NVVM could not promote shows up as a stack frame with STL and LDL in the SASS while
 `spill_bytes` stays 0, so `stack_bytes`, `stl_count` and `ldl_count` are carried into the card

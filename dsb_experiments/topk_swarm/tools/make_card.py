@@ -41,7 +41,7 @@ CELL_KEYS = ["key_type", "value_type", "output_form", "n", "k", "threads", "requ
              "workload_name", "regime", "metric", "value", "control_name", "control_value", "canary_start",
              "canary_end", "resources", "raw_file"]
 RES_KEYS = ["registers", "smem_bytes", "spill_bytes", "occupancy_blocks_per_sm", "bar_sync_count", "stack_bytes",
-            "stl_count", "ldl_count", "sass_instructions"]
+            "stl_count", "ldl_count", "sass_instructions", "bssy_count"]
 
 
 def fallback_validate(obj, schema, path="$"):

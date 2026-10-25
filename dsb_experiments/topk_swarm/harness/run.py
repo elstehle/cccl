@@ -214,7 +214,7 @@ def sass_stats(cuobjdump, binary, timeout=600):
         m = re.search(r"Function\s*:\s*(\S+)", ln)
         if m:
             cur = m.group(1)
-            stats[cur] = {"stl_count": 0, "ldl_count": 0, "bar_sync_count": 0, "sass_instructions": 0}
+            stats[cur] = {"stl_count": 0, "ldl_count": 0, "bar_sync_count": 0, "bssy_count": 0, "sass_instructions": 0}
             continue
         if cur and re.match(r"\s*/\*[0-9a-f]+\*/", ln):
             stats[cur]["sass_instructions"] += 1
@@ -224,6 +224,8 @@ def sass_stats(cuobjdump, binary, timeout=600):
                 stats[cur]["ldl_count"] += 1
             if re.search(r"\bBAR\.SYNC", ln):
                 stats[cur]["bar_sync_count"] += 1
+            if re.search(r"\bBSSY\b", ln):
+                stats[cur]["bssy_count"] += 1
     return stats
 
 
