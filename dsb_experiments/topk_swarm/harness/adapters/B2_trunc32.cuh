@@ -53,7 +53,7 @@ struct B2_trunc32
   static constexpr bool is_bf16                        = std::is_same_v<KeyT, __nv_bfloat16>;
 
   // fp32 packing: B index bits (N a power of two, so N - 1 fits), 32 - B key bits
-  static constexpr int B             = b2::log2_int(N);
+  static constexpr int B             = b2b::log2_int(N);
   static constexpr unsigned lo_mask  = (1u << B) - 1u; // inverted index in the packed word
   static constexpr unsigned hi_mask  = ~lo_mask; // truncated key
   static constexpr int B2            = 32 - B; // finish word: low key bits above, inverted index below
@@ -95,14 +95,14 @@ struct B2_trunc32
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      p[i] = (b2::twiddle16(keys[i]) << 16) | (0xffffu - static_cast<unsigned>(tid * IPT + i));
+      p[i] = (b2b::twiddle16(keys[i]) << 16) | (0xffffu - static_cast<unsigned>(tid * IPT + i));
     }
-    b2::sort_desc<IPT>(p);
+    b2b::sort_desc<IPT>(p);
     __syncthreads();
-#pragma unroll b2::round_unroll<K>::value
+#pragma unroll b2b::round_unroll<K>::value
     for (int r = 0; r < K; ++r)
     {
-      b2::round_shift1<IPT>(&ts.slot[r], p);
+      b2b::round_shift1<IPT>(&ts.slot[r], p);
     }
     for (int t = tid; t < K; t += Threads)
     {
@@ -123,16 +123,16 @@ struct B2_trunc32
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      tw[i] = b2::twiddle32(keys[i]);
+      tw[i] = b2b::twiddle32(keys[i]);
       p[i]  = (tw[i] & hi_mask) | (lo_mask - static_cast<unsigned>(tid * IPT + i));
     }
-    b2::sort_desc<IPT>(p);
+    b2b::sort_desc<IPT>(p);
     __syncthreads();
     unsigned last = 0u;
-#pragma unroll b2::round_unroll<K>::value
+#pragma unroll b2b::round_unroll<K>::value
     for (int r = 0; r < K; ++r)
     {
-      last = b2::round_shift1<IPT>(&ts.slot[r], p);
+      last = b2b::round_shift1<IPT>(&ts.slot[r], p);
     }
     // Tie class of the k-th truncated key. My largest remaining word is the only one that can be
     // in it (the list is sorted and every remaining word is at most the k-th slot).

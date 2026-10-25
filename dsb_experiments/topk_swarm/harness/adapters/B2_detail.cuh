@@ -10,7 +10,7 @@
 
 #include "../topk_harness.cuh"
 
-namespace b2
+namespace b2b
 {
 
 // Order-preserving twiddles in the negate form: a positive key gets its sign bit set, a negative
@@ -221,4 +221,44 @@ __device__ __forceinline__ unsigned round_shift_twolevel(unsigned* slot, unsigne
   return m;
 }
 
-} // namespace b2
+// Round of the two-level list with a warp pre-reduction: one redux.sync.max per warp and one
+// atomic per warp (8 same-address atomics per round instead of 256), the rest as above.
+template <int IPT, int H>
+__device__ __forceinline__ unsigned round_shift_twolevel_redux(unsigned* slot, unsigned (&p)[IPT])
+{
+  const unsigned wmax = __reduce_max_sync(0xffffffffu, p[0]);
+  if ((threadIdx.x & 31u) == 0u)
+  {
+    atomicMax(slot, wmax);
+  }
+  __syncthreads();
+  const unsigned m = *slot;
+  const bool w     = (p[0] == m);
+#pragma unroll
+  for (int i = 0; i + 1 < H; ++i)
+  {
+    p[i] = w ? p[i + 1] : p[i];
+  }
+  p[H - 1] = w ? 0u : p[H - 1];
+  if constexpr (IPT > H)
+  {
+    if (p[0] == 0u)
+    {
+      unsigned mx = p[H];
+#pragma unroll
+      for (int i = H + 1; i < IPT; ++i)
+      {
+        mx = mx > p[i] ? mx : p[i];
+      }
+#pragma unroll
+      for (int i = H; i < IPT; ++i)
+      {
+        p[i] = (p[i] == mx) ? 0u : p[i];
+      }
+      p[0] = mx;
+    }
+  }
+  return m;
+}
+
+} // namespace b2b

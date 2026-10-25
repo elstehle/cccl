@@ -47,7 +47,7 @@ struct B2_twolevel
   using key_storage                                    = KeyT[items_per_thread];
   static constexpr bool is_bf16                        = std::is_same_v<KeyT, __nv_bfloat16>;
 
-  static constexpr int B             = b2::log2_int(N);
+  static constexpr int B             = b2b::log2_int(N);
   static constexpr unsigned lo_mask  = (1u << B) - 1u;
   static constexpr unsigned hi_mask  = ~lo_mask;
   static constexpr int B2            = 32 - B;
@@ -89,14 +89,14 @@ struct B2_twolevel
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      p[i] = (b2::twiddle16(keys[i]) << 16) | (0xffffu - static_cast<unsigned>(tid * IPT + i));
+      p[i] = (b2b::twiddle16(keys[i]) << 16) | (0xffffu - static_cast<unsigned>(tid * IPT + i));
     }
-    b2::partial_sort_top<IPT, H>(p);
+    b2b::partial_sort_top<IPT, H>(p);
     __syncthreads();
-#pragma unroll b2::round_unroll<K>::value
+#pragma unroll b2b::round_unroll<K>::value
     for (int r = 0; r < K; ++r)
     {
-      b2::round_shift_twolevel<IPT, H>(&ts.slot[r], p);
+      b2b::round_shift_twolevel<IPT, H>(&ts.slot[r], p);
     }
     for (int t = tid; t < K; t += Threads)
     {
@@ -117,16 +117,16 @@ struct B2_twolevel
 #pragma unroll
     for (int i = 0; i < IPT; ++i)
     {
-      tw[i] = b2::twiddle32(keys[i]);
+      tw[i] = b2b::twiddle32(keys[i]);
       p[i]  = (tw[i] & hi_mask) | (lo_mask - static_cast<unsigned>(tid * IPT + i));
     }
-    b2::partial_sort_top<IPT, H>(p);
+    b2b::partial_sort_top<IPT, H>(p);
     __syncthreads();
     unsigned last = 0u;
-#pragma unroll b2::round_unroll<K>::value
+#pragma unroll b2b::round_unroll<K>::value
     for (int r = 0; r < K; ++r)
     {
-      last = b2::round_shift_twolevel<IPT, H>(&ts.slot[r], p);
+      last = b2b::round_shift_twolevel<IPT, H>(&ts.slot[r], p);
     }
     const unsigned tkk = last & hi_mask;
     const bool pending = ((p[0] & hi_mask) == tkk) && (p[0] != 0u);
