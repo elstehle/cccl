@@ -376,6 +376,61 @@
  {
   "scope": "block",
   "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 32,
+  "requirement": "not_guaranteed",
+  "winner": "B2_twolevel",
+  "runner_up": "N8_b2packed",
+  "margin": 0.08350842060968547
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 128,
+  "n": 1024,
+  "k": 24,
+  "requirement": "not_guaranteed",
+  "winner": "N8_b2packed@T128",
+  "runner_up": "B2_packed@T128",
+  "margin": 0.0004813569024272229
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 4096,
+  "k": 16,
+  "requirement": "not_guaranteed",
+  "winner": "B2_packed",
+  "runner_up": "N8_b2packed",
+  "margin": 0.00039261023227383856
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 16,
+  "requirement": "not_guaranteed",
+  "winner": "B2_packed",
+  "runner_up": "N8_b2packed",
+  "margin": 1.7100063395311345e-05
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 32,
+  "requirement": "not_guaranteed",
+  "winner": "B1_idx",
+  "runner_up": "B2_packed",
+  "margin": 0.04357527800839527
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
   "threads": 128,
   "n": 1024,
   "k": 4,
@@ -728,6 +783,39 @@
  {
   "scope": "block",
   "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 32,
+  "requirement": "prefer_smaller_index",
+  "winner": "N8_b2packed@T128",
+  "runner_up": "B2_packed@T128",
+  "margin": 1.2927505163514918e-05
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 128,
+  "n": 1024,
+  "k": 24,
+  "requirement": "prefer_smaller_index",
+  "winner": "N8_b2packed@T128",
+  "runner_up": "B2_packed@T128",
+  "margin": 0.000573465590349638
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 4096,
+  "k": 16,
+  "requirement": "prefer_smaller_index",
+  "winner": "N8_b2packed",
+  "runner_up": "B2_packed",
+  "margin": 0.00010931293945285703
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
   "threads": 256,
   "n": 4096,
   "k": 256,
@@ -757,17 +845,6 @@
   "winner": "B1_idx",
   "runner_up": "B1_det2",
   "margin": 0.000555285934872409
- },
- {
-  "scope": "block",
-  "key_type": "bf16",
-  "threads": 256,
-  "n": 16384,
-  "k": 32,
-  "requirement": "not_guaranteed",
-  "winner": "B2_twolevel",
-  "runner_up": "B1_idx@T512",
-  "margin": 0.08998075358379293
  },
  {
   "scope": "block",
@@ -838,17 +915,6 @@
  {
   "scope": "block",
   "key_type": "fp32",
-  "threads": 128,
-  "n": 1024,
-  "k": 24,
-  "requirement": "not_guaranteed",
-  "winner": "N8_b2packed@T128",
-  "runner_up": "B1_det2",
-  "margin": 0.06761697320657492
- },
- {
-  "scope": "block",
-  "key_type": "fp32",
   "threads": 256,
   "n": 1024,
   "k": 48,
@@ -867,17 +933,6 @@
   "winner": "B1_det2",
   "runner_up": "B1_idx",
   "margin": 0.00027790195793542006
- },
- {
-  "scope": "block",
-  "key_type": "fp32",
-  "threads": 256,
-  "n": 4096,
-  "k": 16,
-  "requirement": "not_guaranteed",
-  "winner": "B1_idx",
-  "runner_up": "B1_det2",
-  "margin": 2.8276713671174835e-05
  },
  {
   "scope": "block",
@@ -922,17 +977,6 @@
   "winner": "B1_idx",
   "runner_up": "B1_det2",
   "margin": 0.0009155400270998842
- },
- {
-  "scope": "block",
-  "key_type": "fp32",
-  "threads": 256,
-  "n": 8192,
-  "k": 16,
-  "requirement": "not_guaranteed",
-  "winner": "B1_idx",
-  "runner_up": "B1_det2",
-  "margin": 2.0699489264792302e-05
  },
  {
   "scope": "block",
@@ -994,17 +1038,6 @@
   "key_type": "fp32",
   "threads": 256,
   "n": 16384,
-  "k": 32,
-  "requirement": "not_guaranteed",
-  "winner": "B4_v4",
-  "runner_up": "B1_idx@T512",
-  "margin": 0.06157979709113093
- },
- {
-  "scope": "block",
-  "key_type": "fp32",
-  "threads": 256,
-  "n": 16384,
   "k": 64,
   "requirement": "not_guaranteed",
   "winner": "B4_v4",
@@ -1054,39 +1087,6 @@
   "winner": "B3_tuned",
   "runner_up": "B4_v4",
   "margin": 0.08889185355748737
- },
- {
-  "scope": "block",
-  "key_type": "bf16",
-  "threads": 128,
-  "n": 1024,
-  "k": 32,
-  "requirement": "prefer_smaller_index",
-  "winner": "N8_b2packed@T128",
-  "runner_up": "B1_det2",
-  "margin": 0.07692060869729712
- },
- {
-  "scope": "block",
-  "key_type": "fp32",
-  "threads": 128,
-  "n": 1024,
-  "k": 24,
-  "requirement": "prefer_smaller_index",
-  "winner": "N8_b2packed@T128",
-  "runner_up": "B1_det2",
-  "margin": 0.12004854564641511
- },
- {
-  "scope": "block",
-  "key_type": "fp32",
-  "threads": 256,
-  "n": 4096,
-  "k": 16,
-  "requirement": "prefer_smaller_index",
-  "winner": "B1_det2",
-  "runner_up": "B2_twolevel",
-  "margin": 0.00451655477514889
  },
  {
   "scope": "block",
