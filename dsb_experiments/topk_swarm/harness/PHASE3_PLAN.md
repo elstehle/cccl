@@ -191,6 +191,19 @@ the matrix, verification by the usual verifiers on the same node from the same b
   matrix inputs, so no table mixes nodes within a pass. Final matrices: `WINNERS_b200.md` 1480
   cells (random, tie_heavy, and the sorted-runs tracks), `WINNERS_gb200.md` 666 cells.
 
+- Matrix integrity (2026-10-26 07:00Z to 07:10Z, curator review): exact batch labels, the 3b pass as
+  its own pattern (`random@sorted`), the one-node random tables kept on umbriel-b200-047 with the
+  068 addenda (B1_det3, 8 and 16 lane named sub-warp cells) as `random@addendum:umbriel-b200-068`
+  tables, B1_det3 as a reference column on the sorted-runs track, N8_b2packed reported as
+  B2_packed@T128, the 3b section classifying unlaunchable and by-design-unsorted adapters as
+  unsupported. The det3 cell list for the curator is `state/phase3/det3_cells_b200.md`.
+- Shuffled tie_heavy run (harness 0.11, pattern `tie_heavy_shuffled`, label `phase3_b200_tieshuf`):
+  umbriel-b200-094, 07:17Z to 08:29Z, block adapters on the 90 close cells at N 8192 and above plus
+  bf16 N 1024, both requirements, 21 of 27 batches measured when the lead's 08:30Z stop came (the
+  W4 chunk merges on shuffled ties and the B1_det3 sorted-runs reference were cut, nothing of the
+  prediction test). The same-node rerun of the two addenda on 047 did not happen (047 never came
+  back), so the addendum tables keep their 068 node name.
+
 ## 7. Go procedure
 
 1. Lead gives the go, broker names the B200 node and starts the pre-flight.
