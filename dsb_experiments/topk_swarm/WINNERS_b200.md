@@ -271,34 +271,36 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 ## block, latency, prefer_smaller_index, random input
 
+Cells of this table were measured on umbriel-b200-047, umbriel-b200-068 (see the node column, resumed passes after the 2026-10-25 21:26Z network outage ran on a different node from the first batches).
+
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | second reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 1024 | 4 |  | N8_b2packed@T128 | 339.5 | B2_packed (378.9) | +11.6% | B1_reference@not_guaranteed@T128 (2067) | +508.7% | B1_det (1959) | +477.1% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 8 |  | N8_b2packed@T128 | 619.2 | B2_packed (711) | +14.8% | B1_reference@not_guaranteed@T128 (2136) | +244.9% | B1_det (2008) | +224.3% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 16 |  | N8_b2packed@T128 | 1179 | B2_packed (1375) | +16.7% | B1_reference@not_guaranteed@T128 (2278) | +93.2% | B1_det (2150) | +82.3% | 9 | 32 | umbriel-b200-047 |
-| bf16 | 1024 | 24 |  | N8_b2packed@T128 | 1731 | B3_tuned (1845) | +6.6% | B1_reference@not_guaranteed@T128 (2326) | +34.4% | B1_det (2284) | +31.9% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 32 |  | B3_tuned | 1902 | B1_det2 (1972) | +3.7% | B1_reference@not_guaranteed (1987) | +4.4% | B1_det (2295) | +20.6% | 9 | 32 | umbriel-b200-047 |
-| bf16 | 1024 | 48 |  | N9_w2fin2 | 1862 | B3_tuned (1895) | +1.8% | B1_reference@not_guaranteed (2019) | +8.4% | B1_det (2430) | +30.5% | 9 | 60 | umbriel-b200-047 |
-| bf16 | 1024 | 64 |  | B3_tuned | 1903 | N9_w2fin2 (1979) | +4.0% | B1_reference@not_guaranteed (2035) | +6.9% | B1_det (2342) | +23.0% | 9 | 32 | umbriel-b200-047 |
-| bf16 | 1024 | 256 |  | B3_tuned | 1904 | N9_w2fin2 (2048) | +7.6% | B1_reference@not_guaranteed (2147) | +12.8% | B1_det (2406) | +26.4% | 9 | 32 | umbriel-b200-047 |
-| bf16 | 4096 | 4 |  | B2_twolevel | 689.9 | B2_packed (696.7) | +1.0% | B1_reference@not_guaranteed (3499) | +407.2% | B1_det (4156) | +502.3% | 9 | 28 | umbriel-b200-047 |
-| bf16 | 4096 | 16 |  | N8_b2packed@T128 | 1881 | B2_packed (1974) | +4.9% | B1_reference@not_guaranteed@T128 (5018) | +166.7% | B1_det (4555) | +142.1% | 9 | 48 | umbriel-b200-047 |
-| bf16 | 4096 | 64 |  | N9_w2fin2 | 3656 | B3_tuned (3860) | +5.6% | B1_reference@not_guaranteed (4253) | +16.3% | B1_det (5819) | +59.2% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 4096 | 256 |  | B3_tuned | 3990 | N9_w2fin2 (4388) | +10.0% | B1_reference@not_guaranteed (5088) | +27.5% | B1_det (6672) | +67.2% | 9 | 63 | umbriel-b200-047 |
-| bf16 | 4096 | 1024 |  | B3_tuned | 3996 | B1_det2 (5587) | +39.8% | B1_reference@not_guaranteed (5788) | +44.8% | B1_det (6710) | +67.9% | 7 | 63 | umbriel-b200-047 |
-| bf16 | 8192 | 16 |  | N8_b2packed@T128 | 2117 | B2_twolevel (2654) | +25.4% | B1_reference@not_guaranteed@T128 (8865) | +318.7% | B1_det (7659) | +261.8% | 9 | 72 | umbriel-b200-047 |
-| bf16 | 8192 | 32 |  | N8_b2packed@T128 | 3782 | B4_v4 (4944) | +30.7% | B1_reference@not_guaranteed@T128 (9211) | +143.6% | B1_det (8052) | +112.9% | 9 | 72 | umbriel-b200-047 |
-| bf16 | 8192 | 64 |  | B4_v4 | 5122 | N9_w2fin2 (5546) | +8.3% | B1_reference@not_guaranteed (6436) | +25.7% | B1_det (8935) | +74.5% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 8192 | 128 |  | B4_v4 | 5259 | N9_w2fin2 (6127) | +16.5% | B1_reference@not_guaranteed (6934) | +31.8% | B1_det (9839) | +87.1% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 8192 | 256 |  | B4_v4 | 5387 | N9_w2fin2 (6156) | +14.3% | B1_reference@not_guaranteed (8172) | +51.7% | B1_det (1.135e+04) | +110.6% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 16384 | 4 |  | B2_twolevel | 934.3 | B2_packed (1864) | +99.5% | B1_reference@not_guaranteed (1.067e+04) | +1042.5% | B1_det (1.225e+04) | +1211.3% | 8 | 40 | umbriel-b200-047 |
-| bf16 | 16384 | 16 |  | B2_twolevel | 3228 | B2_packed (3751) | +16.2% | B1_reference@not_guaranteed (1.078e+04) | +233.8% | B1_det (1.257e+04) | +289.4% | 8 | 80 | umbriel-b200-047 |
-| bf16 | 16384 | 32 |  | B4_v4 | 5935 | B2_twolevel (6620) | +11.5% | B1_reference@not_guaranteed (9944) | +67.6% | B1_det (1.445e+04) | +143.4% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 64 |  | B4_v4 | 6056 | N9_w2fin2 (9359) (spills) | +54.5% | B1_reference@not_guaranteed (1.034e+04) | +70.8% | B1_det (1.475e+04) | +143.5% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 128 |  | B4_v4 | 6274 | N9_w2fin2 (9108) (spills) | +45.2% | B1_reference@not_guaranteed (1.139e+04) | +81.6% | B1_det (1.693e+04) | +169.9% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 256 |  | B4_v4 | 6459 | N9_w2fin2 (9701) (spills) | +50.2% | B1_reference@not_guaranteed (1.247e+04) | +93.1% | B1_det (1.911e+04) | +195.8% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 1024 |  | B4_v4 | 9858 | B3_tuned (1.049e+04) (spills) | +6.4% | B1_reference@not_guaranteed (1.736e+04) | +76.1% | B1_det (2.336e+04) | +137.0% | 7 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 4096 |  | B3_tuned | 1.048e+04 | B1_det2 (1.936e+04) | +84.7% | B1_reference@not_guaranteed (2.263e+04) | +115.9% | B1_det (2.414e+04) | +130.4% | 7 | 128 | umbriel-b200-047 |
+| bf16 | 1024 | 4 |  | N8_b2packed@T128 | 339.5 | B2_packed (378.9) | +11.6% | B1_reference@not_guaranteed@T128 (2067) | +508.7% | B1_det (1959) | +477.1% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 8 |  | N8_b2packed@T128 | 619.2 | B2_packed (711) | +14.8% | B1_reference@not_guaranteed@T128 (2136) | +244.9% | B1_det (2008) | +224.3% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 16 |  | N8_b2packed@T128 | 1179 | B2_packed (1375) | +16.7% | B1_reference@not_guaranteed@T128 (2278) | +93.2% | B1_det (2150) | +82.3% | 10 | 32 | umbriel-b200-047 |
+| bf16 | 1024 | 24 |  | N8_b2packed@T128 | 1731 | B3_tuned (1845) | +6.6% | B1_reference@not_guaranteed@T128 (2326) | +34.4% | B1_det (2284) | +31.9% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 32 |  | B3_tuned | 1902 | B1_det3 (1938) | +1.9% | B1_reference@not_guaranteed (1987) | +4.4% | B1_det (2295) | +20.6% | 10 | 32 | umbriel-b200-047 |
+| bf16 | 1024 | 48 |  | N9_w2fin2 | 1862 | B3_tuned (1895) | +1.8% | B1_reference@not_guaranteed (2019) | +8.4% | B1_det (2430) | +30.5% | 10 | 60 | umbriel-b200-047 |
+| bf16 | 1024 | 64 |  | B3_tuned | 1903 | N9_w2fin2 (1979) | +4.0% | B1_reference@not_guaranteed (2035) | +6.9% | B1_det (2342) | +23.0% | 10 | 32 | umbriel-b200-047 |
+| bf16 | 1024 | 256 |  | B3_tuned | 1904 | N9_w2fin2 (2048) | +7.6% | B1_reference@not_guaranteed (2147) | +12.8% | B1_det (2406) | +26.4% | 10 | 32 | umbriel-b200-047 |
+| bf16 | 4096 | 4 |  | B2_twolevel | 689.9 | B2_packed (696.7) | +1.0% | B1_reference@not_guaranteed (3499) | +407.2% | B1_det (4156) | +502.3% | 10 | 28 | umbriel-b200-047 |
+| bf16 | 4096 | 16 |  | N8_b2packed@T128 | 1881 | B2_packed (1974) | +4.9% | B1_reference@not_guaranteed@T128 (5018) | +166.7% | B1_det (4555) | +142.1% | 10 | 48 | umbriel-b200-047 |
+| bf16 | 4096 | 64 |  | N9_w2fin2 | 3656 | B3_tuned (3860) | +5.6% | B1_reference@not_guaranteed (4253) | +16.3% | B1_det (5819) | +59.2% | 10 | 128 | umbriel-b200-047 |
+| bf16 | 4096 | 256 |  | B3_tuned | 3990 | N9_w2fin2 (4388) | +10.0% | B1_reference@not_guaranteed (5088) | +27.5% | B1_det (6672) | +67.2% | 10 | 63 | umbriel-b200-047 |
+| bf16 | 4096 | 1024 |  | B3_tuned | 3996 | B1_det3 (5318) (spills) | +33.1% | B1_reference@not_guaranteed (5788) | +44.8% | B1_det (6710) | +67.9% | 8 | 63 | umbriel-b200-047 |
+| bf16 | 8192 | 16 |  | N8_b2packed@T128 | 2117 | B2_twolevel (2654) | +25.4% | B1_reference@not_guaranteed@T128 (8865) | +318.7% | B1_det (7659) | +261.8% | 10 | 72 | umbriel-b200-047 |
+| bf16 | 8192 | 32 |  | N8_b2packed@T128 | 3782 | B4_v4 (4944) | +30.7% | B1_reference@not_guaranteed@T128 (9211) | +143.6% | B1_det (8052) | +112.9% | 10 | 72 | umbriel-b200-047 |
+| bf16 | 8192 | 64 |  | B4_v4 | 5122 | N9_w2fin2 (5546) | +8.3% | B1_reference@not_guaranteed (6436) | +25.7% | B1_det (8935) | +74.5% | 10 | 128 | umbriel-b200-047 |
+| bf16 | 8192 | 128 |  | B4_v4 | 5259 | N9_w2fin2 (6127) | +16.5% | B1_reference@not_guaranteed (6934) | +31.8% | B1_det (9839) | +87.1% | 10 | 128 | umbriel-b200-047 |
+| bf16 | 8192 | 256 |  | B4_v4 | 5387 | N9_w2fin2 (6156) | +14.3% | B1_reference@not_guaranteed (8172) | +51.7% | B1_det (1.135e+04) | +110.6% | 10 | 128 | umbriel-b200-047 |
+| bf16 | 16384 | 4 |  | B2_twolevel | 934.3 | B2_packed (1864) | +99.5% | B1_reference@not_guaranteed (1.067e+04) | +1042.5% | B1_det (1.225e+04) | +1211.3% | 9 | 40 | umbriel-b200-047 |
+| bf16 | 16384 | 16 |  | B2_twolevel | 3228 | B2_packed (3751) | +16.2% | B1_reference@not_guaranteed (1.078e+04) | +233.8% | B1_det (1.257e+04) | +289.4% | 9 | 80 | umbriel-b200-047 |
+| bf16 | 16384 | 32 |  | B4_v4 | 5935 | B2_twolevel (6620) | +11.5% | B1_reference@not_guaranteed (9944) | +67.6% | B1_det (1.445e+04) | +143.4% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 64 |  | B4_v4 | 6056 | N9_w2fin2 (9359) (spills) | +54.5% | B1_reference@not_guaranteed (1.034e+04) | +70.8% | B1_det (1.475e+04) | +143.5% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 128 |  | B4_v4 | 6274 | N9_w2fin2 (9108) (spills) | +45.2% | B1_reference@not_guaranteed (1.139e+04) | +81.6% | B1_det (1.693e+04) | +169.9% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 256 |  | B4_v4 | 6459 | N9_w2fin2 (9701) (spills) | +50.2% | B1_reference@not_guaranteed (1.247e+04) | +93.1% | B1_det (1.911e+04) | +195.8% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 1024 |  | B4_v4 | 9858 | B3_tuned (1.049e+04) (spills) | +6.4% | B1_reference@not_guaranteed (1.736e+04) | +76.1% | B1_det (2.336e+04) | +137.0% | 8 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 4096 |  | B3_tuned | 1.048e+04 | B1_det3 (1.732e+04) | +65.2% | B1_reference@not_guaranteed (2.263e+04) | +115.9% | B1_det (2.414e+04) | +130.4% | 8 | 128 | umbriel-b200-047 |
 | bf16 | 32768 | 4 |  | B2_twolevel | 1864 | B4_v4 (6688) (spills) | +258.7% | B1_reference@not_guaranteed (1.96e+04) | +951.2% |  |  | 4 | 254 | umbriel-b200-047 |
 | bf16 | 32768 | 16 |  | B2_twolevel | 4439 | B4_v4 (6935) (spills) | +56.2% | B1_reference@not_guaranteed (1.957e+04) | +340.9% |  |  | 4 | 254 | umbriel-b200-047 |
 | bf16 | 32768 | 32 |  | B4_v4 | 7097 | B2_twolevel (7516) | +5.9% | B1_reference@not_guaranteed (1.964e+04) | +176.8% |  |  | 4 | 255 | umbriel-b200-047 |
@@ -307,35 +309,35 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 | bf16 | 32768 | 256 |  | B4_v4 | 7711 | B3_tuned (1.782e+04) (spills) | +131.1% | B1_reference@not_guaranteed (2.268e+04) | +194.1% |  |  | 4 | 255 | umbriel-b200-047 |
 | bf16 | 32768 | 1024 |  | B4_v4 | 1.195e+04 | B3_tuned (1.982e+04) (spills) | +65.8% | B1_reference@not_guaranteed (2.961e+04) | +147.8% |  |  | 3 | 255 | umbriel-b200-047 |
 | bf16 | 32768 | 4096 |  | B3_tuned | 1.798e+04 | B4_v4 (5.388e+04) (spills) | +199.7% | B1_reference@not_guaranteed (4.08e+04) | +126.9% |  |  | 3 | 255 | umbriel-b200-047 |
-| fp32 | 1024 | 4 |  | N8_b2packed@T128 | 604.9 | B2_packed (609.9) | +0.8% | B1_reference@not_guaranteed@T128 (2115) | +249.6% | B1_det (1936) | +220.0% | 9 | 48 | umbriel-b200-047 |
-| fp32 | 1024 | 8 |  | N8_b2packed@T128 | 889.1 | B2_packed (943.4) | +6.1% | B1_reference@not_guaranteed@T128 (2172) | +144.2% | B1_det (2029) | +128.2% | 9 | 48 | umbriel-b200-047 |
-| fp32 | 1024 | 16 |  | N8_b2packed@T128 | 1477 | B2_packed (1625) | +10.0% | B1_reference@not_guaranteed@T128 (2320) | +57.1% | B1_det (2130) | +44.2% | 9 | 48 | umbriel-b200-047 |
-| fp32 | 1024 | 24 |  | N9_w2fin2 | 1957 | B1_det2 (2007) | +2.5% | B1_reference@not_guaranteed (2071) | +5.8% | B1_det (2349) | +20.0% | 9 | 59 | umbriel-b200-047 |
-| fp32 | 1024 | 32 |  | B1_det2 | 1922 | N9_w2fin2 (2030) | +5.6% | B1_reference@not_guaranteed (2012) | +4.7% | B1_det (2290) | +19.1% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 48 |  | N9_w2fin2 | 1917 | B1_det2 (2084) | +8.7% | B1_reference@not_guaranteed (2194) | +14.4% | B1_det (2440) | +27.3% | 9 | 59 | umbriel-b200-047 |
-| fp32 | 1024 | 64 |  | B1_det2 | 1905 | N9_w2fin2 (2027) | +6.4% | B1_reference@not_guaranteed (2012) | +5.6% | B1_det (2270) | +19.1% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 256 |  | N9_w2fin2 | 2086 | B1_det2 (2137) | +2.5% | B1_reference@not_guaranteed (2274) | +9.0% | B1_det (2425) | +16.3% | 9 | 59 | umbriel-b200-047 |
-| fp32 | 4096 | 4 |  | B2_twolevel | 1116 | B2_packed (1186) | +6.3% | B1_reference@not_guaranteed (3103) | +178.1% | B1_det (3894) | +248.9% | 9 | 79 | umbriel-b200-047 |
-| fp32 | 4096 | 16 |  | N8_b2packed@T128 | 2234 | B2_packed (2347) | +5.1% | B1_reference@not_guaranteed@T128 (5007) | +124.2% | B1_det (4528) | +102.7% | 9 | 128 | umbriel-b200-047 |
-| fp32 | 4096 | 64 |  | N9_w2fin2 | 3764 | B3_tuned (4296) (spills) | +14.1% | B1_reference@not_guaranteed (4685) | +24.5% | B1_det (5735) | +52.4% | 9 | 128 | umbriel-b200-047 |
-| fp32 | 4096 | 256 |  | B3_tuned | 4166 | N9_w2fin2 (4317) | +3.6% | B1_reference@not_guaranteed (5335) | +28.1% | B1_det (6402) | +53.6% | 9 | 64 | umbriel-b200-047 |
-| fp32 | 4096 | 1024 |  | B3_tuned | 4241 | B1_det2 (5682) (spills) | +34.0% | B1_reference@not_guaranteed (6181) | +45.7% | B1_det (6814) | +60.7% | 7 | 64 | umbriel-b200-047 |
-| fp32 | 8192 | 16 |  | N8_b2packed@T128 | 2802 | B2_packed (3216) | +14.8% | B1_reference@not_guaranteed@T128 (8645) | +208.6% | B1_det (7156) | +155.4% | 9 | 254 | umbriel-b200-047 |
-| fp32 | 8192 | 32 |  | B4_v4 | 4729 | N8_b2packed@T128 (4921) | +4.1% | B1_reference@not_guaranteed (5502) | +16.3% | B1_det (7837) | +65.7% | 9 | 202 | umbriel-b200-047 |
-| fp32 | 8192 | 64 |  | B4_v4 | 4947 | N9_w2fin2 (5418) | +9.5% | B1_reference@not_guaranteed (5905) | +19.4% | B1_det (8335) | +68.5% | 9 | 202 | umbriel-b200-047 |
-| fp32 | 8192 | 128 |  | B4_v4 | 4969 | B3_tuned (6128) | +23.3% | B1_reference@not_guaranteed (6661) | +34.0% | B1_det (9403) | +89.2% | 9 | 202 | umbriel-b200-047 |
-| fp32 | 8192 | 256 |  | B4_v4 | 5195 | B3_tuned (6263) | +20.6% | B1_reference@not_guaranteed (7827) | +50.7% | B1_det (1.058e+04) | +103.6% | 9 | 202 | umbriel-b200-047 |
-| fp32 | 8192 | 1024 | dsa_v4_merge_m8_k1024 | B3_tuned | 6758 | B4_v4 (8701) | +28.7% | B1_reference@not_guaranteed (1.145e+04) | +69.4% | B1_det (1.247e+04) | +84.5% | 7 | 127 | umbriel-b200-047 |
-| fp32 | 8192 | 2048 | dsa_small_context_8k_k2048 | B3_tuned | 6645 | B1_det2 (9925) | +49.4% | B1_reference@not_guaranteed (1.142e+04) | +71.8% | B1_det (1.219e+04) | +83.4% | 7 | 127 | umbriel-b200-047 |
-| fp32 | 8192 | 2048 | dsa_v32_merge_m4_k2048 | B3_tuned | 6644 | B1_det2 (9925) | +49.4% | B1_reference@not_guaranteed (1.141e+04) | +71.7% | B1_det (1.219e+04) | +83.4% | 7 | 127 | umbriel-b200-047 |
-| fp32 | 16384 | 4 |  | B2_twolevel | 1649 | B2_packed (2779) | +68.5% | B1_reference@not_guaranteed (1.006e+04) | +510.3% | B1_det (1.147e+04) | +595.5% | 8 | 254 | umbriel-b200-047 |
-| fp32 | 16384 | 16 |  | B2_packed | 4177 | B2_twolevel (4413) | +5.7% | B1_reference@not_guaranteed (1.071e+04) | +156.4% | B1_det (1.223e+04) | +192.9% | 8 | 254 | umbriel-b200-047 |
-| fp32 | 16384 | 32 |  | B4_v4 | 4936 | B2_twolevel (7529) | +52.5% | B1_reference@not_guaranteed (8938) | +81.1% | B1_det (1.279e+04) | +159.2% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 64 |  | B4_v4 | 5088 | B3_tuned (8290) | +62.9% | B1_reference@not_guaranteed (1.036e+04) | +103.5% | B1_det (1.41e+04) | +177.2% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 128 |  | B4_v4 | 5352 | N9_w2fin2 (8703) (spills) | +62.6% | B1_reference@not_guaranteed (1.2e+04) | +124.1% | B1_det (1.59e+04) | +197.0% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 256 |  | B4_v4 | 5566 | B3_tuned (9244) | +66.1% | B1_reference@not_guaranteed (1.336e+04) | +140.0% | B1_det (1.775e+04) | +219.0% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 1024 |  | B4_v4 | 9628 | B3_tuned (1.133e+04) | +17.6% | B1_reference@not_guaranteed (1.839e+04) | +91.0% | B1_det (2.229e+04) | +131.5% | 7 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 4096 |  | B3_tuned | 9171 | B1_det2 (1.794e+04) | +95.7% | B1_reference@not_guaranteed (2.472e+04) | +169.6% | B1_det (2.292e+04) | +149.9% | 7 | 255 | umbriel-b200-047 |
+| fp32 | 1024 | 4 |  | N8_b2packed@T128 | 604.9 | B2_packed (609.9) | +0.8% | B1_reference@not_guaranteed@T128 (2115) | +249.6% | B1_det (1936) | +220.0% | 10 | 48 | umbriel-b200-047 |
+| fp32 | 1024 | 8 |  | N8_b2packed@T128 | 889.1 | B2_packed (943.4) | +6.1% | B1_reference@not_guaranteed@T128 (2172) | +144.2% | B1_det (2029) | +128.2% | 10 | 48 | umbriel-b200-047 |
+| fp32 | 1024 | 16 |  | N8_b2packed@T128 | 1477 | B2_packed (1625) | +10.0% | B1_reference@not_guaranteed@T128 (2320) | +57.1% | B1_det (2130) | +44.2% | 10 | 48 | umbriel-b200-047 |
+| fp32 | 1024 | 24 |  | N9_w2fin2 | 1957 | B1_det3 (1981) | +1.2% | B1_reference@not_guaranteed (2071) | +5.8% | B1_det (2349) | +20.0% | 10 | 59 | umbriel-b200-047 |
+| fp32 | 1024 | 32 |  | B1_det3 | 1902 | B1_det2 (1922) | +1.0% | B1_reference@not_guaranteed (2008) | +5.6% | B1_det (2290) | +20.4% | 10 | 39 | umbriel-b200-068 |
+| fp32 | 1024 | 48 |  | N9_w2fin2 | 1917 | B1_det3 (2052) | +7.1% | B1_reference@not_guaranteed (2194) | +14.4% | B1_det (2440) | +27.3% | 10 | 59 | umbriel-b200-047 |
+| fp32 | 1024 | 64 |  | B1_det3 | 1878 | B1_det2 (1905) | +1.4% | B1_reference@not_guaranteed (2014) | +7.2% | B1_det (2270) | +20.8% | 10 | 39 | umbriel-b200-068 |
+| fp32 | 1024 | 256 |  | N9_w2fin2 | 2086 | B1_det3 (2117) | +1.5% | B1_reference@not_guaranteed (2274) | +9.0% | B1_det (2425) | +16.3% | 10 | 59 | umbriel-b200-047 |
+| fp32 | 4096 | 4 |  | B2_twolevel | 1116 | B2_packed (1186) | +6.3% | B1_reference@not_guaranteed (3103) | +178.1% | B1_det (3894) | +248.9% | 10 | 79 | umbriel-b200-047 |
+| fp32 | 4096 | 16 |  | N8_b2packed@T128 | 2234 | B2_packed (2347) | +5.1% | B1_reference@not_guaranteed@T128 (5007) | +124.2% | B1_det (4528) | +102.7% | 10 | 128 | umbriel-b200-047 |
+| fp32 | 4096 | 64 |  | N9_w2fin2 | 3764 | B3_tuned (4296) (spills) | +14.1% | B1_reference@not_guaranteed (4685) | +24.5% | B1_det (5735) | +52.4% | 10 | 128 | umbriel-b200-047 |
+| fp32 | 4096 | 256 |  | B3_tuned | 4166 | N9_w2fin2 (4317) | +3.6% | B1_reference@not_guaranteed (5335) | +28.1% | B1_det (6402) | +53.6% | 10 | 64 | umbriel-b200-047 |
+| fp32 | 4096 | 1024 |  | B3_tuned | 4241 | B1_det3 (5679) (spills) | +33.9% | B1_reference@not_guaranteed (6181) | +45.7% | B1_det (6814) | +60.7% | 8 | 64 | umbriel-b200-047 |
+| fp32 | 8192 | 16 |  | N8_b2packed@T128 | 2802 | B2_packed (3216) | +14.8% | B1_reference@not_guaranteed@T128 (8645) | +208.6% | B1_det (7156) | +155.4% | 10 | 254 | umbriel-b200-047 |
+| fp32 | 8192 | 32 |  | B4_v4 | 4729 | N8_b2packed@T128 (4921) | +4.1% | B1_reference@not_guaranteed (5502) | +16.3% | B1_det (7837) | +65.7% | 10 | 202 | umbriel-b200-047 |
+| fp32 | 8192 | 64 |  | B4_v4 | 4947 | N9_w2fin2 (5418) | +9.5% | B1_reference@not_guaranteed (5905) | +19.4% | B1_det (8335) | +68.5% | 10 | 202 | umbriel-b200-047 |
+| fp32 | 8192 | 128 |  | B4_v4 | 4969 | B3_tuned (6128) | +23.3% | B1_reference@not_guaranteed (6661) | +34.0% | B1_det (9403) | +89.2% | 10 | 202 | umbriel-b200-047 |
+| fp32 | 8192 | 256 |  | B4_v4 | 5195 | B3_tuned (6263) | +20.6% | B1_reference@not_guaranteed (7827) | +50.7% | B1_det (1.058e+04) | +103.6% | 10 | 202 | umbriel-b200-047 |
+| fp32 | 8192 | 1024 | dsa_v4_merge_m8_k1024 | B3_tuned | 6758 | B4_v4 (8701) | +28.7% | B1_reference@not_guaranteed (1.145e+04) | +69.4% | B1_det (1.247e+04) | +84.5% | 8 | 127 | umbriel-b200-047 |
+| fp32 | 8192 | 2048 | dsa_small_context_8k_k2048 | B3_tuned | 6645 | B1_det3 (9582) | +44.2% | B1_reference@not_guaranteed (1.142e+04) | +71.8% | B1_det (1.219e+04) | +83.4% | 8 | 127 | umbriel-b200-047 |
+| fp32 | 8192 | 2048 | dsa_v32_merge_m4_k2048 | B3_tuned | 6644 | B1_det3 (9583) | +44.2% | B1_reference@not_guaranteed (1.141e+04) | +71.7% | B1_det (1.219e+04) | +83.4% | 8 | 127 | umbriel-b200-047 |
+| fp32 | 16384 | 4 |  | B2_twolevel | 1649 | B2_packed (2779) | +68.5% | B1_reference@not_guaranteed (1.006e+04) | +510.3% | B1_det (1.147e+04) | +595.5% | 9 | 254 | umbriel-b200-047 |
+| fp32 | 16384 | 16 |  | B2_packed | 4177 | B2_twolevel (4413) | +5.7% | B1_reference@not_guaranteed (1.071e+04) | +156.4% | B1_det (1.223e+04) | +192.9% | 9 | 254 | umbriel-b200-047 |
+| fp32 | 16384 | 32 |  | B4_v4 | 4936 | B2_twolevel (7529) | +52.5% | B1_reference@not_guaranteed (8938) | +81.1% | B1_det (1.279e+04) | +159.2% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 64 |  | B4_v4 | 5088 | B3_tuned (8290) | +62.9% | B1_reference@not_guaranteed (1.036e+04) | +103.5% | B1_det (1.41e+04) | +177.2% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 128 |  | B4_v4 | 5352 | N9_w2fin2 (8703) (spills) | +62.6% | B1_reference@not_guaranteed (1.2e+04) | +124.1% | B1_det (1.59e+04) | +197.0% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 256 |  | B4_v4 | 5566 | B3_tuned (9244) | +66.1% | B1_reference@not_guaranteed (1.336e+04) | +140.0% | B1_det (1.775e+04) | +219.0% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 1024 |  | B4_v4 | 9628 | B3_tuned (1.133e+04) | +17.6% | B1_reference@not_guaranteed (1.839e+04) | +91.0% | B1_det (2.229e+04) | +131.5% | 8 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 4096 |  | B3_tuned | 9171 | B1_det3 (1.759e+04) | +91.8% | B1_reference@not_guaranteed (2.472e+04) | +169.6% | B1_det (2.292e+04) | +149.9% | 8 | 255 | umbriel-b200-047 |
 | fp32 | 32768 | 4 |  | B4_v4 | 5424 | B2_twolevel (6649) (spills) | +22.6% | B1_reference@not_guaranteed (1.976e+04) | +264.4% |  |  | 3 | 255 | umbriel-b200-047 |
 | fp32 | 32768 | 16 |  | B4_v4 | 5595 | B2_twolevel (8670) (spills) | +55.0% | B1_reference@not_guaranteed (1.94e+04) | +246.7% |  |  | 3 | 255 | umbriel-b200-047 |
 | fp32 | 32768 | 16 | beam_search_chunk | B4_v4 | 5595 | B2_twolevel (8682) (spills) | +55.2% | B1_reference@not_guaranteed (1.939e+04) | +246.6% |  |  | 3 | 255 | umbriel-b200-047 |
@@ -351,23 +353,45 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 ## block, latency, prefer_smaller_index, random@runs4 input
 
+Cells of this table were measured on umbriel-b200-047, umbriel-b200-068 (see the node column, resumed passes after the 2026-10-25 21:26Z network outage ran on a different node from the first batches).
+
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 8192 | 256 |  | W4_chunk4@runs4 | 3746 |  |  | B1_reference@not_guaranteed (8834) | +135.8% | 1 | 99 | umbriel-b200-047 |
-| bf16 | 8192 | 1024 |  | W4_chunk4@runs4 | 3072 |  |  | B1_reference@not_guaranteed (1.112e+04) | +262.0% | 1 | 112 | umbriel-b200-047 |
-| bf16 | 8192 | 4096 |  | W4_chunk4@runs4 | 6884 |  |  | B1_reference@not_guaranteed (1.455e+04) | +111.3% | 1 | 120 | umbriel-b200-047 |
-| bf16 | 16384 | 256 |  | W4_chunk4@runs4 | 3077 |  |  | B1_reference@not_guaranteed (1.579e+04) | +413.2% | 1 | 74 | umbriel-b200-047 |
-| bf16 | 16384 | 1024 |  | W4_chunk4@runs4 | 4171 |  |  | B1_reference@not_guaranteed (1.805e+04) | +332.9% | 1 | 80 | umbriel-b200-047 |
-| bf16 | 16384 | 4096 |  | W4_chunk4@runs4 | 7607 |  |  | B1_reference@not_guaranteed (2.357e+04) | +209.9% | 1 | 128 | umbriel-b200-047 |
+| bf16 | 8192 | 4 |  | B1_det3@runs4 | 5033 |  |  | B1_reference@not_guaranteed (5914) | +17.5% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 16 |  | B1_det3@runs4 | 5355 |  |  | B1_reference@not_guaranteed (6281) | +17.3% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 32 |  | B1_det3@runs4 | 5438 |  |  | B1_reference@not_guaranteed (6663) | +22.5% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 64 |  | B1_det3@runs4 | 5759 |  |  | B1_reference@not_guaranteed (7493) | +30.1% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 128 |  | B1_det3@runs4 | 5804 |  |  | B1_reference@not_guaranteed (8424) | +45.2% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 256 |  | W4_chunk4@runs4 | 3746 | B1_det3@runs4 (6111) | +63.1% | B1_reference@not_guaranteed (8834) | +135.8% | 2 | 99 | umbriel-b200-047 |
+| bf16 | 8192 | 1024 |  | W4_chunk4@runs4 | 3072 | B1_det3@runs4 (6593) | +114.6% | B1_reference@not_guaranteed (1.112e+04) | +262.0% | 2 | 112 | umbriel-b200-047 |
+| bf16 | 8192 | 4096 |  | W4_chunk4@runs4 | 6884 | B1_det3@runs4 (8178) | +18.8% | B1_reference@not_guaranteed (1.455e+04) | +111.3% | 2 | 120 | umbriel-b200-047 |
+| bf16 | 16384 | 4 |  | B1_det3@runs4 | 8661 |  |  | B1_reference@not_guaranteed (1.182e+04) | +36.5% | 1 | 128 | umbriel-b200-068 |
+| bf16 | 16384 | 16 |  | B1_det3@runs4 | 8686 |  |  | B1_reference@not_guaranteed (1.188e+04) | +36.8% | 1 | 128 | umbriel-b200-068 |
+| bf16 | 16384 | 32 |  | B1_det3@runs4 | 9516 |  |  | B1_reference@not_guaranteed (1.089e+04) | +14.5% | 1 | 128 | umbriel-b200-068 |
+| bf16 | 16384 | 64 |  | B1_det3@runs4 | 9484 |  |  | B1_reference@not_guaranteed (1.166e+04) | +22.9% | 1 | 128 | umbriel-b200-068 |
+| bf16 | 16384 | 128 |  | B1_det3@runs4 | 1.008e+04 |  |  | B1_reference@not_guaranteed (1.344e+04) | +33.4% | 1 | 128 | umbriel-b200-068 |
+| bf16 | 16384 | 256 |  | W4_chunk4@runs4 | 3077 | B1_det3@runs4 (1.034e+04) | +236.0% | B1_reference@not_guaranteed (1.579e+04) | +413.2% | 2 | 74 | umbriel-b200-047 |
+| bf16 | 16384 | 1024 |  | W4_chunk4@runs4 | 4171 | B1_det3@runs4 (1.096e+04) | +162.7% | B1_reference@not_guaranteed (1.805e+04) | +332.9% | 2 | 80 | umbriel-b200-047 |
+| bf16 | 16384 | 4096 |  | W4_chunk4@runs4 | 7607 | B1_det3@runs4 (1.336e+04) | +75.7% | B1_reference@not_guaranteed (2.357e+04) | +209.9% | 2 | 128 | umbriel-b200-047 |
 | bf16 | 32768 | 256 |  | W4_chunk4@runs4 | 6398 |  |  | B1_reference@not_guaranteed (2.692e+04) | +320.8% | 1 | 167 | umbriel-b200-047 |
 | bf16 | 32768 | 1024 |  | W4_chunk4@runs4 | 6941 |  |  | B1_reference@not_guaranteed (3.3e+04) | +375.4% | 1 | 165 | umbriel-b200-047 |
 | bf16 | 32768 | 4096 |  | W4_chunk4@runs4 | 1.048e+04 |  |  | B1_reference@not_guaranteed (4.182e+04) | +298.9% | 1 | 164 | umbriel-b200-047 |
-| fp32 | 8192 | 256 |  | W4_chunk4@runs4 | 1618 |  |  | B1_reference@not_guaranteed (8470) | +423.6% | 1 | 60 | umbriel-b200-047 |
-| fp32 | 8192 | 1024 |  | W4_chunk4@runs4 | 4527 |  |  | B1_reference@not_guaranteed (1.163e+04) | +157.0% | 1 | 75 | umbriel-b200-047 |
-| fp32 | 8192 | 4096 |  | W4_chunk4@runs4 | 1.096e+04 |  |  | B1_reference@not_guaranteed (1.395e+04) | +27.3% | 1 | 128 | umbriel-b200-047 |
-| fp32 | 16384 | 256 |  | W4_chunk4@runs4 | 2682 |  |  | B1_reference@not_guaranteed (1.658e+04) | +518.3% | 1 | 77 | umbriel-b200-047 |
-| fp32 | 16384 | 1024 |  | W4_chunk4@runs4 | 5354 |  |  | B1_reference@not_guaranteed (1.901e+04) | +255.1% | 1 | 112 | umbriel-b200-047 |
-| fp32 | 16384 | 4096 |  | W4_chunk4@runs4 | 1.196e+04 |  |  | B1_reference@not_guaranteed (2.573e+04) | +115.1% | 1 | 128 | umbriel-b200-047 |
+| fp32 | 8192 | 4 |  | B1_det3@runs4 | 4737 |  |  | B1_reference@not_guaranteed (4388) | -7.4% | 1 | 80 | umbriel-b200-068 |
+| fp32 | 8192 | 16 |  | B1_det3@runs4 | 5236 |  |  | B1_reference@not_guaranteed (5221) | -0.3% | 1 | 80 | umbriel-b200-068 |
+| fp32 | 8192 | 32 |  | B1_det3@runs4 | 5634 |  |  | B1_reference@not_guaranteed (5974) | +6.0% | 1 | 80 | umbriel-b200-068 |
+| fp32 | 8192 | 64 |  | B1_det3@runs4 | 5665 |  |  | B1_reference@not_guaranteed (6848) | +20.9% | 1 | 80 | umbriel-b200-068 |
+| fp32 | 8192 | 128 |  | B1_det3@runs4 | 5982 |  |  | B1_reference@not_guaranteed (8067) | +34.9% | 1 | 80 | umbriel-b200-068 |
+| fp32 | 8192 | 256 |  | W4_chunk4@runs4 | 1618 | B1_det3@runs4 (6012) | +271.6% | B1_reference@not_guaranteed (8470) | +423.6% | 2 | 60 | umbriel-b200-047 |
+| fp32 | 8192 | 1024 |  | W4_chunk4@runs4 | 4527 | B1_det3@runs4 (7134) | +57.6% | B1_reference@not_guaranteed (1.163e+04) | +157.0% | 2 | 75 | umbriel-b200-047 |
+| fp32 | 8192 | 4096 |  | B1_det3@runs4 | 7819 | W4_chunk4@runs4 (1.096e+04) (spills) | +40.1% | B1_reference@not_guaranteed (1.395e+04) | +78.4% | 2 | 80 | umbriel-b200-068 |
+| fp32 | 16384 | 4 |  | B1_det3@runs4 | 7956 |  |  | B1_reference@not_guaranteed (1.109e+04) | +39.4% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 16 |  | B1_det3@runs4 | 8532 |  |  | B1_reference@not_guaranteed (1.164e+04) | +36.4% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 32 |  | B1_det3@runs4 | 8845 |  |  | B1_reference@not_guaranteed (9666) | +9.3% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 64 |  | B1_det3@runs4 | 9792 |  |  | B1_reference@not_guaranteed (1.155e+04) | +17.9% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 128 |  | B1_det3@runs4 | 1.07e+04 |  |  | B1_reference@not_guaranteed (1.379e+04) | +28.9% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 256 |  | W4_chunk4@runs4 | 2682 | B1_det3@runs4 (1.095e+04) | +308.3% | B1_reference@not_guaranteed (1.658e+04) | +518.3% | 2 | 77 | umbriel-b200-047 |
+| fp32 | 16384 | 1024 |  | W4_chunk4@runs4 | 5354 | B1_det3@runs4 (1.177e+04) | +119.9% | B1_reference@not_guaranteed (1.901e+04) | +255.1% | 2 | 112 | umbriel-b200-047 |
+| fp32 | 16384 | 4096 |  | W4_chunk4@runs4 | 1.196e+04 | B1_det3@runs4 (1.413e+04) | +18.1% | B1_reference@not_guaranteed (2.573e+04) | +115.1% | 2 | 128 | umbriel-b200-047 |
 | fp32 | 32768 | 256 |  | W4_chunk4@runs4 | 6646 |  |  | B1_reference@not_guaranteed (3.157e+04) | +375.1% | 1 | 171 | umbriel-b200-047 |
 | fp32 | 32768 | 1024 |  | W4_chunk4@runs4 | 8541 |  |  | B1_reference@not_guaranteed (3.872e+04) | +353.3% | 1 | 171 | umbriel-b200-047 |
 | fp32 | 32768 | 4096 |  | W4_chunk4@runs4 | 1.334e+04 |  |  | B1_reference@not_guaranteed (4.801e+04) | +259.9% | 1 | 255 | umbriel-b200-047 |
@@ -765,34 +789,36 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 ## block, throughput, prefer_smaller_index, random input
 
+Cells of this table were measured on umbriel-b200-047, umbriel-b200-068 (see the node column, resumed passes after the 2026-10-25 21:26Z network outage ran on a different node from the first batches).
+
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | second reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 1024 | 4 |  | N8_b2packed@T128 | 1587 | B2_packed (1197) | +32.6% | B1_reference@not_guaranteed@T128 (489.7) | +224.1% | B1_det (315.8) | +402.7% | 9 | 29 | umbriel-b200-047 |
-| bf16 | 1024 | 8 |  | N8_b2packed@T128 | 1099 | B2_packed (796.1) | +38.0% | B1_reference@not_guaranteed@T128 (478.6) | +129.6% | B1_det (329.2) | +233.7% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 16 |  | N8_b2packed@T128 | 649.5 | B2_packed (478.6) | +35.7% | B1_reference@not_guaranteed@T128 (452.9) | +43.4% | B1_det (305.8) | +112.4% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 24 |  | N8_b2packed@T128 | 462.8 | B2_packed (340.7) | +35.8% | B1_reference@not_guaranteed@T128 (440.5) | +5.1% | B1_det (297.6) | +55.5% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 32 |  | N8_b2packed@T128 | 360.9 | B1_det2 (335.1) | +7.7% | B1_reference@not_guaranteed@T128 (420.6) | -14.2% | B1_det (286.2) | +26.1% | 9 | 30 | umbriel-b200-047 |
-| bf16 | 1024 | 48 |  | B3_tuned | 313.7 | N9_w2fin2 (293.4) | +6.9% | B1_reference@not_guaranteed (317.7) | -1.3% | B1_det (274.3) | +14.4% | 9 | 40 | umbriel-b200-047 |
-| bf16 | 1024 | 64 |  | B1_det2 | 329.4 | B3_tuned (314.7) | +4.7% | B1_reference@not_guaranteed (315.9) | +4.3% | B1_det (280.2) | +17.6% | 9 | 32 | umbriel-b200-047 |
-| bf16 | 1024 | 256 |  | B3_tuned | 314.4 | B1_det2 (297.3) | +5.8% | B1_reference@not_guaranteed (290.4) | +8.3% | B1_det (267.4) | +17.6% | 9 | 40 | umbriel-b200-047 |
-| bf16 | 4096 | 4 |  | B2_twolevel | 1814 | B2_packed (1671) | +8.5% | B1_reference@not_guaranteed (570.7) | +217.8% | B1_det (509.3) | +256.2% | 9 | 26 | umbriel-b200-047 |
-| bf16 | 4096 | 16 |  | N8_b2packed@T128 | 923.7 | B2_twolevel (892.2) | +3.5% | B1_reference@not_guaranteed@T128 (589.9) | +56.6% | B1_det (475.3) | +94.3% | 9 | 40 | umbriel-b200-047 |
-| bf16 | 4096 | 64 |  | B3_tuned | 539.2 | B1_det2 (442.3) | +21.9% | B1_reference@not_guaranteed (481.9) | +11.9% | B1_det (383.8) | +40.5% | 9 | 40 | umbriel-b200-047 |
-| bf16 | 4096 | 256 |  | B3_tuned | 518.8 | B1_det2 (393.2) | +31.9% | B1_reference@not_guaranteed (405.4) | +28.0% | B1_det (338.7) | +53.2% | 9 | 40 | umbriel-b200-047 |
-| bf16 | 4096 | 1024 |  | B3_tuned | 518.8 | B1_det2 (377.1) | +37.6% | B1_reference@not_guaranteed (328.8) | +57.8% | B1_det (342.1) | +51.6% | 7 | 40 | umbriel-b200-047 |
-| bf16 | 8192 | 16 |  | B2_twolevel | 1085 | N8_b2packed@T128 (930.8) | +16.6% | B1_reference@not_guaranteed (550.3) | +97.3% | B1_det (411.2) | +164.0% | 9 | 48 | umbriel-b200-047 |
-| bf16 | 8192 | 32 |  | B2_twolevel | 737.9 | N8_b2packed@T128 (619.3) | +19.2% | B1_reference@not_guaranteed (536.5) | +37.5% | B1_det (387.4) | +90.5% | 9 | 40 | umbriel-b200-047 |
-| bf16 | 8192 | 64 |  | B4_v4 | 575.9 | B3_tuned (452.2) | +27.4% | B1_reference@not_guaranteed (506.6) | +13.7% | B1_det (359.8) | +60.1% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 8192 | 128 |  | B4_v4 | 567 | B3_tuned (452.1) | +25.4% | B1_reference@not_guaranteed (481.1) | +17.9% | B1_det (333.4) | +70.1% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 8192 | 256 |  | B4_v4 | 553.8 | B3_tuned (449.4) | +23.2% | B1_reference@not_guaranteed (419.9) | +31.9% | B1_det (292.9) | +89.0% | 9 | 128 | umbriel-b200-047 |
-| bf16 | 16384 | 4 |  | B2_twolevel | 1921 | B2_packed (1212) | +58.5% | B1_reference@not_guaranteed (471.7) | +307.3% | B1_det (325.1) | +490.8% | 8 | 37 | umbriel-b200-047 |
-| bf16 | 16384 | 16 |  | B2_twolevel | 1189 | B2_packed (875.2) | +35.8% | B1_reference@not_guaranteed (473.2) | +151.2% | B1_det (320.8) | +270.6% | 8 | 80 | umbriel-b200-047 |
-| bf16 | 16384 | 32 |  | B2_twolevel | 738.8 | B2_packed (603.2) | +22.5% | B1_reference@not_guaranteed (468.8) | +57.6% | B1_det (280.4) | +163.5% | 8 | 76 | umbriel-b200-047 |
-| bf16 | 16384 | 64 |  | B4_v4 | 589 | B2_twolevel (468) | +25.9% | B1_reference@not_guaranteed (461.3) | +27.7% | B1_det (282.1) | +108.8% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 128 |  | B4_v4 | 569.7 | B3_tuned (456.6) (spills) | +24.8% | B1_reference@not_guaranteed (432.1) | +31.8% | B1_det (247.6) | +130.1% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 256 |  | B4_v4 | 556.6 | B3_tuned (456.9) (spills) | +21.8% | B1_reference@not_guaranteed (407.3) | +36.7% | B1_det (225.4) | +147.0% | 8 | 255 | umbriel-b200-047 |
-| bf16 | 16384 | 1024 |  | B3_tuned | 452.2 | B4_v4 (397.4) | +13.8% | B1_reference@not_guaranteed (311.4) | +45.2% | B1_det (189.6) | +138.5% | 7 | 128 | umbriel-b200-047 |
-| bf16 | 16384 | 4096 |  | B3_tuned | 450.7 | B1_det2 (222.2) | +102.9% | B1_reference@not_guaranteed (244.5) | +84.3% | B1_det (182.7) | +146.7% | 7 | 128 | umbriel-b200-047 |
+| bf16 | 1024 | 4 |  | N8_b2packed@T128 | 1587 | B2_packed (1197) | +32.6% | B1_reference@not_guaranteed@T128 (489.7) | +224.1% | B1_det (315.8) | +402.7% | 10 | 29 | umbriel-b200-047 |
+| bf16 | 1024 | 8 |  | N8_b2packed@T128 | 1099 | B2_packed (796.1) | +38.0% | B1_reference@not_guaranteed@T128 (478.6) | +129.6% | B1_det (329.2) | +233.7% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 16 |  | N8_b2packed@T128 | 649.5 | B2_packed (478.6) | +35.7% | B1_reference@not_guaranteed@T128 (452.9) | +43.4% | B1_det (305.8) | +112.4% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 24 |  | N8_b2packed@T128 | 462.8 | B2_packed (340.7) | +35.8% | B1_reference@not_guaranteed@T128 (440.5) | +5.1% | B1_det (297.6) | +55.5% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 32 |  | N8_b2packed@T128 | 360.9 | B1_det3 (341.2) | +5.8% | B1_reference@not_guaranteed@T128 (420.6) | -14.2% | B1_det (286.2) | +26.1% | 10 | 30 | umbriel-b200-047 |
+| bf16 | 1024 | 48 |  | B3_tuned | 313.7 | B1_det3 (310.9) | +0.9% | B1_reference@not_guaranteed (317.7) | -1.3% | B1_det (274.3) | +14.4% | 10 | 40 | umbriel-b200-047 |
+| bf16 | 1024 | 64 |  | B1_det3 | 336.5 | B1_det2 (329.4) | +2.2% | B1_reference@not_guaranteed (315.2) | +6.8% | B1_det (280.2) | +20.1% | 10 | 32 | umbriel-b200-068 |
+| bf16 | 1024 | 256 |  | B3_tuned | 314.4 | B1_det3 (309.4) | +1.6% | B1_reference@not_guaranteed (290.4) | +8.3% | B1_det (267.4) | +17.6% | 10 | 40 | umbriel-b200-047 |
+| bf16 | 4096 | 4 |  | B2_twolevel | 1814 | B2_packed (1671) | +8.5% | B1_reference@not_guaranteed (570.7) | +217.8% | B1_det (509.3) | +256.2% | 10 | 26 | umbriel-b200-047 |
+| bf16 | 4096 | 16 |  | N8_b2packed@T128 | 923.7 | B2_twolevel (892.2) | +3.5% | B1_reference@not_guaranteed@T128 (589.9) | +56.6% | B1_det (475.3) | +94.3% | 10 | 40 | umbriel-b200-047 |
+| bf16 | 4096 | 64 |  | B3_tuned | 539.2 | B1_det3 (524.2) | +2.9% | B1_reference@not_guaranteed (481.9) | +11.9% | B1_det (383.8) | +40.5% | 10 | 40 | umbriel-b200-047 |
+| bf16 | 4096 | 256 |  | B3_tuned | 518.8 | B1_det3 (462) | +12.3% | B1_reference@not_guaranteed (405.4) | +28.0% | B1_det (338.7) | +53.2% | 10 | 40 | umbriel-b200-047 |
+| bf16 | 4096 | 1024 |  | B3_tuned | 518.8 | B1_det3 (434.5) | +19.4% | B1_reference@not_guaranteed (328.8) | +57.8% | B1_det (342.1) | +51.6% | 8 | 40 | umbriel-b200-047 |
+| bf16 | 8192 | 16 |  | B2_twolevel | 1085 | N8_b2packed@T128 (930.8) | +16.6% | B1_reference@not_guaranteed (550.3) | +97.3% | B1_det (411.2) | +164.0% | 10 | 48 | umbriel-b200-047 |
+| bf16 | 8192 | 32 |  | B2_twolevel | 737.9 | B1_det3 (636.3) | +16.0% | B1_reference@not_guaranteed (536.5) | +37.5% | B1_det (387.4) | +90.5% | 10 | 40 | umbriel-b200-047 |
+| bf16 | 8192 | 64 |  | B1_det3 | 610.9 | B4_v4 (575.9) | +6.1% | B1_reference@not_guaranteed (505.5) | +20.9% | B1_det (359.8) | +69.8% | 10 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 128 |  | B1_det3 | 581.5 | B4_v4 (567) | +2.6% | B1_reference@not_guaranteed (480.2) | +21.1% | B1_det (333.4) | +74.4% | 10 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 256 |  | B4_v4 | 553.8 | B1_det3 (522.9) | +5.9% | B1_reference@not_guaranteed (419.9) | +31.9% | B1_det (292.9) | +89.0% | 10 | 128 | umbriel-b200-047 |
+| bf16 | 16384 | 4 |  | B2_twolevel | 1921 | B2_packed (1212) | +58.5% | B1_reference@not_guaranteed (471.7) | +307.3% | B1_det (325.1) | +490.8% | 9 | 37 | umbriel-b200-047 |
+| bf16 | 16384 | 16 |  | B2_twolevel | 1189 | B2_packed (875.2) | +35.8% | B1_reference@not_guaranteed (473.2) | +151.2% | B1_det (320.8) | +270.6% | 9 | 80 | umbriel-b200-047 |
+| bf16 | 16384 | 32 |  | B2_twolevel | 738.8 | B2_packed (603.2) | +22.5% | B1_reference@not_guaranteed (468.8) | +57.6% | B1_det (280.4) | +163.5% | 9 | 76 | umbriel-b200-047 |
+| bf16 | 16384 | 64 |  | B4_v4 | 589 | B1_det3 (546.4) | +7.8% | B1_reference@not_guaranteed (461.3) | +27.7% | B1_det (282.1) | +108.8% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 128 |  | B4_v4 | 569.7 | B1_det3 (503.5) | +13.1% | B1_reference@not_guaranteed (432.1) | +31.8% | B1_det (247.6) | +130.1% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 256 |  | B4_v4 | 556.6 | B1_det3 (469.1) | +18.7% | B1_reference@not_guaranteed (407.3) | +36.7% | B1_det (225.4) | +147.0% | 9 | 255 | umbriel-b200-047 |
+| bf16 | 16384 | 1024 |  | B3_tuned | 452.2 | B1_det3 (405.8) | +11.4% | B1_reference@not_guaranteed (311.4) | +45.2% | B1_det (189.6) | +138.5% | 8 | 128 | umbriel-b200-047 |
+| bf16 | 16384 | 4096 |  | B3_tuned | 450.7 | B1_det3 (377.8) | +19.3% | B1_reference@not_guaranteed (244.5) | +84.3% | B1_det (182.7) | +146.7% | 8 | 128 | umbriel-b200-047 |
 | bf16 | 32768 | 4 |  | B2_twolevel | 1372 | B4_v4 (836.8) (spills) | +64.0% | B1_reference@not_guaranteed (376) | +264.9% |  |  | 4 | 254 | umbriel-b200-047 |
 | bf16 | 32768 | 16 |  | B2_twolevel | 981.4 | B4_v4 (822.5) (spills) | +19.3% | B1_reference@not_guaranteed (376.5) | +160.6% |  |  | 4 | 254 | umbriel-b200-047 |
 | bf16 | 32768 | 32 |  | B4_v4 | 813.7 | B2_twolevel (731.3) | +11.3% | B1_reference@not_guaranteed (374.9) | +117.0% |  |  | 4 | 255 | umbriel-b200-047 |
@@ -801,35 +827,35 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 | bf16 | 32768 | 256 |  | B4_v4 | 775.8 | B3_tuned (395.6) (spills) | +96.1% | B1_reference@not_guaranteed (340.4) | +127.9% |  |  | 4 | 255 | umbriel-b200-047 |
 | bf16 | 32768 | 1024 |  | B4_v4 | 586.5 | B3_tuned (395.6) (spills) | +48.3% | B1_reference@not_guaranteed (270.9) | +116.5% |  |  | 3 | 255 | umbriel-b200-047 |
 | bf16 | 32768 | 4096 |  | B3_tuned | 395.6 | B4_v4 (169) (spills) | +134.0% | B1_reference@not_guaranteed (205.3) | +92.7% |  |  | 3 | 255 | umbriel-b200-047 |
-| fp32 | 1024 | 4 |  | N8_b2packed@T128 | 1032 | B2_twolevel (910.2) | +13.3% | B1_reference@not_guaranteed@T128 (538.3) | +91.6% | B1_det (356) | +189.8% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 8 |  | N8_b2packed@T128 | 788.5 | B2_twolevel (663.4) | +18.9% | B1_reference@not_guaranteed@T128 (517.1) | +52.5% | B1_det (348.4) | +126.3% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 16 |  | N8_b2packed@T128 | 518.4 | B2_twolevel (422.7) | +22.6% | B1_reference@not_guaranteed@T128 (480.6) | +7.8% | B1_det (335.6) | +54.4% | 9 | 48 | umbriel-b200-047 |
-| fp32 | 1024 | 24 |  | N8_b2packed@T128 | 394.3 | B1_det2 (352.1) | +12.0% | B1_reference@not_guaranteed@T128 (444.2) | -11.2% | B1_det (309.3) | +27.5% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 32 |  | B1_det2 | 359.2 | N8_b2packed@T128 (316.3) | +13.6% | B1_reference@not_guaranteed (323.9) | +10.9% | B1_det (313.6) | +14.6% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 48 |  | B1_det2 | 335.1 | B1_det (293.9) | +14.0% | B1_reference@not_guaranteed (303) | +10.6% | B1_det (293.9) | +14.0% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 64 |  | B1_det2 | 357.9 | B1_det (310.9) | +15.1% | B1_reference@not_guaranteed (319.4) | +12.1% | B1_det (310.9) | +15.1% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 1024 | 256 |  | B1_det2 | 310.5 | B3_tuned (296.6) | +4.7% | B1_reference@not_guaranteed (276.1) | +12.5% | B1_det (294.4) | +5.5% | 9 | 40 | umbriel-b200-047 |
-| fp32 | 4096 | 4 |  | B2_twolevel | 956.7 | B2_packed (848) | +12.8% | B1_reference@not_guaranteed (546.8) | +75.0% | B1_det (579.4) | +65.1% | 9 | 63 | umbriel-b200-047 |
-| fp32 | 4096 | 16 |  | B1_det2 | 604.2 | B2_twolevel (601.5) | +0.5% | B1_reference@not_guaranteed (499.3) | +21.0% | B1_det (529.2) | +14.2% | 9 | 64 | umbriel-b200-047 |
-| fp32 | 4096 | 64 |  | B1_det2 | 521.9 | B1_det (452.6) | +15.3% | B1_reference@not_guaranteed (419.1) | +24.5% | B1_det (452.6) | +15.3% | 9 | 64 | umbriel-b200-047 |
-| fp32 | 4096 | 256 |  | B1_det2 | 473.1 | B3_tuned (411.2) | +15.1% | B1_reference@not_guaranteed (360.6) | +31.2% | B1_det (405.1) | +16.8% | 9 | 64 | umbriel-b200-047 |
-| fp32 | 4096 | 1024 |  | B1_det2 | 413.6 | B3_tuned (406.8) | +1.7% | B1_reference@not_guaranteed (285.3) | +45.0% | B1_det (383) | +8.0% | 7 | 64 | umbriel-b200-047 |
-| fp32 | 8192 | 16 |  | N8_b2packed@T128 | 569.3 | B1_det2 (554.2) | +2.7% | B1_reference@not_guaranteed@T128 (309.4) | +84.0% | B1_det (473.2) | +20.3% | 9 | 254 | umbriel-b200-047 |
-| fp32 | 8192 | 32 |  | B1_det2 | 524 | B1_det (444.8) | +17.8% | B1_reference@not_guaranteed (371) | +41.2% | B1_det (444.8) | +17.8% | 9 | 119 | umbriel-b200-047 |
-| fp32 | 8192 | 64 |  | B1_det2 | 497.7 | B1_det (419.8) | +18.6% | B1_reference@not_guaranteed (346.9) | +43.5% | B1_det (419.8) | +18.6% | 9 | 119 | umbriel-b200-047 |
-| fp32 | 8192 | 128 |  | B1_det2 | 464 | B4_v4 (398.3) | +16.5% | B1_reference@not_guaranteed (325.3) | +42.6% | B1_det (383.3) | +21.1% | 9 | 119 | umbriel-b200-047 |
-| fp32 | 8192 | 256 |  | B1_det2 | 421.3 | B4_v4 (387.2) | +8.8% | B1_reference@not_guaranteed (292.6) | +44.0% | B1_det (347.3) | +21.3% | 9 | 119 | umbriel-b200-047 |
-| fp32 | 8192 | 1024 | dsa_v4_merge_m8_k1024 | B1_det2 | 364.9 | B3_tuned (350.6) | +4.1% | B1_reference@not_guaranteed (221.3) | +64.9% | B1_det (304.4) | +19.9% | 7 | 119 | umbriel-b200-047 |
-| fp32 | 8192 | 2048 | dsa_small_context_8k_k2048 | B1_det2 | 358.6 | B3_tuned (351.5) | +2.0% | B1_reference@not_guaranteed (208.2) | +72.2% | B1_det (309.2) | +16.0% | 7 | 119 | umbriel-b200-047 |
-| fp32 | 8192 | 2048 | dsa_v32_merge_m4_k2048 | B1_det2 | 358.3 | B3_tuned (351.4) | +1.9% | B1_reference@not_guaranteed (208.3) | +72.0% | B1_det (309.2) | +15.9% | 7 | 119 | umbriel-b200-047 |
-| fp32 | 16384 | 4 |  | B4_v4 | 737.5 | B2_twolevel (734.4) | +0.4% | B1_reference@not_guaranteed (317) | +132.6% | B1_det (353.2) | +108.8% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 16 |  | B4_v4 | 720.2 | B2_packed (525.2) | +37.1% | B1_reference@not_guaranteed (303) | +137.7% | B1_det (322.2) | +123.5% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 32 |  | B4_v4 | 693.6 | N9_w2fin2 (398.7) (spills) | +73.9% | B1_reference@not_guaranteed (293.6) | +136.3% | B1_det (312.8) | +121.7% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 64 |  | B4_v4 | 681.9 | N9_w2fin2 (361.5) (spills) | +88.6% | B1_reference@not_guaranteed (273.4) | +149.4% | B1_det (295.8) | +130.5% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 128 |  | B4_v4 | 663.3 | N9_w2fin2 (417.4) (spills) | +58.9% | B1_reference@not_guaranteed (251.7) | +163.5% | B1_det (270.6) | +145.1% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 256 |  | B4_v4 | 632.1 | N9_w2fin2 (409.1) (spills) | +54.5% | B1_reference@not_guaranteed (233.8) | +170.3% | B1_det (244.8) | +158.2% | 8 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 1024 |  | B4_v4 | 414.6 | B3_tuned (287.5) | +44.2% | B1_reference@not_guaranteed (187.3) | +121.4% | B1_det (200.2) | +107.1% | 7 | 255 | umbriel-b200-047 |
-| fp32 | 16384 | 4096 |  | B3_tuned | 287.5 | B1_det2 (239.8) | +19.9% | B1_reference@not_guaranteed (160.8) | +78.8% | B1_det (193.7) | +48.4% | 7 | 183 | umbriel-b200-047 |
+| fp32 | 1024 | 4 |  | N8_b2packed@T128 | 1032 | B2_twolevel (910.2) | +13.3% | B1_reference@not_guaranteed@T128 (538.3) | +91.6% | B1_det (356) | +189.8% | 10 | 40 | umbriel-b200-047 |
+| fp32 | 1024 | 8 |  | N8_b2packed@T128 | 788.5 | B2_twolevel (663.4) | +18.9% | B1_reference@not_guaranteed@T128 (517.1) | +52.5% | B1_det (348.4) | +126.3% | 10 | 40 | umbriel-b200-047 |
+| fp32 | 1024 | 16 |  | N8_b2packed@T128 | 518.4 | B2_twolevel (422.7) | +22.6% | B1_reference@not_guaranteed@T128 (480.6) | +7.8% | B1_det (335.6) | +54.4% | 10 | 48 | umbriel-b200-047 |
+| fp32 | 1024 | 24 |  | N8_b2packed@T128 | 394.3 | B1_det3 (355.4) | +11.0% | B1_reference@not_guaranteed@T128 (444.2) | -11.2% | B1_det (309.3) | +27.5% | 10 | 40 | umbriel-b200-047 |
+| fp32 | 1024 | 32 |  | B1_det2 | 359.2 | B1_det3 (359) | +0.1% | B1_reference@not_guaranteed (323.9) | +10.9% | B1_det (313.6) | +14.6% | 10 | 40 | umbriel-b200-047 |
+| fp32 | 1024 | 48 |  | B1_det3 | 338.8 | B1_det2 (335.1) | +1.1% | B1_reference@not_guaranteed (302.2) | +12.1% | B1_det (293.9) | +15.3% | 10 | 32 | umbriel-b200-068 |
+| fp32 | 1024 | 64 |  | B1_det3 | 358.1 | B1_det2 (357.9) | +0.1% | B1_reference@not_guaranteed (318.9) | +12.3% | B1_det (310.9) | +15.2% | 10 | 32 | umbriel-b200-068 |
+| fp32 | 1024 | 256 |  | B1_det3 | 312 | B1_det2 (310.5) | +0.5% | B1_reference@not_guaranteed (275.4) | +13.3% | B1_det (294.4) | +6.0% | 10 | 32 | umbriel-b200-068 |
+| fp32 | 4096 | 4 |  | B2_twolevel | 956.7 | B2_packed (848) | +12.8% | B1_reference@not_guaranteed (546.8) | +75.0% | B1_det (579.4) | +65.1% | 10 | 63 | umbriel-b200-047 |
+| fp32 | 4096 | 16 |  | B1_det3 | 644.1 | B1_det2 (604.2) | +6.6% | B1_reference@not_guaranteed (498.8) | +29.1% | B1_det (529.2) | +21.7% | 10 | 48 | umbriel-b200-068 |
+| fp32 | 4096 | 64 |  | B1_det3 | 558.6 | B1_det2 (521.9) | +7.0% | B1_reference@not_guaranteed (418.5) | +33.5% | B1_det (452.6) | +23.4% | 10 | 48 | umbriel-b200-068 |
+| fp32 | 4096 | 256 |  | B1_det3 | 508 | B1_det2 (473.1) | +7.4% | B1_reference@not_guaranteed (360.1) | +41.1% | B1_det (405.1) | +25.4% | 10 | 48 | umbriel-b200-068 |
+| fp32 | 4096 | 1024 |  | B1_det3 | 438.1 | B1_det2 (413.6) | +5.9% | B1_reference@not_guaranteed (284.7) | +53.9% | B1_det (383) | +14.4% | 8 | 48 | umbriel-b200-068 |
+| fp32 | 8192 | 16 |  | B1_det3 | 729.1 | N8_b2packed@T128 (569.3) | +28.1% | B1_reference@not_guaranteed (391.5) | +86.3% | B1_det (473.2) | +54.1% | 10 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 32 |  | B1_det3 | 693.5 | B1_det2 (524) | +32.3% | B1_reference@not_guaranteed (370.8) | +87.0% | B1_det (444.8) | +55.9% | 10 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 64 |  | B1_det3 | 668.7 | B1_det2 (497.7) | +34.4% | B1_reference@not_guaranteed (346.8) | +92.8% | B1_det (419.8) | +59.3% | 10 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 128 |  | B1_det3 | 629.3 | B1_det2 (464) | +35.6% | B1_reference@not_guaranteed (325.5) | +93.4% | B1_det (383.3) | +64.2% | 10 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 256 |  | B1_det3 | 570.4 | B1_det2 (421.3) | +35.4% | B1_reference@not_guaranteed (293.5) | +94.4% | B1_det (347.3) | +64.2% | 10 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 1024 | dsa_v4_merge_m8_k1024 | B1_det3 | 501.9 | B1_det2 (364.9) | +37.6% | B1_reference@not_guaranteed (220.8) | +127.3% | B1_det (304.4) | +64.9% | 8 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 2048 | dsa_small_context_8k_k2048 | B1_det3 | 473.4 | B1_det2 (358.6) | +32.0% | B1_reference@not_guaranteed (208) | +127.6% | B1_det (309.2) | +53.1% | 8 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 2048 | dsa_v32_merge_m4_k2048 | B1_det3 | 473.3 | B1_det2 (358.3) | +32.1% | B1_reference@not_guaranteed (208) | +127.6% | B1_det (309.2) | +53.1% | 8 | 64 | umbriel-b200-068 |
+| fp32 | 16384 | 4 |  | B4_v4 | 737.5 | B2_twolevel (734.4) | +0.4% | B1_reference@not_guaranteed (317) | +132.6% | B1_det (353.2) | +108.8% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 16 |  | B4_v4 | 720.2 | B1_det3 (633) | +13.8% | B1_reference@not_guaranteed (303) | +137.7% | B1_det (322.2) | +123.5% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 32 |  | B4_v4 | 693.6 | B1_det3 (611.3) | +13.5% | B1_reference@not_guaranteed (293.6) | +136.3% | B1_det (312.8) | +121.7% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 64 |  | B4_v4 | 681.9 | B1_det3 (572.4) | +19.1% | B1_reference@not_guaranteed (273.4) | +149.4% | B1_det (295.8) | +130.5% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 128 |  | B4_v4 | 663.3 | B1_det3 (535.2) | +23.9% | B1_reference@not_guaranteed (251.7) | +163.5% | B1_det (270.6) | +145.1% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 256 |  | B4_v4 | 632.1 | B1_det3 (501.1) | +26.2% | B1_reference@not_guaranteed (233.8) | +170.3% | B1_det (244.8) | +158.2% | 9 | 255 | umbriel-b200-047 |
+| fp32 | 16384 | 1024 |  | B1_det3 | 426.4 | B4_v4 (414.6) | +2.8% | B1_reference@not_guaranteed (186.7) | +128.4% | B1_det (200.2) | +112.9% | 8 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 4096 |  | B1_det3 | 397.3 | B3_tuned (287.5) | +38.2% | B1_reference@not_guaranteed (160.6) | +147.4% | B1_det (193.7) | +105.1% | 8 | 128 | umbriel-b200-068 |
 | fp32 | 32768 | 4 |  | B4_v4 | 924.1 | B2_twolevel (610.3) (spills) | +51.4% | B1_reference@not_guaranteed (320.3) | +188.5% |  |  | 3 | 255 | umbriel-b200-047 |
 | fp32 | 32768 | 16 |  | B4_v4 | 911.6 | B2_twolevel (531.1) (spills) | +71.6% | B1_reference@not_guaranteed (317.7) | +187.0% |  |  | 3 | 255 | umbriel-b200-047 |
 | fp32 | 32768 | 32 |  | B4_v4 | 894.7 | B2_twolevel (427.9) (spills) | +109.1% | B1_reference@not_guaranteed (296.7) | +201.5% |  |  | 3 | 255 | umbriel-b200-047 |
@@ -844,23 +870,45 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 ## block, throughput, prefer_smaller_index, random@runs4 input
 
+Cells of this table were measured on umbriel-b200-047, umbriel-b200-068 (see the node column, resumed passes after the 2026-10-25 21:26Z network outage ran on a different node from the first batches).
+
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 8192 | 256 |  | W4_chunk4@runs4 | 822.5 |  |  | B1_reference@not_guaranteed (410.1) | +100.5% | 1 | 58 | umbriel-b200-047 |
-| bf16 | 8192 | 1024 |  | W4_chunk4@runs4 | 669.9 |  |  | B1_reference@not_guaranteed (308.7) | +117.0% | 1 | 117 | umbriel-b200-047 |
-| bf16 | 8192 | 4096 |  | W4_chunk4@runs4 | 325.5 |  |  | B1_reference@not_guaranteed (193.8) | +68.0% | 1 | 124 | umbriel-b200-047 |
-| bf16 | 16384 | 256 |  | W4_chunk4@runs4 | 900.3 |  |  | B1_reference@not_guaranteed (356.4) | +152.6% | 1 | 74 | umbriel-b200-047 |
-| bf16 | 16384 | 1024 |  | W4_chunk4@runs4 | 764.6 |  |  | B1_reference@not_guaranteed (311.1) | +145.8% | 1 | 75 | umbriel-b200-047 |
-| bf16 | 16384 | 4096 |  | W4_chunk4@runs4 | 462.8 |  |  | B1_reference@not_guaranteed (243.5) | +90.1% | 1 | 124 | umbriel-b200-047 |
+| bf16 | 8192 | 4 |  | B1_det3@runs4 | 719.7 |  |  | B1_reference@not_guaranteed (536.2) | +34.2% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 16 |  | B1_det3@runs4 | 697.3 |  |  | B1_reference@not_guaranteed (526.5) | +32.4% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 32 |  | B1_det3@runs4 | 684.3 |  |  | B1_reference@not_guaranteed (510.6) | +34.0% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 64 |  | B1_det3@runs4 | 669.3 |  |  | B1_reference@not_guaranteed (467.6) | +43.1% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 128 |  | B1_det3@runs4 | 662.3 |  |  | B1_reference@not_guaranteed (430.2) | +53.9% | 1 | 64 | umbriel-b200-068 |
+| bf16 | 8192 | 256 |  | W4_chunk4@runs4 | 822.5 | B1_det3@runs4 (633.2) | +29.9% | B1_reference@not_guaranteed (410.1) | +100.5% | 2 | 58 | umbriel-b200-047 |
+| bf16 | 8192 | 1024 |  | W4_chunk4@runs4 | 669.9 | B1_det3@runs4 (590.6) | +13.4% | B1_reference@not_guaranteed (308.7) | +117.0% | 2 | 117 | umbriel-b200-047 |
+| bf16 | 8192 | 4096 |  | B1_det3@runs4 | 405.7 | W4_chunk4@runs4 (325.5) | +24.6% | B1_reference@not_guaranteed (193.2) | +110.0% | 2 | 64 | umbriel-b200-068 |
+| bf16 | 16384 | 4 |  | B1_det3@runs4 | 626.3 |  |  | B1_reference@not_guaranteed (453.8) | +38.0% | 1 | 127 | umbriel-b200-068 |
+| bf16 | 16384 | 16 |  | B1_det3@runs4 | 626.5 |  |  | B1_reference@not_guaranteed (450.8) | +39.0% | 1 | 127 | umbriel-b200-068 |
+| bf16 | 16384 | 32 |  | B1_det3@runs4 | 592.5 |  |  | B1_reference@not_guaranteed (444.3) | +33.4% | 1 | 127 | umbriel-b200-068 |
+| bf16 | 16384 | 64 |  | B1_det3@runs4 | 595 |  |  | B1_reference@not_guaranteed (427.3) | +39.2% | 1 | 127 | umbriel-b200-068 |
+| bf16 | 16384 | 128 |  | B1_det3@runs4 | 565.6 |  |  | B1_reference@not_guaranteed (392.2) | +44.2% | 1 | 127 | umbriel-b200-068 |
+| bf16 | 16384 | 256 |  | W4_chunk4@runs4 | 900.3 | B1_det3@runs4 (554.1) | +62.5% | B1_reference@not_guaranteed (356.4) | +152.6% | 2 | 74 | umbriel-b200-047 |
+| bf16 | 16384 | 1024 |  | W4_chunk4@runs4 | 764.6 | B1_det3@runs4 (532.4) | +43.6% | B1_reference@not_guaranteed (311.1) | +145.8% | 2 | 75 | umbriel-b200-047 |
+| bf16 | 16384 | 4096 |  | W4_chunk4@runs4 | 462.8 | B1_det3@runs4 (441.2) | +4.9% | B1_reference@not_guaranteed (243.5) | +90.1% | 2 | 124 | umbriel-b200-047 |
 | bf16 | 32768 | 256 |  | W4_chunk4@runs4 | 678.2 |  |  | B1_reference@not_guaranteed (294.2) | +130.6% | 1 | 128 | umbriel-b200-047 |
 | bf16 | 32768 | 1024 |  | W4_chunk4@runs4 | 786.3 |  |  | B1_reference@not_guaranteed (247.9) | +217.2% | 1 | 161 | umbriel-b200-047 |
 | bf16 | 32768 | 4096 |  | W4_chunk4@runs4 | 601.6 |  |  | B1_reference@not_guaranteed (200.6) | +200.0% | 1 | 163 | umbriel-b200-047 |
-| fp32 | 8192 | 256 |  | W4_chunk4@runs4 | 609.7 |  |  | B1_reference@not_guaranteed (288) | +111.7% | 1 | 64 | umbriel-b200-047 |
-| fp32 | 8192 | 1024 |  | W4_chunk4@runs4 | 439.1 |  |  | B1_reference@not_guaranteed (222.3) | +97.6% | 1 | 64 | umbriel-b200-047 |
-| fp32 | 8192 | 4096 |  | W4_chunk4@runs4 | 173.1 |  |  | B1_reference@not_guaranteed (169.5) | +2.1% | 1 | 128 | umbriel-b200-047 |
-| fp32 | 16384 | 256 |  | W4_chunk4@runs4 | 611.5 |  |  | B1_reference@not_guaranteed (201.9) | +202.9% | 1 | 80 | umbriel-b200-047 |
-| fp32 | 16384 | 1024 |  | W4_chunk4@runs4 | 543 |  |  | B1_reference@not_guaranteed (183) | +196.8% | 1 | 98 | umbriel-b200-047 |
-| fp32 | 16384 | 4096 |  | W4_chunk4@runs4 | 283.8 |  |  | B1_reference@not_guaranteed (155.3) | +82.7% | 1 | 128 | umbriel-b200-047 |
+| fp32 | 8192 | 4 |  | B1_det3@runs4 | 821.4 |  |  | B1_reference@not_guaranteed (400.7) | +105.0% | 1 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 16 |  | B1_det3@runs4 | 783.7 |  |  | B1_reference@not_guaranteed (377.8) | +107.5% | 1 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 32 |  | B1_det3@runs4 | 750 |  |  | B1_reference@not_guaranteed (353.1) | +112.4% | 1 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 64 |  | B1_det3@runs4 | 736.8 |  |  | B1_reference@not_guaranteed (321.6) | +129.1% | 1 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 128 |  | B1_det3@runs4 | 718.6 |  |  | B1_reference@not_guaranteed (295.8) | +143.0% | 1 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 256 |  | B1_det3@runs4 | 707 | W4_chunk4@runs4 (609.7) | +16.0% | B1_reference@not_guaranteed (287.7) | +145.7% | 2 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 1024 |  | B1_det3@runs4 | 617.9 | W4_chunk4@runs4 (439.1) | +40.7% | B1_reference@not_guaranteed (222.2) | +178.1% | 2 | 64 | umbriel-b200-068 |
+| fp32 | 8192 | 4096 |  | B1_det3@runs4 | 414.5 | W4_chunk4@runs4 (173.1) | +139.4% | B1_reference@not_guaranteed (169.3) | +144.8% | 2 | 64 | umbriel-b200-068 |
+| fp32 | 16384 | 4 |  | B1_det3@runs4 | 720.1 |  |  | B1_reference@not_guaranteed (303.8) | +137.0% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 16 |  | B1_det3@runs4 | 685.8 |  |  | B1_reference@not_guaranteed (290.4) | +136.1% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 32 |  | B1_det3@runs4 | 659 |  |  | B1_reference@not_guaranteed (279) | +136.2% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 64 |  | B1_det3@runs4 | 623.7 |  |  | B1_reference@not_guaranteed (254.9) | +144.7% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 128 |  | B1_det3@runs4 | 584.6 |  |  | B1_reference@not_guaranteed (227.5) | +157.0% | 1 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 256 |  | W4_chunk4@runs4 | 611.5 | B1_det3@runs4 (587) | +4.2% | B1_reference@not_guaranteed (201.9) | +202.9% | 2 | 80 | umbriel-b200-047 |
+| fp32 | 16384 | 1024 |  | B1_det3@runs4 | 555.4 | W4_chunk4@runs4 (543) | +2.3% | B1_reference@not_guaranteed (182.9) | +203.7% | 2 | 128 | umbriel-b200-068 |
+| fp32 | 16384 | 4096 |  | B1_det3@runs4 | 461.2 | W4_chunk4@runs4 (283.8) (spills) | +62.5% | B1_reference@not_guaranteed (155.1) | +197.4% | 2 | 128 | umbriel-b200-068 |
 | fp32 | 32768 | 256 |  | W4_chunk4@runs4 | 611.7 |  |  | B1_reference@not_guaranteed (230) | +166.0% | 1 | 168 | umbriel-b200-047 |
 | fp32 | 32768 | 1024 |  | W4_chunk4@runs4 | 542.7 |  |  | B1_reference@not_guaranteed (199) | +172.7% | 1 | 169 | umbriel-b200-047 |
 | fp32 | 32768 | 4096 |  | W4_chunk4@runs4 | 351.2 |  |  | B1_reference@not_guaranteed (165.4) | +112.3% | 1 | 234 | umbriel-b200-047 |
@@ -1011,17 +1059,17 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 8 | 4 |  | W2_packed_sw_v2@T4 | 453.1 |  |  | W1_baseline_sub (405) | -10.6% | 1 | 34 | umbriel-b200-068 |
-| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 581.1 |  |  | W1_baseline_sub (1199) | +106.3% | 1 | 36 | umbriel-b200-068 |
-| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 832.7 |  |  | W1_baseline_sub (1158) | +39.1% | 1 | 43 | umbriel-b200-068 |
-| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 528.6 |  |  | W1_baseline_sub (5455) | +932.0% | 1 | 39 | umbriel-b200-068 |
-| fp32 | 8 | 2 |  | W2_packed_sw_v2@T4 | 534.5 |  |  | W1_baseline_sub (366) | -31.5% | 1 | 40 | umbriel-b200-068 |
-| fp32 | 8 | 4 |  | W2_packed_sw_v2@T4 | 698 |  |  | W1_baseline_sub (342) | -51.0% | 1 | 40 | umbriel-b200-068 |
-| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 536.3 |  |  | W1_baseline_sub (1030) | +92.1% | 1 | 48 | umbriel-b200-068 |
-| fp32 | 32 | 16 |  | W2_packed_sw_v2@T16 | 777.2 |  |  | W1_baseline_sub (927) | +19.3% | 1 | 45 | umbriel-b200-068 |
-| fp32 | 64 | 4 |  | W2_packed_sw_v2@T4 | 1149 |  |  | W1_baseline_sub (1552) | +35.1% | 1 | 96 | umbriel-b200-068 |
-| fp32 | 128 | 16 |  | W2_packed_sw_v2@T16 | 1226 | W2_packed_sw_v2@T8 (1657) | +35.1% | W1_baseline_sub (3289) | +168.2% | 2 | 68 | umbriel-b200-068 |
-| fp32 | 128 | 64 |  | W2_packed_sw_v2@T8 | 7380 |  |  | W1_baseline_sub (7822) | +6.0% | 1 | 136 | umbriel-b200-068 |
+| bf16 | 8 | 4 |  | W1_eager_same_sub@T4 | 200 | W2_packed_sw_v2@T4 (453.1) | +126.5% | W1_baseline_sub (405) | +102.5% | 2 | 28 | umbriel-b200-068 |
+| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 581.1 | W1_eager_same_sub@T4 (893) | +53.7% | W1_baseline_sub (1199) | +106.3% | 2 | 36 | umbriel-b200-068 |
+| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 832.6 | W1_eager_same_sub@T8 (1103) | +32.5% | W1_baseline_sub (1158) | +39.1% | 2 | 43 | umbriel-b200-068 |
+| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 528.5 | W1_eager_same_sub@T8 (3879) | +633.9% | W1_baseline_sub (5455) | +932.1% | 2 | 39 | umbriel-b200-068 |
+| fp32 | 8 | 2 |  | W1_eager_same_sub@T4 | 292 | N10_auto_sub@T4 (303) | +3.8% | W1_baseline_sub (366) | +25.3% | 3 | 43 | umbriel-b200-068 |
+| fp32 | 8 | 4 |  | W1_eager_same_sub@T4 | 219 | N10_auto_sub@T4 (270) | +23.3% | W1_baseline_sub (342) | +56.2% | 3 | 37 | umbriel-b200-068 |
+| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 536.3 | N10_auto_sub@T8 (714) | +33.1% | W1_baseline_sub (1030) | +92.1% | 3 | 48 | umbriel-b200-068 |
+| fp32 | 32 | 16 |  | N10_auto_sub@T16 | 498 | W2_packed_sw_v2@T16 (777.1) | +56.1% | W1_baseline_sub (927) | +86.1% | 3 | 57 | umbriel-b200-068 |
+| fp32 | 64 | 4 |  | N10_auto_sub@T4 | 1109 | W2_packed_sw_v2@T4 (1149) | +3.6% | W1_baseline_sub (1552) | +39.9% | 3 | 116 | umbriel-b200-068 |
+| fp32 | 128 | 16 |  | N10_auto_sub@T16 | 1132 | W2_packed_sw_v2@T16 (1226) | +8.3% | W1_baseline_sub (3289) | +190.5% | 6 | 79 | umbriel-b200-068 |
+| fp32 | 128 | 64 |  | N10_auto_sub@T8 | 1821 | W2_packed_sw_v2@T8 (7380) | +305.3% | W1_baseline_sub (7822) | +329.5% | 3 | 113 | umbriel-b200-068 |
 
 ## subwarp, latency, prefer_smaller_index, random input
 
@@ -1044,16 +1092,16 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 8 | 4 |  | W2_packed_sw_v2@T4 | 453.1 |  |  | W1_baseline_sub (788) | +73.9% | 1 | 34 | umbriel-b200-068 |
-| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 581.4 |  |  | W1_baseline_sub (3483) | +499.0% | 1 | 36 | umbriel-b200-068 |
-| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 832.7 |  |  | W1_baseline_sub (3782) | +354.2% | 1 | 43 | umbriel-b200-068 |
-| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 528.4 |  |  | W1_baseline_sub (1.335e+04) | +2426.0% | 1 | 39 | umbriel-b200-068 |
-| bf16 | 128 | 64 |  | W2_packed_sw_v2@T16 | 2593 |  |  | W1_baseline_sub (1.426e+04) | +450.1% | 1 | 75 | umbriel-b200-068 |
-| fp32 | 8 | 4 |  | W2_packed_sw_v2@T4 | 697.3 |  |  | W1_baseline_sub (2204) | +216.1% | 1 | 40 | umbriel-b200-068 |
-| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 536.4 |  |  | W1_baseline_sub (7809) | +1355.9% | 1 | 48 | umbriel-b200-068 |
-| fp32 | 32 | 16 |  | W2_packed_sw_v2@T16 | 777.4 |  |  | W1_baseline_sub (5065) | +551.5% | 1 | 45 | umbriel-b200-068 |
-| fp32 | 128 | 16 |  | W2_packed_sw_v2@T16 | 1227 | W2_packed_sw_v2@T8 (1656) | +35.0% | W1_baseline_sub (2.421e+04) | +1873.7% | 2 | 68 | umbriel-b200-068 |
-| fp32 | 128 | 64 |  | W2_packed_sw_v2@T8 | 7380 |  |  | W1_baseline_sub (6.605e+04) | +795.1% | 1 | 136 | umbriel-b200-068 |
+| bf16 | 8 | 4 |  | W1_eager_same_sub@T4 | 200 | W2_packed_sw_v2@T4 (453.1) | +126.6% | W1_baseline_sub (788) | +294.0% | 2 | 28 | umbriel-b200-068 |
+| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 581.4 | W1_eager_same_sub@T4 (893) | +53.6% | W1_baseline_sub (3483) | +499.0% | 2 | 36 | umbriel-b200-068 |
+| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 831.6 | W1_eager_same_sub@T8 (1103) | +32.6% | W1_baseline_sub@not_guaranteed (1158) | +39.2% | 2 | 43 | umbriel-b200-068 |
+| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 528.2 | W1_eager_same_sub@T8 (3879) | +634.4% | W1_baseline_sub@not_guaranteed (5455) | +932.8% | 2 | 39 | umbriel-b200-068 |
+| bf16 | 128 | 64 |  | W2_packed_sw_v2@T16 | 2593 | W1_eager_same_sub@T16 (4182) | +61.3% | W1_baseline_sub (1.426e+04) | +450.1% | 2 | 75 | umbriel-b200-068 |
+| fp32 | 8 | 4 |  | W1_eager_same_sub@T4 | 219 | N10_auto_sub@T4 (270) | +23.3% | W1_baseline_sub (2204) | +906.4% | 3 | 37 | umbriel-b200-068 |
+| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 536.3 | N10_auto_sub@T8 (714) | +33.1% | W1_baseline_sub@not_guaranteed (1030) | +92.0% | 3 | 48 | umbriel-b200-068 |
+| fp32 | 32 | 16 |  | N10_auto_sub@T16 | 498 | W2_packed_sw_v2@T16 (776.8) | +56.0% | W1_baseline_sub (5065) | +917.1% | 3 | 57 | umbriel-b200-068 |
+| fp32 | 128 | 16 |  | N10_auto_sub@T16 | 1132 | W2_packed_sw_v2@T16 (1226) | +8.3% | W1_baseline_sub (2.421e+04) | +2038.9% | 6 | 79 | umbriel-b200-068 |
+| fp32 | 128 | 64 |  | N10_auto_sub@T8 | 1821 | W2_packed_sw_v2@T8 (7380) | +305.2% | W1_baseline_sub (6.605e+04) | +3527.3% | 3 | 113 | umbriel-b200-068 |
 
 ## subwarp, throughput, not_guaranteed, random input
 
@@ -1082,17 +1130,17 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 8 | 4 |  | W2_packed_sw_v2@T4 | 48.74 |  |  | W1_baseline_sub (49.19) | -0.9% | 1 | 27 | umbriel-b200-068 |
-| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 257.8 |  |  | W1_baseline_sub (39.81) | +547.6% | 1 | 31 | umbriel-b200-068 |
-| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 227.4 |  |  | W1_baseline_sub (60.82) | +273.9% | 1 | 36 | umbriel-b200-068 |
-| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 1047 |  |  | W1_baseline_sub (188.2) | +456.5% | 1 | 40 | umbriel-b200-068 |
-| fp32 | 8 | 2 |  | W2_packed_sw_v2@T4 | 108.2 |  |  | W1_baseline_sub (53.36) | +102.7% | 1 | 30 | umbriel-b200-068 |
-| fp32 | 8 | 4 |  | W2_packed_sw_v2@T4 | 101.2 |  |  | W1_baseline_sub (53.35) | +89.6% | 1 | 30 | umbriel-b200-068 |
-| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 476 |  |  | W1_baseline_sub (107.2) | +344.1% | 1 | 38 | umbriel-b200-068 |
-| fp32 | 32 | 16 |  | W2_packed_sw_v2@T16 | 174.5 |  |  | W1_baseline_sub (203.7) | -14.4% | 1 | 32 | umbriel-b200-068 |
-| fp32 | 64 | 4 |  | W2_packed_sw_v2@T4 | 230.4 |  |  | W1_baseline_sub (109.2) | +110.9% | 1 | 87 | umbriel-b200-068 |
-| fp32 | 128 | 16 |  | W2_packed_sw_v2@T8 | 377.4 | W2_packed_sw_v2@T16 (354) | +6.6% | W1_baseline_sub (252.9) | +49.3% | 2 | 92 | umbriel-b200-068 |
-| fp32 | 128 | 64 |  | W2_packed_sw_v2@T8 | 127.5 |  |  | W1_baseline_sub (181.9) | -29.9% | 1 | 115 | umbriel-b200-068 |
+| bf16 | 8 | 4 |  | N5_rows_fs_sub@T4 | 53.39 | W1_eager_same_sub@T4 (49.42) | +8.0% | W1_baseline_sub (48.9) | +9.2% | 3 | 32 | umbriel-b200-068 |
+| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 257.8 | N5_rows_fs_sub@T4 (55.56) | +364.0% | W1_baseline_sub (39.81) | +547.6% | 3 | 31 | umbriel-b200-068 |
+| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 227.5 | N5_rows_fs_sub@T8 (110.8) | +105.3% | W1_baseline_sub (60.82) | +274.0% | 3 | 36 | umbriel-b200-068 |
+| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 1047 | N5_rows_fs_sub@T8 (395.9) | +164.6% | W1_baseline_sub (188.2) | +456.5% | 3 | 40 | umbriel-b200-068 |
+| fp32 | 8 | 2 |  | W2_packed_sw_v2@T4 | 108.2 | W1_eager_same_sub@T4 (53.44) | +102.4% | W1_baseline_sub (53.36) | +102.7% | 3 | 30 | umbriel-b200-068 |
+| fp32 | 8 | 4 |  | W2_packed_sw_v2@T4 | 101.3 | N10_auto_sub@T4 (53.45) | +89.5% | W1_baseline_sub (53.36) | +89.8% | 3 | 30 | umbriel-b200-068 |
+| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 476 | N10_auto_sub@T8 (109.3) | +335.5% | W1_baseline_sub (107.2) | +344.1% | 3 | 38 | umbriel-b200-068 |
+| fp32 | 32 | 16 |  | N10_auto_sub@T16 | 212.2 | W1_eager_same_sub@T16 (200.3) | +6.0% | W1_baseline_sub (203.9) | +4.1% | 3 | 32 | umbriel-b200-068 |
+| fp32 | 64 | 4 |  | W2_packed_sw_v2@T4 | 230.4 | N10_auto_sub@T4 (110.4) | +108.6% | W1_baseline_sub (109.2) | +110.9% | 3 | 87 | umbriel-b200-068 |
+| fp32 | 128 | 16 |  | N10_auto_sub@T8 | 407.7 | N10_auto_sub@T16 (392.6) | +3.8% | W1_baseline_sub (252.9) | +61.2% | 6 | 109 | umbriel-b200-068 |
+| fp32 | 128 | 64 |  | N10_auto_sub@T8 | 322.1 | W1_eager_same_sub@T8 (150.4) | +114.2% | W1_baseline_sub (181.9) | +77.1% | 3 | 107 | umbriel-b200-068 |
 
 ## subwarp, throughput, prefer_smaller_index, random input
 
@@ -1115,16 +1163,16 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 | key | N | k | workload | winner | value | runner-up | margin | reference | margin | candidates | regs | node |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| bf16 | 8 | 4 |  | W2_packed_sw_v2@T4 | 48.49 |  |  | W1_baseline_sub (48.6) | -0.2% | 1 | 27 | umbriel-b200-068 |
-| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 257.7 |  |  | W1_baseline_sub (39.76) | +548.3% | 1 | 31 | umbriel-b200-068 |
-| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 227.5 |  |  | W1_baseline_sub (56.37) | +303.6% | 1 | 36 | umbriel-b200-068 |
-| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 1047 |  |  | W1_baseline_sub (96.17) | +988.7% | 1 | 40 | umbriel-b200-068 |
-| bf16 | 128 | 64 |  | W2_packed_sw_v2@T16 | 123.3 |  |  | W1_baseline_sub (45.85) | +168.8% | 1 | 54 | umbriel-b200-068 |
-| fp32 | 8 | 4 |  | W2_packed_sw_v2@T4 | 100.8 |  |  | W1_baseline_sub (50.01) | +101.6% | 1 | 30 | umbriel-b200-068 |
-| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 475.8 |  |  | W1_baseline_sub (93.08) | +411.2% | 1 | 38 | umbriel-b200-068 |
-| fp32 | 32 | 16 |  | W2_packed_sw_v2@T16 | 174.4 |  |  | W1_baseline_sub (74.81) | +133.1% | 1 | 32 | umbriel-b200-068 |
-| fp32 | 128 | 16 |  | W2_packed_sw_v2@T8 | 377.4 | W2_packed_sw_v2@T16 (354) | +6.6% | W1_baseline_sub (67.62) | +458.1% | 2 | 92 | umbriel-b200-068 |
-| fp32 | 128 | 64 |  | W2_packed_sw_v2@T8 | 126 |  |  | W1_baseline_sub (46.22) | +172.6% | 1 | 115 | umbriel-b200-068 |
+| bf16 | 8 | 4 |  | N5_rows_fs_sub@T4 | 53.4 | W1_eager_same_sub@T4 (48.7) | +9.6% | W1_baseline_sub@not_guaranteed (48.79) | +9.5% | 3 | 32 | umbriel-b200-068 |
+| bf16 | 32 | 4 |  | W2_packed_sw_v2@T4 | 258 | N5_rows_fs_sub@T4 (55.56) | +364.4% | W1_baseline_sub@not_guaranteed (39.81) | +548.1% | 3 | 31 | umbriel-b200-068 |
+| bf16 | 32 | 16 |  | W2_packed_sw_v2@T8 | 227.5 | N5_rows_fs_sub@T8 (110.3) | +106.2% | W1_baseline_sub (56.37) | +303.6% | 3 | 36 | umbriel-b200-068 |
+| bf16 | 128 | 4 |  | W2_packed_sw_v2@T8 | 1047 | N5_rows_fs_sub@T8 (395.3) | +165.0% | W1_baseline_sub@not_guaranteed (188.2) | +456.5% | 3 | 40 | umbriel-b200-068 |
+| bf16 | 128 | 64 |  | N5_rows_fs_sub@T16 | 451.2 | W1_eager_same_sub@T16 (237.8) | +89.8% | W1_baseline_sub@not_guaranteed (106.4) | +324.0% | 3 | 60 | umbriel-b200-068 |
+| fp32 | 8 | 4 |  | W2_packed_sw_v2@T4 | 101.1 | W1_eager_same_sub@T4 (53.44) | +89.2% | W1_baseline_sub@not_guaranteed (53.28) | +89.7% | 3 | 30 | umbriel-b200-068 |
+| fp32 | 32 | 4 |  | W2_packed_sw_v2@T8 | 476.2 | N10_auto_sub@T8 (109.2) | +336.0% | W1_baseline_sub@not_guaranteed (107.2) | +344.3% | 3 | 38 | umbriel-b200-068 |
+| fp32 | 32 | 16 |  | N10_auto_sub@T16 | 212.3 | W1_eager_same_sub@T16 (200) | +6.1% | W1_baseline_sub@not_guaranteed (203.7) | +4.2% | 3 | 32 | umbriel-b200-068 |
+| fp32 | 128 | 16 |  | N10_auto_sub@T8 | 407.7 | N10_auto_sub@T16 (392.6) | +3.9% | W1_baseline_sub@not_guaranteed (253) | +61.1% | 6 | 109 | umbriel-b200-068 |
+| fp32 | 128 | 64 |  | N10_auto_sub@T8 | 322 | W1_eager_same_sub@T8 (150.3) | +114.2% | W1_baseline_sub@not_guaranteed (181.8) | +77.1% | 3 | 107 | umbriel-b200-068 |
 
 ## warp, latency, not_guaranteed, random input
 
@@ -1648,37 +1696,36 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 
 | scope | regime | adapter | cells won |
 |---|---|---|---|
+| block | latency | B1_det3@runs4 | 74 |
 | block | latency | B4_v4 | 64 |
 | block | latency | W4_chunk8@runs8 | 57 |
-| block | latency | W4_chunk4@runs4 | 53 |
-| block | latency | B1_det3@runs4 | 53 |
+| block | latency | W4_chunk4@runs4 | 52 |
 | block | latency | B3_tuned | 45 |
 | block | latency | N8_b2packed@T128 | 33 |
 | block | latency | B1_n6b | 23 |
 | block | latency | B2_twolevel | 22 |
 | block | latency | N9_w2fin2 | 21 |
 | block | latency | B1_det3@T128@runs4 | 15 |
-| block | latency | B1_det3 | 10 |
+| block | latency | B1_det3 | 12 |
 | block | latency | B2_packed@T128 | 7 |
 | block | latency | B2_packed | 5 |
 | block | latency | B1_n6b@T512 | 5 |
 | block | latency | B1_det3@T512@runs4 | 5 |
 | block | latency | N8_b2packed | 4 |
-| block | latency | B1_det2 | 2 |
 | block | latency | B1_idx@T512 | 1 |
 | block | latency | B1_det@T512 | 1 |
 | block | latency | B1_det3@T512 | 1 |
-| block | throughput | B1_det3@runs4 | 60 |
+| block | throughput | B1_det3@runs4 | 86 |
 | block | throughput | W4_chunk8@runs8 | 57 |
-| block | throughput | B4_v4 | 51 |
-| block | throughput | W4_chunk4@runs4 | 42 |
-| block | throughput | B1_det2 | 39 |
+| block | throughput | B4_v4 | 48 |
+| block | throughput | B1_det3 | 42 |
+| block | throughput | W4_chunk4@runs4 | 36 |
 | block | throughput | B1_idx | 31 |
 | block | throughput | B2_twolevel | 28 |
-| block | throughput | N8_b2packed@T128 | 25 |
-| block | throughput | B1_det3 | 22 |
+| block | throughput | N8_b2packed@T128 | 24 |
+| block | throughput | B1_det2 | 24 |
 | block | throughput | B1_det3@T128@runs4 | 20 |
-| block | throughput | B3_tuned | 18 |
+| block | throughput | B3_tuned | 17 |
 | block | throughput | B1_idx@T512 | 11 |
 | block | throughput | B2_twolevel@T128 | 5 |
 | block | throughput | N9_w2fin2@T128 | 4 |
@@ -1693,19 +1740,22 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 | block | throughput | B1_det@T512 | 1 |
 | block | throughput | B1_n6b | 1 |
 | block | throughput | N8_b2packed | 1 |
-| subwarp | latency | W2_packed_sw_v2@T16 | 19 |
-| subwarp | latency | W2_packed_sw_v2@T4 | 10 |
-| subwarp | latency | W2_packed_sw_v2@T8 | 8 |
-| subwarp | latency | W1_eager_same_sub@T4 | 6 |
-| subwarp | latency | N10_auto_sub@T16 | 6 |
-| subwarp | latency | N10_auto_sub@T4 | 2 |
-| subwarp | throughput | W2_packed_sw_v2@T4 | 18 |
-| subwarp | throughput | W2_packed_sw_v2@T8 | 16 |
-| subwarp | throughput | W2_packed_sw_v2@T16 | 5 |
-| subwarp | throughput | N5_rows_fs_sub@T16 | 4 |
-| subwarp | throughput | N10_auto_sub@T8 | 4 |
+| subwarp | latency | W2_packed_sw_v2@T16 | 15 |
+| subwarp | latency | W1_eager_same_sub@T4 | 11 |
+| subwarp | latency | N10_auto_sub@T16 | 10 |
+| subwarp | latency | W2_packed_sw_v2@T8 | 6 |
+| subwarp | latency | W2_packed_sw_v2@T4 | 4 |
+| subwarp | latency | N10_auto_sub@T4 | 3 |
+| subwarp | latency | N10_auto_sub@T8 | 2 |
+| subwarp | throughput | W2_packed_sw_v2@T4 | 16 |
+| subwarp | throughput | W2_packed_sw_v2@T8 | 12 |
+| subwarp | throughput | N10_auto_sub@T8 | 8 |
+| subwarp | throughput | N5_rows_fs_sub@T16 | 5 |
 | subwarp | throughput | N5_rows_fs_sub@T8 | 2 |
 | subwarp | throughput | W1_eager_same_sub@T16 | 2 |
+| subwarp | throughput | W2_packed_sw_v2@T16 | 2 |
+| subwarp | throughput | N5_rows_fs_sub@T4 | 2 |
+| subwarp | throughput | N10_auto_sub@T16 | 2 |
 | warp | latency | W2_packed_v3 | 100 |
 | warp | latency | N6w_atom32 | 71 |
 | warp | latency | W5_v4 | 43 |
@@ -1721,7 +1771,7 @@ Reading notes. (1) Every value is from the harness version named above; cards ma
 | warp | throughput | N10_auto | 6 |
 | warp | throughput | W1x_vimnmx_eager | 2 |
 
-1440 cells, 477 close (margin over the runner-up below 15 percent), 113 adapter cells measured twice in the session with a spread above 3 percent.
+1480 cells, 497 close (margin over the runner-up below 15 percent), 113 adapter cells measured twice in the session with a spread above 3 percent.
 
 | scope | regime | req | key | N | k | adapter | spread between the session's measurements |
 |---|---|---|---|---|---|---|---|
