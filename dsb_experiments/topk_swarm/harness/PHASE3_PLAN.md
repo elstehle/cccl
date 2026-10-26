@@ -204,6 +204,30 @@ the matrix, verification by the usual verifiers on the same node from the same b
   prediction test). The same-node rerun of the two addenda on 047 did not happen (047 never came
   back), so the addendum tables keep their 068 node name.
 
+## 6.3 Follow-up: same-node rerun of the two addenda
+
+Not done: the pinned request for umbriel-b200-047 (the random-pass node) never started (host mixed,
+reboot requested) and was cancelled, so the B1_det3 addendum and the 8 and 16 lane named sub-warp
+addendum stay as they were measured on umbriel-b200-068, in their own `random@addendum:umbriel-b200-068`
+tables with the cross-node caveat.
+
+What the rerun would settle: (a) the `prefer_smaller_index` block cells where B1_det3 (068) reads
+within noise of or ahead of the 047 winner, listed in `state/phase3/det3_cells_b200.md` (on random
+input det3 is within 1 percent of B1_det2 and beats no 047 winner, so the expected outcome is no
+change of hands, which a same-node measurement would make final), and (b) the named sub-warp
+workloads at 8 and 16 lanes against their 4-lane rows measured on 047 (the GB200 pass, which ran all
+lane counts on one node, puts the 16-lane W2_packed_sw_v2 ahead on 4 of the 6 workloads).
+
+Procedure on a free B200 (the scripts are generated for 047, regenerate with `--node` for another):
+`bash state/phase3/y_047_det3_build.sh && bash state/phase3/y_047_det3_measure.sh && bash state/phase3/y_047_named_build.sh && bash state/phase3/y_047_named_measure.sh`,
+then `tools/winners.py` with the usual B200 arguments; the batches carry the provenance note and, on
+047 itself, would enter the one-node random tables directly (the `--main-node` rule keeps any other
+node's batches as addendum tables).
+
+Node detail for the shuffled run: umbriel-b200-094 runs driver 615.71.09 where every other B200 of
+the study had 615.71.10; the shuffled pass compares adapters within itself on that one node, so it
+does not matter for its tables, recorded here for the cards.
+
 ## 7. Go procedure
 
 1. Lead gives the go, broker names the B200 node and starts the pre-flight.
