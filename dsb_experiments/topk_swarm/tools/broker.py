@@ -219,9 +219,20 @@ def reconcile(reg, queues, now=None):
             continue
         job = jobs.get(str(n["job_id"]))
         if job is None:
-            notes.append("%s: job %s no longer in squeue, marked lost" % (node_label(n), n["job_id"]))
-            mark_lost(n, "vanished from squeue at %s" % iso(now))
+            # one squeue miss is not enough: a transient empty or partial squeue answer (seen at the
+            # 2026-10-26 reconnection) must not retire live jobs. Mark lost on the second miss at least
+            # two minutes after the first.
+            first = parse_iso(n.get("missing_since"))
+            if first is None:
+                n["missing_since"] = iso(now)
+                notes.append("%s: job %s not in squeue, will mark lost if still missing in 2 min" % (node_label(n), n["job_id"]))
+                continue
+            if (now - first).total_seconds() < 120:
+                continue
+            notes.append("%s: job %s missing from squeue since %s, marked lost" % (node_label(n), n["job_id"], n["missing_since"]))
+            mark_lost(n, "missing from squeue since %s" % n["missing_since"])
             continue
+        n.pop("missing_since", None)
         if job["state"] == "RUNNING":
             left = slurm_time_to_seconds(job["left"])
             limit = slurm_time_to_seconds(job["limit"])
