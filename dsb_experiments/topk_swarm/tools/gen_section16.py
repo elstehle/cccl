@@ -520,7 +520,7 @@ if TIE and PROSE['tie_header'] and PROSE['tie_reading']:
                                            extra=', '.join(sorted(extra))))
     out.append('')
     if SHUF:
-        out.append(f'Robustness under heavy ties, the shuffled variant ({SHUF_PAT}, the same multiset through a shuffle so the period no longer aligns with the stripe, {len(SHUF)} cells, ' + ' and '.join(sorted({n for r in SHUF for n in r['nodes']})) + '). The matrices name the best adapter per cell on this input, the flip list compares with the random winners of the same cells under the same restriction as above.')
+        out.append(f'Robustness under heavy ties, the shuffled variant ({SHUF_PAT}, the same multiset through a shuffle so the period no longer aligns with the stripe, {len(SHUF)} cells, ' + ' and '.join(sorted({n for r in SHUF for n in r['nodes']})) + '). The pass as generated above is partly a layout test, these tables are the fairer tie-flood reading, and the study keeps both. The matrices name the best adapter per cell on this input, the flip list compares with the random winners of the same cells under the same restriction as above.')
         out.append('')
         for scope, title in (('warp', 'shuffled tie input, warp'), ('subwarp', 'shuffled tie input, sub-warp'), ('block', 'shuffled tie input, block')):
             if any(r['scope'] == scope and r['pattern'] == SHUF_PAT for r in SHUF):
