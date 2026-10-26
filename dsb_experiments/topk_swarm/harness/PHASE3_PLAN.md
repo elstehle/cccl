@@ -182,6 +182,15 @@ the matrix, verification by the usual verifiers on the same node from the same b
   (`run.py --skip-if-done`), batches resumed on a different node carry a `note` in their meta and the
   matrices print the node per cell and per table.
 
+- Resumed run (2026-10-26, tunnel back at 03:46Z): tie_heavy pass on umbriel-b200-068 (51 batches,
+  388 cells, done 06:36Z), B1_det3 addendum on 068 (done 06:42Z), named sub-warp addendum at 8 and
+  16 lanes on 068 (done 06:50Z), phase 3b on the successor umbriel-b200-047 (18 batches, done
+  06:3xZ), GB200 warp and sub-warp pass on gb200-nvl4-ts2-99 (57 batches, done 05:31Z), named
+  sub-warp addendum (05:40Z) and block cells at N 1024 and 4096 (done 06:27Z) on the same node.
+  The partial pre-outage batches of 035 and ts2-105 are under `superseded_outage/` and are not
+  matrix inputs, so no table mixes nodes within a pass. Final matrices: `WINNERS_b200.md` 1480
+  cells (random, tie_heavy, and the sorted-runs tracks), `WINNERS_gb200.md` 666 cells.
+
 ## 7. Go procedure
 
 1. Lead gives the go, broker names the B200 node and starts the pre-flight.
