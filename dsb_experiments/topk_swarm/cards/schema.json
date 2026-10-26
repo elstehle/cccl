@@ -156,6 +156,45 @@
         },
         "notes": {
           "type": "string"
+        },
+        "unsupported_cells": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "cells the adapter's supported() rejected, named without the adapter and control prefix"
+        },
+        "dropped_cells": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "cell",
+              "reason"
+            ],
+            "properties": {
+              "cell": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "pattern": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              }
+            }
+          },
+          "description": "cells the harness measured no number for, with the reason (oracle_failed, run_error, ...) and the first failure messages"
+        },
+        "order_check_not_applicable": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "phase 3b cells that failed only the sorted-order check on an adapter whose output is unsorted by contract"
         }
       }
     },
@@ -236,7 +275,10 @@
               "signed_zero",
               "inf_denorm",
               "quantized_random",
-              "relu_quantized"
+              "relu_quantized",
+              "tie_heavy_shuffled",
+              "signed_zero_boundary",
+              "pivot_tie_zero"
             ]
           },
           "workload_name": {

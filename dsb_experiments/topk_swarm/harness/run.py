@@ -393,6 +393,8 @@ def main():
                   "requirement": c["requirement"]} for c in items if c.get("scope", v_meta["scope"]) == v_meta["scope"]]
         if args.keys:
             cells = [c for c in cells if c["key_type"] in args.keys.split(",")]
+        if args.req:
+            cells = [c for c in cells if c["requirement"] in args.req.split(",")]
         spec = dict(spec, name="list")
     else:
         cells = expand_cells(spec, v_meta["scope"], args)

@@ -39,7 +39,7 @@ SWARM = os.path.dirname(HERE)
 
 CELL_KEYS = ["key_type", "value_type", "output_form", "n", "k", "rows", "runs", "threads", "requirement", "input_pattern",
              "workload_name", "regime", "metric", "value", "control_name", "control_value", "canary_start",
-             "canary_end", "resources", "raw_file"]
+             "canary_end", "resources", "raw_file", "node", "harness_version", "batch_label", "output_sorted_checked"]
 RES_KEYS = ["registers", "smem_bytes", "spill_bytes", "occupancy_blocks_per_sm", "bar_sync_count", "stack_bytes",
             "stl_count", "ldl_count", "sass_instructions", "bssy_count"]
 
@@ -125,6 +125,11 @@ def main():
     ap.add_argument("--allow-selftest-failure", action="store_true",
                     help="keep cells whose oracle self-test recorded false (harness 0.3 and earlier report a false "
                     "negative at k == N/2 from a self-test construction defect, the oracle itself was intact), flagged")
+    ap.add_argument("--unsorted-by-contract", action="store_true",
+                    help="the adapter's output is unsorted by contract: a cell that fails only the sorted-order check "
+                    "(every failure message is an order message, output not sorted or equal keys not in tie-break "
+                    "index order) is recorded under order_check_not_applicable "
+                    "instead of as an oracle failure. Also honored as the findings key unsorted_by_contract")
     args = ap.parse_args()
 
     schema = json.load(open(args.schema))
@@ -146,23 +151,36 @@ def main():
         else:
             raise SystemExit("--source-commit is required: the card's commit field is the adapter source commit, "
                              "not the node's clone commit (or write harness/SOURCE_COMMIT before shipping the harness)")
-    if len(recorded - {None, ""}) > 1:
+    if len(recorded - {None, ""}) > 1 and not args.source_commit:
         raise SystemExit("batches record different source commits: %s" % sorted(recorded - {None, ""}))
     clone_commits = {(b.get("repo") or {}).get("commit", "")[:12] for b in batches} - {""}
 
     cells, notes, cases, oracle_all_ok = [], [], 0, True
     counted_runs = set()
+    dropped_no_control = []
+    unsupported_cells, dropped_cells, order_na, kept_no_control_3b = [], [], [], []
+    unsorted_ok = args.unsorted_by_contract or bool(findings.get("unsorted_by_contract"))
+
+    def short_cell(name):
+        # the batch names a cell <adapter>__<control>__<cell>, the card keeps the cell part
+        return name.split("__", 2)[-1]
+
     for b, bpath in zip(batches, args.batch):
         if arch_of(b) and arch_of(b) != arch:
             raise SystemExit("batch %s is on %s, card is %s: no cross-arch cards" % (bpath, arch_of(b), arch))
         if b["adapter"]["id"] != adapter_id:
             raise SystemExit("batch %s is for adapter %s, not %s" % (bpath, b["adapter"]["id"], adapter_id))
         for f in b.get("failed", []):
+            msgs = f.get("failures", [])
+            order_only = all(("output not sorted" in m) or ("not in the tie-break index order" in m) for m in msgs)
+            if unsorted_ok and f.get("reason") == "oracle_failed" and msgs and order_only:
+                order_na.append(short_cell(f["cell"]))
+                continue
             oracle_all_ok = oracle_all_ok and f.get("reason") != "oracle_failed"
-            notes.append("dropped %s (%s)%s" % (f["cell"], f["reason"],
-                                               (": " + "; ".join(f.get("failures", [])[:3])) if f.get("failures") else ""))
+            dropped_cells.append({"cell": short_cell(f["cell"]), "reason": f.get("reason", "unknown"),
+                                  "pattern": f.get("pattern", ""), "detail": "; ".join(msgs[:3])})
         for u in b.get("unsupported", []):
-            notes.append("unsupported %s" % u["cell"])
+            unsupported_cells.append(short_cell(u["cell"]))
         for c in b.get("cells", []):
             raw = c.get("raw", {})
             v = raw.get("variant") or {}
@@ -172,8 +190,9 @@ def main():
                 cases += int(v.get("oracle_cases", 0))
             if not v.get("oracle_passed", False):
                 oracle_all_ok = False
-                notes.append("dropped cell N%d k%d %s %s %s: oracle failed" % (c["n"], c["k"], c["key_type"],
-                                                                               c["requirement"], c["regime"]))
+                dropped_cells.append({"cell": "N%d k%d %s %s %s" % (c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]),
+                                      "reason": "oracle_failed", "pattern": c.get("input_pattern", ""),
+                                      "detail": "the measured cell records oracle_passed false"})
                 continue
             if raw.get("oracle_selftest") is False:
                 if args.allow_selftest_failure:
@@ -185,25 +204,69 @@ def main():
                         c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
                     continue
             if "control_value" not in c:
-                if args.allow_missing_control:
+                if c.get("control_missing") and c.get("output_sorted_checked"):
+                    # phase 3b: the control's own output is unsorted, it fails the order check and the harness
+                    # records no control reading, the variant's sorted cell is kept with control none
+                    c["control_name"] = "none"
+                    c["control_value"] = c["value"]
+                    kept_no_control_3b.append("N%d k%d %s %s %s" % (c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
+                elif args.allow_missing_control:
                     c["control_name"] = "none"
                     c["control_value"] = c["value"]
                     notes.append("cell N%d k%d %s %s %s has no control (flagged)" % (
                         c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
                 else:
-                    notes.append("dropped cell N%d k%d %s %s %s: no control value" % (
-                        c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
+                    dropped_no_control.append("N%d k%d %s %s %s" % (c["n"], c["k"], c["key_type"], c["requirement"], c["regime"]))
                     continue
             cell = {k: c[k] for k in CELL_KEYS if k in c}
             cell["resources"] = {k: c["resources"][k] for k in RES_KEYS if k in c["resources"]}
             cell["raw_file"] = rel_to_swarm(bpath)
+            # provenance on every number: the node and harness version of the batch it came from
+            cell["node"] = b.get("node", {}).get("hostname", "unknown")
+            cell["harness_version"] = b.get("harness_version") or "unknown"
+            cell["batch_label"] = b.get("label", "")
+            if c.get("named_pattern"):
+                cell["named_pattern"] = c["named_pattern"]
             cells.append(cell)
 
+    summary = []
+    oracle_dropped = [d for d in dropped_cells if d["reason"] == "oracle_failed"]
+    other_dropped = [d for d in dropped_cells if d["reason"] != "oracle_failed"]
+    if oracle_dropped:
+        first = oracle_dropped[0]
+        summary.append("oracle failed in %d cells, listed in correctness.dropped_cells, first %s: %s" % (
+            len(oracle_dropped), first["cell"], first["detail"].split("; ")[0]))
+    elif oracle_all_ok:
+        summary.append("oracle passed on every measured cell")
+    if other_dropped:
+        summary.append("%d cells dropped for %s, listed in correctness.dropped_cells" % (
+            len(other_dropped), ", ".join(sorted({d["reason"] for d in other_dropped}))))
+    if order_na:
+        summary.append("%d phase 3b cells failed only the sorted-order check, which does not apply: the output is "
+                       "unsorted by contract, listed in correctness.order_check_not_applicable" % len(order_na))
+    if unsupported_cells:
+        summary.append("%d cells reported unsupported by the adapter's supported(), listed in "
+                       "correctness.unsupported_cells" % len(unsupported_cells))
+    if kept_no_control_3b:
+        summary.append("%d phase 3b cells carry control_name none: the control's output is unsorted, it fails the "
+                       "sorted-order check and the harness recorded no control reading, the variant's value stands "
+                       "alone (for example %s)" % (len(kept_no_control_3b), kept_no_control_3b[0]))
+    notes = summary + notes
+    if dropped_no_control:
+        if len(dropped_no_control) <= 5:
+            notes.append("dropped cells without a control value: " + ", ".join(dropped_no_control))
+        else:
+            notes.append("%d cells dropped for lack of a control value (a cell-list batch run under the other requirement "
+                         "carries the same cells without the reference's path, their twins with a control are in the card), "
+                         "for example %s" % (len(dropped_no_control), dropped_no_control[0]))
     if findings.get("correctness_notes"):
         notes.append(findings["correctness_notes"])
     control_ids = sorted({c["control_name"] for c in cells})
     if b0.get("control_is_aa"):
         notes.append("control is an A/A run of the same adapter in the same process (run-to-run noise reference)")
+    nodes_used = sorted({b.get("node", {}).get("hostname", "unknown") for b in batches})
+    if len(nodes_used) > 1:
+        notes.append("cells come from more than one node, see the node field of every cell: " + ", ".join(nodes_used))
 
     card = {
         "approach_id": approach_id,
@@ -212,11 +275,14 @@ def main():
         "arch": arch,
         "cuda_version": b0["node"].get("nvcc_version", "unknown"),
         "node": b0["node"].get("hostname", "unknown"),
-        "date": b0.get("date"),
+        "date": max(str(b.get("date") or "") for b in batches) or b0.get("date"),
         "commit": source_commit,
         "author": findings["author"],
         "contract": findings["contract"],
-        "correctness": {"oracle_passed": oracle_all_ok, "cases": cases, "notes": " | ".join(notes)},
+        "correctness": dict({"oracle_passed": oracle_all_ok, "cases": cases, "notes": " | ".join(notes)},
+                            **{k: v for k, v in (("unsupported_cells", unsupported_cells),
+                                                 ("dropped_cells", dropped_cells),
+                                                 ("order_check_not_applicable", order_na)) if v}),
         "cells": cells,
         "findings": findings["findings"],
         "techniques_adopted": findings.get("techniques_adopted", []),
