@@ -1,0 +1,722 @@
+[
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 4,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 4,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 8,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 8,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 24,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 24,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 48,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 48,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 64,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 64,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 256,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 1024,
+  "k": 256,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 8192,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 8192,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 64,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 64,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 128,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 128,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 32768,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 32768,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 32768,
+  "k": 4096,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 32768,
+  "k": 4096,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 128,
+  "n": 8192,
+  "k": 16,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 128,
+  "n": 8192,
+  "k": 16,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 64,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 64,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 16,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 16,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 256,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 256,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 64,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 64,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 128,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 128,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 16,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 16,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 256,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 256,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 1024,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 1024,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 2048,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 2048,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 64,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 64,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 512,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 512,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 32768,
+  "k": 2048,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 32768,
+  "k": 2048,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 512,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 512,
+  "n": 16384,
+  "k": 4096,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 256,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 256,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 32768,
+  "k": 4096,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 512,
+  "n": 32768,
+  "k": 4096,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 128,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 8192,
+  "k": 128,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 4,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 4,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 32,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 128,
+  "n": 1024,
+  "k": 32,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 64,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 64,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 128,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 16384,
+  "k": 128,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 1024,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 1024,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "bf16",
+  "threads": 256,
+  "n": 8192,
+  "k": 1024,
+  "requirement": "prefer_smaller_index"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 256,
+  "requirement": "not_guaranteed"
+ },
+ {
+  "scope": "block",
+  "key_type": "fp32",
+  "threads": 256,
+  "n": 16384,
+  "k": 256,
+  "requirement": "prefer_smaller_index"
+ }
+]

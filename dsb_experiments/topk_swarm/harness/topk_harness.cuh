@@ -141,7 +141,7 @@ inline constexpr int num_chain_points = 5;
 inline constexpr int num_inputs       = 16; // distinct inputs per pattern, one per chain position
 inline constexpr int default_reps     = 24; // minimum repetitions per chain length
 inline constexpr int throughput_reps  = 5; // best of 5 event timings
-inline constexpr const char* harness_version = "0.10";
+inline constexpr const char* harness_version = "0.11";
 
 // ------------------------------------------------------------------------------------------------
 // Key traits. The device input buffer holds raw key bits; the host oracle sees widened floats.
@@ -1085,6 +1085,20 @@ inline std::vector<float> make_pattern(const std::string& p, int n, int k, unsig
       v[j] = static_cast<float>(j % 64) / 64.f;
     }
   }
+  else if (p == "tie_heavy_shuffled")
+  {
+    // the tie_heavy multiset with the positions permuted by a fixed seed: tie_heavy's period of 64
+    // divides every stripe and tile, which aligns the 64 copies of each value with the thread
+    // layout (every striped thread of a 256-thread block holds one value), the shuffle removes
+    // that layout artifact while keeping the tie structure
+    v.resize(n);
+    for (int j = 0; j < n; ++j)
+    {
+      v[j] = static_cast<float>(j % 64) / 64.f;
+    }
+    std::mt19937_64 rng(0x7E1EBA5Eull + seed);
+    std::shuffle(v.begin(), v.end(), rng);
+  }
   else if (p == "sorted_asc" || p == "sorted_desc")
   {
     v = normal_values(n, seed);
@@ -2007,6 +2021,14 @@ struct cell_runner
         ++r.oracle_cases;
         if (!oracle_one(in, why, o.check_sorted))
         {
+          if (why.rfind("dynamic shared memory", 0) == 0)
+          {
+            // the oracle kernel cannot launch at this shape: the cell is unsupported on this device,
+            // the same classification as an unlaunchable regime, not a wrong result
+            r.supported = false;
+            r.error += "unsupported on this device: " + why + "; ";
+            return;
+          }
           r.oracle_ok = false;
           r.oracle_failures.push_back(std::string(it.pattern) + " seed " + std::to_string(s) + ": " + why);
           if (o.verbose)
@@ -2185,7 +2207,7 @@ struct cell_runner
       }
     }
     run_oracle(o, r);
-    if (!r.oracle_ok || o.oracle_only)
+    if (!r.supported || !r.oracle_ok || o.oracle_only)
     {
       return r;
     }
@@ -2503,7 +2525,10 @@ int run_cell(int argc, char** argv)
     }
     const bool selftest_ok = oracle_selftest(N, K);
     root.add("status",
-             !selftest_ok ? "selftest_failed" : vr.oracle_ok ? (have_control ? "ok" : "ok_no_control") : "oracle_failed");
+             !selftest_ok  ? "selftest_failed"
+             : !vr.supported ? "variant_unsupported_on_device"
+             : vr.oracle_ok  ? (have_control ? "ok" : "ok_no_control")
+                             : "oracle_failed");
     root.add("cells",
              vr.oracle_ok ? make_cells<KeyT>(vr, have_control ? &cr : nullptr, control_name, VCfg::rows, o.runs, o.check_sorted, Threads, N, K, Req,
                                              VA::output, o.pattern, can0, can1)

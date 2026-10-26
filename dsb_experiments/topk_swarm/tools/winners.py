@@ -20,10 +20,12 @@ import sys
 from collections import defaultdict
 
 DEFAULT_THREADS = {"block": 256, "warp": 32}
+# adapters that are the same kernel under two ids (N8_b2packed is B2_packed launched at another thread count)
+ALIASES = {"N8_b2packed": "B2_packed"}
 
 
 def label_of(cell, adapter_id, scope):
-    lab = adapter_id
+    lab = ALIASES.get(adapter_id, adapter_id)
     t = cell.get("threads")
     if scope in DEFAULT_THREADS and t and t != DEFAULT_THREADS[scope]:
         lab += "@T%d" % t
@@ -50,6 +52,15 @@ def main():
     ap.add_argument("--label-prefix", default=None,
                     help="only batches whose label starts with this (e.g. phase3_b200: the random and tie_heavy passes), "
                     "so older batches fetched from the same node directory are ignored")
+    ap.add_argument("--labels", default=None,
+                    help="comma list of exact batch labels to include (preferred over --label-prefix: phase3_b200_3b "
+                    "would otherwise match the prefix phase3_b200 and enter the random cells)")
+    ap.add_argument("--main-node", default=None,
+                    help="node of the main random pass: random-label batches measured on another node are not "
+                    "candidates of the one-node random tables, they form addendum tables named after their node")
+    ap.add_argument("--runs-reference", action="append", default=[],
+                    help="adapter ids that are a reference column, not a candidate, in the sorted-runs tables "
+                    "(an unsorted selection over presorted runs is not the track's contract), e.g. B1_det3")
     ap.add_argument("--second-reference", action="append", default=[],
                     help="adapter ids whose value is a second reference column (e.g. B1_det, the deterministic path): "
                     "taken from its own candidate measurement in the same session, or from batches where it was the control")
@@ -68,8 +79,14 @@ def main():
             continue
         if (d.get("node", {}).get("arch") or "").lower() not in ("", args.arch):
             continue
-        if args.label_prefix and not str(d.get("label", "")).startswith(args.label_prefix):
+        lab = str(d.get("label", ""))
+        if args.labels:
+            if lab not in args.labels.split(","):
+                continue
+        elif args.label_prefix and not lab.startswith(args.label_prefix):
             continue
+        is_3b = lab.endswith("_3b")
+        is_addendum = bool(args.main_node and lab.endswith("_random") and d["node"].get("hostname") != args.main_node)
         scope = d["adapter"]["scope"]
         aid = d["adapter"]["id"]
         nodes.add(d["node"].get("hostname"))
@@ -82,6 +99,10 @@ def main():
             pattern = c.get("named_pattern") or c["input_pattern"]
             if c.get("runs"):
                 pattern += "@runs%d" % c["runs"]  # sorted-runs input is its own cell, never compared with random
+            if is_3b:
+                pattern += "@sorted"  # the sorted-output pass runs a different code path, never a random candidate
+            if is_addendum:
+                pattern += "@addendum:" + str(d["node"].get("hostname"))  # measured on another node, own tables
             if args.pattern and pattern != args.pattern:
                 continue
             key = (scope, c["regime"], c["requirement"], pattern, c["key_type"], c["n"], c["k"], c.get("workload_name") or "")
@@ -90,6 +111,9 @@ def main():
                 continue
             if aid in seconds:
                 refs2[key].append((aid, c["value"]))  # measured as a candidate: its value is the second reference
+            if c.get("runs") and aid in args.runs_reference:
+                refs2[key].append((aid + "@runs%d" % c["runs"], c["value"]))  # reference on the sorted-runs track
+                continue
             ctrl_label = c["control_name"]
             t = c.get("threads")
             if scope in DEFAULT_THREADS and t and t != DEFAULT_THREADS[scope]:
@@ -150,6 +174,30 @@ def main():
             close.append({"scope": scope, "key_type": kt, "threads": win["threads"], "n": n, "k": k, "requirement": req,
                           "winner": win["adapter"], "runner_up": run["adapter"], "margin": m_run})
 
+    # 3b sorted-output outcomes per adapter, from the batches of the 3b pass
+    sorted3b = defaultdict(lambda: {"ok": 0, "unsupported": 0, "failed": 0, "nodes": set(), "examples": []})
+    for p in sorted(glob.glob(os.path.join(args.results, "*.json"))):
+        if p.endswith(".build.json"):
+            continue
+        try:
+            d = json.load(open(p))
+        except Exception:
+            continue
+        if not str(d.get("label", "")).endswith("_3b"):
+            continue
+        aid = d["adapter"]["id"]
+        s3 = sorted3b[aid]
+        by_design_unsorted = aid in ("N5_rows_f", "N5_rows_fs_sub")
+        s3["nodes"].add(d["node"].get("hostname"))
+        s3["ok"] += len({(c["key_type"], c["n"], c["k"], c["requirement"]) for c in d.get("cells", [])})
+        for f in d.get("failed", []):
+            text = " ".join(f.get("failures", []))
+            if "exceeds the device limit" in text or f.get("reason") == "oracle_selftest_failed" or by_design_unsorted:
+                s3["unsupported"] += 1
+            else:
+                s3["failed"] += 1
+                if len(s3["examples"]) < 2:
+                    s3["examples"].append(f["cell"].split("__")[2] + ": " + text[:110])
     # markdown
     lines = ["# Winners matrix, %s" % args.arch, "",
              "Generated by `tools/winners.py` from the phase 3 batches under `%s`. Nodes: %s. Harness: %s. "
@@ -166,7 +214,16 @@ def main():
              "these rows are not head-to-head with the random-input tables. (3) A runner-up marked `(spills)` has "
              "register spills or local memory at that cell, so its margin is against a degraded form (B2_packed "
              "above 32 items per thread is the known case). (4) When a table's cells were measured on more than "
-             "one node the `node` column says which, candidates of one cell always share a node and a session.", ""]
+             "one node the `node` column says which, candidates of one cell always share a node and a session. "
+             "(5) N8_b2packed is B2_packed launched at 128 threads and is reported under the B2_packed name with "
+             "the `@T128` suffix, so the same kernel never appears twice in a cell. (7) Tables whose pattern carries "
+             "`@sorted` are the phase 3b pass (sorted-output oracle, a different code path in some adapters), tables "
+             "with `@addendum:<node>` were measured on another node than the main random pass and are not mixed into "
+             "its one-node tables, and on the sorted-runs track an adapter named with --runs-reference (B1_det3, an "
+             "unsorted selection over presorted runs) is a reference column, not a candidate. (6) The 3b sorted-output "
+             "section at the end lists, per adapter, the cells that passed the order check over the full oracle "
+             "battery, the cells unsupported on the device (oracle kernel could not launch) and the cells that "
+             "failed the order check, with the reading per adapter.", ""]
     groups = defaultdict(list)
     for r in rows:
         groups[(r["scope"], r["regime"], r["requirement"], r["pattern"])].append(r)
@@ -210,6 +267,21 @@ def main():
         lines.append("| %s | %s | %s | %d |" % (scope, regime, adapter, nwin))
     lines.append("")
     wide = [(r, lab, sp) for r in rows for lab, sp in r["duplicate_spread"].items() if sp > 0.03]
+    if sorted3b:
+        lines.append("## Phase 3b, sorted output (oracle with --check-sorted over the full battery)")
+        lines.append("")
+        lines.append("| adapter | cells sorted on every battery case | unsupported on the device | failed the order check | reading |")
+        lines.append("|---|---|---|---|---|")
+        readings = {
+            "N5_rows_f": "unsupported: no sorted output by design (card: sorted_output_support none), its unsorted cells stand",
+            "N5_rows_fs_sub": "unsupported: no sorted output by design (card: sorted_output_support none), its unsorted cells stand",
+            "W5_v4": "ordering bug in the sorted finish under prefer_smaller_index for fp32: equal keys inside the top k come out in scatter order, the unsorted cells stand",
+            "B6_radix": "sorted on every launchable cell, fp32 N 32768 exceeds the 227 KB dynamic shared memory limit",
+        }
+        for aid, s3 in sorted(sorted3b.items()):
+            reading = readings.get(aid, "sorted on every cell" if not s3["failed"] else "; ".join(s3["examples"]))
+            lines.append("| %s | %d | %d | %d | %s |" % (aid, s3["ok"], s3["unsupported"], s3["failed"], reading))
+        lines.append("")
     lines.append("%d cells, %d close (margin over the runner-up below %.0f percent), %d adapter cells measured twice in "
                  "the session with a spread above 3 percent." % (len(rows), len(close), args.close_margin * 100, len(wide)))
     if wide:

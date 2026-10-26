@@ -595,6 +595,10 @@ def main():
         if d.get("status") == "variant_unsupported":
             unsupported.append({"cell": c["name"], "reason": "variant does not support this cell"})
             continue
+        if d.get("status") == "variant_unsupported_on_device":
+            unsupported.append({"cell": c["name"], "reason": "unsupported on this device: " +
+                                str(d.get("variant", {}).get("error", ""))[:200]})
+            continue
         if not d.get("variant", {}).get("oracle_passed", False):
             failed.append({"cell": c["name"], "pattern": rec["pattern"], "reason": "oracle_failed",
                            "failures": d.get("variant", {}).get("oracle_failures", [])})

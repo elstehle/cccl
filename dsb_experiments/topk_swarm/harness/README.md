@@ -169,7 +169,9 @@ the numbers say so.
 
 Patterns (values generated in fp32, then rounded to the key type, so bf16 inputs carry the ties
 rounding introduces): `random` normal(0, 1); `quantized_random`, `relu_quantized` as in
-`segmented_topk/variable/common.cuh`; `tie_heavy` `(j % 64) / 64`; `sorted_asc` and `sorted_desc`
+`segmented_topk/variable/common.cuh`; `tie_heavy` `(j % 64) / 64` (unshuffled, its period 64 divides every stripe, so it is partly a layout
+test: every striped thread of a 256-thread block holds 64 copies of one value); `tie_heavy_shuffled`
+(0.11) the same multiset with positions permuted by a fixed seed; `sorted_asc` and `sorted_desc`
 the sorted normal sample; `pivot_tie` all 1.0 with `max(1, min(k/4, N/8))` values 2.0 at the tail
 (boundary flood of equal keys); `all_equal`; `signed_zero` negative keys with 2k zeros of
 alternating sign at random positions; `inf_denorm` normal sample with +-inf, denormals and the
@@ -256,7 +258,9 @@ reported next to the number. The no-op adapter's throughput is reported as
 `harness_ceiling_gelem_per_s`: if an adapter approaches it the harness loads, not the primitive,
 set the number.
 
-A regime whose launch does not fit the device (typically the throughput block of 8 warps times a
+An oracle kernel that cannot launch (dynamic shared memory above the opt-in limit) makes the cell
+unsupported on this device (status `variant_unsupported_on_device`, harness 0.11), the same
+classification as an unlaunchable regime below, never an oracle failure. A regime whose launch does not fit the device (typically the throughput block of 8 warps times a
 large per-warp temp storage plus the double-buffered output exceeding the 227 KB opt-in limit) is
 reported as unsupported for that regime in the adapter's `error` field, the other regime's numbers
 stand, and the cell binary does not fail (harness 0.9).
